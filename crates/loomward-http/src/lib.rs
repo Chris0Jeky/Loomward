@@ -239,6 +239,8 @@ pub fn serve(service: Arc<dyn ViewService>, options: Options) -> io::Result<Hand
         .build()?;
     let (stop_tx, stop_rx) = watch::channel(false);
     let connections = Arc::new(Semaphore::new(options.max_connections.max(1)));
+    // Service teardown may wait for native workers; keep the final owner outside Tokio.
+    let service = shared.service.clone();
     let thread = std::thread::Builder::new()
         .name("loomward-serve".into())
         .spawn(move || {
@@ -249,6 +251,7 @@ pub fn serve(service: Arc<dyn ViewService>, options: Options) -> io::Result<Hand
                 }
             });
             runtime.shutdown_timeout(Duration::from_secs(2));
+            drop(service);
         })?;
     Ok(Handle {
         addr,
@@ -420,7 +423,7 @@ impl AsyncWrite for WriteDeadline {
 
 async fn handle(s: &Shared, req: hyper::Request<Incoming>) -> Response<Body> {
     let api = req.uri().path().starts_with("/api/");
-    let mut res = route(s, req).await;
+    let mut res = route(s, req.map(Body::new)).await;
     security_headers(res.headers_mut(), api);
     res
 }
@@ -453,16 +456,16 @@ async fn drain(body: Body, _headers: &HeaderMap, timeout: Duration) -> Drained {
 
 async fn early_reply(
     s: &Shared,
-    body: Incoming,
+    body: Body,
     headers: &HeaderMap,
     res: Response<Body>,
 ) -> Response<Body> {
     // LW-001: a bounded drain preserves early replies on Windows; it cannot override the gate.
-    let _ = drain(Body::new(body), headers, s.read_timeout).await;
+    let _ = drain(body, headers, s.read_timeout).await;
     res
 }
 
-async fn route(s: &Shared, req: hyper::Request<Incoming>) -> Response<Body> {
+async fn route(s: &Shared, req: hyper::Request<Body>) -> Response<Body> {
     let (parts, body) = req.into_parts();
     if !host_ok(s, &parts) {
         return early_reply(
@@ -504,13 +507,17 @@ async fn route(s: &Shared, req: hyper::Request<Incoming>) -> Response<Body> {
     } else {
         match (&parts.method, path) {
             (&Method::POST, "/api/v3/call") => call_header_refusal(&parts.headers),
-            (&Method::GET, "/api/v3/events") => Some(events(s, &parts.headers).await),
+            (&Method::GET, "/api/v3/events") => None,
             _ if known => Some(refuse(StatusCode::METHOD_NOT_ALLOWED, "method not allowed")),
             _ => Some(refuse(StatusCode::NOT_FOUND, "not found")),
         }
     };
     let mut res = if let Some(res) = early {
         early_reply(s, body, &parts.headers, res).await
+    } else if path == "/api/v3/events" {
+        // A stalled request body must not reserve a subscription or an SSE permit.
+        let _ = drain(body, &parts.headers, s.read_timeout).await;
+        events(s, &parts.headers).await
     } else {
         let read = match tokio::time::timeout(
             s.read_timeout,
@@ -928,6 +935,63 @@ mod tests {
     use super::*;
 
     #[test]
+    fn sse_body_drain_does_not_hold_a_stream_permit() {
+        let shared = Shared {
+            service: Arc::new(
+                fixture::FixtureService::new(loomward_protocol::DatasetClass::Synthetic).unwrap(),
+            ),
+            host: "127.0.0.1:12345".into(),
+            self_origin: "http://127.0.0.1:12345".into(),
+            allow_origins: vec![],
+            token: "0".repeat(64),
+            static_dir: None,
+            read_timeout: Duration::from_secs(60),
+            write_timeout: Duration::from_secs(1),
+            connection_lifetime: Duration::from_secs(60),
+            sse_send_timeout: Duration::from_secs(1),
+            streams: Arc::new(Semaphore::new(MAX_STREAMS)),
+            stop: Arc::new(AtomicBool::new(false)),
+        };
+        let draining = Arc::new(AtomicBool::new(false));
+        let polled = draining.clone();
+        let body = Body::from_stream(stream::poll_fn(move |_| {
+            polled.store(true, Ordering::SeqCst);
+            Poll::<Option<Result<Bytes, Infallible>>>::Pending
+        }));
+        let request = hyper::Request::builder()
+            .method(Method::GET)
+            .uri("/api/v3/events")
+            .header(header::HOST, &shared.host)
+            .header(TOKEN_HEADER, &shared.token)
+            .header(header::CONTENT_LENGTH, DRAIN_LIMIT * 2)
+            .body(body)
+            .unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let mut response = Box::pin(route(&shared, request));
+            futures_util::future::poll_fn(|cx| {
+                assert!(response.as_mut().poll(cx).is_pending());
+                if draining.load(Ordering::SeqCst) {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            })
+            .await;
+            let available = shared.streams.available_permits();
+            shared.stop.store(true, Ordering::SeqCst);
+            drop(response);
+            assert_eq!(
+                available, MAX_STREAMS,
+                "a body not yet drained must not reserve an SSE stream"
+            );
+        });
+    }
+
+    #[test]
     fn early_large_body_drains_to_the_byte_bound() {
         let read = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let count = read.clone();
@@ -949,6 +1013,34 @@ mod tests {
             Drained::TooLarge
         ));
         assert_eq!(read.load(Ordering::SeqCst), 5);
+    }
+
+    #[test]
+    fn shutdown_drops_the_service_outside_the_runtime() {
+        struct DropProbe(std::sync::mpsc::Sender<bool>);
+        impl ViewService for DropProbe {
+            fn call(&self, _: RequestEnvelope, _: &CallContext) -> ResponseEnvelope {
+                unreachable!()
+            }
+            fn subscribe(&self, _: Option<(String, u64)>) -> Box<dyn EventStream> {
+                unreachable!()
+            }
+        }
+        impl Drop for DropProbe {
+            fn drop(&mut self) {
+                self.0
+                    .send(tokio::runtime::Handle::try_current().is_ok())
+                    .unwrap();
+            }
+        }
+        let (dropped, received) = std::sync::mpsc::channel();
+        serve(Arc::new(DropProbe(dropped)), Options::default())
+            .unwrap()
+            .shutdown();
+        assert!(
+            !received.recv_timeout(Duration::from_secs(5)).unwrap(),
+            "a blocking service destructor ran inside the Tokio runtime"
+        );
     }
 
     #[test]

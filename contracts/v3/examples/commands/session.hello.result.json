@@ -8,6 +8,7 @@
   "capabilities": {
     "observation": {
       "metadata_scan": true,
+      "duplicate_content_read": true,
       "process_observation": true,
       "gpu_observation": false,
       "disk_io_observation": true,

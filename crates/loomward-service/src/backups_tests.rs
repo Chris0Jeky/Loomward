@@ -284,6 +284,9 @@ fn malformed_oversized_and_non_regular_picks_are_refused_by_name() {
         // Device names open a device, not a file: refused before anything is opened.
         (tmp.path().join("CON"), "not_a_regular_file"),
         (tmp.path().join("com1 .json"), "not_a_regular_file"),
+        (tmp.path().join("COM\u{00b9}.json"), "not_a_regular_file"),
+        (tmp.path().join("LPT\u{00b2}.txt"), "not_a_regular_file"),
+        (tmp.path().join("com\u{00b3} .json"), "not_a_regular_file"),
         // Network and device namespaces are refused lexically: no network or device I/O.
         (
             PathBuf::from(r"\\synthetic-host.invalid\share\snapshots.json"),
@@ -335,6 +338,87 @@ fn the_reader_never_returns_more_than_the_budget() {
         read_receipt(&over).unwrap_err(),
         BackupImportRefusal::TooLarge
     );
+}
+
+#[test]
+fn unrepresentable_receipt_times_refuse_without_replacing_evidence() {
+    let tmp = temp_root();
+    let svc = personal(tmp.path());
+    let snaps = write(tmp.path(), "snapshots.json", snapshots());
+    let check = write(tmp.path(), "check.json", CLEAN_CHECK);
+    let future = std::time::UNIX_EPOCH + Duration::from_secs(10_413_792_000); // 2300-01-01
+    let original = imported(import(
+        &svc,
+        &Files::new(vec![Some(snaps.clone())]),
+        payload("synthetic-nas", None, None, false),
+    ));
+    for (path, integrity) in [(&snaps, false), (&check, true)] {
+        let handle = std::fs::File::options().write(true).open(path).unwrap();
+        handle.set_modified(future).unwrap();
+        drop(handle);
+        assert_eq!(std::fs::metadata(path).unwrap().modified().unwrap(), future);
+        rearm(&svc);
+        let picks = if integrity {
+            vec![Some(snaps.clone()), Some(check.clone())]
+        } else {
+            vec![Some(snaps.clone())]
+        };
+        assert_eq!(
+            refusal(import(
+                &svc,
+                &Files::new(picks),
+                payload("synthetic-nas", None, None, integrity),
+            )),
+            "unreadable"
+        );
+        assert_eq!(
+            list(&svc)[0]["snapshot_observed_at"],
+            original["evidence"]["snapshot_observed_at"]
+        );
+        assert_eq!(list(&svc).len(), 1);
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now())
+            .unwrap();
+    }
+}
+
+#[test]
+fn v1_stores_migrate_to_importable_backup_evidence() {
+    let tmp = temp_root();
+    let state = tmp.path().join("state");
+    std::fs::create_dir(&state).unwrap();
+    for (name, schema) in [
+        (
+            "catalog.db",
+            include_str!("../../loomward-catalog/tests/fixtures/catalog-v1.sql"),
+        ),
+        (
+            "state.db",
+            include_str!("../../loomward-catalog/tests/fixtures/state-v1.sql"),
+        ),
+    ] {
+        let conn = rusqlite::Connection::open(state.join(name)).unwrap();
+        conn.execute_batch(schema).unwrap();
+        conn.pragma_update(None, "application_id", loomward_catalog::APPLICATION_ID)
+            .unwrap();
+        conn.pragma_update(None, "user_version", 1).unwrap();
+        conn.execute("INSERT INTO meta VALUES('dataset_class','personal')", [])
+            .unwrap();
+    }
+    let svc = personal(tmp.path());
+    assert!(list(&svc).is_empty());
+    let snaps = write(tmp.path(), "snapshots.json", snapshots());
+    imported(import(
+        &svc,
+        &Files::new(vec![Some(snaps)]),
+        payload("synthetic-nas", None, None, false),
+    ));
+    assert_eq!(list(&svc).len(), 1);
+    drop(svc);
+    assert_eq!(list(&personal(tmp.path())).len(), 1);
 }
 
 #[test]

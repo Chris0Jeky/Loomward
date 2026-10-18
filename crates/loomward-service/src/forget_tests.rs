@@ -325,7 +325,7 @@ fn forgetting_removes_state_copy_sidecars_including_orphans() {
         "state.before-v0.db",
         "state.start-123.db",
     ] {
-        for suffix in ["-wal", "-shm"] {
+        for suffix in ["-wal", "-shm", "-journal"] {
             let mut bytes = PATH_A.as_bytes().to_vec();
             bytes.extend_from_slice(&utf16);
             std::fs::write(dir.path().join(format!("{stem}{suffix}")), bytes).unwrap();
@@ -338,7 +338,7 @@ fn forgetting_removes_state_copy_sidecars_including_orphans() {
         "state.before-v0.db",
         "state.start-123.db",
     ] {
-        for suffix in ["-wal", "-shm"] {
+        for suffix in ["-wal", "-shm", "-journal"] {
             assert!(!dir.path().join(format!("{stem}{suffix}")).exists());
         }
     }
@@ -654,7 +654,9 @@ fn preserved_catalogue_copies_are_swept_with_their_sidecars() {
         "catalog.corrupt-1.db",
         "catalog.corrupt-1.db-wal",
         "catalog.corrupt-1.db-shm",
+        "catalog.corrupt-1.db-journal",
         "catalog.before-v1-2.db",
+        "catalog.before-v1-2.db-journal",
     ] {
         std::fs::write(dir.path().join(name), PATH_A).unwrap();
     }
@@ -663,6 +665,43 @@ fn preserved_catalogue_copies_are_swept_with_their_sidecars() {
     ok("roots.forget", forget(&svc, root, None));
     assert!(holders(dir.path(), PATH_A).is_empty());
     assert_eq!(std::fs::read_to_string(unrelated).unwrap(), PATH_B);
+}
+
+#[test]
+fn forget_removes_the_archive_created_by_corrupt_catalogue_recovery() {
+    let dir = temp_root();
+    drop(loomward_catalog::Catalog::open(dir.path(), "synthetic").unwrap());
+    std::fs::write(dir.path().join("catalog.db"), PATH_A).unwrap();
+    drop(loomward_catalog::Catalog::open(dir.path(), "synthetic").unwrap());
+    let archived = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("catalog.corrupt-")
+        })
+        .expect("corrupt catalogue was not archived");
+    assert!(crate::handlers::holds(&archived, PATH_A));
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    let (root, grant) = named(&svc, 1, NAME_A, PATH_A);
+    svc.inner.revoke(grant).unwrap();
+    ok("roots.forget", forget(&svc, root, None));
+    assert!(!archived.exists());
+    assert!(holders(dir.path(), PATH_A).is_empty());
+}
+
+#[test]
+fn backup_directory_open_failure_is_not_an_empty_success() {
+    let dir = temp_root();
+    let error =
+        crate::handlers::forget_backups(&dir.path().join("missing"), Some(PATH_A)).unwrap_err();
+    assert_eq!(
+        error.detail.as_ref().unwrap()["reason"],
+        "forget_backup_scrub_failed"
+    );
+    assert_eq!(error.detail.as_ref().unwrap()["copy_kind"], "directory");
 }
 
 #[test]
@@ -796,10 +835,13 @@ fn v1_migration_forget_preserves_the_other_grant_and_clears_every_copy() {
         ),
         41
     );
+    // A legacy grant stays active until its first matching native admission adopts a GUID.
+    let kept = "SELECT count(*) FROM st.root_grant WHERE id=7 AND display_path='KeepServicePathBeta' AND state='active' AND volume_guid IS NULL";
+    assert_eq!(count(&svc, kept), 1);
     let root = count(&svc, "SELECT id FROM main.root WHERE grant_id=41");
     svc.inner.revoke(41).unwrap();
     ok("roots.forget", forget(&svc, root, None));
-    assert_eq!(count(&svc, "SELECT count(*) FROM st.root_grant WHERE id=7 AND display_path='KeepServicePathBeta' AND state='identity_changed' AND volume_guid IS NULL"), 1);
+    assert_eq!(count(&svc, kept), 1);
     drop(svc);
     assert!(holders(dir.path(), PATH_A).is_empty());
 }
@@ -840,6 +882,41 @@ fn an_unrecognised_grant_copy_is_byte_checked_before_any_id_scrub() {
         ),
         1
     );
+}
+
+#[test]
+fn an_unknown_v2_copy_never_scrubs_a_grant_in_an_unproven_id_namespace() {
+    for path in [PATH_B, PATH_A] {
+        let dir = temp_root();
+        let svc = open(dir.path(), DatasetClass::Synthetic);
+        let (root, grant) = named(&svc, 1, NAME_A, PATH_A);
+        svc.inner.revoke(grant).unwrap();
+        let copy = dir.path().join("state.before-v2.db");
+        let db = rusqlite::Connection::open(&copy).unwrap();
+        // No object_ref table: v2 alone cannot establish that the grant IDs match live state.
+        db.execute_batch("PRAGMA user_version=2; CREATE TABLE root_grant(id INTEGER PRIMARY KEY,display_path TEXT,volume_key TEXT,root_file_id BLOB)").unwrap();
+        db.execute(
+            "INSERT INTO root_grant VALUES(?1,?2,'copy-volume',X'0102')",
+            rusqlite::params![grant, path],
+        )
+        .unwrap();
+        drop(db);
+        ok("roots.forget", forget(&svc, root, None));
+        if path == PATH_A {
+            assert!(
+                !copy.exists(),
+                "an unknown copy with forgotten bytes was retained"
+            );
+        } else {
+            assert!(copy.exists(), "an unrelated unknown copy was removed");
+            let db = rusqlite::Connection::open(&copy).unwrap();
+            let unchanged: bool = db.query_row("SELECT display_path=?1 AND volume_key='copy-volume' AND root_file_id=X'0102' FROM root_grant", [PATH_B], |r| r.get(0)).unwrap();
+            assert!(
+                unchanged,
+                "the unknown copy's grant ID was treated as live authority"
+            );
+        }
+    }
 }
 
 #[test]

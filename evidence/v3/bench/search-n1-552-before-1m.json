@@ -1,0 +1,80 @@
+{
+  "limits": "warm SQLite, generated fixture; no filesystem enumeration, service or HTTP; first search run included",
+  "resolve_1024_depth20_ms": 474.3123,
+  "resolve_sql_calls": 21504,
+  "search": [
+    {
+      "budget_hit": false,
+      "case": "owner_common",
+      "has_cursor": true,
+      "hits": 100,
+      "ms": 7.7915,
+      "run": 0
+    },
+    {
+      "budget_hit": false,
+      "case": "owner_common",
+      "has_cursor": true,
+      "hits": 100,
+      "ms": 6.8465,
+      "run": 1
+    },
+    {
+      "budget_hit": false,
+      "case": "owner_common",
+      "has_cursor": true,
+      "hits": 100,
+      "ms": 6.4127,
+      "run": 2
+    },
+    {
+      "budget_hit": true,
+      "case": "narrow_scope_common",
+      "has_cursor": true,
+      "hits": 0,
+      "ms": 4500.4934,
+      "run": 0
+    },
+    {
+      "budget_hit": true,
+      "case": "narrow_scope_common",
+      "has_cursor": true,
+      "hits": 0,
+      "ms": 3304.1112,
+      "run": 1
+    },
+    {
+      "budget_hit": true,
+      "case": "narrow_scope_common",
+      "has_cursor": true,
+      "hits": 0,
+      "ms": 3013.7403,
+      "run": 2
+    },
+    {
+      "budget_hit": false,
+      "case": "disjoint_ancestors",
+      "has_cursor": false,
+      "hits": 100,
+      "ms": 28.0325,
+      "run": 0
+    },
+    {
+      "budget_hit": false,
+      "case": "disjoint_ancestors",
+      "has_cursor": false,
+      "hits": 100,
+      "ms": 17.7108,
+      "run": 1
+    },
+    {
+      "budget_hit": false,
+      "case": "disjoint_ancestors",
+      "has_cursor": false,
+      "hits": 100,
+      "ms": 22.3223,
+      "run": 2
+    }
+  ],
+  "synthetic_files": 1000100
+}

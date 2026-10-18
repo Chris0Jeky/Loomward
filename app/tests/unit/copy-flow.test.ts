@@ -13,6 +13,7 @@ const manifest: CopyPreview = {
 const status = (state: CopyStatus['state']): CopyStatus => ({
   operation_id: manifest.operation_id, digest, state, items_total: 3,
   items_verified: state === 'committed' ? 3 : 0, staging_folder: null, leftover_staging_folders: [], refusal: null,
+  unjournaled_items: [], unjournaled_item_count: 0,
 });
 function scripted() {
   const call = vi.fn(async (command: string) => {
@@ -91,6 +92,7 @@ describe('copy UI lifecycle (scripted transport only; no file effects)', () => {
     expect(call).toHaveBeenCalledTimes(1); expect(f.canApprove).toBe(false);
     expect(refusalReason('cloud_placeholder')).toContain('download');
     expect(refusalReason('source_changed')).toContain('new preview');
+    expect(refusalReason('destination_changed')).toContain('Nothing was written');
   });
 
   it('rejects approval for a different digest or operation and expired approval', async () => {

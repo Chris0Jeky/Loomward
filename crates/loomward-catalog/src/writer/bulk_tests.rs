@@ -5,7 +5,18 @@ use crate::test_watchdog::watchdog;
 use std::path::Path;
 
 fn open(path: &Path, bulk: bool) -> crate::Catalog {
-    let catalog = crate::Catalog::open(path, "synthetic").unwrap();
+    open_with(path, bulk, false)
+}
+
+fn open_with(path: &Path, bulk: bool, ranked: bool) -> crate::Catalog {
+    let catalog = crate::Catalog::open_with(
+        path,
+        "synthetic",
+        &crate::CatalogOptions {
+            ranked_index: ranked,
+        },
+    )
+    .unwrap();
     catalog.writer().set_bulk_first_scan(bulk);
     catalog
 }
@@ -282,6 +293,9 @@ fn dump(path: &Path, catalog: &crate::Catalog, roots: &[(i64, i64)]) -> Vec<Stri
             .unwrap();
         out.push(format!("{sql}: {rows:?}"));
     }
+    if crate::search::token_index_enabled(&db).unwrap() {
+        out.push(format!("search_token: {:?}", token_entries(&db)));
+    }
     let mut reader = catalog.reader().unwrap();
     let dirs: Vec<i64> = db
         .prepare("SELECT id FROM dir ORDER BY id")
@@ -361,12 +375,33 @@ fn dump(path: &Path, catalog: &crate::Catalog, roots: &[(i64, i64)]) -> Vec<Stri
         .collect()
 }
 
+/// The token index's logical content, (term, key) pairs (`detail=none` keeps no positions), and
+/// its change queue, which must be empty after every commit.
+fn token_entries(db: &Connection) -> Vec<(String, i64)> {
+    db.execute_batch("CREATE VIRTUAL TABLE IF NOT EXISTS temp.token_vocab USING fts5vocab(main, search_token, instance)").unwrap();
+    let queued: i64 = db
+        .query_row("SELECT count(*) FROM search_dirty", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(queued, 0, "token queue drained");
+    db.prepare("SELECT term,doc FROM temp.token_vocab ORDER BY term,doc")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+}
+
 /// Root A's first scan with a neighbour publishing between A's commands: none; root B's ordinary
 /// refresh, larger than A by A's swap, so the swap takes the ordered-insert branch; or root C's
 /// own first scan, still building when A swaps, so A's swap must leave C's build alone.
-fn equivalent_catalogue(bulk: bool, state: &str, neighbour: &str) -> (Vec<String>, Vec<String>) {
+fn equivalent_catalogue(
+    bulk: bool,
+    ranked: bool,
+    state: &str,
+    neighbour: &str,
+) -> (Vec<String>, Vec<String>) {
     let temp = tempfile::tempdir().unwrap();
-    let catalog = open(temp.path(), bulk);
+    let catalog = open_with(temp.path(), bulk, ranked);
     let w = catalog.writer();
     let (grant_b, root_b) = register(w, 2);
     end(w, begin(w, grant_b), "completed").unwrap();
@@ -420,11 +455,23 @@ fn equivalent_catalogue(bulk: bool, state: &str, neighbour: &str) -> (Vec<String
 #[test]
 fn bulk_first_scan_matches_the_incremental_path_row_for_row_and_query_for_query() {
     let _hang = watchdog();
-    for state in ["completed", "cancelled"] {
+    // With the ranked token index too (#520): the incremental path queues every key and drains
+    // it, the bulk swap indexes its rows in one pass; the index content must be the same.
+    for (state, ranked) in [
+        ("completed", false),
+        ("cancelled", false),
+        ("completed", true),
+        ("cancelled", true),
+    ] {
         for neighbour in ["none", "live", "bulk"] {
-            let (normal_replies, normal) = equivalent_catalogue(false, state, neighbour);
-            let (bulk_replies, bulk) = equivalent_catalogue(true, state, neighbour);
+            let (normal_replies, normal) = equivalent_catalogue(false, ranked, state, neighbour);
+            let (bulk_replies, bulk) = equivalent_catalogue(true, ranked, state, neighbour);
             assert_eq!(normal_replies, bulk_replies, "{state} {neighbour}");
+            assert_eq!(
+                ranked,
+                bulk.iter().any(|l| l.starts_with("search_token: [(")),
+                "{state} {neighbour}"
+            );
             assert_eq!(normal.len(), bulk.len());
             for (n, b) in normal.iter().zip(&bulk) {
                 assert_eq!(n, b, "{state} {neighbour}");
@@ -849,4 +896,82 @@ fn the_deepest_build_the_writer_accepts_is_discarded_or_swapped_in_one_cascade()
         let swapped = if ending == "completed" { levels } else { 0 };
         assert_eq!(visible(temp.path(), root_dir), (swapped + 1, swapped));
     }
+}
+
+/// Opting an existing store into the ranked index (#520) queues its rows for the writer's
+/// background backfill instead of indexing them in the open transaction. Until it is done ranked
+/// search says so; a command that changes a waiting row indexes it at once; a reopen without the
+/// option resumes it; the result is the index the queue path builds for the same tree.
+#[test]
+fn an_opted_in_store_is_backfilled_in_the_background_to_the_queue_path_index() {
+    let _hang = watchdog();
+    let build = |ranked: bool| {
+        let temp = tempfile::tempdir().unwrap();
+        let catalog = open_with(temp.path(), true, ranked);
+        let (grant, root) = register(catalog.writer(), 1);
+        scan(
+            catalog.writer(),
+            temp.path(),
+            grant,
+            root,
+            "completed",
+            &mut || {},
+        );
+        drop(catalog);
+        temp
+    };
+    // A rename and a removal of rows the backfill has not reached, as one writer command would.
+    let change = |db: &Connection| {
+        db.execute_batch("UPDATE file SET name='renamed while waiting.txt' WHERE name='a.txt'; DELETE FROM file WHERE name='e.txt';").unwrap();
+        crate::search::drain_tokens(db).unwrap();
+    };
+    let settled = |path: &Path| {
+        let db = Connection::open(path.join("catalog.db")).unwrap();
+        db.execute_batch("INSERT INTO search_token(search_token) VALUES('optimize')")
+            .unwrap();
+        token_entries(&db)
+    };
+    let queued = build(true);
+    change(&crate::db::open_pair_with(queued.path(), "synthetic", true).unwrap());
+    let expected = settled(queued.path());
+    assert!(expected.iter().any(|(t, _)| t == "waiting"));
+    assert!(!expected.iter().any(|(t, _)| t == "e"));
+
+    let migrated = build(false);
+    let db = crate::db::open_pair_with(migrated.path(), "synthetic", true).unwrap();
+    assert!(crate::search::backfilling(&db).unwrap());
+    let request = SearchRequest {
+        text: "waiting".into(),
+        kind: "any".into(),
+        limit: 10,
+        work_budget: 1_000_000,
+        ..SearchRequest::default()
+    };
+    let ranked = || {
+        crate::Reader::open(migrated.path())
+            .unwrap()
+            .search_ranked(&request, &crate::RankOptions::default())
+    };
+    assert!(
+        matches!(ranked(), Err(Error::RankedIndexBuilding)),
+        "{:?}",
+        ranked()
+    );
+    change(&db);
+    drop(db);
+    // Reopened without the option: the store has the index, so the writer finishes the backfill.
+    let catalog = crate::Catalog::open(migrated.path(), "synthetic").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let page = loop {
+        match ranked() {
+            Err(Error::RankedIndexBuilding) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            other => break other.unwrap(),
+        }
+    };
+    assert_eq!(page.index_state, "current");
+    assert_eq!(page.hits[0].path.text, "renamed while waiting.txt");
+    drop(catalog);
+    assert_eq!(settled(migrated.path()), expected);
 }

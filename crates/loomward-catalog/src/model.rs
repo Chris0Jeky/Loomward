@@ -211,6 +211,11 @@ pub struct Totals {
 #[derive(Clone, Debug)]
 pub enum WriteCommand {
     RegisterRoot(RootObservation),
+    /// Refresh a specific active grant; never recreate one after revocation.
+    RefreshRoot {
+        grant_id: i64,
+        observation: RootObservation,
+    },
     BeginRun {
         grant_id: i64,
         mode: String,

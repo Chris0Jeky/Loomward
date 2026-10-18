@@ -320,6 +320,8 @@ mod native;
 mod profile;
 #[cfg(all(test, windows))]
 pub(crate) use native::force_elevation_for_test;
+#[cfg(all(windows, any(feature = "content-read", test)))]
+pub(crate) use native::open_data_stream;
 #[cfg(windows)]
 pub(crate) use native::open_journal_root;
 #[cfg(all(windows, feature = "shortcut-read"))]
@@ -330,13 +332,16 @@ pub(crate) use native::record_open_accesses;
 pub(crate) use native::volume_device;
 #[cfg(windows)]
 pub(crate) use native::{non_elevated, open_watch_root};
-#[cfg(all(windows, any(feature = "content-read", test)))]
-pub(crate) use native::{open_data_stream, open_relative_mode, root_handles};
 #[cfg(windows)]
 pub use native::{
     open_metadata_child, open_readonly_directory, running_elevated, IoCancellation, NativeDir,
     NativeSource,
 };
+#[cfg(all(
+    windows,
+    any(feature = "content-read", feature = "diagnostics-export", test)
+))]
+pub(crate) use native::{open_relative_mode, root_handles};
 #[cfg(windows)]
 pub use profile::scan_profile;
 #[cfg(test)]

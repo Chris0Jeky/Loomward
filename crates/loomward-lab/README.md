@@ -147,7 +147,9 @@ warm/uncontrolled; `first-after-generate` is an observation label, never a cold-
 `cross-check --root <absolute-local-root> --root-log <absolute-private-log>` needs no marker or
 manifest. It refuses volume roots, profile/credential/browser components, namespace aliases and
 reparse/offline root ancestors, requires a non-elevated token, and flushes a timestamp/root/reason
-line before each traversal. The log must be outside the scanned root. The owner must explicitly
+line before each traversal. The log must be outside the scanned root and be an ordinary,
+single-link file. Native and Python comparisons validate a no-follow append handle before writing
+through that same handle; reparse and hard-link aliases are refused. The owner must explicitly
 authorise the selected metadata scope; syntactic validation is not a grant.
 
 Each of the four strategies runs in a fresh child process, with one worker for `std-single`,

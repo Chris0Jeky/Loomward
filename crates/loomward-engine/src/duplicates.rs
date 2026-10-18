@@ -22,6 +22,7 @@ impl Engine {
         candidates: DuplicateCandidates,
         budget: DuplicateBudget,
     ) -> EngineResult<Job> {
+        self.check_root(&root)?;
         if candidates.entries.len() > (budget.max_candidates.get() as usize).min(200) {
             return Err(EngineError::ResourceBudget {
                 message: "duplicate candidate budget exceeded; no metadata or content was opened"
@@ -177,6 +178,62 @@ fn duplicate_report(
 
 #[cfg(test)]
 #[test]
+fn duplicate_dataset_class_refusal_precedes_candidate_budget() {
+    use loomward_protocol::{DatasetClass, RootId};
+    use loomward_windows::enumerate::{IdBasis, OpenedIdentity};
+    let tmp = tempfile::tempdir().unwrap();
+    let engine = Arc::new(
+        Engine::open(crate::EngineConfig::new(
+            tmp.path().to_owned(),
+            DatasetClass::Synthetic,
+        ))
+        .unwrap(),
+    );
+    let root = GrantedRoot::new(
+        RootId::new("rt_fixture").unwrap(),
+        tmp.path().join("unopened"),
+        DatasetClass::Personal,
+        OpenedIdentity {
+            volume_guid: None,
+            id: None,
+            basis: IdBasis::None,
+            volume_serial: None,
+            attributes: 0,
+            reparse_tag: None,
+        },
+    );
+    let candidates = DuplicateCandidates {
+        entries: vec![
+            DuplicateCandidate {
+                relative: "fixture".into(),
+                volume_key: "fixture".into(),
+                file_id: None,
+                logical: 4,
+                created: None,
+                modified: None,
+                changed: None,
+                attributes: 0,
+            };
+            3
+        ],
+        ..Default::default()
+    };
+    let budget = serde_json::from_value(serde_json::json!({
+        "max_candidates":2,"max_bytes":"100","max_ms":1000
+    }))
+    .unwrap();
+    let error = engine
+        .duplicates_start(root, candidates, budget)
+        .unwrap_err();
+    assert_eq!(error.to_body().message.as_str(), "dataset_class_mismatch");
+    assert_eq!(
+        error.to_body().code,
+        loomward_protocol::ErrorCode::PermissionDenied
+    );
+}
+
+#[cfg(test)]
+#[test]
 fn duplicate_candidate_budget_refuses_before_root_io() {
     use loomward_protocol::{DatasetClass, RootId};
     use loomward_windows::enumerate::{IdBasis, OpenedIdentity};
@@ -201,7 +258,7 @@ fn duplicate_candidate_budget_refuses_before_root_io() {
             reparse_tag: None,
         },
     );
-    for (count, cap) in [(3, 2), (201, 200)] {
+    for (count, cap) in [(3, 2), (201, 200), (2, 2), (200, 200)] {
         let candidates = DuplicateCandidates {
             entries: (0..count)
                 .map(|_| DuplicateCandidate {
@@ -224,10 +281,14 @@ fn duplicate_candidate_budget_refuses_before_root_io() {
         let error = engine
             .duplicates_start(root.clone(), candidates, budget)
             .unwrap_err();
-        assert!(
-            matches!(error, EngineError::ResourceBudget { .. }),
-            "{error:?}"
-        );
+        if count > cap {
+            assert!(
+                matches!(error, EngineError::ResourceBudget { .. }),
+                "{error:?}"
+            );
+        } else {
+            assert_eq!(error.to_body().message.as_str(), "unsupported");
+        }
         assert!(!root.path().exists());
         assert!(engine
             .job_list(&serde_json::from_value(serde_json::json!({"limit":50})).unwrap())

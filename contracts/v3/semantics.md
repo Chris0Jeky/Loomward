@@ -97,6 +97,14 @@ Revoking a root (or its grant ending `identity_changed`) redacts the stored feat
 human event on its nodes to empty values, withdraws those events from training and deletes every
 stored model, since a model carries name tokens; the sweep repeats at startup and before each refit.
 A revoked root's nodes cannot be labelled (`not_found`); withdrawal of an earlier label stays possible.
+Redaction is permanent for that feature snapshot, including after an `identity_changed` grant is
+replaced. A fresh label under an active grant records a new snapshot; it does not restore the old one.
+New feedback records the feature snapshot's grant in the same transaction as the event, so moves,
+pending rebinds and a rebuilt catalogue do not change its origin. Historical events without that
+provenance retain the older best-effort sweep through their current binding; a migration policy for
+those snapshots remains open in #370. Cleanup is retried before model reads; an unsuccessful retry
+returns an error rather than serving the retained candidate. An explicit revoke can report a cleanup
+error after the grant has already ended; retrying the revoke repeats cleanup.
 
 Every teacher entry point (`teacher.preview`, `grants.create_disclosure`, `teacher.run`,
 `teacher.results`) refuses a personal session with `capability_unavailable` and
@@ -113,12 +121,19 @@ events are excluded and counted in `learning.status.unresolved_human_events`.
 
 `learning.refit` produces a persisted **candidate**, without promotion (LW-027). Status and queue
 use the latest candidate for advice only; `calibrated` and `autonomy_allowed` remain false. Scores
-are **relative scores, not probabilities**. Queue order is descending review priority with a node
+are **relative scores, not probabilities**. New fits record the highest human-feedback row ID observed at commit and use that
+monotonic counter for freshness, independent of the wall clock. Older stored candidates retain
+their timestamp guard until explicitly refitted; no feature history is removed by this change.
+Queue order is descending review priority with a node
 ID tie-break. The synthetic smoke queue is bounded to 10,000 eligible files; refits accept at most
 the latest unretracted human labels for at most 10,000 resolved objects, newest event first. Human history and durable replay receipts remain intact; older objects fall outside this explicit training window.
 Feedback changed during a refit is `stale_generation`; retry explicitly. Cancellation is available
 through `jobs.cancel` for any retained job kind; `scan.cancel` remains scan-only. Cancellation
-acknowledges immediately and completion remains a separate job state. Refit cancellation and candidate commit are serialized: cancellation before commit rolls back without `learning.updated`; after commit the job completes. The Learning view warns when human history exceeds fitted examples; this is a conservative freshness warning, not an exact stale flag.
+does not join the worker; completion remains a separate job state. Refit cancellation and candidate
+commit are serialized: cancellation may wait for an in-flight durable commit. Cancellation before
+commit rolls back without `learning.updated`; a successful commit wins and the job completes.
+The Learning view warns when human history exceeds fitted examples; this is a conservative freshness
+warning, not an exact stale flag.
 
 ### Placement reads and stored scenarios
 
@@ -233,7 +248,7 @@ Rules:
   SHOULD page from slices (which are snapshots) during scans and use cursors once the scan finishes.
 - A page that stops on its work budget returns the items found so far, `budget_hit: true`, and a cursor that
   resumes the scan after the last examined row (not the last returned row).
-- `search.query` (LW-113, owner-local and grant-scoped; no MCP or Ask exposure before LW-067) reads a name index
+- `search.query` (LW-113; client principals require an owner-issued LW-067 grant through the LW-069 shared adapter) reads a name index
   that every catalogue commit keeps exact in the same transaction. Hits come in tiers, each tier folders first and
   then files in index-key order: `exact` (the whole name, or the name up to a dot), `prefix`, `token` (after a
   separator), `substring`, then for several words `token` (every word at a word start) and `substring` (every word
@@ -470,8 +485,11 @@ through pinned, revalidated, non-elevated handles opened without recall: cloud p
 offline files are skipped (placeholder, offline) and never hydrated or downloaded, reparse points are
 never followed, and a row without a 128-bit native file identity is never read (unsupported).
 Nothing leaves the machine, no file is written, moved or deleted, and the job's byte and time budgets
-bound all of it. `Capabilities.effects.content_read` stays false, as it already was for synthetic
-inspection: no command returns file content; inspection returns equality evidence, never bytes.
+bound all of it. `Capabilities.observation.duplicate_content_read` reports whether local,
+read-only duplicate inspection is available on explicit request (Windows only). It does not grant
+access to any root. `Capabilities.effects.content_read` is the legacy, always-false file-content
+return flag: no command returns file content; inspection returns equality evidence, never bytes.
+The UI shows the observation separately from file and process effects; mocks report it unavailable.
 Scan file identity, size, attributes and creation/write/change ticks must match
 fresh root-relative metadata before the existing handle reader compares content. Root revocation
 uses the existing root cancellation fence and refuses the report: after revocation `jobs.get` and
@@ -590,10 +608,12 @@ never omitted, `null` or zero; `recent_errors` is always `{"unknown": "not_retai
 `diagnostics.save {digest}` exists on the desktop adapter only (HTTP answers `capability_unavailable`), in every
 dataset class. A digest other than the held preview's is `refused` / `preview_changed` before any dialog opens.
 Rust opens the native save dialog (one dialog at a time with the pickers, 2 s cooldown: `busy`). When the
-chosen file exists, Loomward asks its own question naming it (Cancel the default) before replacing it. Cancel
-in either is `cancelled_by_user` and writes nothing; it is the only thing that is. A save dialog that never opened is
+chosen file exists, Loomward asks its own question naming it (Cancel the default) before replacing it. A confirmed
+user cancellation is `cancelled_by_user` and writes nothing. A save dialog that never opened is
 `refused` and says why: `dialog_busy` (another dialog is open) or `dialog_unavailable` (no owner window yet, no start
-folder, or no dialog on the adapter). A relative,
+folder, or no dialog on the adapter). If the backend returns no path but cannot distinguish cancellation from
+an error (rfd on Windows), the outcome is `refused` / `dialog_no_selection`: no location was returned, and nothing
+was written. This never claims that the owner cancelled or that the dialog opened. A relative,
 network, device or verbatim path, a device name, a stream name, a parent folder that is missing or resolves (through a junction or link) to a share, or an existing target
 that is not a regular file or is a link or reparse point is `unsupported_target`; an existing online-only cloud
 placeholder is `cloud_placeholder`; a write
@@ -628,8 +648,17 @@ new folder name, every exact item name in sorted order, bytes, identities and pr
 owner approves. An approval is single use and expires after 30 minutes. `copy.start` rebuilds the manifest from
 fresh observations and is refused unless it has no refusal and exactly the approved digest: another membership
 or destination is `digest_mismatch`, other bytes or identities under the same membership are `source_changed`,
-a revocation since approval is `grant_revoked`. v1 always creates one new folder inside the destination parent
+a revocation since approval is `grant_revoked`, and a destination parent that no longer opens as its pinned
+identity under its grant's root (renamed, replaced, removed or moved) is `destination_changed`, before any effect.
+A refusal's `node_id` names the refused entry's catalogue node when the catalogue holds that source path with the
+same native file ID; it is null for an operation-wide refusal and for an entry the catalogue does not hold under
+that identity, never a guessed node. v1 always creates one new folder inside the destination parent
 (" (2)", " (3)" when the name is taken) and never writes into an existing folder (docs/47 Q3 open).
+
+Recovery records detected journal/disk damage as `needs_attention` wherever the journal permits that
+transition; otherwise status reports the observed attention state without inventing a journal edge.
+`unjournaled_items` reports the first 64 staging-relative manifest names observed without journaled
+identities, with the full total in `unjournaled_item_count`. These entries are never adopted or removed.
 
 ## Lazy meaning threads
 

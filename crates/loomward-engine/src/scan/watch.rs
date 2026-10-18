@@ -498,7 +498,9 @@ fn reconcile<S: DirSource>(
         report.failed = next.failed;
         report.limit_hit |= next.limit_hit;
         report.limit_reason = next.limit_reason.or(report.limit_reason);
-        report.strategy = next.strategy;
+        if (next.strategy as u8) > (report.strategy as u8) {
+            report.strategy = next.strategy;
+        }
     }
     sink.watch_dirty(root.root_id())?;
     report.complete = false;
@@ -651,6 +653,102 @@ mod tests {
             assert_eq!(report.enumeration_attempts, if cap == 10 { 8 } else { 6 });
             if cap == 10 {
                 assert_eq!((report.examined, report.skipped, report.failed), (3, 1, 0));
+            }
+        }
+    }
+    #[test]
+    fn watched_repairs_keep_the_least_capable_strategy_across_passes() {
+        use super::super::tests::{root, Tree};
+        struct Source {
+            baseline: Strategy,
+            repair: Strategy,
+            repairing: AtomicBool,
+        }
+        impl DirSource for Source {
+            type Dir = u64;
+            fn strategy(&self) -> Strategy {
+                if self.repairing.load(Ordering::Acquire) {
+                    self.repair
+                } else {
+                    self.baseline
+                }
+            }
+            fn open_root(
+                &self,
+                path: &std::path::Path,
+            ) -> Result<(u64, OpenedIdentity), SourceError> {
+                Tree.open_root(path)
+            }
+            fn open_child(
+                &self,
+                parent: &u64,
+                entry: &RawEntry<'_>,
+            ) -> Result<(u64, OpenedIdentity), SourceError> {
+                Tree.open_child(parent, entry)
+            }
+            fn list(&self, dir: &u64, sink: &mut dyn FnMut(RawEntry<'_>) -> Flow) -> ListOutcome {
+                Tree.list(dir, sink)
+            }
+        }
+        for targeted in [false, true] {
+            for (baseline, repair, expected) in [
+                (Strategy::Find, Strategy::Extended, Strategy::Find),
+                (Strategy::Extended, Strategy::Find, Strategy::Find),
+                (Strategy::Both, Strategy::Extended, Strategy::Both),
+                (Strategy::Extended, Strategy::Both, Strategy::Both),
+                (Strategy::Portable, Strategy::Extended, Strategy::Portable),
+                (Strategy::Extended, Strategy::Portable, Strategy::Portable),
+                (Strategy::Extended, Strategy::Extended, Strategy::Extended),
+            ] {
+                let source = Source {
+                    baseline,
+                    repair,
+                    repairing: AtomicBool::new(false),
+                };
+                let root = root();
+                let sink = Arc::new(RecordingSink::default());
+                let dirty = Mutex::new(Dirty::default());
+                let checkpoints = std::sync::atomic::AtomicUsize::new(0);
+                let report = reconcile(
+                    &source,
+                    &root,
+                    1,
+                    sink.clone(),
+                    Arc::new(ByteBudget::new(crate::budgets::SCAN_BYTES)),
+                    Arc::new(AtomicBool::new(false)),
+                    ScanOptions {
+                        workers: 1,
+                        ..Default::default()
+                    },
+                    &dirty,
+                    || {
+                        if checkpoints.fetch_add(1, Ordering::Relaxed) == 1 {
+                            source.repairing.store(true, Ordering::Release);
+                            dirty.lock().unwrap().record(vec![if targeted {
+                                Change::Name {
+                                    action: 3,
+                                    name: "x\\x".encode_utf16().collect(),
+                                }
+                            } else {
+                                Change::RootDirty
+                            }]);
+                        }
+                        true
+                    },
+                )
+                .unwrap();
+                assert_eq!(
+                    sink.scopes.lock().unwrap()[1],
+                    if targeted {
+                        RunScope::Targeted(vec![2])
+                    } else {
+                        RunScope::FullRoot
+                    }
+                );
+                assert!(report.complete && !report.limit_hit, "{report:?}");
+                assert_eq!((report.failed, report.totals.files), (0, 1));
+                assert!(sink.memory.sweep_allowed(root.root_id()));
+                assert_eq!(report.strategy, expected, "{baseline:?} then {repair:?}");
             }
         }
     }

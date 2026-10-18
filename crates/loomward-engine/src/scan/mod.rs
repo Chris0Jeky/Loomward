@@ -528,7 +528,7 @@ impl Engine {
             Err(EngineError::unavailable(Component::Scan))
         }
     }
-    fn check_root(&self, root: &GrantedRoot) -> EngineResult<()> {
+    pub(crate) fn check_root(&self, root: &GrantedRoot) -> EngineResult<()> {
         if root.dataset_class != self.config.dataset_class {
             return Err(EngineError::PermissionDenied {
                 message: "dataset_class_mismatch".into(),

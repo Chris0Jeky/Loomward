@@ -1331,6 +1331,10 @@ not worth it for a companion app. The guard, the M1 pin and the bench's RSS
 reporting land on their own. A memory bound returns only with a design that does not
 tax every first scan, for example chunked temp use for oversized directories.
 
+The [2026-10-18 follow-up](evidence/catalog-lens-memory-honesty.md#three-way-throughputmemory-decision-2026-10-18)
+selects different current settings against a much larger adversarial memory case;
+the dated P4c rejection and its measurements above remain historical evidence.
+
 Recommended commit messages:
 
 1. `fix(catalog): reject receipts after SQLite auto-rollback` (guard + M1 pin).
@@ -2002,3 +2006,27 @@ including BeginRun, EndRun, revocation and identity change. Successful bulk EndR
 post-commit compaction when at least 1 MiB and 10% of pages are free. The rollback regressions,
 reader/concurrent-build integrity check, size/time measurements and remaining P14 miss are in
 [the follow-up evidence](../../evidence/v3/first-scan-bulk-load-148.md#follow-ups-386--17-october-2026).
+
+## Catalogue lens memory/honesty selection (2026-10-18)
+
+The `fix/catalog-lens-memory-honesty` Sol lane reproduces all three findings on
+`3ad1870`: staged scratch grows with the whole listing, finalisation builds a
+directory heap graph, and retained files under placeholders report complete coverage.
+**Selected settings: `temp_store=FILE`, 16 MiB TEMP cache, 128 MiB main cache.**
+The main cache also bounds SQLite's separate sorter buffer. File-backed postorder
+uses 1,024-ID batches. Retained files preserve inherited exclusion coverage.
+
+The [curated evidence](evidence/catalog-lens-memory-honesty.md) records red/green
+tests, three interleaved runs per main/HEAD/HEAD-MEMORY variant for both catalogue
+perf examples and both 1M memory cases, medians/ranges and source/binary hashes.
+Keep FILE under the requested selection rule: median P4 insertion loses **2.77%**
+against main (below 10%); independently, HEAD/MEMORY peaks at **1,920.50 MiB**
+on the long-name listing versus FILE's **352.64 MiB**, exceeding the 600 MiB limit.
+This is not throughput parity: through-EndRun P4 is **22.25% slower** than main;
+the MEMORY variant's through-EndRun median is lower still. The earlier P4c
+rejection remains historical evidence, and shared-host timing is uncontrolled.
+No transaction boundary or publication atomicity was relaxed; scratch SQLITE_FULL,
+overflow rollback and restart recovery are covered. The initial implementation is
+committed as `bbf5bfb`; this documentation/measurement follow-up remains uncommitted
+for the driver. No production code, test, safety gate, owner decision or global
+checkpoint changed in the follow-up.

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { Client, LoomwardError } from '../../src/lib/transport/client';
 import { createHttpTransport } from '../../src/lib/transport/http';
 import { TransportError } from '../../src/lib/transport/transport';
@@ -18,6 +18,58 @@ const idOf = (init: RequestInit) => (JSON.parse(init.body as string) as { reques
 const hang = (init: RequestInit) => new Promise<never>((_, rej) => init.signal!.addEventListener('abort', () => rej(new Error('aborted'))));
 
 describe('http transport', () => {
+  it.each([false, true])('closes after 45 seconds of silence and resumes on a fresh connection (heartbeat: %s)', async (heartbeat) => {
+    vi.useFakeTimers();
+    const signals: AbortSignal[] = [];
+    const ids: (string | undefined)[] = [];
+    const states: string[] = [];
+    const got: EventEnvelope[] = [];
+    let stream!: ReadableStreamDefaultController<Uint8Array>;
+    const t = createHttpTransport({
+      base: 'http://127.0.0.1:8765', token: 'synthetic-token',
+      fetchImpl: asFetch(async (_url, init) => {
+        signals.push(init.signal!);
+        ids.push((init.headers as Record<string, string>)['Last-Event-ID']);
+        return new Response(new ReadableStream<Uint8Array>({
+          start(c) {
+            stream = c;
+            init.signal!.addEventListener('abort', () => c.error(new Error('aborted')), { once: true });
+            c.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(hello('e1', 7))}\n\n`));
+          },
+        }));
+      }),
+    });
+    const stop = t.subscribe((e) => got.push(e), (s) => states.push(s));
+    try {
+      await vi.advanceTimersByTimeAsync(44_999);
+      expect(states).toEqual(['open']);
+      expect(got).toEqual([hello('e1', 7)]);
+      if (heartbeat) {
+        stream.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(hello('e1', 7))}\n\n`));
+        await vi.advanceTimersByTimeAsync(44_999);
+        expect(states).toEqual(['open']);
+      }
+      await vi.advanceTimersByTimeAsync(1);
+      expect(states).toEqual(['open', 'closed']);
+      expect(signals[0]!.aborted).toBe(true);
+      await vi.advanceTimersByTimeAsync(499);
+      expect(signals).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(states).toEqual(['open', 'closed', 'open']);
+      expect(ids).toEqual([undefined, 'e1.7']);
+      expect(signals[1]!.aborted).toBe(false);
+      stop();
+      await vi.advanceTimersByTimeAsync(90_000);
+      expect(signals[1]!.aborted).toBe(true);
+      expect(signals).toHaveLength(2);
+      expect(states).toEqual(['open', 'closed', 'open']);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      stop();
+      vi.useRealTimers();
+    }
+  });
+
   it('posts the envelope with the token header and returns the result', async () => {
     let seen: { url: string; init: RequestInit } | undefined;
     const t = createHttpTransport({

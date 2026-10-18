@@ -147,6 +147,11 @@ fn migrate(path: &Path, schema: &str, version: i64, dataset: &str, precious: boo
         if precious && version < 8 {
             tx.execute_batch(include_str!("client-grant.sql"))?;
         }
+        // v9 persists filesystem evidence; v10 binds grants to a volume GUID.
+        // Column guards also accept the earlier scan branch's v9 GUID-only stores.
+        if precious && !tx.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('root_grant') WHERE name='filesystem')", [], |r| r.get::<_, bool>(0))? {
+            tx.execute_batch("ALTER TABLE root_grant ADD COLUMN filesystem TEXT CHECK (filesystem IS NULL OR length(filesystem) <= 32)")?;
+        }
         if precious && !tx.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('root_grant') WHERE name='volume_guid')", [], |r| r.get::<_, bool>(0))? {
             tx.execute_batch("ALTER TABLE root_grant ADD COLUMN volume_guid TEXT")?;
         }
@@ -202,16 +207,18 @@ pub(crate) fn derive_root(
     grant: i64,
     observation: Option<&crate::RootObservation>,
 ) -> Result<(i64, i64)> {
-    let (key, id, path, state, mode): (String, Vec<u8>, String, String, String) = conn.query_row(
-        "SELECT volume_key,root_file_id,display_path,state,identity_mode FROM st.root_grant WHERE id=?1",
+    let (key, id, path, state, mode, stored_filesystem): (String, Vec<u8>, String, String, String, Option<String>) = conn.query_row(
+        "SELECT volume_key,root_file_id,display_path,state,identity_mode,filesystem FROM st.root_grant WHERE id=?1",
         [grant],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
     )?;
     if state != "active" && state != "identity_changed" {
         return Err(Error::NotFound);
     }
     let name = observation.map_or(path.as_str(), |o| o.display_name.as_str());
-    let filesystem = observation.and_then(|o| o.filesystem.as_deref());
+    let filesystem = observation
+        .and_then(|o| o.filesystem.as_deref())
+        .or(stored_filesystem.as_deref());
     let at = observation.map_or(0, |o| o.observed_at_ns);
     conn.execute("INSERT INTO volume(volume_key,display_name,filesystem,identity_json,capabilities_json,device_json,online,observed_at_ns) VALUES(?1,?2,?3,'{}','{}','{}',1,?4) ON CONFLICT(volume_key) DO UPDATE SET filesystem=coalesce(excluded.filesystem,volume.filesystem)",rusqlite::params![key,name,filesystem,at])?;
     let volume: i64 = conn.query_row("SELECT id FROM volume WHERE volume_key=?1", [key], |r| {
@@ -302,8 +309,11 @@ pub(crate) fn open_pair_with(dir: &Path, dataset: &str, ranked: bool) -> Result<
     conn.busy_timeout(Duration::from_secs(5))?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
-    conn.pragma_update(None, "cache_size", -262144)?;
-    conn.pragma_update(None, "temp_store", "MEMORY")?;
+    // SQLite can allocate a sorter buffer as large as the main cache as well.
+    conn.pragma_update(None, "cache_size", -131072)?;
+    // Listing reconciliation and rollup scratch can be larger than the catalogue cache.
+    conn.pragma_update(None, "temp_store", "FILE")?;
+    conn.pragma_update(Some("temp"), "cache_size", -16384)?;
     conn.wal_hook(Some(|wal, pages| {
         crate::crashpoint::hit("post-commit");
         let threshold = if wal.name().to_bytes() == b"main" {
@@ -325,6 +335,14 @@ pub(crate) fn open_pair_with(dir: &Path, dataset: &str, ranked: bool) -> Result<
     conn.execute_batch(
         "PRAGMA st.synchronous=FULL;PRAGMA st.foreign_keys=ON;PRAGMA st.secure_delete=ON",
     )?;
+    if cv >= 2 {
+        // Also retries an interrupted migration's backfill; NULL stays unknown without an observation.
+        let tx = conn.transaction()?;
+        if tx.execute("UPDATE st.root_grant AS g SET filesystem=(SELECT v.filesystem FROM main.root r JOIN main.volume v ON v.id=r.volume_id WHERE r.grant_id=g.id) WHERE g.filesystem IS NULL AND EXISTS(SELECT 1 FROM main.root r JOIN main.volume v ON v.id=r.volume_id WHERE r.grant_id=g.id AND v.filesystem IS NOT NULL)", [])? > 0 {
+            tx.execute("UPDATE st.revision SET state_rev=state_rev+1", [])?;
+        }
+        tx.commit()?;
+    }
     reconcile_references(&mut conn)?;
     let instance: String =
         conn.query_row("SELECT value FROM meta WHERE key='instance_id'", [], |r| {
@@ -397,9 +415,9 @@ pub(crate) fn open_pair_with(dir: &Path, dataset: &str, ranked: bool) -> Result<
 }
 /// The name search indexes: the trigram table (q-34) always, the ranked-search token table (F2)
 /// only where the caller asks for it (`ranked`) or the store already has it. Each is created with
-/// its triggers by the first open that wants it and filled from the rows already there in the same
-/// transaction, so neither is ever behind the tables. A store opened without `ranked` that has no
-/// token table gets no new object.
+/// its triggers by the first open that wants it. The trigram table is filled from the rows already
+/// there in the same transaction; the token table's rows are queued for the writer's background
+/// backfill (#520). A store opened without `ranked` that has no token table gets no new object.
 pub(crate) fn search_index(conn: &Connection, ranked: bool) -> Result<()> {
     let has = |name: &str| -> Result<bool> {
         Ok(conn.query_row(
@@ -417,11 +435,9 @@ pub(crate) fn search_index(conn: &Connection, ranked: bool) -> Result<()> {
     }
     if ranked && !has("search_token")? {
         conn.execute_batch(include_str!("search-token.sql"))?;
-        // Every existing row is a new key to the queue; the drain below indexes them all.
-        conn.execute_batch(
-            "INSERT OR IGNORE INTO search_dirty SELECT id,1 FROM dir WHERE parent_id IS NOT NULL;
-             INSERT OR IGNORE INTO search_dirty SELECT id+281474976710656,1 FROM file;",
-        )?;
+        // Every existing row waits for the writer's background backfill (#520): indexing them here
+        // would hold the open for about 10 s per million names. `search_ranked` says "building" until it is done.
+        crate::search::start_backfill(conn)?;
     }
     // Keys a raw writer queued while no writer was running.
     crate::search::drain_tokens(conn)?;

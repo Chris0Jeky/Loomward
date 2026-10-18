@@ -18,7 +18,7 @@ loomward-backup = { path = "../loomward-backup" }
 loomward-ask = { path = "../loomward-ask" }
 loomward-operations = { path = "../loomward-operations" }
 # copy-primitives: the docs/47 C5 lab executor; served for synthetic sessions only (copy.rs).
-loomward-windows = { path = "../loomward-windows", features = ["copy-primitives"] }
+loomward-windows = { path = "../loomward-windows", features = ["copy-primitives", "diagnostics-export"] }
 rusqlite = { version = "0.38.0", features = ["bundled", "hooks"] }
 serde.workspace = true
 serde_json.workspace = true

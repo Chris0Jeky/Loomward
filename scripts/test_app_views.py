@@ -75,8 +75,10 @@ class FakeEngine:
         self.candidate_gate = None  # one (arrived, release) event pair
         self.tier_volumes: list[dict] | None = None
         self.candidate_sources: list[str] = []
+        self.placement_groups: dict[str, list[dict]] = {}
+        self.saved_source = 'vo_x'
         self.simulate_overrides: list = []
-        self.plan_mode = 'executable'  # 'executable' or 'malformed': how placement.simulate misbehaves
+        self.plan_mode = 'executable'  # 'executable', 'malformed', or a 'safe' nonexecutable reply
         self.slice_queue: list[tuple[float, str]] = []  # (delay, root name) per tree.slice call, then the default
         self.events: queue.Queue[dict] = queue.Queue()
         self.seq = 0
@@ -93,7 +95,7 @@ class FakeEngine:
         self.diagnostics_answers: list[dict] | None = None  # set: hello offers diagnostics_save, diagnostics.save pops these
         self.diagnostics_calls: list[dict] = []
         self.roots: list[dict] = []  # roots.list
-        self.grant_mode = 'granted'  # roots.request_grant: granted, cancelled, refused, busy, deadline (the root lands before the reply) or deadline_late (after it)
+        self.grant_mode = 'granted'  # deadline lands before the reply; deadline_late is delivered explicitly by the test
         self.grant_delay = 0.0
         self.grant_calls: list[dict] = []
         self.trend_mode: str | None = None
@@ -127,7 +129,7 @@ class FakeEngine:
             return {
                 'protocol': 'loomward/3', 'engine_version': 'view-fake', 'adapter': 'tauri' if desktop else 'http',
                 'dataset_class': 'personal' if desktop else 'synthetic', 'session_started_at': '2026-10-01T00:00:00Z',
-                'enumeration_strategy': 'std_read_dir', 'capabilities': {'observation': {'process_observation': self.process_error is not None}, 'effects': effects},
+                'enumeration_strategy': 'std_read_dir', 'capabilities': {'observation': {'duplicate_content_read': True, 'process_observation': self.process_error is not None}, 'effects': effects},
                 'features': {**{k: k == 'grant_picker' and self.grant_picker for k in ('grant_picker', 'disclosure_dialog', 'teacher_available', 'telemetry_available', 'gpu_available')},
                              'diagnostics_save': self.diagnostics_answers is not None},
                 'limits': {'max_request_bytes': 65536, 'max_slice_nodes': 6000, 'max_page_items': 200},
@@ -172,7 +174,6 @@ class FakeEngine:
                 self.land('E:\\Picked At The Deadline')
                 return ('deadline_exceeded', 'the dialog outlived the deadline')
             if self.grant_mode == 'deadline_late':
-                threading.Timer(0.8, self.land, ['E:\\Picked After The Deadline']).start()
                 return ('deadline_exceeded', 'the dialog outlived the deadline')
             self.land('E:\\Picked Folder')
             return {'outcome': 'granted', 'root': self.roots[-1], 'refusal': None}
@@ -249,19 +250,20 @@ class FakeEngine:
                     'policy': {'watch_free_fraction': 0.2, 'pressure_free_fraction': 0.1, 'reserve_note': 'r', 'note': 'n'}}
         if cmd == 'placement.candidates':
             self.candidate_sources.append(p['source_volume_id'])
+            g = {'group_id': 'cg_a', 'node_id': 'nd_a', 'root_id': 'rt_a', 'name': 'group-a', 'source_bytes': '5000', 'destination_bytes': '5000', 'transfer_bytes': '5000', 'estimate_basis': 'allocated_entries',
+                 'estimated_relief_bytes': '5000', 'relief_basis': 'verified_unique_allocation', 'heat': None, 'heat_basis': 'unknown', 'newest_modified_at': None, 'pinned': False, 'active': False, 'protected': False, 'days_since_move': 30, 'coverage': 'complete'}
+            groups = self.placement_groups.get(p['source_volume_id'], [g])
             gate, self.candidate_gate = self.candidate_gate, None
             if gate:
                 gate[0].set()
-                if not gate[1].wait(9):
+                if not gate[1].wait(60):  # every user releases in finally; slow CI runners need the headroom
                     return ('deadline_exceeded', 'synthetic candidate gate expired')
-            g = {'group_id': 'cg_a', 'node_id': 'nd_a', 'root_id': 'rt_a', 'name': 'group-a', 'source_bytes': '5000', 'destination_bytes': '5000', 'transfer_bytes': '5000', 'estimate_basis': 'allocated_entries',
-                 'estimated_relief_bytes': '5000', 'relief_basis': 'verified_unique_allocation', 'heat': None, 'heat_basis': 'unknown', 'newest_modified_at': None, 'pinned': False, 'active': False, 'protected': False, 'days_since_move': 30, 'coverage': 'complete'}
-            return {'source_volume_id': 'vo_x', 'root_generations': [], 'groups': [g], 'excluded_volumes': [], 'note': 'n'}
+            return {'source_volume_id': p['source_volume_id'], 'root_generations': [], 'groups': groups, 'excluded_volumes': [], 'note': 'n'}
         if cmd == 'volumes.declare_tier':
             return {'volume': json.loads((ROOT / 'contracts/v3/examples/commands/volumes.declare_tier.result.json').read_text())['volume'], 'preference_recorded_at': '2026-10-01T00:00:00Z'}
         if cmd == 'proposals.get':
             detail = json.loads((ROOT / 'contracts/v3/examples/commands/proposals.get.result.json').read_text())
-            detail['summary']['source_volume_id'] = 'vo_x'
+            detail['summary']['source_volume_id'] = self.saved_source
             return detail
         if cmd == 'proposals.list':
             if self.fail_proposals:
@@ -277,6 +279,12 @@ class FakeEngine:
                     'assumptions': [], 'root_generations': [], 'proposal_id': None}
             if self.plan_mode == 'malformed':
                 plan['proposals'] = 'none'
+            elif self.plan_mode == 'safe':
+                allowed = {g['group_id'] for g in self.result({'command': 'placement.candidates', 'payload': p})['groups']}
+                if any(o['group_id'] not in allowed for o in p.get('overrides', [])):
+                    return ('invalid_request', 'duplicate_or_unknown_group_override')
+                plan['proposals'][0]['group_id'] = next(iter(allowed))
+                plan['proposals'][0]['executable'] = False
             return plan
         if cmd == 'search.query':
             text = p.get('text', '')
@@ -562,7 +570,8 @@ def check_explorer_fallback(page: Page, engine: FakeEngine) -> None:
     expect(page.locator('main .tbl-wrap')).to_have_attribute('aria-busy', 'false')
     # no ancestor lists any more (an engine restart): the view returns to the starting points, and says so
     engine.gone = {'nd_Fake_Root', 'nd_dir_1', 'nd_dir_2', 'nd_dir_3'}
-    engine.slice_queue = [(0.0, 'New Root')]
+    # The epoch refresh and breadcrumb recovery both read the replacement starting points.
+    engine.slice_queue = [(0.0, 'New Root'), (0.0, 'New Root')]
     current.focus()
     page.keyboard.press('Shift+Tab')
     page.keyboard.press('Tab')
@@ -770,6 +779,91 @@ def check_tiers_source_eligibility(page: Page, engine: FakeEngine) -> None:
     ok(engine.simulate_overrides and engine.simulate_overrides[-1] == [],
        f'a source replaced on refresh sends no stale group overrides ({engine.simulate_overrides[-1:] if engine.simulate_overrides else None})')
     engine.tier_volumes = None
+
+
+def check_tiers_assumption_refresh(page: Page, engine: FakeEngine) -> None:
+    template = engine.result({'command': 'tiers.model'})['volumes'][0]
+    a = engine.result({'command': 'placement.candidates', 'payload': {'source_volume_id': 'vo_x'}})['groups'][0]
+    b = {**a, 'group_id': 'cg_b', 'node_id': 'nd_b', 'name': 'group-b'}
+    engine.tier_volumes = [template, {**template, 'volume_id': 'vo_other', 'display_name': 'Other'}]
+    engine.placement_groups = {'vo_x': [a, b], 'vo_other': [a]}
+    engine.saved_scenarios = True
+    engine.plan_mode = 'safe'
+    page.goto(f'{engine.base}/#token={TOKEN}')
+    page.evaluate("location.hash = '#/tiers'")
+    panel = page.locator('section[aria-labelledby="h-vol"]')
+
+    def simulate(expected):
+        engine.simulate_overrides.clear()
+        page.get_by_role('button', name='Simulate', exact=True).click()
+        expect(page.get_by_role('heading', name='Alternatives')).to_be_visible()
+        expect(page.get_by_role('heading', name='Placement plan', level=2)).to_be_visible()
+        ok(len(engine.simulate_overrides) == 3 and all(o == expected for o in engine.simulate_overrides),
+           f'Tiers sends only current assumptions and all simulations succeed: {expected}')
+
+    gate = None
+    try:
+        page.get_by_label('Assumed heat for group-a').select_option('0.9')
+        page.get_by_label('Assumed heat for group-b').select_option('0.1')
+        engine.placement_groups['vo_x'] = [b]
+        declare_tier(page, engine, panel, '2')
+        expect(page.get_by_label('Assumed heat for group-a')).to_have_count(0)
+        expect(page.get_by_label('Assumed heat for group-b')).to_have_value('0.1')
+        simulate([{'group_id': 'cg_b', 'heat': 0.1}])
+        # A vanished group's assumption must not return if its ID reappears later.
+        engine.placement_groups['vo_x'] = [a, b]
+        declare_tier(page, engine, panel, '3')
+        expect(page.get_by_label('Assumed heat for group-a')).to_have_value('')
+        page.get_by_label('Assumed heat for group-a').select_option('0.9')
+        engine.saved_source = 'vo_other'
+        page.get_by_role('button', name=re.compile('Show saved scenario')).click()
+        expect(panel.get_by_role('button', name=re.compile('^Source volume'))).to_contain_text('Other')
+        expect(page.get_by_label('Assumed heat for group-a')).to_have_value('')
+        simulate([])  # Even an ID shared across sources must lose the old assumption.
+
+        # Chromium can report ERR_ABORTED after a streamed fetch body was fully decoded (#644).
+        # Hold the complete old reply at fetch delivery, rather than waiting for requestfinished.
+        gate = page.evaluate_handle("""() => {
+            const fetch = window.fetch;
+            let arrive, release;
+            const arrived = new Promise(resolve => arrive = resolve);
+            const released = new Promise(resolve => release = resolve);
+            const restore = () => { window.fetch = fetch; };
+            window.fetch = async (...args) => {
+                const req = JSON.parse(args[1]?.body ?? '{}');
+                if (req.command !== 'placement.candidates' || req.payload.source_volume_id !== 'vo_x')
+                    return fetch(...args);
+                restore();
+                const response = await fetch(...args);
+                const body = await response.text();
+                arrive(JSON.parse(body));
+                await released;
+                return new Response(body, response);
+            };
+            return { arrived, release, restore };
+        }""")
+        page.get_by_role('button', name=re.compile(r'^Use as source\s*:\s*X:$')).click()
+        stale = gate.evaluate('g => g.arrived')
+        assert stale['ok'] and stale['result']['source_volume_id'] == 'vo_x'
+        assert [g['group_id'] for g in stale['result']['groups']] == ['cg_a', 'cg_b']
+        page.get_by_role('button', name=re.compile(r'^Use as source\s*:\s*Other$')).click()
+        expect(page.get_by_label('Assumed heat for group-a')).to_be_visible()
+        page.get_by_label('Assumed heat for group-a').select_option('0.5')
+        gate.evaluate('g => g.release()')
+        page.evaluate('() => new Promise(requestAnimationFrame)')
+        expect(page.get_by_label('Assumed heat for group-b')).to_have_count(0)
+        expect(page.get_by_label('Assumed heat for group-a')).to_have_value('0.5')
+        simulate([{'group_id': 'cg_a', 'heat': 0.5}])
+    finally:
+        if gate:
+            gate.evaluate('g => { g.restore(); g.release(); }')
+            gate.dispose()
+        engine.placement_groups = {}
+        engine.tier_volumes = None
+        engine.saved_source = 'vo_x'
+        engine.saved_scenarios = False
+        engine.plan_mode = 'executable'
+
 
 def check_tiers(page: Page, base: str, shoot) -> None:
     page.goto(f'{base}/?transport=mock#/tiers')
@@ -1281,7 +1375,11 @@ def check_health(page: Page, base: str, shoot) -> None:
     expect(main.get_by_role('heading', name="Loomward's own health")).to_be_visible()
     expect(main.get_by_text('Private commit')).to_be_visible()
     expect(main.get_by_text('Writer queue')).to_be_visible()
-    ok(main.get_by_text('off', exact=True).count() == 11, 'the capability matrix shows all 11 effects off')
+    ok(main.get_by_text('off', exact=True).count() == 10, 'the capability matrix shows all 10 file/process effects off')
+    reads = main.locator('.caps li').filter(has_text='Content read: duplicates only, on request')
+    expect(reads).to_contain_text('not available')
+    ok(main.locator('.caps li').filter(has_text=re.compile(r'\boff\s+content read\b', re.I)).count() == 0,
+       'content reads are separate from file/process effects')
     expect(main.get_by_text('The one exception is a diagnostic bundle you save yourself')).to_be_visible()
     ok(main.get_by_text('ON', exact=True).count() == 0, 'no effect is on')
     expect(main.get_by_text('not available').first).to_be_visible()
@@ -1460,6 +1558,10 @@ def check_add_folder(page: Page, engine: FakeEngine) -> None:
         expect(page.get_by_role('status', name='Session status')).to_contain_text('Connected')
         expect(page.get_by_role('heading', name='Grants & health', level=1)).to_be_visible()
 
+        reads = page.locator('.caps li').filter(has_text='Content read: duplicates only, on request')
+        expect(reads).to_contain_text('available')
+        expect(reads).not_to_contain_text('not available')
+
     add = page.get_by_role('button', name='Add a folder…', exact=True)
     status = page.locator('main section[aria-labelledby="h-roots"] .add p.live')
     cards = page.locator('main ul.scans li')
@@ -1495,6 +1597,17 @@ def check_add_folder(page: Page, engine: FakeEngine) -> None:
     expect(table).to_contain_text('Picked Folder')
     ok(status.inner_text() == '' and cards.filter(has_text='just added').count() == 0, 'leaving Health and coming back does not repeat "Added" or the just-added tag')
 
+    # A reply completed while another view was open is still a new receipt on returning.
+    fresh()
+    add.click()
+    expect(status).to_contain_text('Waiting for you')
+    page.evaluate("location.hash = '#/explorer'")
+    expect(page.get_by_role('heading', name='Explorer', level=1)).to_be_visible()
+    wait_until(page, lambda: len(engine.roots) == 1)
+    page.evaluate("location.hash = '#/health'")
+    expect(status).to_contain_text('Added E:\\Picked Folder')
+    expect(cards.filter(has_text='Picked Folder')).to_contain_text('just added')
+
     # cancelled: quiet and neutral, no root
     engine.grant_mode, engine.grant_delay = 'cancelled', 0.0
     fresh()
@@ -1514,7 +1627,7 @@ def check_add_folder(page: Page, engine: FakeEngine) -> None:
     engine.grant_mode = 'busy'
     fresh()
     add.click()
-    expect(status).to_have_text('A Windows folder dialog is still open. Choose a folder there and it will appear below.')
+    expect(status).to_have_text('A Windows folder dialog may still be open. Check it, then refresh the folder list.')
     expect(add).to_be_focused()
 
     # deadline, the grant landed: the roots are read again and the new one is reported; the dialog is not reopened
@@ -1529,6 +1642,8 @@ def check_add_folder(page: Page, engine: FakeEngine) -> None:
     fresh()
     add.click()
     expect(status).to_contain_text('No folder was added yet')
+    expect(table).to_contain_text('No roots granted')
+    engine.land('E:\\Picked After The Deadline')
     expect(table).to_contain_text('Picked After The Deadline', timeout=5000)
     expect(status).to_contain_text('Added E:\\Picked After The Deadline')  # the late grant is worded as added, not left at the deadline text
     ok(len(engine.grant_calls) == 1, 'a grant that lands after the deadline shows up from roots.changed without a second request')
@@ -1613,6 +1728,7 @@ def run_views(page: Page, base: str, shots: Path | None) -> None:
         check_explorer_reissued_ids(page, engine)
         check_tiers_loading_followups(page, engine)
         check_tiers_source_eligibility(page, engine)
+        check_tiers_assumption_refresh(page, engine)
         check_tiers_refused(page, engine)
         check_backups_import(page, engine)
         check_diagnostics_save(page, engine)

@@ -12,6 +12,25 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+#[test]
+fn hello_reports_duplicate_content_reads_separately_from_effects() {
+    let dir = temp_root();
+    for dataset in [DatasetClass::Synthetic, DatasetClass::Personal] {
+        let state = dir.path().join(format!("{dataset:?}"));
+        let svc = open(&state, dataset);
+        let (hello, _) = ok("session.hello", call(&svc, "session.hello", json!({})));
+        assert_eq!(
+            hello["capabilities"]["observation"]["duplicate_content_read"],
+            cfg!(windows)
+        );
+        assert!(hello["capabilities"]["effects"]
+            .as_object()
+            .unwrap()
+            .values()
+            .all(|v| v == false));
+    }
+}
+
 /// Test seams inside the service: a delay before one command runs, a run counter, the order
 /// commands finished their delay in, a one-shot forced mutation-thread spawn failure, an injected
 /// profile resolver for the scan-time grant fence, and named
@@ -44,6 +63,10 @@ pub(crate) struct Hooks {
     pub fail_explicit_retry: std::sync::atomic::AtomicBool,
     #[cfg(windows)]
     pub fail_automatic_start: std::sync::atomic::AtomicBool,
+    #[cfg(windows)]
+    pub fail_watch_start: std::sync::atomic::AtomicBool,
+    #[cfg(windows)]
+    pub fail_freshness_checkpoint: std::sync::atomic::AtomicBool,
 }
 
 /// What a personal space read answers in tests: wait on an explicit gate, or report fixed space.
@@ -2824,6 +2847,87 @@ fn dropping_the_service_waits_for_workers_that_already_replied() {
 }
 
 #[test]
+fn drop_waits_for_a_weak_upgrade_after_its_last_count_check() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let hooks = svc.inner.hooks.clone();
+    struct Release(Arc<Hooks>);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            self.0.open(Command::TelemetrySubscribe, "drop_ready");
+        }
+    }
+    let _release = Release(hooks.clone());
+    hooks
+        .closed
+        .lock()
+        .unwrap()
+        .push((Command::TelemetrySubscribe, "drop_ready"));
+    let weak = Arc::downgrade(&svc.inner);
+    let (done, finished) = std::sync::mpsc::channel();
+    let dropper = std::thread::spawn(move || {
+        drop(svc);
+        done.send(()).unwrap();
+    });
+    hooks.until("drop ready", |h| {
+        h.arrived
+            .lock()
+            .unwrap()
+            .contains(&(Command::TelemetrySubscribe, "drop_ready"))
+    });
+    // The pump can acquire this same transient reference after the count check.
+    let transient = weak.upgrade().unwrap();
+    hooks.open(Command::TelemetrySubscribe, "drop_ready");
+    let escaped = finished.recv_timeout(Duration::from_millis(200)).is_ok();
+    drop(transient);
+    if !escaped {
+        finished.recv_timeout(Duration::from_secs(15)).unwrap();
+    }
+    dropper.join().unwrap();
+    assert!(
+        !escaped,
+        "Drop returned while a transient upgrade held Inner"
+    );
+    assert!(weak.upgrade().is_none());
+    std::fs::remove_file(tmp.path().join("catalog.db")).unwrap();
+}
+
+#[test]
+#[cfg(windows)]
+fn drop_closes_the_catalogue_with_an_active_telemetry_lease() {
+    for _ in 0..20 {
+        let tmp = temp_root();
+        // No roots or process channel: only aggregate system counters leave the sampler.
+        let svc = open(tmp.path(), DatasetClass::Personal);
+        let mut events = svc.subscribe(None);
+        ok(
+            "telemetry.subscribe",
+            call(
+                &svc,
+                "telemetry.subscribe",
+                json!({"subscription_id": null, "channels": ["system"], "interval_ms": 1000}),
+            ),
+        );
+        let until = Instant::now() + Duration::from_secs(15);
+        loop {
+            if matches!(events.recv_timeout(Duration::from_millis(250)), RecvOutcome::Event(e) if e.event == EventName::TelemetrySample)
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < until,
+                "the telemetry pump never published a sample"
+            );
+        }
+        drop(events);
+        let weak = Arc::downgrade(&svc.inner);
+        drop(svc);
+        assert!(weak.upgrade().is_none());
+        std::fs::remove_file(tmp.path().join("catalog.db")).unwrap();
+    }
+}
+
+#[test]
 fn revoke_distinguishes_missing_grants_from_store_failures() {
     let tmp = temp_root();
     let svc = open(tmp.path(), DatasetClass::Synthetic);
@@ -3307,15 +3411,15 @@ impl Gate {
 /// A registered, granted lab root filled with a small synthetic tree:
 /// `top.bin` (100), `a/{1,2,3}.bin` (10, 20, 30), `a/deep/x.bin` (5), and an empty `b`.
 #[cfg(windows)]
-struct Lab {
+pub(crate) struct Lab {
     _tmp: tempfile::TempDir,
-    path: std::path::PathBuf,
-    svc: Service,
-    root: String,
+    pub(crate) path: std::path::PathBuf,
+    pub(crate) svc: Service,
+    pub(crate) root: String,
 }
 
 #[cfg(windows)]
-fn lab() -> Option<Lab> {
+pub(crate) fn lab() -> Option<Lab> {
     if loomward_windows::enumerate::running_elevated() {
         eprintln!("skipped: elevated token; the native scan refuses elevation (invariant 2)");
         return None;
@@ -3404,7 +3508,7 @@ fn walk(dir: &Path) -> (u64, u64, u64) {
 }
 
 #[cfg(windows)]
-fn start(svc: &Service, root: &str, mode: &str) -> String {
+pub(crate) fn start(svc: &Service, root: &str, mode: &str) -> String {
     let (job, _) = ok(
         "scan.start",
         call(svc, "scan.start", json!({"root_id": root, "mode": mode})),
@@ -3413,7 +3517,7 @@ fn start(svc: &Service, root: &str, mode: &str) -> String {
 }
 
 #[cfg(windows)]
-fn settle(svc: &Service, job: &str) -> Payload {
+pub(crate) fn settle(svc: &Service, job: &str) -> Payload {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let (j, _) = ok("jobs.get", call(svc, "jobs.get", json!({"job_id": job})));
@@ -3531,6 +3635,16 @@ fn f3_search_reports_freshness_without_enabling_federated_search() {
     serde_json::from_value::<SearchFreshness>(freshness.clone()).unwrap();
     let (hello, _) = ok("session.hello", call(&lab.svc, "session.hello", json!({})));
     assert_eq!(hello["features"]["federated_search"], false);
+    // The ranked token index follows the same switch (#520): no index, no backfill, until it flips.
+    let ranked: bool = rusqlite::Connection::open(lab._tmp.path().join("state").join("catalog.db"))
+        .unwrap()
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name IN ('search_token','search_dirty','search_backfill'))",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(ranked, crate::FEDERATED_SEARCH);
 }
 
 #[cfg(windows)]
@@ -4098,6 +4212,196 @@ fn f3_completed_automatic_start_preserves_the_reset_budget() {
         0,
         "late start bookkeeping overwrote the successful pass's reset"
     );
+}
+
+#[cfg(windows)]
+#[test]
+fn f3_issue617_completed_catchup_retries_its_checkpoint() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    settle(svc, &start(svc, &lab.root, "full"));
+    f3_wait_live(svc);
+    svc.inner.freshness.pause_pump();
+    svc.inner
+        .freshness
+        .record(1, vec![loomward_windows::watch::Change::RootDirty]);
+    for _ in 0..2 {
+        svc.inner.freshness.ready_targeted_hint(1);
+        svc.inner
+            .hooks
+            .fail_automatic_start
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        crate::freshness::refresh(&svc.inner);
+    }
+    svc.inner.freshness.ready_targeted_hint(1);
+    svc.inner
+        .hooks
+        .fail_freshness_checkpoint
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    crate::freshness::refresh(&svc.inner);
+    let auto = svc.inner.freshness.explicit(1).auto.clone().unwrap();
+    assert_eq!(settle(svc, auto.as_str())["coverage"], "complete");
+    assert!(
+        svc.inner.freshness.stale(1),
+        "unconfirmed coverage must stay stale"
+    );
+    assert_eq!(svc.inner.freshness.attempts(1), 3);
+    crate::freshness::refresh(&svc.inner);
+    assert!(
+        !svc.inner.freshness.stale(1),
+        "completed catch-up lost its settle witness"
+    );
+    assert_eq!(svc.inner.freshness.attempts(1), 0);
+    assert!(f3_hits(svc)["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|h| h["freshness"]["state"] == "live"));
+}
+
+#[cfg(windows)]
+#[test]
+fn f3_issue617_explicit_scan_preempts_another_roots_pool() {
+    if loomward_windows::enumerate::running_elevated() {
+        return;
+    }
+    let tmp = temp_root();
+    let state = tmp.path().join("state");
+    let mut paths = Vec::new();
+    for name in ["lab-first", "lab-second"] {
+        let path = tmp.path().join(name);
+        crate::lab::register(
+            &state,
+            &path,
+            name,
+            "S",
+            "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        )
+        .unwrap();
+        std::fs::create_dir(path.join("child")).unwrap();
+        std::fs::write(path.join("child/file.bin"), b"synthetic").unwrap();
+        paths.push(path.canonicalize().unwrap());
+    }
+    let svc = Service::open(Config {
+        state_dir: state,
+        dataset: DatasetClass::Synthetic,
+        allow_personal: false,
+        allow_identity_unverified: false,
+        grant_roots: paths,
+    })
+    .unwrap();
+    svc.inner.freshness.pause_pump();
+    let rows = crate::db::roots(&svc.inner.db(), None).unwrap();
+    let first = svc.inner.root_id(rows[0].root);
+    let second = svc.inner.root_id(rows[1].root);
+    for root in [&first, &second] {
+        assert_eq!(
+            settle(&svc, &start(&svc, root, "full"))["coverage"],
+            "complete"
+        );
+    }
+    svc.inner.freshness.record(
+        rows[0].root,
+        vec![loomward_windows::watch::Change::RootDirty],
+    );
+    svc.inner.freshness.ready_targeted_hint(rows[0].root);
+    svc.inner.scan.gate.arm();
+    crate::freshness::refresh(&svc.inner);
+    svc.inner.scan.gate.wait_reached();
+    let auto = svc
+        .inner
+        .freshness
+        .explicit(rows[0].root)
+        .auto
+        .clone()
+        .unwrap();
+    let held = (Command::ScanStart, "full_catalogue_published");
+    svc.inner
+        .hooks
+        .arrived
+        .lock()
+        .unwrap()
+        .retain(|at| *at != held);
+    svc.inner.hooks.closed.lock().unwrap().push(held);
+    let (answer, stale) = std::thread::scope(|s| {
+        let asking = s.spawn(|| call(&svc, "scan.start", json!({"root_id":second,"mode":"full"})));
+        svc.inner
+            .hooks
+            .until("explicit response or automatic cancellation", |_| {
+                asking.is_finished()
+                    || svc.inner.engine.job_status(&auto).unwrap().state
+                        == JobState::CancelRequested
+            });
+        let stale = svc.inner.freshness.stale(rows[0].root);
+        svc.inner.scan.gate.release();
+        (asking.join().unwrap(), stale)
+    });
+    let (job, _) = ok("scan.start", answer);
+    assert!(stale, "pre-emption cannot make the other root fresh");
+    assert_eq!(settle(&svc, auto.as_str())["state"], "cancelled");
+    svc.inner.hooks.until("owner scan holds the pool", |h| {
+        h.arrived.lock().unwrap().contains(&held)
+    });
+    for _ in 0..3 {
+        crate::freshness::refresh(&svc.inner);
+    }
+    let attempts = svc.inner.freshness.attempts(rows[0].root);
+    svc.inner.hooks.open(held.0, held.1);
+    assert_eq!(
+        settle(&svc, job["job"]["job_id"].as_str().unwrap())["coverage"],
+        "complete"
+    );
+    assert!(svc.inner.freshness.stale(rows[0].root));
+    assert_eq!(
+        attempts, 0,
+        "pool pressure spent the deferred catch-up's retries"
+    );
+    crate::freshness::refresh(&svc.inner);
+    let retry = svc
+        .inner
+        .freshness
+        .explicit(rows[0].root)
+        .auto
+        .clone()
+        .unwrap();
+    assert_eq!(settle(&svc, retry.as_str())["coverage"], "complete");
+    assert!(!svc.inner.freshness.stale(rows[0].root));
+}
+
+#[cfg(windows)]
+#[test]
+fn f3_issue617_deferred_checkpoint_preserves_newer_hints() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    settle(svc, &start(svc, &lab.root, "full"));
+    f3_wait_live(svc);
+    svc.inner.freshness.pause_pump();
+    svc.inner
+        .freshness
+        .record(1, vec![loomward_windows::watch::Change::RootDirty]);
+    svc.inner.freshness.ready_targeted_hint(1);
+    svc.inner
+        .hooks
+        .fail_freshness_checkpoint
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    crate::freshness::refresh(&svc.inner);
+    let auto = svc.inner.freshness.explicit(1).auto.clone().unwrap();
+    assert_eq!(settle(svc, auto.as_str())["coverage"], "complete");
+    svc.inner
+        .freshness
+        .record(1, vec![loomward_windows::watch::Change::RootDirty]);
+    let claim = svc.inner.freshness.explicit(1);
+    crate::freshness::refresh(&svc.inner);
+    assert!(
+        svc.inner.freshness.stale(1),
+        "old completion cleared a newer hint"
+    );
+    drop(claim);
+    svc.inner.freshness.ready_targeted_hint(1);
+    crate::freshness::refresh(&svc.inner);
+    let auto = svc.inner.freshness.explicit(1).auto.clone().unwrap();
+    assert_eq!(settle(svc, auto.as_str())["coverage"], "complete");
+    assert!(!svc.inner.freshness.stale(1));
 }
 
 #[cfg(windows)]
@@ -5576,6 +5880,7 @@ fn followup_all_catalogue_reads_observe_deadlines() {
         interrupt: Mutex::new(None),
     };
     for (command, payload) in [
+        ("health.get", json!({})),
         ("roots.list", json!({})),
         (
             "tree.slice",
@@ -5604,6 +5909,36 @@ fn followup_all_catalogue_reads_observe_deadlines() {
             "{command}"
         );
     }
+}
+
+#[test]
+fn health_counts_do_not_use_the_shared_mutation_connection() {
+    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    fixture(&svc, 3);
+    let expected = crate::db::counts(&svc.inner.db()).unwrap();
+    svc.inner
+        .db()
+        .authorizer(Some(|ctx: AuthContext<'_>| {
+            if ctx.database_name == Some("main")
+                && matches!(
+                    ctx.action,
+                    AuthAction::Read {
+                        table_name: "file" | "dir",
+                        ..
+                    }
+                )
+            {
+                Authorization::Deny
+            } else {
+                Authorization::Allow
+            }
+        }))
+        .unwrap();
+    let (health, _) = ok("health.get", call(&svc, "health.get", json!({})));
+    assert_eq!(health["catalog"]["files"], expected.0);
+    assert_eq!(health["catalog"]["dirs"], expected.1);
 }
 
 #[test]
@@ -5814,6 +6149,168 @@ fn identity_unverified_cli_grants_need_explicit_confirmation() {
     assert_eq!(grant_identity(&svc, root).0, "verified");
 }
 
+#[cfg(windows)]
+#[test]
+fn regrant_backfills_a_legacy_null_filesystem_without_replacing_the_grant() {
+    if loomward_windows::enumerate::running_elevated() {
+        eprintln!("skipped: elevated token; native identity reads refuse elevation (invariant 2)");
+        return;
+    }
+    let tmp = temp_root();
+    let folder = tmp.path().join("synthetic-folder");
+    std::fs::create_dir(&folder).unwrap();
+    let folder = folder.canonicalize().unwrap();
+    let svc = open(&tmp.path().join("state"), DatasetClass::Personal);
+    let (root, _) = svc.inner.grant(&folder, "cli_flag", false).unwrap();
+    let before = crate::db::active_grants(&svc.inner.db()).unwrap();
+    svc.inner
+        .db()
+        .execute_batch(
+            "UPDATE main.volume SET filesystem=NULL; UPDATE st.root_grant SET filesystem=NULL",
+        )
+        .unwrap();
+    assert_eq!(
+        svc.inner.grant(&folder, "cli_flag", false).unwrap(),
+        (root, false)
+    );
+    let filesystem: Option<String> = svc
+        .inner
+        .db()
+        .query_row("SELECT filesystem FROM main.volume", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(filesystem.as_deref(), Some("NTFS"));
+    assert_eq!(
+        svc.inner
+            .db()
+            .query_row("SELECT filesystem FROM st.root_grant", [], |r| r
+                .get::<_, String>(0))
+            .unwrap(),
+        "NTFS"
+    );
+    assert_eq!(crate::db::active_grants(&svc.inner.db()).unwrap(), before);
+}
+
+#[cfg(windows)]
+#[test]
+fn stored_unverified_grant_needs_no_second_cli_confirmation_after_restart() {
+    if loomward_windows::enumerate::running_elevated() {
+        eprintln!("skipped: elevated token; native identity reads refuse elevation (invariant 2)");
+        return;
+    }
+    let tmp = temp_root();
+    let folder = tmp.path().join("synthetic-folder");
+    std::fs::create_dir(&folder).unwrap();
+    let folder = folder.canonicalize().unwrap();
+    let state = tmp.path().join("state");
+    let svc = open(&state, DatasetClass::Personal);
+    *svc.inner.hooks.filesystem.lock().unwrap() = Some("exFAT");
+    let (root, _) = svc.inner.grant(&folder, "cli_flag", true).unwrap();
+    drop(svc);
+    let svc = open(&state, DatasetClass::Personal);
+    *svc.inner.hooks.filesystem.lock().unwrap() = Some("exFAT");
+    assert_eq!(
+        svc.inner.grant(&folder, "cli_flag", false).unwrap(),
+        (root, false)
+    );
+    assert_eq!(grant_identity(&svc, root).0, "unverified");
+    let (key, id) = crate::lab::identity(&folder).unwrap();
+    let guid: String = svc
+        .inner
+        .db()
+        .query_row(
+            "SELECT volume_guid FROM st.root_grant WHERE state='active'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        crate::db::active_grant(&svc.inner.db(), &key, &id, "Another synthetic root", &guid)
+            .unwrap(),
+        None,
+        "a recyclable ID cannot transfer the saved permission to another path"
+    );
+    let other = tmp.path().join("synthetic-other");
+    std::fs::create_dir(&other).unwrap();
+    assert_eq!(
+        svc.inner
+            .grant(&other.canonicalize().unwrap(), "cli_flag", false),
+        Err(crate::Refused::IdentityUnverified)
+    );
+    svc.inner
+        .catalog
+        .writer()
+        .call(WriteCommand::RevokeGrant {
+            grant_id: svc
+                .inner
+                .db()
+                .query_row("SELECT grant_id FROM main.root WHERE id=?1", [root], |r| {
+                    r.get(0)
+                })
+                .unwrap(),
+            revoked_at_ns: crate::now_ns(),
+        })
+        .unwrap();
+    assert_eq!(
+        svc.inner.grant(&folder, "cli_flag", false),
+        Err(crate::Refused::IdentityUnverified)
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn revocation_between_regrant_lookup_and_write_cannot_reuse_confirmation() {
+    if loomward_windows::enumerate::running_elevated() {
+        eprintln!("skipped: elevated token; native identity reads refuse elevation (invariant 2)");
+        return;
+    }
+    let tmp = temp_root();
+    let folder = tmp.path().join("synthetic-folder");
+    std::fs::create_dir(&folder).unwrap();
+    let folder = folder.canonicalize().unwrap();
+    let svc = open(&tmp.path().join("state"), DatasetClass::Personal);
+    *svc.inner.hooks.filesystem.lock().unwrap() = Some("exFAT");
+    let (root, _) = svc.inner.grant(&folder, "cli_flag", true).unwrap();
+    let grant = svc
+        .inner
+        .db()
+        .query_row("SELECT grant_id FROM main.root WHERE id=?1", [root], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    svc.inner
+        .hooks
+        .closed
+        .lock()
+        .unwrap()
+        .push((Command::RootsRequestGrant, "grant_observed"));
+    let peer = svc.inner.clone();
+    let regrant = std::thread::spawn(move || peer.grant(&folder, "cli_flag", false));
+    svc.inner.hooks.until("regrant observed", |hooks| {
+        hooks
+            .arrived
+            .lock()
+            .unwrap()
+            .contains(&(Command::RootsRequestGrant, "grant_observed"))
+    });
+    // The catalogue connection can revoke independently of the service's mutation mutex.
+    svc.inner
+        .catalog
+        .writer()
+        .call(WriteCommand::RevokeGrant {
+            grant_id: grant,
+            revoked_at_ns: crate::now_ns(),
+        })
+        .unwrap();
+    svc.inner
+        .hooks
+        .open(Command::RootsRequestGrant, "grant_observed");
+    assert!(
+        regrant.join().unwrap().is_err(),
+        "a revoked grant cannot supply a saved confirmation"
+    );
+    assert_eq!(crate::db::active_grants(&svc.inner.db()).unwrap(), 0);
+}
+
 /// #219: the desktop picker asks the one-line native confirmation only for a volume that cannot
 /// verify identity; declining grants nothing and reports `cancelled_by_user`.
 #[cfg(windows)]
@@ -5827,7 +6324,9 @@ fn picker_confirms_identity_unverified_volumes_explicitly() {
         fn confirm_disclosure(&self, _: &DisclosureSummary) -> Result<bool, ErrorBody> {
             Ok(false)
         }
-        fn confirm_identity_unverified(&self) -> bool {
+        fn confirm_identity_unverified(&self, folder: &Path, filesystem: &str) -> bool {
+            assert_eq!(folder, self.0.canonicalize().unwrap());
+            assert_eq!(filesystem, "FAT32");
             self.2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.1
         }
@@ -6140,3 +6639,56 @@ mod alerts_tests;
 #[cfg(test)]
 #[path = "clutter_tests.rs"]
 mod clutter_tests;
+
+#[test]
+fn active_grant_matches_guid_and_unverified_path_together() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let guid = "00000000000000000000000000000001";
+    let WriteReply::Root { grant_id, .. } = svc
+        .inner
+        .catalog
+        .writer()
+        .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_guid: Some(guid.into()),
+            volume_key: "fixture-volume".into(),
+            root_file_id: Some(vec![1; 16]),
+            display_name: "Synthetic volume".into(),
+            display_path: "Synthetic root".into(),
+            filesystem: Some("exFAT".into()),
+            origin: "fixture".into(),
+            granted_via: "fixture".into(),
+            observed_at_ns: 1,
+        }))
+        .unwrap()
+    else {
+        panic!()
+    };
+    let conn = svc.inner.db();
+    assert_eq!(
+        crate::db::active_grant(&conn, "fixture-volume", &[1; 16], "Synthetic root", guid).unwrap(),
+        Some((grant_id, "unverified".into()))
+    );
+    assert_eq!(
+        crate::db::active_grant(
+            &conn,
+            "fixture-volume",
+            &[1; 16],
+            "Another synthetic root",
+            guid
+        )
+        .unwrap(),
+        None
+    );
+    assert_eq!(
+        crate::db::active_grant(
+            &conn,
+            "fixture-volume",
+            &[1; 16],
+            "Synthetic root",
+            "00000000000000000000000000000002"
+        )
+        .unwrap(),
+        None
+    );
+}

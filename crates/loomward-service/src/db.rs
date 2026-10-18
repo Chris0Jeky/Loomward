@@ -233,12 +233,13 @@ pub fn active_grant(
     conn: &Connection,
     volume_key: &str,
     file_id: &[u8],
+    display_path: &str,
     volume_guid: &str,
-) -> Sql<Option<i64>> {
+) -> Sql<Option<(i64, String)>> {
     conn.query_row(
-        "SELECT id FROM st.root_grant WHERE volume_key=?1 AND root_file_id=?2 AND volume_guid=?3 AND state='active' ORDER BY id DESC LIMIT 1",
-        params![volume_key, file_id, volume_guid],
-        |r| r.get(0),
+        "SELECT id,identity_mode FROM st.root_grant WHERE volume_key=?1 AND root_file_id=?2 AND state='active' AND (identity_mode='verified' OR display_path=?3) AND volume_guid=?4 ORDER BY id DESC LIMIT 1",
+        params![volume_key, file_id, display_path, volume_guid],
+        |r| Ok((r.get(0)?, r.get(1)?)),
     )
     .optional()
 }

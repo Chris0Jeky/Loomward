@@ -520,6 +520,8 @@ pub struct Outcome {
     /// Staging tokens intended but never identity-committed: a folder under such a name may exist,
     /// empty and unjournaled. Never adopted or removed; reported for the owner.
     pub leftover_staging: Vec<String>,
+    /// Staging-relative manifest names observed without journaled identities; never removed.
+    pub unjournaled_items: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -697,6 +699,41 @@ pub fn status(store: &Mutex<Store>, op: u64) -> Result<Outcome, Fault> {
         .unwrap_or_else(|e| e.into_inner())
         .rows(op)
         .map_err(|e| Fault::Journal(e.to_string()))?;
+    let mut state = r.state;
+    let mut unjournaled_items = Vec::new();
+    // Recovery cannot journal needs_attention from every state (e.g. blocked or staged).
+    // Re-observe those waiting states, and recorded attention, so later status reads keep the damage visible.
+    if !state.is_terminal()
+        && (state == OpState::NeedsAttention || !state.can_transition(OpState::NeedsAttention))
+    {
+        let plan = store
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .plan(op)
+            .map_err(|e| Fault::Journal(e.to_string()))?
+            .and_then(|p| serde_json::from_str::<Plan>(&p).ok());
+        if let Some(plan) = plan {
+            let disk = PathDisk::new(&plan, &r);
+            if matches!(
+                loomward_operations::recover(op, &rows, &disk).decision,
+                Decision::NeedsAttention(_)
+            ) {
+                state = OpState::NeedsAttention;
+            }
+            if state == OpState::NeedsAttention {
+                if let Some(staging) = r.staging {
+                    unjournaled_items = r
+                        .items
+                        .iter()
+                        .filter(|i| i.id.is_none())
+                        .filter_map(|i| i.name.as_ref())
+                        .filter(|n| disk.in_staging(staging, n).is_some())
+                        .cloned()
+                        .collect();
+                }
+            }
+        }
+    }
     let mut refusal = None;
     for row in &rows {
         match serde_json::from_str::<loomward_operations::Entry>(&row.body).map(|e| e.record) {
@@ -709,7 +746,7 @@ pub fn status(store: &Mutex<Store>, op: u64) -> Result<Outcome, Fault> {
         }
     }
     Ok(Outcome {
-        state: r.state,
+        state,
         refusal,
         staging_left: r
             .staging_left
@@ -721,6 +758,7 @@ pub fn status(store: &Mutex<Store>, op: u64) -> Result<Outcome, Fault> {
             Some(_) => r.staging_tokens[..r.staging_tokens.len() - 1].to_vec(),
             None => r.staging_tokens.clone(),
         },
+        unjournaled_items,
     })
 }
 
@@ -773,21 +811,24 @@ pub fn run(store: &Mutex<Store>, op: u64, control: &Control) -> Result<Outcome, 
     };
     let stopped = match Destination::open(&plan.destination, &plan.destination_key) {
         Err(e) => {
-            // Revalidation failed before any effect: `preparing -> refused`.
+            // Revalidation failed before any effect: `preparing -> refused`. An access, sharing or
+            // space error keeps its own code; anything else means the name no longer reaches the
+            // pinned object (renamed, replaced or removed): `destination_changed` (#526).
             let code = match io_refusal(&e) {
-                Stop::Refused(code, _) => Some(code),
-                _ => None,
+                Stop::Refused(code, _) if code != Refusal::StagingNameTaken => code,
+                _ if e.kind() == io::ErrorKind::PermissionDenied => Refusal::AccessDenied,
+                _ => Refusal::DestinationChanged,
             };
             journal.log(Record::Transition {
                 to: OpState::Refused,
-                code,
+                code: Some(code),
             })
         }
         // The pinned parent must still sit under its grant's root (a swapped ancestor is refused).
         Ok(destination) if !within(&destination, plan.destination_root).unwrap_or(false) => journal
             .log(Record::Transition {
                 to: OpState::Refused,
-                code: None,
+                code: Some(Refusal::DestinationChanged),
             }),
         Ok(destination) => copy(&journal, &plan, control, &destination),
     };
@@ -1348,10 +1389,14 @@ impl Runner<'_, '_> {
                             || self.staging.folder_plain(&path, name, key).is_ok_and(|p| p))
                 })
             })
-            && self.plan.manifest.root.as_ref().is_none_or(|r| {
-                self.staging.own_metadata().is_ok_and(|m| m == preserved(r))
-                    && self.staging.own_plain().is_ok_and(|p| p)
+            && self.staging.own_metadata().is_ok_and(|m| {
+                self.plan
+                    .manifest
+                    .root
+                    .as_ref()
+                    .is_none_or(|r| m == preserved(r))
             })
+            && self.staging.own_plain().is_ok_and(|p| p)
     }
 }
 
@@ -1717,7 +1762,16 @@ pub fn recover(store: &Mutex<Store>, op: u64, control: &Control) -> Result<Outco
             staging,
             final_name,
         } => confirm(store, op, &plan, &r, staging, &final_name, false),
-        Decision::Settled | Decision::Resume(_) | Decision::NeedsAttention(_) => status(store, op),
+        Decision::NeedsAttention(_) => {
+            if r.state.can_transition(OpState::NeedsAttention) {
+                log(Record::Transition {
+                    to: OpState::NeedsAttention,
+                    code: None,
+                })?;
+            }
+            status(store, op)
+        }
+        Decision::Settled | Decision::Resume(_) => status(store, op),
     }
 }
 
@@ -1851,10 +1905,14 @@ fn confirm(
             }
         }
         check(listing(&published, &keys).map_err(|e| unverifiable(&e))? == want)?;
-        if let Some(root) = &plan.manifest.root {
-            check(published.own_metadata().map_err(|e| unverifiable(&e))? == preserved(root))?;
-            check(published.own_plain().map_err(|e| unverifiable(&e))?)?;
-        }
+        let root_metadata = published.own_metadata().map_err(|e| unverifiable(&e))?;
+        check(
+            plan.manifest
+                .root
+                .as_ref()
+                .is_none_or(|root| root_metadata == preserved(root)),
+        )?;
+        check(published.own_plain().map_err(|e| unverifiable(&e))?)?;
         Ok(holds)
     })();
     let attention = |code| {

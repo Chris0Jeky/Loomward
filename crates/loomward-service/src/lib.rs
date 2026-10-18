@@ -43,7 +43,14 @@ mod sink;
 mod tests;
 
 pub use clients::CLIENT_FIELDS;
-use loomward_catalog::{Catalog, NodeKey, RootObservation, WriteCommand, WriteReply};
+use loomward_catalog::{
+    Catalog, CatalogOptions, NodeKey, RootObservation, WriteCommand, WriteReply,
+};
+
+/// `features.federated_search`, and with it the catalogue's ranked token index (#520): the lane
+/// that serves ranked search flips this one constant, so the open-time backfill never runs for a
+/// store the owner has not opted into. docs/46 F1 is the contract only.
+pub(crate) const FEDERATED_SEARCH: bool = false;
 use loomward_engine::{Engine, EngineConfig};
 use loomward_protocol::{
     CallContext, Command, DatasetClass, Detail, ErrorBody, ErrorCode, EventName, EventStream,
@@ -74,9 +81,20 @@ pub struct Config {
 
 /// The engine service. Cheap to share; `call` may run on any thread.
 pub struct Service {
-    inner: Arc<Inner>,
+    inner: OwnedInner,
     /// A handle an Ask turn borrows for its tool calls (ask.rs): dropping it shuts nothing down.
     peer: bool,
+}
+
+/// Shared borrows stay unchanged; shutdown can take and atomically reclaim the owning Arc.
+struct OwnedInner(Option<Arc<Inner>>);
+
+impl std::ops::Deref for OwnedInner {
+    type Target = Arc<Inner>;
+
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref().expect("service is not being dropped")
+    }
 }
 
 pub(crate) struct Inner {
@@ -119,18 +137,31 @@ pub(crate) struct Inner {
     pub(crate) hooks: Arc<tests::Hooks>,
 }
 
-/// Detached workers (reads, mutations, a telemetry sampling turn) hold the shared state, hence
-/// every catalogue connection, until their closure ends, which is after the caller has its reply.
-/// Dropping the service therefore waits for them: on return its files are closed and removable.
-/// Bounded, so a worker stuck in a blocking native call cannot hang the owner's shutdown.
+/// Waits up to ten seconds for detached workers' shared state, then reclaims it atomically so
+/// weak upgrades cannot outlive successful reclamation. Workers past that deadline, or scans
+/// retaining a separate sink, may still hold catalogue connections after this returns.
+/// Destruction of the reclaimed state also runs the engine and copy workers' own shutdowns.
 impl Drop for Service {
     fn drop(&mut self) {
         if self.peer {
             return;
         }
-        self.inner.freshness.stop();
+        let mut inner = self.inner.0.take().expect("service owns its state");
+        inner.freshness.stop();
         let give_up = Instant::now() + Duration::from_secs(10);
-        while Arc::strong_count(&self.inner) > 1 && Instant::now() < give_up {
+        #[cfg(test)]
+        inner.hooks.gate(Command::TelemetrySubscribe, "drop_ready");
+        loop {
+            match Arc::try_unwrap(inner) {
+                Ok(inner) => {
+                    drop(inner);
+                    return;
+                }
+                Err(shared) => inner = shared,
+            }
+            if Instant::now() >= give_up {
+                return;
+            }
             std::thread::sleep(Duration::from_millis(1));
         }
     }
@@ -169,6 +200,7 @@ impl Service {
             return Err("a personal session requires --allow-personal".into());
         }
         let destination = paths::prospective_dir(&config.state_dir)?;
+        let sqlite_destination = loomward_catalog::sqlite_dir(&destination);
         paths::validate_roots(&config.grant_roots, Some(&destination))?;
         Catalog::validate_stores(&destination, class_name(config.dataset))
             .map_err(|e| format!("state store: {e}"))?;
@@ -180,7 +212,7 @@ impl Service {
                     return Err(refusal_name(Refusal::IdentityUnavailable));
                 }
                 let existing = rusqlite::Connection::open_with_flags(
-                    destination.join("state.db"),
+                    sqlite_destination.join("state.db"),
                     rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
                 )
                 .map_err(|_| refusal_name(Refusal::SyntheticSessionRequiresLabRoot))?;
@@ -196,7 +228,7 @@ impl Service {
                 continue;
             }
             let existing = rusqlite::Connection::open_with_flags(
-                destination.join(name),
+                sqlite_destination.join(name),
                 rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
             )
             .map_err(|_| "cannot inspect stored grants")?;
@@ -228,13 +260,22 @@ impl Service {
             .state_dir
             .canonicalize()
             .map_err(|_| "cannot resolve the state directory".to_string())?;
-        let catalog = Catalog::open(&state_dir, class_name(config.dataset))
-            .map_err(|e| format!("catalogue refused to open: {e}"))?;
+        // The ranked token index exists only where ranked search is served (#520).
+        let catalog = Catalog::open_with(
+            &state_dir,
+            class_name(config.dataset),
+            &CatalogOptions {
+                ranked_index: FEDERATED_SEARCH,
+            },
+        )
+        .map_err(|e| format!("catalogue refused to open: {e}"))?;
         // A root's first full scan publishes once, atomically, with its file indexes built once (#148).
         catalog.writer().set_bulk_first_scan(true);
         let engine = Engine::open(EngineConfig::new(state_dir.clone(), config.dataset))
             .map_err(|e| format!("engine refused to open: {e}"))?;
-        let conn = db::open(&state_dir).map_err(|e| format!("state store: {e}"))?;
+        let mut conn = db::open(&state_dir).map_err(|e| format!("state store: {e}"))?;
+        // Once per open, not per connection: it takes the write lock (#607).
+        clients::migrate(&mut conn).map_err(|e| format!("client grants: {e}"))?;
         let forgotten: bool = conn
             .query_row("SELECT EXISTS(SELECT 1 FROM st.root_forgotten)", [], |r| {
                 r.get(0)
@@ -310,7 +351,10 @@ impl Service {
         }
         spawn_telemetry_pump(Arc::downgrade(&inner));
         spawn_backup_scrub_retry(Arc::downgrade(&inner));
-        Ok(Service { inner, peer: false })
+        Ok(Service {
+            inner: OwnedInner(Some(inner)),
+            peer: false,
+        })
     }
 
     pub fn dataset(&self) -> DatasetClass {
@@ -380,6 +424,7 @@ pub(crate) fn is_mutation(c: Command) -> bool {
             | DiagnosticsSave
             | AlertsConfigure
             // docs/47: refused before dispatch while the gate is closed; mutations when it opens.
+            | CopyApprove
             | CopyStart
             | CopyCancel
             | CopyAbandon
@@ -1121,11 +1166,21 @@ impl Inner {
         // #219: a personal root on a volume that cannot verify identity needs the owner's
         // explicit confirmation; a synthetic lab root may list unverified freely.
         let unverified = !loomward_windows::enumerate::verifies_identity(&filesystem);
-        if unverified && self.dataset == DatasetClass::Personal && !confirmed_unverified {
-            return Err(Refused::IdentityUnverified);
-        }
+        let text = root.to_string_lossy();
+        let display_path = text.strip_prefix(r"\\?\").unwrap_or(&text).to_string();
         let _m = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
         let conn = self.db();
+        let existing = db::active_grant(&conn, &volume_key, &file_id, &display_path, &volume_guid)
+            .map_err(|_| Refusal::IdentityUnavailable)?;
+        if unverified
+            && self.dataset == DatasetClass::Personal
+            && !confirmed_unverified
+            && !existing
+                .as_ref()
+                .is_some_and(|(_, mode)| mode == "unverified")
+        {
+            return Err(Refused::IdentityUnverified);
+        }
         let origin = match self.dataset {
             DatasetClass::Synthetic => {
                 if file_id.len() != 16 {
@@ -1139,46 +1194,50 @@ impl Inner {
             }
             DatasetClass::Personal => "owner_granted",
         };
-        if let Some(grant) = db::active_grant(&conn, &volume_key, &file_id, &volume_guid)
-            .map_err(|_| Refusal::IdentityUnavailable)?
-        {
-            if let Some(root) =
-                db::root_for_grant(&conn, grant).map_err(|_| Refusal::IdentityUnavailable)?
-            {
-                return Ok((root, false));
-            }
-        }
-        if db::active_grants(&conn).map_err(|_| Refusal::IdentityUnavailable)?
-            >= db::MAX_ACTIVE_ROOTS
+        if existing.is_none()
+            && db::active_grants(&conn).map_err(|_| Refusal::IdentityUnavailable)?
+                >= db::MAX_ACTIVE_ROOTS
         {
             return Err(Refused::RootLimit);
         }
         drop(conn);
-        let text = root.to_string_lossy();
-        let display_path = text.strip_prefix(r"\\?\").unwrap_or(&text).to_string();
+        #[cfg(test)]
+        if existing.is_some() {
+            self.hooks
+                .gate(Command::RootsRequestGrant, "grant_observed");
+        }
         let display_name = root.file_name().map_or_else(
             || display_path.clone(),
             |n| n.to_string_lossy().into_owned(),
         );
+        let fresh = existing.is_none();
+        let observation = RootObservation {
+            volume_guid: Some(volume_guid),
+            volume_key,
+            display_name: display_name.chars().take(260).collect(),
+            display_path,
+            root_file_id: Some(file_id),
+            // The volume's real filesystem: NTFS/ReFS keep durable references; the writer marks
+            // any other filesystem's grant identity-unverified.
+            filesystem: Some(filesystem),
+            origin: origin.into(),
+            granted_via: via.into(),
+            observed_at_ns: now_ns(),
+        };
+        let command = match existing {
+            Some((grant_id, _)) => WriteCommand::RefreshRoot {
+                grant_id,
+                observation,
+            },
+            None => WriteCommand::RegisterRoot(observation),
+        };
         let reply = self
             .catalog
             .writer()
-            .call(WriteCommand::RegisterRoot(RootObservation {
-                volume_guid: Some(volume_guid),
-                volume_key,
-                display_name: display_name.chars().take(260).collect(),
-                display_path,
-                root_file_id: Some(file_id),
-                // The volume's real filesystem: NTFS/ReFS keep durable references; the writer marks
-                // any other filesystem's grant identity-unverified.
-                filesystem: Some(filesystem),
-                origin: origin.into(),
-                granted_via: via.into(),
-                observed_at_ns: now_ns(),
-            }))
+            .call(command)
             .map_err(|_| Refusal::IdentityUnavailable)?;
         match reply {
-            WriteReply::Root { root_id, .. } => Ok((root_id, true)),
+            WriteReply::Root { root_id, .. } => Ok((root_id, fresh)),
             _ => Err(Refusal::IdentityUnavailable.into()),
         }
     }

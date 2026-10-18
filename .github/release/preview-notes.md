@@ -39,9 +39,7 @@ early testers, built from commit `{{SHA}}`.
 - **Read-only, simulation-only.** Loomward never moves, deletes, renames or writes your files, and
   never kills, suspends, reprioritises or trims your processes. While a scan or a duplicate
   inspection runs, renaming a scanned folder or writing a file being compared may be refused
-  briefly ("in use"); this ends when it finishes. The *Grants & health* view may still show
-  "content read: off" under its capability tags; that tag is stale (duplicates do read contents, as
-  above). The only files it writes are its
+  briefly ("in use"); this ends when it finishes. The only files it writes are its
   own: its state under `%LOCALAPPDATA%\Loomward Data\v3\` and the WebView2 browser data under
   `%LOCALAPPDATA%\dev.loomward.desktop\`. *Revoke* stops it reading a folder; *Forget* on a revoked
   folder then removes its name and catalogue from Loomward's own database and, where it can, from its

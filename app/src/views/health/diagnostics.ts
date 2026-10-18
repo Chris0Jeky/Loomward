@@ -7,7 +7,8 @@ export const SAVE_REFUSAL_WORDS: Record<DiagnosticsSaveRefusal, string> = {
   cloud_placeholder: 'That file is online-only in a cloud folder, so nothing was saved. Choose another file, or make it available offline first.',
   write_failed: 'The file could not be written (read-only, full, locked, or it appeared while saving). The chosen file was left as it was.',
   dialog_busy: 'Another Loomward dialog is open, so the save dialog did not open and nothing was saved. Close it, then save again.',
-  dialog_unavailable: 'The save dialog could not open (the window is not ready yet), so nothing was saved. Try again in a moment.',
+  dialog_unavailable: 'The save dialog is unavailable, so nothing was saved. Try again in a moment.',
+  dialog_no_selection: 'The save dialog returned no location (it may have been cancelled or failed), so nothing was saved.',
 };
 
 const sorted = (v: unknown): unknown =>

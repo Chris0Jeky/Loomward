@@ -22,11 +22,14 @@ mod analyze;
 mod rank;
 mod tokens;
 pub use rank::{RankOptions, ALL_TIERS, TIER_CONTEXT, TIER_TOKEN, TIER_TRIGRAM};
-pub(crate) use tokens::{drain_tokens, enabled as token_index_enabled};
+pub(crate) use tokens::{
+    backfill_round, backfilling, drain_tokens, enabled as token_index_enabled,
+    index_new as index_new_tokens, restore_insert_triggers, start_backfill,
+    suspend_insert_triggers,
+};
 
 /// A file's index key is its id plus this; a folder's is its id.
 pub(crate) const FILE_KEY: i64 = 1 << 48;
-const BATCH: usize = 128;
 /// What may precede a word: the name start sentinel or one of these.
 const SEPARATORS: [char; 16] = [
     ' ', '_', '-', '.', '(', '[', '{', ',', '+', '&', '@', '#', '~', '\'', '=', '!',
@@ -174,22 +177,52 @@ struct Place {
     root_name: String,
     hidden: bool,
 }
-/// Root-relative path and visibility of a folder, cached for the request.
-fn place<'a>(conn: &Connection, cache: &'a mut HashMap<i64, Place>, dir: i64) -> Result<&'a Place> {
+const PLACE_SQL: &str = "WITH RECURSIVE a(id,parent_id,name,listing_state,depth) AS (
+    SELECT id,parent_id,name,listing_state,0 FROM dir WHERE id=?1
+    UNION ALL SELECT d.id,d.parent_id,d.name,d.listing_state,a.depth+1
+    FROM dir d JOIN a ON d.id=a.parent_id WHERE a.depth<1025)
+    SELECT id,parent_id,name,listing_state FROM a";
+/// Root-relative path and visibility, or invalid ancestry (`None`), cached for the request.
+fn place<'a>(
+    conn: &Connection,
+    cache: &'a mut HashMap<i64, Option<Place>>,
+    dir: i64,
+) -> Result<&'a Place> {
     let mut chain = Vec::new();
     let mut at = Some(dir);
-    while let Some(id) = at.filter(|id| !cache.contains_key(id)) {
-        let (parent, name, state): (Option<i64>, String, String) = conn
-            .prepare_cached("SELECT parent_id,name,listing_state FROM dir WHERE id=?1")?
-            .query_row([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
-        if chain.len() > 1024 {
+    if !cache.contains_key(&dir) {
+        let mut stmt = conn.prepare_cached(PLACE_SQL)?;
+        let mut rows = stmt.query([dir])?;
+        while let Some(row) = rows.next()? {
+            let id = row.get(0)?;
+            if matches!(cache.get(&id), Some(Some(_))) {
+                at = None;
+                break;
+            }
+            if cache.contains_key(&id) || chain.iter().any(|(seen, _, _, _)| *seen == id) {
+                break;
+            }
+            if chain.len() > 1024 {
+                // Only this starting folder is known to be too deep; its ancestors may be valid.
+                cache.insert(dir, None);
+                return Err(Error::Invalid("directory identity cycle"));
+            }
+            let parent = row.get(1)?;
+            let name = row.get(2)?;
+            let state: String = row.get(3)?;
+            chain.push((id, parent, name, state == "absent_pending"));
+            at = parent;
+        }
+        if let Some(id) = at {
+            cache.insert(id, None);
+            for (id, _, _, _) in chain {
+                cache.insert(id, None);
+            }
             return Err(Error::Invalid("directory identity cycle"));
         }
-        chain.push((id, parent, name, state == "absent_pending"));
-        at = parent;
     }
     for (id, parent, name, hidden) in chain.into_iter().rev() {
-        let place = match parent.and_then(|p| cache.get(&p)) {
+        let place = match parent.and_then(|p| cache.get(&p)).and_then(Option::as_ref) {
             Some(p) => Place {
                 rel: if p.rel.is_empty() {
                     name
@@ -205,9 +238,11 @@ fn place<'a>(conn: &Connection, cache: &'a mut HashMap<i64, Place>, dir: i64) ->
                 hidden,
             },
         };
-        cache.insert(id, place);
+        cache.insert(id, Some(place));
     }
-    Ok(&cache[&dir])
+    cache[&dir]
+        .as_ref()
+        .ok_or(Error::Invalid("directory identity cycle"))
 }
 
 fn root_states(conn: &Connection, root: Option<i64>) -> Result<Vec<SearchRootState>> {
@@ -247,16 +282,16 @@ fn visible(files: bool, scope: Option<&[i64]>) -> String {
     });
     format!("d.root_id IN (SELECT id FROM root_grant WHERE state='active') AND d.listing_state!='absent_pending' AND (?3 IS NULL OR d.root_id=?3){scope} AND {filters}")
 }
-/// The SQL of one batch: a pass's folders or files, or a filter-only listing of either.
+/// The SQL of one streaming pass: a pass's folders or files, or a filter-only listing of either.
 fn statement(filter: bool, files: bool, by_size: bool, scope: Option<&[i64]>) -> String {
     let matched = format!("coalesce({},0)", visible(files, scope));
     match (filter, files) {
-        (false, false) => format!("SELECT {DIR_COLUMNS},{matched},s.rowid FROM search_name s JOIN dir d ON d.id=s.rowid WHERE search_name MATCH ?1 AND s.rowid>?2 AND s.rowid<{FILE_KEY} ORDER BY s.rowid LIMIT {BATCH}"),
-        (false, true) => format!("SELECT {FILE_COLUMNS},{matched},s.rowid FROM search_name s JOIN file f ON f.id=s.rowid-{FILE_KEY} JOIN dir d ON d.id=f.dir_id LEFT JOIN ext e ON e.id=f.ext_id WHERE search_name MATCH ?1 AND s.rowid>?2 ORDER BY s.rowid LIMIT {BATCH}"),
-        (true, false) => format!("SELECT {DIR_COLUMNS},{matched},d.id FROM dir d WHERE ?1 IS NOT NULL AND d.id>?2 AND d.parent_id IS NOT NULL ORDER BY d.id LIMIT {BATCH}"),
+        (false, false) => format!("SELECT {DIR_COLUMNS},{matched},s.rowid FROM search_name s JOIN dir d ON d.id=s.rowid WHERE search_name MATCH ?1 AND s.rowid>?2 AND s.rowid<{FILE_KEY} ORDER BY s.rowid"),
+        (false, true) => format!("SELECT {FILE_COLUMNS},{matched},s.rowid FROM search_name s JOIN file f ON f.id=s.rowid-{FILE_KEY} JOIN dir d ON d.id=f.dir_id LEFT JOIN ext e ON e.id=f.ext_id WHERE search_name MATCH ?1 AND s.rowid>?2 ORDER BY s.rowid"),
+        (true, false) => format!("SELECT {DIR_COLUMNS},{matched},d.id FROM dir d WHERE ?1 IS NOT NULL AND d.id>?2 AND d.parent_id IS NOT NULL ORDER BY d.id"),
         // One extension: its index, largest first, then by id.
-        (true, true) if by_size => format!("SELECT {FILE_COLUMNS},{matched},f.id+{FILE_KEY} FROM file f INDEXED BY file_by_ext JOIN dir d ON d.id=f.dir_id LEFT JOIN ext e ON e.id=f.ext_id WHERE ?1 IS NOT NULL AND f.ext_id=(SELECT id FROM ext WHERE ext=?4) AND (?9 IS NULL OR f.logical<?9 OR (f.logical=?9 AND f.id>?2-{FILE_KEY})) ORDER BY f.logical DESC,f.id LIMIT {BATCH}"),
-        (true, true) => format!("SELECT {FILE_COLUMNS},{matched},f.id+{FILE_KEY} FROM file f JOIN dir d ON d.id=f.dir_id LEFT JOIN ext e ON e.id=f.ext_id WHERE ?1 IS NOT NULL AND f.id>?2-{FILE_KEY} ORDER BY f.id LIMIT {BATCH}"),
+        (true, true) if by_size => format!("SELECT {FILE_COLUMNS},{matched},f.id+{FILE_KEY} FROM file f INDEXED BY file_by_ext JOIN dir d ON d.id=f.dir_id LEFT JOIN ext e ON e.id=f.ext_id WHERE ?1 IS NOT NULL AND f.ext_id=(SELECT id FROM ext WHERE ext=?4) AND (?9 IS NULL OR f.logical<?9 OR (f.logical=?9 AND f.id>?2-{FILE_KEY})) ORDER BY f.logical DESC,f.id"),
+        (true, true) => format!("SELECT {FILE_COLUMNS},{matched},f.id+{FILE_KEY} FROM file f JOIN dir d ON d.id=f.dir_id LEFT JOIN ext e ON e.id=f.ext_id WHERE ?1 IS NOT NULL AND f.id>?2-{FILE_KEY} ORDER BY f.id"),
 }
 }
 
@@ -270,7 +305,7 @@ struct Walk<'r> {
     key: i64,
     size: Option<i64>,
     hits: Vec<(SearchHit, Position)>,
-    places: HashMap<i64, Place>,
+    places: HashMap<i64, Option<Place>>,
     skipped: bool,
     progress: Arc<AtomicBool>,
 }
@@ -278,8 +313,8 @@ impl Walk<'_> {
     fn full(&self) -> bool {
         self.hits.len() > self.req.limit
     }
-    /// One batch of one pass's folders or files. Returns whether the batch was full.
-    fn batch(&mut self, conn: &Connection, expr: &str, files: bool) -> Result<bool> {
+    /// Stream one pass until the page is full or the work guard interrupts it.
+    fn scan(&mut self, conn: &Connection, expr: &str, files: bool) -> Result<()> {
         let r = self.req;
         let by_size = files && self.pass == FILTER_PASS && r.extension.is_some();
         let sql = statement(self.pass == FILTER_PASS, files, by_size, r.scope.as_deref());
@@ -299,9 +334,7 @@ impl Walk<'_> {
         ];
         let n = stmt.parameter_count();
         let mut rows = stmt.query(rusqlite::params_from_iter(values.into_iter().take(n)))?;
-        let mut examined = 0;
         while let Some(row) = rows.next()? {
-            examined += 1;
             let key: i64 = row.get(24)?;
             if row.get::<_, bool>(23)? {
                 let hit = raw(row)?;
@@ -313,10 +346,10 @@ impl Walk<'_> {
             }
             self.progress.store(true, Ordering::Relaxed);
             if self.full() {
-                return Ok(false);
+                return Ok(());
             }
         }
-        Ok(examined == BATCH)
+        Ok(())
     }
     fn hit(&mut self, conn: &Connection, hit: Raw, key: i64) -> Result<()> {
         // A folder hit is never a root (roots are not indexed), so both kinds have a parent.
@@ -378,7 +411,7 @@ impl Walk<'_> {
             let dirs = self.req.kind != "file"
                 && !(self.pass == FILTER_PASS && self.req.extension.is_some());
             if dirs && self.key < FILE_KEY {
-                while self.batch(conn, expr, false)? {}
+                self.scan(conn, expr, false)?;
                 if self.full() {
                     return Ok(());
                 }
@@ -387,7 +420,7 @@ impl Walk<'_> {
                 if self.key < FILE_KEY {
                     (self.key, self.size) = (FILE_KEY - 1, None);
                 }
-                while self.batch(conn, expr, true)? {}
+                self.scan(conn, expr, true)?;
                 if self.full() {
                     return Ok(());
                 }
@@ -587,6 +620,169 @@ impl Reader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn an_uncached_search_parent_uses_one_ancestor_query_and_keeps_visibility() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("catalog.sql")).unwrap();
+        conn.execute_batch("INSERT INTO root(id,grant_id,state) VALUES(1,1,'complete'); WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<30) INSERT INTO dir(id,root_id,parent_id,name,id_quality,id_basis,depth,attrs,listing_state,born_run,seen_run) SELECT i,1,CASE WHEN i=1 THEN NULL ELSE i-1 END,'level-'||i,'path_observation','none',i-1,0,'complete',0,0 FROM n").unwrap();
+        let mut cache = HashMap::new();
+        let found = place(&conn, &mut cache, 30).unwrap();
+        assert_eq!(found.root_name, "level-1");
+        assert!(found.rel.starts_with("level-2\\level-3\\"));
+        assert!(found.rel.ends_with("\\level-30") && !found.hidden);
+        place(&conn, &mut cache, 29).unwrap();
+        assert_eq!(
+            conn.prepare_cached(PLACE_SQL)
+                .unwrap()
+                .get_status(rusqlite::StatementStatus::Run),
+            1
+        );
+        conn.execute(
+            "UPDATE dir SET listing_state='absent_pending' WHERE id=10",
+            [],
+        )
+        .unwrap();
+        cache.clear();
+        assert!(place(&conn, &mut cache, 30).unwrap().hidden);
+        conn.pragma_update(None, "foreign_keys", false).unwrap();
+        conn.execute("UPDATE dir SET parent_id=999 WHERE id=10", [])
+            .unwrap();
+        cache.clear();
+        assert!(
+            place(&conn, &mut cache, 30).is_err(),
+            "missing ancestry must never become a visible path"
+        );
+    }
+    #[test]
+    fn a_scoped_pass_streams_past_rejected_hits_without_restarting_fts() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("catalog.sql")).unwrap();
+        conn.execute_batch(include_str!("search.sql")).unwrap();
+        conn.execute_batch("CREATE TABLE root_grant(id INTEGER PRIMARY KEY,state TEXT); INSERT INTO root_grant VALUES(1,'active'),(2,'active'); INSERT INTO root(id,grant_id,state) VALUES(1,1,'complete'),(2,2,'complete'); INSERT INTO dir(id,root_id,name,id_quality,id_basis,depth,attrs,listing_state,born_run,seen_run) VALUES(1,1,'Alpha','path_observation','none',0,0,'complete',0,0),(2,2,'Beta','path_observation','none',0,0,'complete',0,0); WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<513) INSERT INTO file(id,dir_id,name,logical,attrs,born_run,seen_run) SELECT i,CASE WHEN i<=512 THEN 1 ELSE 2 END,'common-'||i||'.txt',1,0,0,0 FROM n").unwrap();
+        let req = SearchRequest {
+            text: "common".into(),
+            kind: "file".into(),
+            limit: 1,
+            scope: Some(vec![2]),
+            ..Default::default()
+        };
+        let mut walk = Walk {
+            req: &req,
+            text: &req.text,
+            pass: 1,
+            key: FILE_KEY - 1,
+            size: None,
+            hits: Vec::new(),
+            places: HashMap::new(),
+            skipped: false,
+            progress: Arc::new(AtomicBool::new(false)),
+        };
+        let plan = Plan {
+            passes: vec![plan(&req.text).passes[1].clone()],
+            substring_searched: true,
+        };
+        walk.run(&conn, &plan).unwrap();
+        assert_eq!(walk.hits.len(), 1);
+        assert_eq!(walk.hits[0].0.row.name, "common-513.txt");
+        assert_eq!(walk.key, FILE_KEY + 513);
+        let stmt = conn
+            .prepare_cached(&statement(false, true, false, req.scope.as_deref()))
+            .unwrap();
+        assert_eq!(stmt.get_status(rusqlite::StatementStatus::Run), 1);
+    }
+    #[test]
+    fn an_over_depth_path_does_not_hide_valid_ancestors() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE dir(id INTEGER PRIMARY KEY,parent_id INTEGER,name TEXT,listing_state TEXT);
+             INSERT INTO dir VALUES (1,NULL,'root','complete');
+             WITH RECURSIVE ids(id) AS (VALUES(2) UNION ALL SELECT id+1 FROM ids WHERE id<1027)
+             INSERT INTO dir SELECT id,id-1,'folder','complete' FROM ids;",
+        )
+        .unwrap();
+        let mut cache = HashMap::new();
+        assert!(matches!(
+            place(&conn, &mut cache, 1027),
+            Err(Error::Invalid("directory identity cycle"))
+        ));
+        let ancestor = place(&conn, &mut cache, 2).unwrap();
+        assert_eq!(ancestor.rel, "folder");
+        assert_eq!(ancestor.root_name, "root");
+        assert!(!ancestor.hidden);
+    }
+
+    #[test]
+    fn cyclic_ancestry_is_negatively_cached_for_every_affected_folder() {
+        use std::sync::atomic::AtomicUsize;
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE dir(id INTEGER PRIMARY KEY,parent_id INTEGER,name TEXT,listing_state TEXT);
+             INSERT INTO dir VALUES (1,2,'cycle-a','complete'),(2,1,'cycle-b','complete'),
+                                    (3,1,'tail','complete'),(4,3,'another-tail','complete');",
+        )
+        .unwrap();
+        let steps = Arc::new(AtomicUsize::new(0));
+        let count = steps.clone();
+        conn.progress_handler(
+            1,
+            Some(move || {
+                count.fetch_add(1, Ordering::Relaxed);
+                false
+            }),
+        )
+        .unwrap();
+        let mut cache = HashMap::new();
+        assert!(matches!(
+            place(&conn, &mut cache, 3),
+            Err(Error::Invalid("directory identity cycle"))
+        ));
+        assert!(steps.swap(0, Ordering::Relaxed) > 0);
+        for dir in [1, 2, 3] {
+            assert!(matches!(
+                place(&conn, &mut cache, dir),
+                Err(Error::Invalid("directory identity cycle"))
+            ));
+            assert_eq!(
+                steps.load(Ordering::Relaxed),
+                0,
+                "folder {dir} was queried again"
+            );
+        }
+        // A new descendant inherits the cached failure after its own single lookup.
+        assert!(matches!(
+            place(&conn, &mut cache, 4),
+            Err(Error::Invalid("directory identity cycle"))
+        ));
+        assert!(steps.swap(0, Ordering::Relaxed) > 0);
+        assert!(matches!(
+            place(&conn, &mut cache, 4),
+            Err(Error::Invalid("directory identity cycle"))
+        ));
+        assert_eq!(steps.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn missing_ancestry_is_negatively_cached_for_every_affected_folder() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE dir(id INTEGER PRIMARY KEY,parent_id INTEGER,name TEXT,listing_state TEXT);
+             INSERT INTO dir VALUES (1,99,'missing-parent','complete'),(2,1,'tail','complete');",
+        )
+        .unwrap();
+        let mut cache = HashMap::new();
+        assert!(place(&conn, &mut cache, 2).is_err());
+        for dir in [1, 2, 99] {
+            assert!(matches!(cache.get(&dir), Some(None)));
+            assert!(place(&conn, &mut cache, dir).is_err());
+        }
+        assert_eq!(
+            conn.prepare_cached(PLACE_SQL)
+                .unwrap()
+                .get_status(rusqlite::StatementStatus::Run),
+            1
+        );
+    }
+
     #[test]
     fn short_texts_skip_the_passes_a_trigram_cannot_express() {
         let one = plan("a");

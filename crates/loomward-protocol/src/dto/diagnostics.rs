@@ -209,6 +209,8 @@ pub enum DiagnosticsSaveRefusal {
     DialogBusy,
     /// The save dialog could not open (no owner window yet, no start folder, or no dialog on this adapter).
     DialogUnavailable,
+    /// No path was returned; the dialog backend cannot distinguish cancellation from failure.
+    DialogNoSelection,
 }
 
 /// Never the chosen path: it stays in Rust.

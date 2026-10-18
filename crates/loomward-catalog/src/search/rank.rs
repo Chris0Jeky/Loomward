@@ -18,11 +18,13 @@
 //! while the catalogue is unchanged. The pool is at least 100 hits deep (twice the page size above
 //! 50), so a query answers at most [`HORIZON`] hits and usually fewer: it is not an exhaustive
 //! enumeration (use `search` for that), and a budget cut during candidate collection ranks what was
-//! seen and says `budget_hit`, without a scan position to resume. The cursor also binds the
+//! seen and says `budget_hit`, without a scan position to resume. If that cut leaves no returned
+//! hits, it refuses with `ResourceBudget`. The cursor also binds the
 //! catalogue revision: after any publication it is refused with `StaleGeneration`. Continuity is
 //! not promised across a `budget_hit` page (a later page's pool may be cut elsewhere).
 //! `search_ranked` returns `RankedIndexDisabled` on a store opened without
-//! `CatalogOptions::ranked_index`.
+//! `CatalogOptions::ranked_index`, and `RankedIndexBuilding` while the writer backfills a store
+//! that has just opted in.
 use super::analyze::{query_tokens, shape, tokens};
 use super::*;
 use crate::query::Raw;
@@ -333,6 +335,9 @@ impl Reader {
         if !self.read(super::tokens::enabled)? {
             return Err(Error::RankedIndexDisabled);
         }
+        if self.read(super::tokens::backfilling)? {
+            return Err(Error::RankedIndexBuilding);
+        }
         if text.is_empty() {
             return self.search(req);
         }
@@ -513,6 +518,9 @@ impl Reader {
                 .take(req.limit.min(HORIZON.saturating_sub(offset)))
                 .map(|(_, _, h)| h)
                 .collect();
+            if hit && hits.is_empty() {
+                return Err(Error::ResourceBudget);
+            }
             let next_cursor = more.then(|| SearchCursor {
                 catalog_instance: catalog_instance.clone(),
                 filters: filters.clone(),

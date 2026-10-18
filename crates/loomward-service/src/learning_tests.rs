@@ -49,6 +49,24 @@ pub(super) fn finish_refit(svc: &Service) -> Payload {
 }
 
 #[test]
+fn learning_features_refuse_a_path_from_another_root_snapshot() {
+    let dir = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    learning_node(&svc);
+    let mut reader = svc.inner.catalog.reader().unwrap();
+    let key = loomward_catalog::NodeKey::File(1);
+    let mut detail = reader.inspect(key).unwrap();
+    // Represents a detail read from before a cross-root move, with the path read after it.
+    detail.root_id = "rt_999".into();
+    assert_eq!(
+        crate::learning::features_of(&mut reader, key, detail)
+            .unwrap_err()
+            .code,
+        ErrorCode::StaleGeneration
+    );
+}
+
+#[test]
 fn both_grant_endings_redact_learning_before_returning() {
     for identity_changed in [false, true] {
         let dir = temp_root();
@@ -79,6 +97,243 @@ fn both_grant_endings_redact_learning_before_returning() {
         // Read the persisted rows directly: a refit/status request could sweep them lazily.
         assert_eq!(count(&svc, "SELECT count(*) FROM st.human_feedback WHERE features_json!='{\"name\":\"\",\"extension\":\"\",\"context\":\"\",\"size_bytes\":0}'"), 0, "identity_changed={identity_changed}");
     }
+}
+
+#[test]
+fn learning_revocation_sweeps_pending_rebinds() {
+    learning_revocation_uses_snapshot_grant("pending");
+}
+
+#[test]
+fn learning_revocation_sweeps_cross_root_moves() {
+    learning_revocation_uses_snapshot_grant("moved");
+}
+
+#[test]
+fn learning_revocation_sweeps_rebuilt_catalogue_references() {
+    learning_revocation_uses_snapshot_grant("unresolved");
+}
+
+fn learning_revocation_uses_snapshot_grant(binding: &str) {
+    let dir = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    let node = learning_node(&svc);
+    ok(
+        "feedback.record",
+        call(
+            &svc,
+            "feedback.record",
+            feedback(&node, "ce_original", Some("Documents"), false),
+        ),
+    );
+    let WriteReply::Root {
+        grant_id: other_grant,
+        dir_id: other_dir,
+        ..
+    } = svc
+        .inner
+        .catalog
+        .writer()
+        .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_guid: None,
+            volume_key: "fixture".into(),
+            display_name: "Other synthetic".into(),
+            display_path: "Other synthetic root".into(),
+            root_file_id: Some(vec![2; 16]),
+            filesystem: Some("NTFS".into()),
+            origin: "fixture".into(),
+            granted_via: "fixture".into(),
+            observed_at_ns: 0,
+        }))
+        .unwrap()
+    else {
+        panic!()
+    };
+    svc.inner
+        .db()
+        .execute("UPDATE main.file SET dir_id=?1 WHERE id=2", [other_dir])
+        .unwrap();
+    let born = svc
+        .inner
+        .db()
+        .query_row("SELECT born_run FROM main.file WHERE id=2", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let other = svc.inner.ids.seal(
+        loomward_catalog::NodeKey::File(2),
+        born,
+        &svc.inner.instance,
+    );
+    ok(
+        "feedback.record",
+        call(
+            &svc,
+            "feedback.record",
+            feedback(&other, "ce_other", Some("Finance"), false),
+        ),
+    );
+    match binding {
+            "pending" => svc.inner.db().execute_batch("INSERT OR REPLACE INTO main.meta VALUES('reference_publication','rebind'); INSERT INTO st.pending_reference(object_ref_id,catalog_instance,publication_token,row_id,born_run) SELECT id,catalog_instance,'rebind',row_id,born_run FROM st.object_ref WHERE id=(SELECT object_ref_id FROM st.human_feedback WHERE client_event_id='ce_original'); UPDATE st.object_ref SET row_id=99999 WHERE id=(SELECT object_ref_id FROM st.human_feedback WHERE client_event_id='ce_original')").unwrap(),
+            "moved" => { svc.inner.db().execute("UPDATE main.file SET dir_id=?1 WHERE id=1", [other_dir]).unwrap(); },
+            "unresolved" => svc.inner.db().execute_batch("UPDATE st.object_ref SET state='unresolved',catalog_instance='rebuilt',row_id=NULL WHERE id=(SELECT object_ref_id FROM st.human_feedback WHERE client_event_id='ce_original')").unwrap(),
+            _ => unreachable!(),
+        }
+    if binding == "pending" {
+        svc.inner
+            .db()
+            .execute("UPDATE st.root_grant SET state='revoked' WHERE id=1", [])
+            .unwrap();
+        svc.inner.engine.learning_redact_revoked().unwrap();
+    } else {
+        svc.inner.revoke(1).unwrap();
+    }
+    assert_eq!(count(&svc, "SELECT count(*) FROM st.human_feedback WHERE client_event_id='ce_original' AND features_json LIKE '%report-000.txt%'"), 0, "{binding}");
+    assert_eq!(count(&svc, "SELECT count(*) FROM st.human_feedback WHERE client_event_id='ce_other' AND features_json LIKE '%report-001.txt%'"), 1, "{binding}");
+    assert_eq!(finish_refit(&svc)["training_count"], 1, "{binding}");
+    assert_eq!(
+        count(
+            &svc,
+            &format!(
+                "SELECT count(*) FROM st.root_grant WHERE id={other_grant} AND state='active'"
+            )
+        ),
+        1
+    );
+    if binding == "moved" {
+        ok(
+            "feedback.record",
+            call(
+                &svc,
+                "feedback.record",
+                feedback(&node, "ce_fresh_snapshot", Some("Archive"), false),
+            ),
+        );
+        svc.inner.engine.learning_redact_revoked().unwrap();
+        assert_eq!(count(&svc, "SELECT count(*) FROM st.human_feedback WHERE client_event_id='ce_fresh_snapshot' AND features_json LIKE '%report-000.txt%'"), 1);
+        assert_eq!(finish_refit(&svc)["training_count"], 2);
+    }
+}
+
+#[test]
+fn learning_redaction_failure_is_reported_and_retried_before_advice() {
+    learning_failed_redaction(false);
+}
+
+#[test]
+fn learning_identity_change_redaction_failure_is_retried_before_advice() {
+    learning_failed_redaction(true);
+}
+
+fn learning_failed_redaction(identity_changed: bool) {
+    let dir = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    let node = learning_node(&svc);
+    ok(
+        "feedback.record",
+        call(
+            &svc,
+            "feedback.record",
+            feedback(&node, "ce_failure", Some("Documents"), false),
+        ),
+    );
+    assert_eq!(finish_refit(&svc)["training_count"], 1);
+    svc.inner.db().execute_batch("CREATE TRIGGER st.fail_redaction BEFORE UPDATE OF features_json ON human_feedback BEGIN SELECT RAISE(ABORT,'synthetic redaction failure'); END").unwrap();
+    if identity_changed {
+        svc.inner
+            .identity_changed(1, &RootId::new(svc.inner.root_id(1)).unwrap(), true);
+    } else {
+        assert_eq!(
+            svc.inner.revoke(1).unwrap_err().code,
+            ErrorCode::InternalError
+        );
+    }
+    assert_eq!(
+        count(
+            &svc,
+            "SELECT count(*) FROM st.root_grant WHERE id=1 AND state!='active'"
+        ),
+        1
+    );
+    assert_eq!(
+        err(call(&svc, "learning.status", json!({}))).code,
+        ErrorCode::InternalError
+    );
+    let revs = svc.inner.revisions().unwrap();
+    assert_eq!(
+        svc.inner
+            .engine
+            .learning_queue(
+                &serde_json::from_value(json!({"root_id":null,"limit":10,"cursor":null})).unwrap(),
+                vec![],
+                revs
+            )
+            .unwrap_err()
+            .code(),
+        ErrorCode::InternalError
+    );
+    assert_eq!(
+        svc.inner
+            .engine
+            .learning_meaning(
+                vec![],
+                revs.1,
+                Instant::now() + Duration::from_secs(60),
+                false
+            )
+            .unwrap_err()
+            .code(),
+        ErrorCode::InternalError
+    );
+    svc.inner
+        .db()
+        .execute_batch("DROP TRIGGER st.fail_redaction")
+        .unwrap();
+    let (status, _) = ok("learning.status", call(&svc, "learning.status", json!({})));
+    assert_eq!(status["model_id"], Value::Null);
+    assert_eq!(count(&svc, "SELECT count(*) FROM st.student_model"), 0);
+    if !identity_changed {
+        svc.inner.revoke(1).unwrap();
+    }
+}
+
+#[test]
+fn learning_refit_ignores_wall_clock_steps() {
+    let dir = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    let node = learning_node(&svc);
+    ok(
+        "feedback.record",
+        call(
+            &svc,
+            "feedback.record",
+            feedback(&node, "ce_future", Some("Documents"), false),
+        ),
+    );
+    svc.inner
+        .db()
+        .execute(
+            "UPDATE st.human_feedback SET recorded_at_ns=9223372036854775807",
+            [],
+        )
+        .unwrap();
+    assert_eq!(finish_refit(&svc)["training_count"], 1);
+    ok(
+        "feedback.record",
+        call(
+            &svc,
+            "feedback.record",
+            feedback(&node, "ce_past_1", Some("Finance"), false),
+        ),
+    );
+    assert!(svc
+        .inner
+        .engine
+        .learning_status()
+        .unwrap()
+        .model_id
+        .is_none());
+    assert_eq!(finish_refit(&svc)["human_support"]["Finance"], 1);
 }
 
 #[test]
@@ -397,14 +652,16 @@ fn learning_stores_never_cross_dataset_classes() {
             ),
         );
         drop(svc);
-        assert!(Service::open(Config {
+        let error = Service::open(Config {
             state_dir: tmp.path().to_path_buf(),
             dataset: other,
             allow_personal: true,
             allow_identity_unverified: false,
             grant_roots: vec![],
         })
-        .is_err());
+        .err()
+        .expect("a store of the other dataset class must be refused");
+        assert_eq!(error, "state store: DatasetMismatch");
         // Even an engine handed the wrong store refuses before reading a label.
         let engine = loomward_engine::Engine::open(loomward_engine::EngineConfig::new(
             tmp.path().into(),

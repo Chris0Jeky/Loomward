@@ -165,7 +165,7 @@ fn copy_primitives_are_wired_only_into_the_service_copy_module() {
     assert!(
         std::fs::read_to_string(workspace.join("crates/loomward-service/Cargo.toml"))
             .unwrap()
-            .contains("features = [\"copy-primitives\"]")
+            .contains("features = [\"copy-primitives\", \"diagnostics-export\"]")
     );
 }
 

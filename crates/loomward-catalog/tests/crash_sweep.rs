@@ -274,7 +274,7 @@ fn prepare(scenario: &str, work: &Path) {
     if scenario != "migrate" {
         return;
     }
-    // A synthetic v4-shaped store: a seeded active grant, no v6/v7 tables, no identity_mode column.
+    // A synthetic v4-shaped store: a seeded active grant, no v6/v7 tables or later grant evidence columns.
     let c = Catalog::open_with(&store, "synthetic", &ranked()).unwrap();
     register(c.writer(), A_NAME, A_PATH, 1);
     drop(c);
@@ -283,6 +283,7 @@ fn prepare(scenario: &str, work: &Path) {
         .execute_batch(
             "DROP TABLE root_forgotten; DROP TABLE backup_evidence;
              ALTER TABLE root_grant DROP COLUMN identity_mode;
+             ALTER TABLE root_grant DROP COLUMN filesystem;
              ALTER TABLE root_grant DROP COLUMN volume_guid; PRAGMA user_version=4;",
         )
         .unwrap();
@@ -530,7 +531,7 @@ fn verify(store: &Path, acks: &[String], scenario: &str) -> Vec<String> {
             "the v5, v6 and v7 additions",
         );
         want(
-            one(&db, &format!("SELECT count(*) FROM st.root_grant WHERE id=1 AND display_path='{A_PATH}' AND identity_mode='verified' AND volume_guid IS NULL AND state='active'")).map(|n| n == 1),
+            one(&db, &format!("SELECT count(*) FROM st.root_grant WHERE id=1 AND display_path='{A_PATH}' AND identity_mode='verified' AND volume_guid IS NULL AND filesystem='NTFS' AND state='active'")).map(|n| n == 1),
             "the seeded grant survives without inventing a volume binding",
         );
         return bad;

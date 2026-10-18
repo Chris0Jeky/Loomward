@@ -4,8 +4,9 @@ Status: **proposed** (2026-10-12), for the driver's acceptance; if accepted it i
 [42](42-v03-adrs.md). It records owner decisions q-34 (scope), q-35 (where the model runs) and q-36 (search
 reach) of 2026-10-12 in `HUMAN_TODO.md`, and designs the pillar they open. q-34's four other areas
 (developer clutter, content understanding, cloud and sync awareness, monitoring and alerts) are out of scope
-here. Nothing here is built. The search v1 lane (SQLite FTS5 substring and token index behind
-`search.query`) is in flight separately, and this document builds on it rather than redesigning it. Contract
+here. This is a target design, not a capability receipt: lexical search, LW-067/LW-069 client projection
+(#541), the local Ask provider (#556) and panel (#582) have since landed; the remaining proposals stay
+design-only. Search v1 (SQLite FTS5 substring and token index behind `search.query`) is its backbone. Contract
 shapes (commands, DTOs, the query grammar) belong to the contracts owner; schemas belong to the catalogue
 owner. This document says what they must provide, not their exact fields.
 
@@ -188,7 +189,7 @@ measured in section 9).
 |---|---|---|---|---|
 | **A. Own index only** (search v1 plus ranking, the smallest change) | One truth source, native identity, works everywhere | Cold index speed bounded by non-elevated enumeration; no reach beyond granted roots | Owner sees Everything is faster on first use | Two-way |
 | **B. Own index + Everything adapter** | Instant name search where Everything runs, no elevation in Loomward | Second source with its own freshness; verification step per hit | Everything absent or a version mismatch | Two-way (adapter off) |
-| **C. B + elevated NTFS helper** | Cold index of a granted volume in seconds; whole-volume journal catch-up | An elevated binary, its install path, its own review | An elevated parser of attacker-influenced data | One-way-ish: an installed service is a posture change |
+| **C. B + elevated NTFS helper** | Faster candidate-name enumeration (speed unmeasured); journal catch-up | An elevated binary, its install path, its own review | An elevated parser of attacker-influenced data | One-way-ish: an installed service is a posture change |
 | **D. B + C + semantic layer** (q-36) | Concept queries ("tax papers from last year") | Model download, embedding compute, index bytes | Model quality on short names | Two-way (derived file, delete to undo) |
 | E. Windows Search (the OS indexer) as a tier | Already present, indexes contents in Libraries | Opaque coverage, slow on non-library roots, contents outside Loomward's grant model | Disagrees with the catalogue with no way to explain why | Two-way |
 
@@ -245,7 +246,9 @@ the owner runs 1.4.
   roots (path-prefix terms in the query), then rechecks each result's prefix against the granted roots'
   current display paths. Invariant 2 says a path seen is not a grant, so **out-of-grant rows are dropped in
   the adapter.** They are never displayed through Ask or MCP, never sent to any model, and never counted in
-  any total. To search a folder, the owner grants it. This is LW-114's disclosure contract (#422): only an
+  any client-visible total or diagnostic. Drop counts are internal-only, not tool results, error details,
+  cursor metadata or model context: even a count would disclose that excluded rows exist.
+  To search a folder, the owner grants it. This is LW-114's disclosure contract (#422): only an
   explicit **owner-local** whole-volume mode could ever show such rows. This document does not design that
   mode; it needs its own gate and its own invariant 2 wording (section 11, Q2).
 - **Cursors and caches.** Merged cursors and cached pages are bound to the client and the grant epoch
@@ -254,7 +257,7 @@ the owner runs 1.4.
   its granted root, runs the post-open validation from [41 section 4.1](41-v03-architecture.md) and matches it
   to a catalogue row by identity. A matched hit becomes an ordinary row with `source: everything+own`.
   An unmatched but validated hit is shown as `not yet catalogued` and enqueues a targeted refresh. A hit that
-  fails validation is dropped and counted.
+  fails validation is dropped; its count is internal-only.
 - Everything results never reach a cloud model, verified or not. Local models see verified rows only.
 - **Health:** `unconfigured` (no pipe), `ready`, `degraded` (database not loaded), `blocked` (protocol
   version mismatch), per the provider lifecycle in [27](27-provider-runtime-and-events.md).
@@ -263,20 +266,35 @@ the owner runs 1.4.
 
 **What it is for.** Speed, not reach. Microsoft documents that `FSCTL_ENUM_USN_DATA` enumerates MFT records
 through a volume handle (`\\.\X:`, NTFS only) [F12], and that opening a volume handle "must have administrative
-privileges" [F13]. That is how name-only whole-volume indexes populate in seconds. Loomward's non-elevated
-enumeration cannot match it on a cold volume. USN enumeration returns `USN_RECORD` entries. Their fields are
-file and parent reference numbers, the USN, a record time stamp, reason and source flags, a security ID,
-file attributes and the name [F27]. **They carry no size and no file data.** Sizes and file times come from
+privileges" [F13]. Faster candidate-name discovery is the hypothesis; there is no Loomward helper timing
+measurement yet. USN enumeration returns `USN_RECORD` entries with names, references and attributes [F12,
+F27]. **They carry no size and no file data.** Sizes and file times come from
 the normal non-elevated scan, which fills them in after the helper's names arrive. Until it does, they show
 as unknown (invariant 4).
+
+**API qualification (re-fetched 2026-10-18, not a Windows helper test).** F12 was last updated
+2021-10-21; F27, 2023-03-13, not the previously cited shared date. A structure member's presence does not
+promise that every control fills it. Neither page guarantees meaningful `TimeStamp` or `Reason` from
+enumeration: treat them as unavailable there, not as a file's modified time or evidence of no changes.
+Change reasons come from `FSCTL_READ_USN_JOURNAL`; even a journal timestamp is a record time, not a file time.
+
+The pages also do not settle enumeration with an inactive journal. H1 therefore requires a successful
+`FSCTL_QUERY_USN_JOURNAL` preflight; an inactive/deleting journal, unsupported control or enumeration failure
+falls back to the normal non-elevated scan, with freshness unknown/stale until scanned. It never creates or
+resizes a journal. The inactive-journal case remains a required lab test in F10b, not an assumed capability.
+
+Buffers may contain V2 or V3 records [F28]. The parser dispatches by `MajorVersion`, bounds-checks
+`RecordLength`, `FileNameOffset` and `FileNameLength`, and preserves V3's 128-bit file and parent IDs [F29]
+without truncating them to V2 IDs. Unsupported versions or malformed records stop the helper path and
+trigger the scan fallback; they never produce a complete-index claim.
 
 **No raw MFT reads.** The helper never reads raw MFT file records (no `$MFT` open, no
 `FSCTL_GET_NTFS_FILE_RECORD`). An MFT record holds a small file's `$DATA` resident, so a raw read is a
 **content read**, not metadata. Raw reads would need a separate content-read gate and owner decision, and are
 not planned. This also keeps ADR-V3-05's ban on an MFT parser without a malformed-record corpus intact.
 q-36 asks for "instant whole-volume search". Under this design that means the owner grants a volume root
-through the native dialog (allowed since q-7; agents never pick one), and the helper then indexes that
-grant in seconds.
+through the native dialog (allowed since q-7; agents never pick one). The helper can accelerate names under
+that grant; a complete size/time index still waits for the normal scan. No seconds-level target is verified.
 
 **Shape options.**
 
@@ -310,16 +328,24 @@ and the same pipe protocol, so moving from H1 to H2 changes the launcher, not th
 `FSCTL_READ_USN_JOURNAL` [F12, F27]. These carry names, references, attributes and journal reasons, and no
 file data. It may never read raw MFT records or `$MFT`, create, delete or resize a journal (those are
 writes), open any file for its content, write anywhere, or touch the network. The only handles it opens are the
-volume handle the three controls need and, for the list-rights check, directories with attribute or security-read
-access (unverified API path; confirm in the gate PR).
+volume handle the three controls need and, for the list-rights check, directory handles with security-read
+access. The proposed API path below still needs the gate's Windows canary.
 
 **Visibility never exceeds the owner's own.** The helper impersonates the pipe client
 (`ImpersonateNamedPipeClient`) and runs an access check for list-directory rights on each directory it
 emits. Directories the owner's unelevated token cannot list are dropped with their subtrees and counted as
-`withheld_by_acl`. It emits only records whose parent chain reaches one of the requested root FRNs. The engine
-then intersects those root FRNs with its granted roots before it asks. So the helper is a faster way to see
+`withheld_by_acl` internally only. It emits only records whose parent chain reaches one of the requested
+root FRNs. The engine then intersects those root FRNs with its granted roots before it asks. So the helper is a faster way to see
 what the owner could already see under a grant, never a way past ACLs. That is the difference from the
 Everything Service, which shows every local user all names [F04].
+
+**List-rights API path (proposed, not yet exercised).** `OpenFileById` takes a `FILE_ID_DESCRIPTOR`
+and needs `FILE_FLAG_BACKUP_SEMANTICS` for directories [F30]. Open only the directory for `READ_CONTROL`,
+obtain its owner/group/DACL with `GetSecurityInfo` [F31], then call `AccessCheck` for
+`FILE_LIST_DIRECTORY` against the client's unelevated impersonation token and file generic mapping [F32].
+`READ_CONTROL` alone does not prove list permission. Backup/restore privileges must not confer access;
+an open, descriptor or access-check failure withholds the subtree. Revalidate identity and the root chain;
+the gate must test denied directories and ACL changes under impersonation before this path is accepted.
 
 **Threat model lite.**
 
@@ -365,8 +391,9 @@ nearest ancestor names. App inventory entries are embedded too (name, publisher,
 
 **Embed less, on purpose.**
 
-- **Directories always.** They are a small fraction of entries and carry most of the meaning ("Invoices
-  2024", "Thesis drafts").
+- **Directories first, within the byte cap.** They often carry most of the meaning ("Invoices
+  2024", "Thesis drafts"), but directory-heavy trees may require sampling them too. Unembedded entries
+  stay searchable lexically; semantic coverage reports the omitted in-scope share.
 - **Files only when their name carries information.** A classifier skips camera, hash, UUID and numeric names
   (`IMG_0412`, `a3f9c2...`). Those files are reachable through their folder's vector.
 - **Deduplicate** identical normalised strings. A vector is keyed by string digest and maps to many object
@@ -420,8 +447,8 @@ that we can delete and rebuild.
 |---|---|
 | Bytes (the cap) | **48 B or fewer per catalogue entry on average**, about 0.48 GB at 10M entries (a quarter of P14's 200 B per entry) |
 | Bytes per vector, at d dimensions | d/8 (binary code) + d (int8 rescoring vector) + 16 (string-digest key) + 4 (flags and alignment) = **308 B at d = 256** |
-| Bytes per embedded entry | One vector share plus a 12 B mapping row (8 B object reference + 4 B vector index) = **320 B at d = 256** when no strings are shared. Deduplication only lowers this, so 320 B is the upper bound. File header and page padding are under 1 MiB in total |
-| Embedded items | Derived from the cap: 48 / 320 = **15% of entries at d = 256**. At d = 384 (bge-small-en-v1.5, which has no MRL truncation) a vector is 48 + 384 + 20 = 452 B, plus the 12 B mapping gives 464 B, so the cap allows **10%**. The classifier in section 6.1 is tuned to that ratio, and directories come first |
+| Bytes per embedded entry | One vector share plus a 36 B mapping row (32 B durable object reference + 4 B vector index) = **344 B at d = 256** when no strings are shared. An 8 B catalogue row ID is not a durable reference. Header, padding and any extra identity bytes also count against the cap; measure the final format |
+| Embedded items | Before overhead: 48 / 344 = **13.95% of entries at d = 256**. At d = 384 (bge-small-en-v1.5, which has no MRL truncation), 452 B per vector + 36 B mapping = 488 B, allowing **9.83%**. Reserve overhead first, then admit directories before informative files until the actual byte cap is reached. Deduplication may admit more entries; it never relaxes the cap |
 | Query | Query embedding at most 30 ms on CPU; binary scan plus rescoring of the top 1,000 at most 50 ms p95 at 1.5M vectors |
 | Build | 1,000 strings/s or more on CPU in Loomward's own low-priority pool (about 25 minutes for 1.5M); incremental after |
 | Freshness | Embedding queue drained within 60 s of a catalogue generation commit for changes under 10k items |
@@ -439,6 +466,27 @@ that we can delete and rebuild.
 
 The UI shows the index age per root ("as of 14:02, live") and never presents a stale hit as current
 (invariant 4).
+
+### F3 failed-watcher recovery (#592)
+
+A failed per-root watcher (including a failed initial open) is retried by the existing service
+pump after **5 seconds**, doubling after each attempt to a **10-minute cap**, with at most
+**12 restart attempts per root in a rolling hour of the running service**. Successful native open alone does not reset
+the backoff; a completed catch-up or full refresh does. Recovery retains the hourly history so a
+flapping root cannot reset that limit. These are conservative, reversible service defaults.
+
+Setup, replacement and removal share the existing setup fence: at most one replacement is in
+flight per root. Every open revalidates the active grant and native identity. Revoked/forgotten
+roots are not restarted; `remove()` drops pending retry state, and `stop()` stops the pump and
+clears it. Retries need no search request or new notification and never broaden the granted scope.
+
+Each replacement replays the last persisted bookmark through the existing USN catch-up path.
+A missing, moved, wrapped or unsupported journal requires the existing full-root refresh instead.
+The previous stale timestamp remains visible, with optional freshness `reason: watch_restarting`,
+until catch-up proves continuity or a completed refresh establishes coverage. A replacement handle
+or expired timer alone never makes a hit current. Replacement advances the freshness epoch after native I/O is armed, so a
+scan begun during backoff or native open cannot publish a false live state. Existing scan retry limits and owner pre-emption
+continue to apply; automatic scans are deferred while the replacement watcher is unavailable.
 
 ## 8. Ask
 
@@ -507,8 +555,9 @@ holds a provider credential or links an HTTP client", and Ask needs no exception
 3. **Behavioural probe** (authoritative): one synthetic turn with a fixture tool. Pass means a well-formed
    tool call with exact arguments, followed by a correct final answer from the fixture result. A streaming
    probe follows.
-4. Context window: from dialect metadata when present, else **assume 4,096**, which is Ollama's default
-   [F23]. The turn budgets in section 8.2 are sized to fit that.
+4. Context window: from dialect metadata when present, else **assume 4,096 as an unverified planning
+   limit**, not a claim about the server's default. Qualify the request-fit calculation in section 8.2
+   against the selected model; a byte limit alone cannot establish token fit.
 5. **Remote-model trap:** a loopback Ollama can serve `:cloud` models, which run on ollama.com and are not
    downloaded [F24]. A model whose name ends in `:cloud`, or that dialect metadata marks as remote (no such
    field was documented at fetch time [F22]), is classed `cloud` whatever the endpoint. The profile records
@@ -522,7 +571,7 @@ If the model is unreachable, the Ask panel says so and the find bar is unaffecte
 
 ### 8.2 Tool catalogue
 
-Every tool is read-only, paged and budgeted, and maps to an existing read command or a planned one, called
+Read tools are paged and budgeted, and map to an existing read command or a planned one, called
 with the `ask` principal. Results refer to rows by **conversation-local handles** (`h1`, `h2`, ...), recorded
 in the citation ledger. The model never sees a `NodeId`, so it cannot forge one, and cloud projections stay
 path-free.
@@ -544,10 +593,19 @@ path-free.
 | `suggest_label` | New: writes a **draft** suggestion | 25 handles | The owner's acceptance becomes a *human* label; the draft trains nothing |
 | `simulate_placement` | `placement.simulate` with `save: false` | n/a | A simulation, never a proposal of record |
 
-**The MCP projection** is this table without `draft_collection` and `suggest_label`. `simulate_placement`
-stays, because `save: false` persists nothing. A test pins that no MCP-listed tool writes to `state.db` or
-`ask.db`, and that calling a draft tool by name over MCP is refused, not merely unlisted ([28](28-mcp-specification.md)
-already requires that hidden names cannot be called).
+**The native MCP projection** is only `find` and `describe`, over the grant-scoped `search.query` and
+`node.inspect` reads already opened by LW-067/LW-069 (#541). The table is the proposed Ask catalogue, not
+an MCP allowlist. `apps`, `processes`, `roots_and_volumes`, `duplicates`, `breakdown`, `collections`, folder
+listing, health and placement tools are excluded; hidden names are refused too. Root and field grants do
+not authorise machine-wide telemetry, application inventory or global aggregates. Any expansion needs a
+separate grant design and its own issue, including disclosure to the external host's model. This does not
+change the frozen Python snapshot reference's tool surface in [28](28-mcp-specification.md).
+
+MCP has no Ask conversation. It uses opaque, session-local in-memory references bound to the client,
+grant epoch and catalogue generation, rechecking the grant on resolution. Unknown, stale, cross-client or
+revoked references are refused; process restart discards them. They are not Ask's conversation handles and
+never create a conversation or citation ledger. F12 must test that every listed tool and attempted hidden
+write leaves both `state.db` and `ask.db` unchanged, including no creation of an absent `ask.db`.
 
 **Never exposed:** `scan.start` (the model may *suggest* a rescan, rendered as a button the owner clicks),
 `roots.*` grants, `grants.*`, `teacher.*`, `feedback.record`, `budgets.set`, `backups.*`, `jobs.cancel`, and
@@ -555,11 +613,32 @@ anything with an effect. A draft is a record, not an approval (invariant 3, [25]
 approval is a separate record). Drafts carry `origin: ask` and the conversation ID, and a test pins that a
 draft never feeds `Student.fit`.
 
-**Turn budgets:** at most 8 tool calls and 9 model rounds per user turn (section 8.1), 6,000 tokens of tool
-output per turn (estimated as 4 bytes per token), and 180 s of model and tool time, not counting the owner's
-time in preview dialogs. Tool arguments are validated strictly: unknown fields are
-rejected, and one repair retry is allowed with the validator's message. An unknown tool returns a tool error
-to the model and never crashes the loop.
+**Turn budgets:** at most 8 tool-call attempts admitted for validation/execution and 9 model rounds per
+user turn (section 8.1), and 180 s of model and tool time, not counting the owner's preview dialogs.
+Unknown tools and invalid arguments consume an attempt even though no service read runs. A batch is
+handled in order: only its prefix fitting the remaining attempts may run; the rest receive a budget error,
+are logged, and perform no service reads. Refused excess calls do not earn new slots. The final round
+offers no tools and executes none even if the model returns calls anyway. No retry resets a counter.
+
+Tool arguments are validated strictly, including unknown fields. One repair retry with the validator's
+message is allowed only within the remaining call, round, time and context budgets: its model request is a
+round, and any returned call is another attempt. There is no extra tenth round or ninth admitted attempt.
+An unknown tool returns a tool error and never crashes the loop.
+
+**Output bytes and context are separate limits.** Keep the cumulative successful tool-result ceiling at
+24,000 UTF-8 bytes; the old "6,000 tokens at 4 bytes/token" was an estimate, not a token bound. Before each
+model request, account for the system prompt, question, history, tool schemas/results and chat framing,
+and reserve 1,024 tokens for the answer within the model's context window. The remaining context allowance
+may be much smaller than the byte ceiling, including on the assumed 4,096-token model. Use the model's
+qualified tokenizer/template or provider count; an unqualified estimate cannot certify fit. If even the
+question and instructions do not fit, end with a visible context-limit error before dispatch. Omitted tool
+rows must be marked partial and must not mint citation handles; never silently truncate the conversation.
+
+**Implementation limit (2026-10-18, #433).** The landed loop in `crates/loomward-ask/src/turn.rs` enforces
+the 8-attempt prefix, 9 rounds, elapsed-time checks and 24,000-byte successful-result bound, but does not yet
+qualify token context fit or implement a dedicated repair retry. Error replies and message framing also
+need context accounting. Those are remaining Ask implementation work, not capabilities
+proved by this design correction. A model/context canary must cover the complete request, not just output.
 
 ### 8.3 Disclosure rules per provider class
 
@@ -572,8 +651,9 @@ LW-067 grants and any cloud gate. A provider profile or a client grant alone doe
 | `cloud` (q-5) | Exactly the teacher field set: `name`, `extension`, `context` (two nearest ancestor names), `size_bucket`, plus `age_bucket`; the sensitive-name screen on the name and each ancestor; nothing under a sensitive or protected ancestor | **Every model round** (each round is a separate request, section 8.1), by native dialog rendered from that round's stored outbound bytes (system prompt, history, tool results), as `DisclosureSummary` does today; a single-use grant per round, consumed before that round's broker spawns | The broker's canaries pass, q-5's names-only scope holds, and the repository gains `sensitive_data` (all three per q-5) |
 | `mcp` (external host) | The fields the client's LW-067 grant projects, within its granted roots; read tools only (section 8.2) | None (the host owns the model) | An LW-067 client grant per MCP client. The Python reference keeps its launch-time flag ([28](28-mcp-specification.md)) |
 
-Everything-sourced unverified hits never go to `cloud` or `mcp` at all, and go to `local` only after native
-verification (section 5.3). Out-of-grant rows from any source reach no class at all, and no class's totals
+Everything-sourced hits never go to `cloud`, even after native verification. `local` may see only verified
+rows; `mcp` may see verified rows only after LW-114's own adapter gate, within the section 8.2 projection
+(section 5.3). Out-of-grant rows from any source reach no class at all, and no class's totals
 (LW-114).
 
 ### 8.4 Prompt-injection posture
@@ -676,9 +756,9 @@ Owners per [40](40-parallel-work-packs.md): contracts and schemas each have one 
 | F8 | Ask eval run (section 9) on 3-8B local models | F6, F7 | `evidence/v3/ask-eval-*.md` with model digests and hardware labels |
 | F9 | (LW-116) Semantic layer: consented downloader, `loomward-embed.exe`, flat index, fusion; bake-off | F2 | Section 6.3 budgets measured; bake-off table; download refused without the dialog |
 | F10a | (LW-115) Elevated helper **gate PR**: invariant 2 amendment (driver), threat model, gate, docs/16 and CHECKPOINT updated | owner Q1 | Driver-merged; owner decision recorded |
-| F10b | (LW-115) Helper H1: USN enumeration and journal reads only, names only, ACL and grant filtering, fuzzed USN record parser, pipe security | F10a | Section 5.4 gate evidence; two review lenses |
+| F10b | (LW-115) Helper H1: USN enumeration and journal reads only, names only, ACL and grant filtering, fuzzed USN record parser, pipe security | F10a | Section 5.4 gate evidence; enum timestamp/reason unknowns, inactive-journal scan fallback, V2/V3 and malformed/unsupported records, denied-directory/ACL-change canaries; two review lenses |
 | F11 | (LW-117) Cloud class: teacher field-set projection, per-round native preview, a single-use grant per round | broker canaries, q-5 conditions, `sensitive_data` overlay, LW-067, LW-069 for search | For every round, the preview equals the outbound bytes, checked by digest; nothing sent before that round's grant; declining one round ends the turn |
-| F12 | (LW-066) Native MCP adapter over the same service (principal `mcp`, read-only projection), succeeding the Python reference for live catalogues | F5, LW-067, LW-069 | Subprocess MCP tests in both protocol eras, as [28](28-mcp-specification.md); same results as the UI for the same query within the client's grant; draft tools absent and refused by name; LW-069 lexical-adapter scope/revocation tests; optional Everything also requires LW-114's own adapter tests |
+| F12 | (LW-066) Native MCP adapter over the same service (principal `mcp`, `find`/`describe` projection), succeeding the Python reference for live catalogues | F5, LW-067, LW-069 | Subprocess MCP tests in both protocol eras, as [28](28-mcp-specification.md); same projected results as the UI within the client's grant; session-local reference expiry/revocation; no state.db/ask.db writes or ask.db creation; excluded tools refused by name; LW-069 scope/revocation tests; optional Everything also requires LW-114's own adapter tests |
 | F13 | Bundled engine: pinned `llama-server` as an owned child on loopback with a random port and `--api-key`, consented GGUF download | F8 shows local value | Hash-pinned binary and weights; kill-on-close; nothing downloads without consent |
 
 F3a and the lexical MCP/Ask path do not depend on F4 or an Everything installation. F4's optional backend
@@ -722,14 +802,14 @@ and its gate. It is decided there, once F9's metadata-only results are in.
 |---|---|
 | Model server down or model unloaded | Ask shows `provider unavailable` with the profile's last probe; find unaffected; no fallback to another provider or to cloud ([25](25-control-evidence-architecture.md)) |
 | Cold model load takes longer than 90 s | Turn fails `first_byte_timeout`; the owner can retry; nothing half-stored |
-| Model emits malformed tool calls | One repair retry, then the turn ends with the error and any partial text; counted in the eval |
+| Model emits malformed tool calls | At most one repair retry within the existing budgets (section 8.2), then the turn ends with the error and any partial text; counted in the eval; dedicated retry not yet built |
 | Model cites a handle it never received | Rendered "unverified reference"; the answer is still shown |
-| Tool loop or runaway | 8-call, 9-round, 6,000-token and 180 s per-turn budgets; then one last round with no tools offered |
+| Tool loop or runaway | 8 admitted attempts (invalid/unknown included), at most 9 rounds total including the final no-tools round, 24,000 output bytes, context fit and 180 s; context fit remains unqualified in the landed loop |
 | A loopback endpoint serves a remote model | `:cloud` or remote detection reclassifies it as `cloud`, which is blocked until F11; undetectable forwarding is a stated limit in the UI |
 | Cloud round times out after dispatch | `outcome unknown`, that round's grant consumed, never auto-retried (broker ADR) |
 | Owner declines a cloud round's preview | Nothing is sent; the turn ends with the text received so far; earlier rounds stand |
 | Everything not running, wrong version or database not loaded | Provider `unconfigured`, `blocked` or `degraded`; own index answers alone; the UI says which |
-| Everything returns paths outside grants or hostile names | Dropped before verification; counted |
+| Everything returns paths outside grants or hostile names | Dropped before verification; counts internal-only, absent from every client result and diagnostic |
 | Watcher overflow or journal wrap | Scope `stale_since`, targeted refresh; hits keep the flag until it completes |
 | Embed worker crash or OOM | Job `failed` with its reason; semantic source `degraded`; lexical search unaffected |
 | `semantic.idx` corrupt or from another model digest | Refused at open, rebuilt in the background; semantic source `degraded` meanwhile |
@@ -757,7 +837,7 @@ Reopen this design when:
 
 ## 14. Sources
 
-Checked 2026-10-12 unless marked "not re-fetched".
+Checked 2026-10-12 unless a later check date or "not re-fetched" is stated.
 
 - [F01] voidtools, Everything SDK3 repository and `LICENSE` (MIT, "Copyright (c) 2025 voidtools / David
   Carpenter"): https://github.com/voidtools/everything_sdk3
@@ -780,7 +860,7 @@ Checked 2026-10-12 unless marked "not re-fetched".
   https://sqlite.org/releaselog/3_34_0.html
 - [F11] usearch (Apache-2.0; HNSW; i8/b1; view from disk; Rust filtered search):
   https://github.com/unum-cloud/usearch
-- [F12] Microsoft, `FSCTL_ENUM_USN_DATA` (page updated 2024-02-22):
+- [F12] Microsoft, `FSCTL_ENUM_USN_DATA` (re-fetched 2026-10-18; page updated 2021-10-21):
   https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ni-winioctl-fsctl_enum_usn_data
 - [F13] Microsoft, `CreateFileW`, "Physical Disks and Volumes" (administrative privileges):
   https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew
@@ -808,6 +888,16 @@ Checked 2026-10-12 unless marked "not re-fetched".
   https://gorilla.cs.berkeley.edu/leaderboard.html
 - [F26] Cormack, Clarke, Buettcher, "Reciprocal Rank Fusion outperforms Condorcet and individual rank
   learning methods", SIGIR 2009 (not re-fetched): https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf
-- [F27] Microsoft, `USN_RECORD_V2` (members: references, USN, time stamp, reason, source info, security ID,
-  attributes, name; no size or data; page updated 2024-02-22):
+- [F27] Microsoft, `USN_RECORD_V2` (structure layout, not a promise that enumeration fills every member;
+  re-fetched 2026-10-18; page updated 2023-03-13):
   https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ns-winioctl-usn_record_v2
+- [F28] Microsoft, Walking a Buffer of Change Journal Records (V2/V3, variable record and name lengths;
+  checked 2026-10-18): https://learn.microsoft.com/en-us/windows/win32/fileio/walking-a-buffer-of-change-journal-records
+- [F29] Microsoft, `USN_RECORD_V3` (128-bit file and parent IDs; checked 2026-10-18):
+  https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ns-winioctl-usn_record_v3
+- [F30] Microsoft, `OpenFileById` (desired access, directory flag and backup privilege caveat;
+  checked 2026-10-18): https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-openfilebyid
+- [F31] Microsoft, `GetSecurityInfo` (READ_CONTROL for owner/group/DACL; checked 2026-10-18):
+  https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-getsecurityinfo
+- [F32] Microsoft, `AccessCheck` (impersonation token, desired access, generic mapping; checked 2026-10-18):
+  https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-accesscheck

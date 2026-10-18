@@ -41,7 +41,10 @@ when elevated, so every grant is refused with `identity_unavailable`.
 the uninstaller's reach (`release.yml` uninstalls silently and asserts the state survives). A default
 start (no `--state-dir`) moves state that an earlier build left in `%LOCALAPPDATA%\Loomward\v3` there
 once. It never merges into an existing `Loomward Data\v3`, and a move that fails refuses to start
-rather than open an empty store. `launch::open` takes docs/41's exclusive `lock` file in the state
+rather than open an empty store. If both homes exist, startup names the current and retained legacy
+homes in a console message or native notice; the legacy copy stays untouched. If no owner window
+or usable `USERPROFILE` start folder configured the picker, requesting a grant reports
+`capability_unavailable` instead of an owner cancellation. `launch::open` takes docs/41's exclusive `lock` file in the state
 directory before the stores open and holds it while the service lives. It is an OS lock on an open
 handle, so a crash leaves nothing stale. A second instance on the same state directory is refused
 with `busy` and exits; it does not focus the first window (no single-instance plugin, so the shell
@@ -54,29 +57,39 @@ native error box, so an installed build never exits silently.
 ```sh
 npm.cmd --prefix app ci
 npm.cmd --prefix app run build                      # app/dist is embedded at compile time
-cargo build --manifest-path native/Cargo.toml
+py -3 scripts/build_broker.py                       # build and stage the Ask sidecar first
+cargo build --locked --manifest-path native/Cargo.toml
 native/target/debug/loomward-desktop.exe --dataset synthetic --state-dir .loomward/desktop-state  # a demo window
 native/target/debug/loomward-desktop.exe              # the owner's personal session (real state)
 native/target/debug/loomward-desktop.exe --self-test  # headless; exit 1 on any failure
 ```
 
-`cargo build` is the whole build: `tauri` is compiled with `custom-protocol`, so the window always
-serves the embedded `app/dist` (there is no `devUrl`; for UI work use Vite with `loomward-serve`).
+After staging the broker, `cargo build` builds the shell: `tauri` is compiled with `custom-protocol`,
+so the window always serves the embedded `app/dist` (there is no `devUrl`; for UI work use Vite with
+`loomward-serve`).
 The Tauri CLI is pinned as an app devDependency (`@tauri-apps/cli` 2.12.1, no global install);
 from the repository root, `app/node_modules/.bin/tauri.cmd info` reports the toolchain and config.
-`cargo build` and `cargo test` do not bundle. The unsigned NSIS preview installer is built only by
-`.github/workflows/release.yml` (`tauri build --bundles nsis`; see [RELEASING.md](../RELEASING.md)). It
-bundles `contracts/v3/examples` beside the exe; an installed build reads them from there (for
-`--fixtures` and the self-test) because it has no checkout. The self-test needs no checkout: it runs
+`cargo build` and `cargo test` do not bundle. The unsigned NSIS installer uses
+`tauri build --bundles nsis`; previews and nightlies share `.github/actions/desktop-installer`
+(see [RELEASING.md](../RELEASING.md)). It
+bundles `contracts/v3/examples` and `loomward-broker.exe` beside the desktop exe; an installed build
+reads the examples from there (for `--fixtures` and the self-test) because it has no checkout.
+The self-test needs no checkout: it runs
 the protocol checks against those examples, then opens the engine service as `main` does, synthetic
 and personal, each in a scratch state directory that it removes.
+
+The broker helper uses Cargo's desktop target directory (`CARGO_TARGET_DIR` included), builds with
+`--locked`, and stages Tauri's host-triple filename in ignored `native/binaries/`. Tauri copies it
+beside the desktop executable without the triple, as Ask expects. Run the helper with `--release`
+before a release-mode shell or installer build. The current desktop pipeline builds for the host,
+not a cross-compilation target. No shell plugin or additional IPC permission is needed.
 
 ## Checks
 
 | Check | Command |
 |---|---|
-| Build, lint | `cargo build --manifest-path native/Cargo.toml`; `cargo clippy --manifest-path native/Cargo.toml --all-targets -- -D warnings`; `cargo fmt --manifest-path native/Cargo.toml --check` |
-| Command layer, dialog guards, Tauri IPC + ACL (mock runtime) | `cargo test --manifest-path native/Cargo.toml` |
+| Build, lint | `cargo build --locked --manifest-path native/Cargo.toml`; `cargo clippy --locked --manifest-path native/Cargo.toml --all-targets -- -D warnings`; `cargo fmt --manifest-path native/Cargo.toml --check` |
+| Command layer, dialog guards, Tauri IPC + ACL (mock runtime) | `cargo test --locked --manifest-path native/Cargo.toml` |
 | The real Win32 disclosure box (needs an interactive desktop) | `cargo test --manifest-path native/Cargo.toml -- --ignored native_disclosure` |
 | Self test | `native/target/debug/loomward-desktop.exe --self-test` |
 | Real WebView2 over the engine service (synthetic, scratch state): raw IPC, ACL, CSP, navigation, heartbeat, renderer lag, teardown; then the personal default (scratch state): the real native picker and confirmation, declined (no grant) and then accepted, grant, scan and revoke a disposable `.loomward/` folder; a dialog still open at the end is cancelled | `py -3 native/tests/webview2_probe.py` (Playwright over CDP; writes to `<cargo target dir>/webview2-probe/` by default, the target dir `cargo metadata` reports, so `CARGO_TARGET_DIR` is honoured; `--out DIR` overrides it, and `--out evidence/v3/native` refreshes the committed evidence) |

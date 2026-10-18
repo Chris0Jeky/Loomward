@@ -1,5 +1,66 @@
 # Search v1 follow-ups (#442)
 
+## Post-#575 reconciliation (18 October 2026)
+
+Lane `fix/442-search-followups`, base `4babf6710c6425086520a8697d495dd15dff2d12`.
+The search files on the newer `origin/main` were unchanged when checked before editing.
+
+Already fixed by #575 (`b28f266`, merge `4b05fd6`): the v1 cursor advance-or-refuse
+guarantee, unknown unsettled-folder sizes, per-hit cyclic-ancestry refusal, and the
+one-character schema/semantics/UI wording. The historical 10M receipt below already records
+P8 and the long transactions: EndRun 583.665 s, reopen/backfill 600.907 s, and the isolated
+optimize statement 188.973 s. These are existing measurements, not rerun timings. Progress
+reporting or transaction chunking remains separate product work; this patch adds no API.
+
+The three remaining follow-ups from the issue comments are addressed:
+
+- Ranked candidate collection refuses with `ResourceBudget` when a budget cut leaves no
+  returned hits, including after applying a ranked cursor's offset. Successful partial
+  pages and genuinely absent results retain their existing behavior.
+- The request-local path cache also remembers invalid ancestry. A repeated cycle is
+  detected before the depth limit; its ancestors/descendants do not pay the same traversal
+  again. Over-depth paths cache only their starting folder, so valid ancestors stay usable.
+- The command note and matching semantics now describe the existing LW-067/LW-069
+  grant-scoped adapter (#541, merge `04cb397`) rather than saying it has yet to land.
+  No adapter, disclosure grant or effect is enabled by these wording corrections.
+
+Regression-first commands, with `CARGO_BUILD_JOBS=4` and
+`CARGO_TARGET_DIR=C:/lw/target/lane-search-442`, against the base implementation with new tests:
+
+| Command (from this worktree) | Before the fix |
+|---|---|
+| `cargo test -p loomward-catalog cyclic_ancestry_is_negatively_cached_for_every_affected_folder` | FAIL, 0 passed / 1 failed: the repeated folder used another 10,260 SQLite VM steps |
+| `cargo test -p loomward-catalog --test search_rank a_ranked_budget_cut_without_returned_hits_refuses` | FAIL, 0 passed / 1 failed: empty `budget_hit` page with no cursor |
+
+The ranked regression checks the combined ranker and each individual tier, a sufficient-budget
+success, and an absent-name success. The existing zero-time-budget test also requires a
+nonempty partial page. The path regression observes SQLite VM work, including a newly seen
+descendant of cached invalid ancestry; a separate depth-boundary test keeps valid ancestors
+visible. Existing catalogue integration tests exercise both plain and ranked cyclic hits.
+
+Final checks on Windows, with the same lane target and four build jobs:
+
+| Exact command | Result |
+|---|---|
+| `cargo test --manifest-path C:/lw/wt/search-442/Cargo.toml -p loomward-catalog` | PASS: 268 passed, 0 failed, 0 ignored; 0 doc tests |
+| `cargo clippy --manifest-path C:/lw/wt/search-442/Cargo.toml -p loomward-catalog --all-targets -- -D warnings` | PASS |
+| `cargo fmt --manifest-path C:/lw/wt/search-442/Cargo.toml --all --check` | PASS |
+| `git -C C:/lw/wt/search-442 diff --check` | PASS |
+| `py -3 C:/lw/wt/search-442/scripts/gen_contracts_ts.py --check` | PASS: generated types are current |
+
+Both originally failing regressions passed after the fix; the full catalogue suite includes
+them and the additional depth-boundary check. The corrected command manifest also parsed as
+valid JSON. No workspace suite (reserved for the driver), service/app/HTTP/desktop run, hosted
+CI, fresh 10M benchmark or quiet-host performance comparison was run for this patch. The
+existing soft-budget FTS5 single-step overrun limit remains; no new latency bound is claimed.
+At final reconciliation, `origin/main` had advanced to `3ad1870`. The search implementation,
+tests and command note were unchanged there; its separate learning additions to `semantics.md`
+do not overlap this slice's search paragraph. Integration remains with the driver.
+
+HUMAN_TODO.md is unchanged. Its search-reach decision q-36 is already answered; this slice
+does not require a new owner decision. No app/service behavior is changed, and no commit,
+push, PR, release or deployment is performed by this Sol lane.
+
 17 October 2026, KRASPYON, Windows 11 Home, shared 16 GB host. Synthetic names generated
 in-process only: no filesystem inventory, personal data, HTTP or owner-file/process operations. Base `04cb397`;
 changes are left uncommitted for the driver. F2 ranking and F3 freshness are already in this base.
