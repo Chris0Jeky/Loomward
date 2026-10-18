@@ -265,7 +265,13 @@ and start-once checks use the unique wire-ID index; revocation selects only oper
 that grant, including recovered runs without a resident worker. These lookups never decode unrelated
 manifests. On first open of a pre-index journal, Store backfills the lookup tables one plan at a time
 in the schema migration transaction, without changing plans, journal rows or head anchors. Unreadable
-legacy plans remain unreadable and gain no lookup identity. Later opens do not rebuild the indexes.
+legacy plans remain unreadable and gain no lookup identity. An `AFTER INSERT ON op_plan` trigger
+maintains both indexes even when a rollback build writes plans without routing rows. Installing the
+trigger also backfills gaps in previously indexed databases once; later opens do not rebuild indexes.
+An exact duplicate lookup insert is a no-op so the previous indexed build can still write its rows;
+a different operation using the same wire ID still aborts the whole plan insert. `copy.start` repeats
+its wire-ID lookup under the mutation lock before journaling, refusing a competing start without
+leaving an orphan operation.
 Lookup rows locate a journal operation; only the executor's existing grant and native identity checks
 authorise effects. Copy remains synthetic-only; C8 stays closed.
 
