@@ -86,6 +86,36 @@ fn update(
     r.expected_state_rev = Some(Generation(expected as u64));
     svc.call(r, &CallContext::http())
 }
+
+#[test]
+fn node_inspect_keeps_typed_collection_memberships() {
+    let (_dir, svc, ids) = setup(DatasetClass::Synthetic);
+    let collection = create(&svc, "Projects");
+    ok(
+        "collections.update_members",
+        update(&svc, &collection, &ids[..1], &[], 2),
+    );
+    let (detail, _) = ok(
+        "node.inspect",
+        call(&svc, "node.inspect", json!({"node_id":ids[0]})),
+    );
+    assert_eq!(
+        detail["memberships"],
+        json!([{"collection_id":collection,"name":"Projects"}])
+    );
+    let root = RootId::new(svc.inner.root_id(1)).unwrap();
+    svc.grant_client("mcp:membership", &[root], &[], None)
+        .unwrap();
+    let response = svc.call(
+        request("node.inspect", json!({"node_id":ids[0]})),
+        &CallContext::client("mcp:membership"),
+    );
+    let ResponseEnvelope::Ok(response) = response else {
+        panic!("{response:?}")
+    };
+    let detail: ClientNodeDetail = serde_json::from_value(Value::Object(response.result)).unwrap();
+    assert_eq!(detail.row.node_id.as_ref(), ids[0]);
+}
 #[test]
 fn collections_create_replay_duplicate_and_restart_both_classes() {
     for class in [DatasetClass::Synthetic, DatasetClass::Personal] {

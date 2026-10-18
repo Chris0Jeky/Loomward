@@ -71,16 +71,6 @@ pub fn born_runs(conn: &Connection, table: &str, ids: &[i64]) -> Sql<Vec<(i64, i
     rows
 }
 
-/// Catalogue root of a dir or file row.
-pub fn root_of(conn: &Connection, dir: Option<i64>, file: Option<i64>) -> Sql<Option<i64>> {
-    conn.query_row(
-        "SELECT coalesce((SELECT root_id FROM main.dir WHERE id=?1),
-                         (SELECT d.root_id FROM main.file f JOIN main.dir d ON d.id=f.dir_id WHERE f.id=?2))",
-        params![dir, file],
-        |r| r.get(0),
-    )
-}
-
 pub fn root_generation(conn: &Connection, root: i64) -> Sql<Option<i64>> {
     conn.query_row(
         "SELECT generation FROM main.root WHERE id=?1",

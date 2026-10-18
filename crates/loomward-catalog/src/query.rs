@@ -20,6 +20,7 @@ pub struct Reader {
     pub inspect_count: u64,
     breakdowns: HashMap<(i64, String, Basis, usize, String), Breakdown>,
     pub(crate) deadline: Option<std::time::Instant>,
+    expected_generation: Option<(NodeKey, u64)>,
 }
 pub(crate) const DIR_COLUMNS:&str="d.id,0 kind,d.name,d.sub_logical logical,d.sub_allocated allocated,d.sub_alloc_unknown unknown,d.sub_files files,d.sub_dirs dirs,d.modified_ft,d.attrs,d.flags,NULL extension,NULL family,coalesce(d.listing_outcome,CASE d.listing_state WHEN 'unlisted' THEN 'unscanned' WHEN 'incomplete' THEN 'partial' ELSE d.listing_state END),d.sub_complete complete,d.parent_id,d.root_id,d.file_id,d.created_ft,d.changed_ft,NULL accessed_ft,d.born_run,d.agg_valid_rev>=d.dirty_rev valid";
 pub(crate) const FILE_COLUMNS:&str="f.id,1 kind,f.name,f.logical,coalesce(f.allocated,0) allocated,(f.allocated IS NULL) unknown,1 files,0 dirs,f.modified_ft,f.attrs,f.flags,e.ext extension,e.family,CASE WHEN d.listing_state='incomplete' AND f.seen_run!=d.seen_run THEN 'stale' ELSE coalesce(d.listing_outcome,CASE d.listing_state WHEN 'unlisted' THEN 'unscanned' WHEN 'incomplete' THEN 'partial' ELSE d.listing_state END) END,1 complete,f.dir_id parent_id,d.root_id,f.file_id,f.created_ft,f.changed_ft,f.accessed_ft,f.born_run,1 valid";
@@ -414,6 +415,7 @@ impl Reader {
             inspect_count: 0,
             breakdowns: HashMap::new(),
             deadline: None,
+            expected_generation: None,
         })
     }
     /// Bind CPU work to the service request's wall-clock deadline.
@@ -423,6 +425,11 @@ impl Reader {
 
     pub fn interrupt_handle(&self) -> rusqlite::InterruptHandle {
         self.conn.get_interrupt_handle()
+    }
+
+    /// Require this generation inside subsequent root-anchored reads' SQLite snapshots.
+    pub fn expect_generation(&mut self, key: NodeKey, generation: u64) {
+        self.expected_generation = Some((key, generation));
     }
 
     /// Physical row counts for health, without repairing aggregates or holding a service lock.
@@ -444,6 +451,7 @@ impl Reader {
     pub(crate) fn read<T>(&mut self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
         self.repair_committed()?;
         let tx = self.conn.transaction()?;
+        check_generation(&tx, self.expected_generation)?;
         let result = f(&tx)?;
         tx.commit()?;
         Ok(result)
@@ -532,6 +540,7 @@ impl Reader {
         self.repair_committed()?;
         let tx = self.conn.transaction()?;
         let conn: &Connection = &tx;
+        check_generation(conn, self.expected_generation)?;
         let root = get(conn, NodeKey::Dir(dir))?;
         let generation = revisions(conn, Some(root.grant))?[0]
             .1
@@ -660,6 +669,20 @@ impl Reader {
         }
         Ok(breakdown)
     }
+}
+
+fn check_generation(conn: &Connection, expected: Option<(NodeKey, u64)>) -> Result<()> {
+    let Some((key, expected)) = expected else {
+        return Ok(());
+    };
+    let root = get(conn, key)?.grant;
+    let generation = revisions(conn, Some(root))?[0]
+        .1
+        .and_then(|g| u64::try_from(g).ok());
+    if generation != Some(expected) {
+        return Err(Error::GenerationMismatch);
+    }
+    Ok(())
 }
 pub(crate) fn node_path(conn: &Connection, key: NodeKey) -> Result<NodePath> {
     let row = get(conn, key)?;
@@ -829,6 +852,62 @@ impl Reader {
 #[cfg(test)]
 mod hardening_tests {
     use super::*;
+    #[test]
+    fn generation_precondition_and_query_share_a_snapshot() {
+        let tmp = tempfile::tempdir().unwrap();
+        let catalog = Catalog::open(tmp.path(), "synthetic").unwrap();
+        let WriteReply::Root {
+            root_id, dir_id, ..
+        } = catalog
+            .writer()
+            .call(WriteCommand::RegisterRoot(RootObservation {
+                volume_key: "fixture".into(),
+                display_name: "Synthetic".into(),
+                display_path: "Synthetic root".into(),
+                root_file_id: Some(vec![1; 16]),
+                filesystem: Some("NTFS".into()),
+                origin: "fixture".into(),
+                granted_via: "fixture".into(),
+                observed_at_ns: 0,
+            }))
+            .unwrap()
+        else {
+            panic!()
+        };
+        let writer = Connection::open(tmp.path().join("catalog.db")).unwrap();
+        writer
+            .execute("UPDATE root SET generation=1 WHERE id=?1", [root_id])
+            .unwrap();
+        let mut reader = catalog.reader().unwrap();
+        reader.expect_generation(NodeKey::Dir(dir_id), 1);
+        let generation: i64 = reader
+            .read(|snapshot| {
+                // Commit after the precondition has read, before the result reads.
+                writer.execute("UPDATE root SET generation=2 WHERE id=?1", [root_id])?;
+                Ok(snapshot.query_row(
+                    "SELECT generation FROM root WHERE id=?1",
+                    [root_id],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(generation, 1);
+        assert!(matches!(
+            reader.inspect(NodeKey::Dir(dir_id)),
+            Err(Error::GenerationMismatch)
+        ));
+        reader.expect_generation(NodeKey::Dir(dir_id), 2);
+        assert_eq!(
+            reader
+                .inspect(NodeKey::Dir(dir_id))
+                .unwrap()
+                .identity
+                .observed_generation
+                .as_deref(),
+            Some("2")
+        );
+    }
+
     #[test]
     fn hardening_deadline_interrupts_running_sql_before_its_step_budget() {
         let conn = Connection::open_in_memory().unwrap();

@@ -64,6 +64,8 @@ pub enum Error {
     DatasetMismatch,
     NotFound,
     StaleGeneration,
+    /// A root-anchored read's snapshot does not match its generation precondition.
+    GenerationMismatch,
     Closed,
     Cancelled,
     RepairRequired,

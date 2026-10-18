@@ -43,6 +43,7 @@ pub(crate) struct Hooks {
     pub order: Mutex<Vec<Command>>,
     pub fail_spawn: std::sync::atomic::AtomicBool,
     pub fail_job_list: std::sync::atomic::AtomicBool,
+    pub before_generation_read: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     pub closed: Mutex<Vec<(Command, &'static str)>>,
     pub arrived: Mutex<Vec<(Command, &'static str)>>,
     pub opened: std::sync::Condvar,
@@ -238,6 +239,133 @@ fn health_job_list_failure_is_an_error_not_idle() {
     let error = err(call(&svc, "health.get", json!({})));
     assert_eq!(error.code, ErrorCode::InternalError);
     assert_eq!(error.message.as_str(), "synthetic job list failure");
+}
+
+#[test]
+fn health_counts_active_jobs_beyond_the_history_page() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let (release, held) = std::sync::mpsc::channel();
+    let held = Mutex::new(held);
+    svc.inner.engine.register_job_runner(
+        JobKind::Scan,
+        Arc::new(move |_, _| {
+            held.lock().unwrap().recv().unwrap();
+            Ok(CoverageState::Complete)
+        }),
+    );
+    let active = svc
+        .inner
+        .engine
+        .job_submit(loomward_engine::jobs::JobSpec::new(
+            JobKind::Scan,
+            Some(RootId::new("rt_fixture").unwrap()),
+        ))
+        .unwrap();
+    svc.inner.engine.register_job_runner(
+        JobKind::Teacher,
+        Arc::new(|_, _| Ok(CoverageState::Complete)),
+    );
+    for _ in 0..50 {
+        let job = svc
+            .inner
+            .engine
+            .job_submit(loomward_engine::jobs::JobSpec::new(JobKind::Teacher, None))
+            .unwrap();
+        let until = Instant::now() + Duration::from_secs(10);
+        while !matches!(
+            svc.inner.engine.job_status(&job.job_id).unwrap().state,
+            JobState::Completed
+        ) {
+            assert!(Instant::now() < until, "synthetic job did not finish");
+            std::thread::yield_now();
+        }
+    }
+    let (history, _) = ok("jobs.list", call(&svc, "jobs.list", json!({"limit":50})));
+    assert_eq!(history["jobs"].as_array().unwrap().len(), 50);
+    assert!(history["jobs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|j| j["job_id"] != json!(active.job_id)));
+    let (health, _) = ok("health.get", call(&svc, "health.get", json!({})));
+    // Release before asserting, so even a red regression never strands its runner.
+    svc.inner.engine.job_cancel(&active.job_id).unwrap();
+    let (cancelling, _) = ok("health.get", call(&svc, "health.get", json!({})));
+    release.send(()).unwrap();
+    assert_eq!(health["jobs_running"], 1);
+    assert_eq!(cancelling["jobs_running"], 1);
+    let until = Instant::now() + Duration::from_secs(10);
+    while svc.inner.engine.job_status(&active.job_id).unwrap().state != JobState::Cancelled {
+        assert!(Instant::now() < until, "synthetic scan did not finish");
+        std::thread::yield_now();
+    }
+    let (idle, _) = ok("health.get", call(&svc, "health.get", json!({})));
+    assert_eq!(idle["jobs_running"], 0);
+}
+
+fn generation_read_race(command: &str) {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let (root, _) = fixture(&svc, 2);
+    let slice = root_slice(&svc, root);
+    let node = slice["nodes"][0]["node_id"].clone();
+    let payload = match command {
+        "tree.slice" => {
+            json!({"anchor":{"kind":"root","root_id":svc.inner.root_id(root)},"depth":2,"max_nodes":64,"min_share":0.0,"basis":"logical","include_files":true})
+        }
+        "tree.children" => {
+            json!({"node_id":node,"sort":"name_asc","basis":"logical","limit":50,"cursor":null})
+        }
+        "stats.breakdown" => json!({"node_id":node,"by":"extension","basis":"logical","limit":10}),
+        _ => json!({"node_id":node}),
+    };
+    let generation = svc
+        .inner
+        .db()
+        .query_row("SELECT generation FROM root WHERE id=?1", [root], |r| {
+            r.get::<_, i64>(0)
+        })
+        .unwrap() as u64;
+    let mut req = request(command, payload);
+    req.expected_generation = Some(Generation(generation));
+    ok(command, svc.call(req.clone(), &CallContext::http()));
+    let path = loomward_catalog::sqlite_dir(&svc.inner.state_dir).join("catalog.db");
+    *svc.inner.hooks.before_generation_read.lock().unwrap() = Some(Box::new(move || {
+        rusqlite::Connection::open(path)
+            .unwrap()
+            .execute(
+                "UPDATE root SET generation=generation+1 WHERE id=?1",
+                [root],
+            )
+            .unwrap();
+    }));
+    let error = err(svc.call(req.clone(), &CallContext::http()));
+    assert_eq!(error.code, ErrorCode::StaleGeneration, "{command}");
+    assert_eq!(reason(&error), Some("generation_changed"));
+    req.expected_generation = Some(Generation(generation + 1));
+    ok(command, svc.call(req, &CallContext::http()));
+}
+
+#[test]
+fn generation_race_node_inspect() {
+    generation_read_race("node.inspect");
+}
+#[test]
+fn generation_race_tree_path() {
+    generation_read_race("tree.path");
+}
+#[test]
+fn generation_race_tree_slice() {
+    generation_read_race("tree.slice");
+}
+#[test]
+fn generation_race_tree_children() {
+    generation_read_race("tree.children");
+}
+#[test]
+fn generation_race_breakdown() {
+    generation_read_race("stats.breakdown");
 }
 
 #[test]
