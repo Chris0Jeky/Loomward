@@ -802,7 +802,7 @@ def check_tiers_assumption_refresh(page: Page, engine: FakeEngine) -> None:
         ok(len(engine.simulate_overrides) == 3 and all(o == expected for o in engine.simulate_overrides),
            f'Tiers sends only current assumptions and all simulations succeed: {expected}')
 
-    release = None
+    gate = None
     try:
         page.get_by_label('Assumed heat for group-a').select_option('0.9')
         page.get_by_label('Assumed heat for group-b').select_option('0.1')
@@ -822,25 +822,43 @@ def check_tiers_assumption_refresh(page: Page, engine: FakeEngine) -> None:
         expect(page.get_by_label('Assumed heat for group-a')).to_have_value('')
         simulate([])  # Even an ID shared across sources must lose the old assumption.
 
-        # Release an older source's response after the new candidates have been installed.
-        arrived, release = threading.Event(), threading.Event()
-        engine.candidate_gate = (arrived, release)
+        # Chromium can report ERR_ABORTED after a streamed fetch body was fully decoded (#644).
+        # Hold the complete old reply at fetch delivery, rather than waiting for requestfinished.
+        gate = page.evaluate_handle("""() => {
+            const fetch = window.fetch;
+            let arrive, release;
+            const arrived = new Promise(resolve => arrive = resolve);
+            const released = new Promise(resolve => release = resolve);
+            const restore = () => { window.fetch = fetch; };
+            window.fetch = async (...args) => {
+                const req = JSON.parse(args[1]?.body ?? '{}');
+                if (req.command !== 'placement.candidates' || req.payload.source_volume_id !== 'vo_x')
+                    return fetch(...args);
+                restore();
+                const response = await fetch(...args);
+                const body = await response.text();
+                arrive(JSON.parse(body));
+                await released;
+                return new Response(body, response);
+            };
+            return { arrived, release, restore };
+        }""")
         page.get_by_role('button', name=re.compile(r'^Use as source\s*:\s*X:$')).click()
-        wait_until(page, arrived.is_set)
+        stale = gate.evaluate('g => g.arrived')
+        assert stale['ok'] and stale['result']['source_volume_id'] == 'vo_x'
+        assert [g['group_id'] for g in stale['result']['groups']] == ['cg_a', 'cg_b']
         page.get_by_role('button', name=re.compile(r'^Use as source\s*:\s*Other$')).click()
         expect(page.get_by_label('Assumed heat for group-a')).to_be_visible()
         page.get_by_label('Assumed heat for group-a').select_option('0.5')
-        with page.expect_request_finished(lambda r: r.method == 'POST' and
-                                          r.post_data_json.get('command') == 'placement.candidates' and
-                                          r.post_data_json['payload']['source_volume_id'] == 'vo_x'):
-            release.set()
+        gate.evaluate('g => g.release()')
         page.evaluate('() => new Promise(requestAnimationFrame)')
         expect(page.get_by_label('Assumed heat for group-b')).to_have_count(0)
         expect(page.get_by_label('Assumed heat for group-a')).to_have_value('0.5')
         simulate([{'group_id': 'cg_a', 'heat': 0.5}])
     finally:
-        if release:
-            release.set()
+        if gate:
+            gate.evaluate('g => { g.restore(); g.release(); }')
+            gate.dispose()
         engine.placement_groups = {}
         engine.tier_volumes = None
         engine.saved_source = 'vo_x'
