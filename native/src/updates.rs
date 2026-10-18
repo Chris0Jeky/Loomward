@@ -312,18 +312,19 @@ impl Updates {
             updater.check().await.map_err(|e| e.to_string())
         }
         .await;
-        *lock(&self.last_error) = result.as_ref().err().cloned();
-        let found = result?.map(|update| {
-            let offer = Offer {
-                version: update.version.clone(),
-                channel,
-                notes: update.body.clone().unwrap_or_default(),
-                date: update.date.map(|d| d.to_string()),
-                previous,
-            };
-            (offer, update)
+        let outcome = result.map(|found| {
+            found.map(|update| {
+                let offer = Offer {
+                    version: update.version.clone(),
+                    channel,
+                    notes: update.body.clone().unwrap_or_default(),
+                    date: update.date.map(|d| d.to_string()),
+                    previous,
+                };
+                (offer, update)
+            })
         });
-        *lock(&self.pending) = found;
+        settle(&self.pending, &self.last_error, outcome)?;
         Ok(self.status())
     }
 
@@ -362,6 +363,28 @@ impl Updates {
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Records one check's outcome: the offer it found, or the error. A failed check also clears the
+/// pending offer. The offer it would have replaced is no longer known to be current, so install
+/// must refuse it until a check succeeds again (an honest unknown, never a stale install).
+fn settle<T>(
+    pending: &Mutex<Option<(Offer, T)>>,
+    last_error: &Mutex<Option<String>>,
+    outcome: Result<Option<(Offer, T)>, String>,
+) -> Result<(), String> {
+    match outcome {
+        Ok(found) => {
+            *lock(last_error) = None;
+            *lock(pending) = found;
+            Ok(())
+        }
+        Err(e) => {
+            *lock(last_error) = Some(e.clone());
+            *lock(pending) = None;
+            Err(e)
+        }
+    }
 }
 
 /// `plugins.updater.pubkey` from the app's config: empty until the owner provides the key.
@@ -459,6 +482,30 @@ mod tests {
         // Persisted beside the state, read back by the next start.
         assert_eq!(load_prefs(dir.path()).channel, Channel::Nightly);
         assert!(load_prefs(dir.path()).check_on_start);
+    }
+
+    #[test]
+    fn a_failed_recheck_clears_the_previous_offer() {
+        let offer = Offer {
+            version: "0.4.0-nightly.20261012.7".into(),
+            channel: Channel::Nightly,
+            notes: String::new(),
+            date: None,
+            previous: false,
+        };
+        let pending = Mutex::new(Some((offer.clone(), ())));
+        let last_error = Mutex::new(None);
+        // The owner checked, saw the offer, and a second check failed on the network.
+        assert!(settle(&pending, &last_error, Err("timed out".into())).is_err());
+        assert!(
+            lock(&pending).is_none(),
+            "a failed re-check left the superseded offer installable"
+        );
+        assert_eq!(*lock(&last_error), Some("timed out".to_string()));
+        // A later successful check that finds the build offers it afresh and clears the error.
+        settle(&pending, &last_error, Ok(Some((offer.clone(), ())))).unwrap();
+        assert_eq!(lock(&pending).as_ref().map(|(o, _)| o.clone()), Some(offer));
+        assert!(lock(&last_error).is_none());
     }
 
     #[test]
