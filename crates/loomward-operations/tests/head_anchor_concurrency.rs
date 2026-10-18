@@ -123,6 +123,26 @@ fn assert_linear(store: &Store, op: u64) -> usize {
     rows.len()
 }
 
+/// An existing journal is readable in WAL mode even while another connection holds the write lock.
+#[test]
+fn an_existing_store_opens_without_waiting_for_the_writer() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let mut writer = Store::open(&path).unwrap();
+    let op = writer.start(1, admitted()).unwrap();
+    let locker = Connection::open(&path).unwrap();
+    locker.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let reader = Store::open(&path).expect("opening an existing schema needs no write lock");
+    assert_eq!(assert_linear(&reader, op), 1);
+    assert_eq!(reader.synchronous().unwrap(), 2);
+    let mut conn = Connection::open(&path).unwrap();
+    conn.set_transaction_behavior(rusqlite::TransactionBehavior::Immediate);
+    let adopted =
+        Store::new(conn).expect("schema checks must be deferred even on an adopted connection");
+    assert_eq!(assert_linear(&adopted, op), 1);
+    locker.execute_batch("ROLLBACK").unwrap();
+}
+
 /// A reader opened while a writer appends to the same operation sees a consistent journal at every
 /// observation: the head and tail are read in one snapshot, so a half-committed append is never visible.
 #[test]

@@ -41,7 +41,10 @@ when elevated, so every grant is refused with `identity_unavailable`.
 the uninstaller's reach (`release.yml` uninstalls silently and asserts the state survives). A default
 start (no `--state-dir`) moves state that an earlier build left in `%LOCALAPPDATA%\Loomward\v3` there
 once. It never merges into an existing `Loomward Data\v3`, and a move that fails refuses to start
-rather than open an empty store. `launch::open` takes docs/41's exclusive `lock` file in the state
+rather than open an empty store. If both homes exist, startup names the current and retained legacy
+homes in a console message or native notice; the legacy copy stays untouched. If no owner window
+or usable `USERPROFILE` start folder configured the picker, requesting a grant reports
+`capability_unavailable` instead of an owner cancellation. `launch::open` takes docs/41's exclusive `lock` file in the state
 directory before the stores open and holds it while the service lives. It is an OS lock on an open
 handle, so a crash leaves nothing stale. A second instance on the same state directory is refused
 with `busy` and exits; it does not focus the first window (no single-instance plugin, so the shell

@@ -968,6 +968,8 @@ impl Inner {
                     "items_verified": outcome.items_verified,
                     "staging_folder": outcome.staging_left,
                     "leftover_staging_folders": outcome.leftover_staging.iter().take(64).collect::<Vec<_>>(),
+                    "unjournaled_items": outcome.unjournaled_items.iter().take(64).collect::<Vec<_>>(),
+                    "unjournaled_item_count": outcome.unjournaled_items.len(),
                     "refusal": outcome.refusal.map(|(code, item)| {
                         let node = item.and_then(|i| {
                             let plan: loomward_windows::effects::exec::Plan = store

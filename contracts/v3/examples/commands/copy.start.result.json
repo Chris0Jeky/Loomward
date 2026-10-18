@@ -6,5 +6,7 @@
   "items_verified": 0,
   "staging_folder": null,
   "leftover_staging_folders": [],
+  "unjournaled_items": [],
+  "unjournaled_item_count": 0,
   "refusal": null
 }

@@ -67,8 +67,8 @@ pub fn is_removable(path: &std::path::Path) -> io::Result<bool> {
         return Err(io::Error::last_os_error());
     }
     let kind = unsafe { GetDriveTypeW(mount.as_ptr()) };
-    if removable_drive_type(kind)? || kind != 3 {
-        return removable_drive_type(kind);
+    if removable_drive_type(kind)? {
+        return Ok(true);
     }
     native::removable_bus(&mount, kind)
 }
@@ -82,7 +82,7 @@ pub fn is_removable(_: &std::path::Path) -> io::Result<bool> {
 fn removable_drive_type(kind: u32) -> io::Result<bool> {
     match kind {
         2 => Ok(true),
-        3 | 5 | 6 => Ok(false),
+        3 => Ok(false),
         _ => Err(io::Error::other("local drive type unavailable")),
     }
 }
@@ -573,14 +573,43 @@ fn removable_device(kind: u32, bus: &str, removable_media: bool) -> io::Result<b
     if removable_drive_type(kind)? || removable_media || matches!(bus, "usb" | "sd") {
         return Ok(true);
     }
-    if bus == "unknown" {
-        return Err(io::Error::other("local bus type unavailable"));
+    match bus {
+        "scsi" | "atapi" | "ata" | "raid" | "sas" | "sata" | "spaces" | "nvme" => Ok(false),
+        _ => Err(io::Error::other("local bus type unavailable")),
     }
-    Ok(false)
 }
 
 #[cfg(test)]
 mod followup_tests {
+    #[test]
+    fn only_known_local_storage_buses_are_eligible() {
+        for bus in [
+            "scsi", "atapi", "ata", "raid", "sas", "sata", "spaces", "nvme",
+        ] {
+            assert!(!super::removable_device(3, bus, false).unwrap(), "{bus}");
+        }
+        for bus in [
+            "unknown",
+            "other(99)",
+            "iscsi",
+            "1394",
+            "file_backed_virtual",
+            "mmc",
+            "virtual",
+            "fibre",
+            "ssa",
+        ] {
+            assert!(super::removable_device(3, bus, false).is_err(), "{bus}");
+        }
+    }
+
+    #[test]
+    fn unsupported_drive_types_cannot_bypass_the_bus_fence() {
+        for kind in [0, 1, 4, 5, 6] {
+            assert!(super::removable_drive_type(kind).is_err(), "{kind}");
+        }
+    }
+
     #[test]
     fn followup_usb_and_sd_are_removable_even_on_fixed_drives() {
         for bus in ["usb", "sd"] {

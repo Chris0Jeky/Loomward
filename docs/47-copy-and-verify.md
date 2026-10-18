@@ -237,9 +237,16 @@ missing heads or rewrite mismatching ones. The anchor detects independent journa
 rewriting of both the journal and its head or restoration of an older whole database. Transaction rollback
 tests inject a head-write failure after the row insert; real power-cut evidence remains the G5 gate.
 
+Store checks for its tables and triggers in a deferred read transaction. An existing schema needs no
+write lock to open; creation or migration takes `BEGIN IMMEDIATE` and re-checks head-table existence
+under that lock before deciding whether to anchor legacy tails. Replay also explicitly uses a deferred
+transaction, regardless of an adopted connection's default transaction mode.
+
 Two `Store` connections to one `state.db` in the same process (for example a copy worker that outlived its
 bounded join, and a later open of the same state directory) serialise on the write lock: each append takes
-`BEGIN IMMEDIATE` with the 5 s busy timeout and re-reads head and tail under that lock. A cached replay is
+`BEGIN IMMEDIATE` with the 5 s busy timeout. BUSY during lock acquisition gets at most two retries,
+after 25 ms and 50 ms backoff (about 15 s maximum waiting across all three attempts). Writes and commit
+acknowledgements are never retried. Once acquired, the transaction re-reads head and tail. A cached replay is
 reused only while the stored tail still matches it, so a stale connection's append is either validated
 against the journal as it now stands or refused (busy, head mismatch, stale epoch); it never forks the chain.
 Tests: `tests/head_anchor_concurrency.rs`.

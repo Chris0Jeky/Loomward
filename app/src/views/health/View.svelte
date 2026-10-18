@@ -17,6 +17,8 @@
   import type { ScanView } from '../../lib/scan/model';
   import type { Grant } from '../../lib/derived';
 
+  untrack(() => picker.resume());
+
   /** A revocation (or forgetting) the owner has asked for and not yet confirmed. */
   type Pending = { kind: 'root'; id: string; label: string } | { kind: 'grant'; id: string; label: string } | { kind: 'forget'; id: string; label: string };
 
@@ -60,7 +62,7 @@
     }
   }
 
-  onMount(() => picker.dismiss()); // the picker store outlives this view: an old "Added" or refusal is not repeated
+  onMount(() => () => picker.dismiss()); // clear outcomes on leaving, so a reply that finishes offscreen survives the return
   $effect(() => { const r = roots?.roots; if (r) untrack(() => picker.sync(r)); }); // only a new roots read speaks, never a change of the picker's own state
 
   // `scans.settled` moves when a scan ends: the roots are read again for their totals and coverage.

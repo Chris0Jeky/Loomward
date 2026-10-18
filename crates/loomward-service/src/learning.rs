@@ -17,6 +17,12 @@ pub(super) fn features_of(
     detail: NodeDetail,
 ) -> Result<(EntryRow, Value), ErrorBody> {
     let path = reader.path(key).map_err(catalog_error)?;
+    if path.root_id.as_deref() != Some(detail.root_id.as_str()) {
+        return Err(fail(
+            ErrorCode::StaleGeneration,
+            "Learning root changed while reading features; retry.",
+        ));
+    }
     let context = path
         .ancestors
         .iter()
@@ -97,7 +103,7 @@ impl Inner {
             };
             return self.learning_out(
                 self.engine
-                    .learning_feedback(&r, reference, &features)
+                    .learning_feedback(&r, reference, &features, None)
                     .map_err(ErrorBody::from)?,
             );
         }
@@ -119,7 +125,17 @@ impl Inner {
                 "Excluded metadata cannot be labelled.",
             ));
         }
-        let (_, features) = features(&mut reader, key)?;
+        let root = crate::bare_row(&detail.root_id, "rt_")
+            .ok_or_else(|| fail(ErrorCode::InternalError, "learning root"))?;
+        let grant: i64 = self
+            .db()
+            .query_row(
+                "SELECT grant_id FROM main.root WHERE id=?1",
+                [root],
+                |row| row.get(0),
+            )
+            .map_err(sql_error)?;
+        let (_, features) = features_of(&mut reader, key, detail)?;
         drop(reader);
         let reference = self
             .catalog
@@ -134,7 +150,7 @@ impl Inner {
         };
         let result = self
             .engine
-            .learning_feedback(&r, reference, &features)
+            .learning_feedback(&r, reference, &features, Some(grant))
             .map_err(ErrorBody::from)?;
         self.learning_out(result)
     }
