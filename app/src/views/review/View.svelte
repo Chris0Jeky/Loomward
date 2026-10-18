@@ -123,7 +123,7 @@
             {#each queue.items as item (item.row.node_id)}
               <tr>
                 <th scope="row"><VisibleName name={item.row.name} /></th>
-                <td>{#if item.suggestion.ranked[0]}{item.suggestion.ranked[0].label} · <span class="num">{item.suggestion.ranked[0].score.toFixed(3)}</span>{:else}Unknown · <span class="unknown">unknown</span>{/if}</td>
+                <td>{#if item.suggestion.ranked[0]}{item.suggestion.ranked[0].label} · <span class="num">{typeof item.suggestion.ranked[0].score === 'number' && Number.isFinite(item.suggestion.ranked[0].score) && item.suggestion.ranked[0].score >= 0 && item.suggestion.ranked[0].score <= 1 ? item.suggestion.ranked[0].score.toFixed(3) : 'unknown'}</span>{:else}Unknown · <span class="unknown">unknown</span>{/if}</td>
                 <td><span class="tag" class:sim={!item.suggestion.abstain} class:unk={item.suggestion.abstain}>{item.suggestion.abstain ? 'Abstaining' : 'Advice only'}</span>{#if item.suggestion.reasons.length}<small>{item.suggestion.reasons.map(r => r.replaceAll('_', ' ')).join(', ')}</small>{/if}</td>
                 <td><button class="btn" disabled={working || pending !== null} aria-pressed={selected === item.row.node_id} onclick={() => { selected = item.row.node_id; message = ''; }}>Review <span class="sr-only"><VisibleName name={item.row.name} /></span></button></td>
               </tr>

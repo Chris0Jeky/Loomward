@@ -219,7 +219,7 @@
       <dl class="kv">
         <dt>Private commit</dt><dd class="num">{formatBytes(health.engine.private_commit_bytes)}</dd>
         <dt>Working set</dt><dd class="num">{formatBytes(health.engine.working_set_bytes)}</dd>
-        <dt>CPU time</dt><dd class="num">{health.engine.cpu_seconds === null ? 'unknown' : `${health.engine.cpu_seconds.toFixed(1)} s`}</dd>
+        <dt>CPU time</dt><dd class="num">{typeof health.engine.cpu_seconds === 'number' && Number.isFinite(health.engine.cpu_seconds) ? `${health.engine.cpu_seconds.toFixed(1)} s` : 'unknown'}</dd>
         <dt>Threads</dt><dd class="num">{formatCount(health.engine.threads)}</dd>
         <dt>Jobs running</dt><dd class="num">{formatCount(health.jobs_running)}</dd>
         <dt>Observed</dt><dd>{formatTime(health.observed_at)}</dd>
