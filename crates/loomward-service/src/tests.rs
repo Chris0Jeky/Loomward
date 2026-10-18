@@ -802,6 +802,9 @@ fn a_stalled_personal_volume_shares_one_reader_across_distinct_grant_roots() {
     let Some((svc, _folder)) = personal_grant_session(&tmp) else {
         return;
     };
+    // The grants below name folders whose native identity differs from the stored one; automatic
+    // watch setup would rightly retire them as identity_changed (#669), so it stays off here.
+    svc.inner.freshness.stop();
     // The stalled volume gets a key of its own, so its injected stall cannot hold up other tests
     // that read the real volume of this disk.
     svc.inner
