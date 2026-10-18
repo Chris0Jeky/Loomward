@@ -137,6 +137,18 @@ impl Target {
 /// Local junctions and links among the ancestors are resolved before pinning the local directory.
 /// On Windows, checks and writes use that handle even if the directory or an ancestor is renamed.
 pub(crate) fn check_target(target: &Path) -> Result<Target, Why> {
+    #[cfg(windows)]
+    let elevated = loomward_windows::enumerate::running_elevated();
+    #[cfg(not(windows))]
+    let elevated = false;
+    check_target_for_session(target, elevated)
+}
+
+pub(crate) fn check_target_for_session(target: &Path, elevated: bool) -> Result<Target, Why> {
+    // Keep the native non-elevated handle guard; name its refusal before inspecting the target.
+    if elevated {
+        return Err(Why::ElevatedSession);
+    }
     let name = target.file_name().map(|n| n.to_string_lossy());
     if !target.is_absolute()
         || paths::network_path(target)

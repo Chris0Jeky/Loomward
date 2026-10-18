@@ -1954,7 +1954,7 @@ export interface DiagnosticsSaveRequest {
 
 export type DiagnosticsSaveOutcome = "saved" | "cancelled_by_user" | "refused";
 
-export type DiagnosticsSaveRefusal = "preview_changed" | "unsupported_target" | "cloud_placeholder" | "write_failed" | "dialog_busy" | "dialog_unavailable" | "dialog_no_selection";
+export type DiagnosticsSaveRefusal = "preview_changed" | "elevated_session" | "unsupported_target" | "cloud_placeholder" | "write_failed" | "dialog_busy" | "dialog_unavailable" | "dialog_no_selection";
 
 /** Never the chosen path: it stays in Rust. */
 export interface DiagnosticsSaveResult {
