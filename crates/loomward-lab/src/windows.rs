@@ -698,7 +698,7 @@ struct CrossRun {
     error: Option<String>,
 }
 
-fn validated_root_log(root: &Path, log_path: &Path) -> io::Result<PathBuf> {
+fn validated_root_log(root: &Path, log_path: &Path) -> io::Result<File> {
     if !log_path.is_absolute() {
         return Err(invalid(
             "root-log must be absolute and outside the scan root",
@@ -723,11 +723,32 @@ fn validated_root_log(root: &Path, log_path: &Path) -> io::Result<PathBuf> {
             "root-log must be absolute and outside the scan root",
         ));
     }
-    Ok(parent.join(
+    let (_parent_pins, _) = loomward_windows::identity::pin_directory(&parent)?;
+    let path = parent.join(
         log_path
             .file_name()
             .ok_or_else(|| invalid("root-log filename required"))?,
-    ))
+    );
+    let file = OpenOptions::new()
+        .append(true)
+        .create(true)
+        .access_mode(FILE_APPEND_DATA | FILE_READ_ATTRIBUTES)
+        .share_mode(FILE_SHARE_READ)
+        .custom_flags(
+            FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_OPEN_NO_RECALL | FILE_FLAG_BACKUP_SEMANTICS,
+        )
+        .open(path)?;
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { zeroed() };
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if info.dwFileAttributes & (REJECT_ATTRS | FILE_ATTRIBUTE_DIRECTORY) != 0
+        || info.nNumberOfLinks != 1
+        || unsafe { GetFileType(file.as_raw_handle()) } != FILE_TYPE_DISK
+    {
+        return Err(invalid("root-log must be an ordinary single-link file"));
+    }
+    Ok(file)
 }
 
 /// Runs the syntactic guard on the input AND on its resolved long-name path, so an 8.3 alias or a
@@ -762,11 +783,7 @@ fn cross_check(
             _ => return Err(invalid("unknown cross-check strategy")),
         };
         let root = PathBuf::from(format!(r"\\?\{input}"));
-        let log_path = validated_root_log(Path::new(input), Path::new(root_log))?;
-        let mut log = OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open(log_path)?;
+        let mut log = validated_root_log(Path::new(input), Path::new(root_log))?;
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(io::Error::other)?
@@ -1323,6 +1340,17 @@ pub fn run() -> io::Result<()> {
 mod tests {
     use super::*;
 
+    /// Hosted runners are elevated and the validated log handle refuses an elevated token
+    /// (invariant 2): prove the refusal, then skip the rest of the test with the reason.
+    fn skip_elevated(scope: &LogScope) -> bool {
+        if !loomward_windows::enumerate::running_elevated() {
+            return false;
+        }
+        assert!(validated_root_log(&scope.root(), &scope.0.join("elevated.log")).is_err());
+        eprintln!("skipped: elevated token; the root log refuses elevation (invariant 2)");
+        true
+    }
+
     #[test]
     fn m_tier_stays_one_million_n6() {
         assert_eq!(scan_tier_files("M").unwrap(), 1_000_000);
@@ -1441,6 +1469,36 @@ mod tests {
     }
 
     #[test]
+    fn root_log_writes_through_validated_handle() {
+        let scope = LogScope::new();
+        if skip_elevated(&scope) {
+            return;
+        }
+        let path = scope.0.join("scope.log");
+        for _ in 0..2 {
+            let mut log = validated_root_log(&scope.root(), &path).unwrap();
+            assert!(fs::rename(&path, scope.0.join("replaced.log")).is_err());
+            writeln!(log, "synthetic scope").unwrap();
+            log.sync_all().unwrap();
+        }
+        assert_eq!(
+            fs::read_to_string(path).unwrap(),
+            "synthetic scope\nsynthetic scope\n"
+        );
+    }
+
+    #[test]
+    fn root_log_refuses_hard_link_without_changing_scanned_file() {
+        let scope = LogScope::new();
+        let data = scope.root().join("data.bin");
+        fs::write(&data, b"synthetic fixture").unwrap();
+        let log = scope.0.join("scope.log");
+        fs::hard_link(&data, &log).unwrap();
+        assert!(validated_root_log(&scope.root(), &log).is_err());
+        assert_eq!(fs::read(data).unwrap(), b"synthetic fixture");
+    }
+
+    #[test]
     fn root_log_refuses_case_variant() {
         let scope = LogScope::new();
         let log = PathBuf::from(scope.root().to_str().unwrap().to_uppercase()).join("unsafe.log");
@@ -1509,6 +1567,9 @@ mod tests {
     #[test]
     fn root_log_accepts_external_sibling_with_shared_prefix() {
         let scope = LogScope::new();
+        if skip_elevated(&scope) {
+            return;
+        }
         let sibling = scope.0.join("scanroot-long-name-sibling");
         fs::create_dir(&sibling).unwrap();
         assert!(validated_root_log(&scope.root(), &sibling.join("safe.log")).is_ok());
