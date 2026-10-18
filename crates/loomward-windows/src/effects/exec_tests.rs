@@ -1550,6 +1550,68 @@ fn detached_worker_checks_durable_stop(point: Point) {
 }
 
 #[test]
+fn detached_worker_check_and_create_exclude_a_reopened_fence() {
+    detached_worker_check_and_create_exclude_fence(Point::Checked(0));
+}
+
+#[test]
+fn detached_worker_check_and_stream_create_exclude_a_reopened_fence() {
+    detached_worker_check_and_create_exclude_fence(Point::CheckedStream(0));
+}
+
+/// #670: a reopened service fences on its own store and `Control` while the detached worker sits
+/// between its durable stop check and the create call. The fence must not be acknowledged while
+/// the create can still follow: once acknowledged, the object either already existed or never will.
+fn detached_worker_check_and_create_exclude_fence(point: Point) {
+    let Some(lab) = Lab::new() else { return };
+    fs::write(lab.src().join("f.bin"), b"payload").unwrap();
+    fs::write(lab.src().join("f.bin:note"), b"stream").unwrap();
+    let op = lab.start(&["f.bin"]);
+    let db = lab.tmp.path().join("state/state.db");
+    let dest = lab.dest();
+    let target = move |token: &str| {
+        let file = dest.join(token).join("f.bin");
+        match point {
+            Point::Checked(_) => file,
+            _ => file.with_file_name("f.bin:note"),
+        }
+    };
+    let fencer = std::sync::Arc::new(Mutex::new(None));
+    let slot = fencer.clone();
+    let control = Control::new(false).with_hook(move |p, _| {
+        if p == point {
+            let (db, target) = (db.clone(), target.clone());
+            let (tx, rx) = std::sync::mpsc::channel();
+            *slot.lock().unwrap() = Some(std::thread::spawn(move || {
+                let reopened = Mutex::new(Store::open(&db).unwrap());
+                let ack = fence(
+                    &reopened,
+                    op,
+                    &Control::new(false),
+                    loomward_operations::FenceCause::GrantRevoked,
+                )
+                .unwrap();
+                let token = replay(&reopened, op).unwrap().staging_tokens.pop().unwrap();
+                let _ = tx.send(());
+                (ack, target(&token).exists(), target(&token))
+            }));
+            // Give an unserialized fence ample time to land inside the window.
+            let _ = rx.recv_timeout(Duration::from_millis(500));
+        }
+        Flow::Continue
+    });
+    let _ = run(&lab.store, op, &control);
+    let fencer = fencer.lock().unwrap().take().expect("seam reached");
+    let (ack, existed_at_ack, path) = fencer.join().unwrap();
+    assert_eq!(ack, Ack::StoppedBeforePublish);
+    assert!(replay(&lab.store, op).unwrap().fenced);
+    assert!(
+        existed_at_ack || !path.exists(),
+        "{point:?}: created after the reopened service's fence was acknowledged"
+    );
+}
+
+#[test]
 fn explicit_destination_aces_prevent_normal_commit() {
     destination_aces_prevent_commit(false);
 }

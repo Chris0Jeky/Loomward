@@ -309,6 +309,10 @@ pub enum Point {
     Creating(u32),
     /// Before a named stream's create step.
     CreatingStream(u32),
+    /// Between an item create step's durable stop check and its create call (#670).
+    Checked(u32),
+    /// Between a named stream create step's durable stop check and its create call (#670).
+    CheckedStream(u32),
     /// After the item cancellation check, before the potentially blocking source open.
     OpeningSource(u32),
     /// Inside a stream's chunk loop, between effect steps: the bytes handed to the writer so far.
@@ -953,6 +957,7 @@ impl Runner<'_, '_> {
             };
             let made = path_of(&item.name, &self.keys).and_then(|(path, name)| {
                 self.journal.check_copying()?;
+                self.control.at(Point::Checked(i as u32))?;
                 match item.kind {
                     Kind::Directory => self
                         .staging
@@ -1161,6 +1166,7 @@ impl Runner<'_, '_> {
             let stream = {
                 let _step = self.control.admit()?;
                 self.journal.check_copying()?;
+                self.control.at(Point::CheckedStream(i as u32))?;
                 file.create_stream(name).map_err(|e| io_refusal(&e))?
             };
             let mut reader = source
