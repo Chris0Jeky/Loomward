@@ -1578,8 +1578,14 @@ fn detached_worker_check_and_create_exclude_fence(point: Point) {
     };
     let fencer = std::sync::Arc::new(Mutex::new(None));
     let slot = fencer.clone();
+    let landed = Mutex::new(None::<std::sync::mpsc::Receiver<()>>);
     let control = Control::new(false).with_hook(move |p, _| {
-        if p == point {
+        if p != point {
+            // Past the window: park until the fence has landed, so the run cannot finish first.
+            if let Some(rx) = landed.lock().unwrap().take() {
+                let _ = rx.recv_timeout(Duration::from_secs(30));
+            }
+        } else {
             let (db, target) = (db.clone(), target.clone());
             let (tx, rx) = std::sync::mpsc::channel();
             *slot.lock().unwrap() = Some(std::thread::spawn(move || {
@@ -1596,7 +1602,9 @@ fn detached_worker_check_and_create_exclude_fence(point: Point) {
                 (ack, target(&token).exists(), target(&token))
             }));
             // Give an unserialized fence ample time to land inside the window.
-            let _ = rx.recv_timeout(Duration::from_millis(500));
+            if rx.recv_timeout(Duration::from_millis(500)).is_err() {
+                *landed.lock().unwrap() = Some(rx);
+            }
         }
         Flow::Continue
     });
