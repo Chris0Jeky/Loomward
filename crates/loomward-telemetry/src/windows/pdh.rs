@@ -716,10 +716,14 @@ fn gpu_rows(
         let array = record_array(field, array, snapshot);
         memory_errors[index] = array.as_ref().err().cloned();
         if let Ok(array) = array {
+            if array.malformed > 0 {
+                memory_errors[index] = Some("unidentified_malformed_adapter_instance".into());
+            }
             let mut totals: BTreeMap<String, Result<u64, String>> = BTreeMap::new();
             for row in array.rows {
                 let Some((id, _)) = gpu_instance(&row.instance, false) else {
                     snapshot.pdh_malformed_instances += 1;
+                    memory_errors[index] = Some("unidentified_malformed_adapter_instance".into());
                     if !snapshot.pdh_unknowns.iter().any(|u| u.field == field) {
                         snapshot
                             .pdh_unknowns
@@ -1051,6 +1055,45 @@ mod tests {
     const B_3D: &str = "pid_9_luid_0x00000000_0x00005678_phys_0_eng_0_engtype_3D";
 
     #[test]
+    fn malformed_physical_memory_instance_invalidates_aggregate() {
+        for parser_malformed in [false, true] {
+            for bad_first in [false, true] {
+                let mut rows = vec![
+                    (A, Ok(100)),
+                    ("luid_0x00000000_0x00001234_phys_bad", Ok(300)),
+                ];
+                if bad_first {
+                    rows.reverse();
+                }
+                let mut dedicated = array(rows).unwrap();
+                if parser_malformed {
+                    dedicated.rows.retain(|r| r.instance == A);
+                    dedicated.malformed = 1;
+                }
+                let mut snapshot = unsupported_snapshot();
+                let Observation::Observed { value } = gpu_rows(
+                    array(vec![(A_3D, Ok(10.0)), (B_3D, Ok(20.0))]),
+                    Ok(dedicated),
+                    array(vec![(A, Ok(50)), (B, Ok(60))]),
+                    &mut snapshot,
+                ) else {
+                    panic!("adapter rows lost")
+                };
+                assert_eq!(value.len(), 2);
+                for adapter in &value {
+                    assert_eq!(adapter.dedicated_used_bytes, None);
+                    assert!(adapter.unknowns.iter().any(
+                        |u| u.field == "dedicated_used_bytes" && u.reason.contains("malformed")
+                    ));
+                    assert!(adapter.shared_used_bytes.is_some());
+                    assert!(adapter.engine_busy_fraction.is_some());
+                }
+                assert!(serde_json::to_value(&value).unwrap()[0]["dedicated_used_bytes"].is_null());
+            }
+        }
+    }
+
+    #[test]
     fn malformed_gpu_instances_preserve_identified_adapters_with_partial_coverage() {
         for unnamed in [false, true] {
             let mut engines = array(vec![
@@ -1091,11 +1134,17 @@ mod tests {
                 panic!("valid adapters lost")
             };
             assert_eq!(value.len(), 2);
-            for (adapter, dedicated, shared) in [(&value[0], 100, 50), (&value[1], 200, 60)] {
+            for adapter in &value {
                 assert!(adapter.engine_busy_fraction.is_none());
                 assert!(adapter.engines.iter().all(|e| e.busy_fraction.is_none()));
-                assert_eq!(adapter.dedicated_used_bytes, Some(dedicated));
-                assert_eq!(adapter.shared_used_bytes, Some(shared));
+                assert_eq!(adapter.dedicated_used_bytes, None);
+                assert_eq!(adapter.shared_used_bytes, None);
+                for field in ["dedicated_used_bytes", "shared_used_bytes"] {
+                    assert!(adapter
+                        .unknowns
+                        .iter()
+                        .any(|u| u.field == field && u.reason.contains("malformed")));
+                }
             }
         }
     }
@@ -1284,7 +1333,11 @@ mod tests {
         assert_eq!(snapshot.pdh_malformed_instances, 2);
         assert!(value[0].engine_busy_fraction.is_none());
         assert!(value[0].engines[0].busy_fraction.is_none());
-        assert_eq!(value[0].dedicated_used_bytes, Some(100));
+        assert_eq!(value[0].dedicated_used_bytes, None);
+        assert!(value[0]
+            .unknowns
+            .iter()
+            .any(|u| u.field == "dedicated_used_bytes" && u.reason.contains("malformed")));
         assert!(snapshot
             .pdh_unknowns
             .iter()

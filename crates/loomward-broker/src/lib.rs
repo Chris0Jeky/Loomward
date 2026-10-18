@@ -25,6 +25,18 @@ fn err(kind: ErrorKind, message: impl Into<String>, dispatched: bool) -> Provide
     ProviderError::new(kind, message, dispatched)
 }
 
+fn remaining(
+    deadline: Instant,
+    limit: Duration,
+    dispatched: bool,
+) -> Result<Duration, ProviderError> {
+    deadline
+        .checked_duration_since(Instant::now())
+        .filter(|left| !left.is_zero())
+        .map(|left| left.min(limit))
+        .ok_or_else(|| err(ErrorKind::Timeout, "round deadline passed", dispatched))
+}
+
 /// One round. Never panics on server input.
 pub fn call(req: &BrokerRequest) -> BrokerReply {
     let started = Instant::now();
@@ -66,36 +78,78 @@ pub fn call(req: &BrokerRequest) -> BrokerReply {
         body.len()
     );
 
-    let mut stream = addrs
-        .iter()
-        .find_map(|a| TcpStream::connect_timeout(a, connect).ok())
-        .ok_or_else(|| {
-            err(
-                ErrorKind::Unreachable,
-                "nothing answered at the endpoint",
-                false,
-            )
-        })?;
-    // From here on bytes may have left: every failure is `dispatched`.
-    let sent = |kind, m: &str| err(kind, m, true);
+    let mut connected = None;
+    for addr in addrs {
+        let wait = remaining(deadline, connect, false)?;
+        if let Ok(stream) = TcpStream::connect_timeout(&addr, wait) {
+            connected = Some(stream);
+            break;
+        }
+    }
+    let stream = connected.ok_or_else(|| {
+        err(
+            if Instant::now() >= deadline {
+                ErrorKind::Timeout
+            } else {
+                ErrorKind::Unreachable
+            },
+            "nothing answered at the endpoint",
+            false,
+        )
+    })?;
+    exchange(
+        stream,
+        head.as_bytes(),
+        body.as_bytes(),
+        first_byte,
+        stall,
+        deadline,
+    )
+}
+
+fn exchange(
+    mut stream: TcpStream,
+    head: &[u8],
+    body: &[u8],
+    first_byte: Duration,
+    stall: Duration,
+    deadline: Instant,
+) -> BrokerReply {
     let _ = stream.set_nodelay(true);
-    stream
-        .set_write_timeout(Some(stall))
-        .and_then(|_| stream.write_all(head.as_bytes()))
-        .and_then(|_| stream.write_all(body.as_bytes()))
-        .map_err(|_| sent(ErrorKind::Unreachable, "the endpoint dropped the request"))?;
+    let mut dispatched = false;
+    for mut bytes in [head, body] {
+        while !bytes.is_empty() {
+            let wait = remaining(deadline, stall, dispatched)?;
+            stream
+                .set_write_timeout(Some(wait))
+                .map_err(|_| err(ErrorKind::Timeout, "socket timeout unavailable", dispatched))?;
+            // A failed write can still have sent bytes.
+            dispatched = true;
+            match stream.write(bytes) {
+                Ok(n) if n > 0 => bytes = &bytes[n..],
+                Err(e) if e.kind() == IoKind::Interrupted => continue,
+                Err(e) if matches!(e.kind(), IoKind::WouldBlock | IoKind::TimedOut) => {
+                    return Err(err(ErrorKind::Timeout, "the request stalled", true));
+                }
+                _ => {
+                    return Err(err(
+                        ErrorKind::Unreachable,
+                        "the endpoint dropped the request",
+                        true,
+                    ))
+                }
+            }
+        }
+    }
+    let sent = |kind, m: &str| err(kind, m, true);
 
     let cap = MAX_REPLY_BYTES + MAX_HEAD_BYTES;
     let mut raw = Vec::new();
     let mut buf = [0u8; 16 * 1024];
     loop {
-        let now = Instant::now();
-        if now >= deadline {
-            return Err(sent(ErrorKind::Timeout, "round deadline passed"));
-        }
         let wait = if raw.is_empty() { first_byte } else { stall };
         stream
-            .set_read_timeout(Some(wait.min(deadline - now)))
+            .set_read_timeout(Some(remaining(deadline, wait, true)?))
             .map_err(|_| sent(ErrorKind::Timeout, "socket timeout unavailable"))?;
         match stream.read(&mut buf) {
             Ok(0) => break,
@@ -103,6 +157,9 @@ pub fn call(req: &BrokerRequest) -> BrokerReply {
                 raw.extend_from_slice(&buf[..n]);
                 if raw.len() > cap {
                     return Err(sent(ErrorKind::Oversize, "reply exceeds the bound"));
+                }
+                if let Some(body) = parse_http(&raw, false).map_err(|(kind, m)| sent(kind, &m))? {
+                    return parse_completion(&body).map_err(|m| sent(ErrorKind::InvalidReply, &m));
                 }
             }
             Err(e) if matches!(e.kind(), IoKind::WouldBlock | IoKind::TimedOut) => {
@@ -114,23 +171,23 @@ pub fn call(req: &BrokerRequest) -> BrokerReply {
                 return Err(sent(ErrorKind::Timeout, m));
             }
             Err(e) if e.kind() == IoKind::Interrupted => {}
-            // A reset after a complete Content-Length body still parses below.
-            Err(_) if !raw.is_empty() => break,
             Err(_) => return Err(sent(ErrorKind::Unreachable, "the connection failed")),
         }
     }
-    let body = parse_http(&raw).map_err(|(kind, m)| sent(kind, &m))?;
+    let body = parse_http(&raw, true)
+        .map_err(|(kind, m)| sent(kind, &m))?
+        .ok_or_else(|| sent(ErrorKind::InvalidReply, "the reply ended early"))?;
     parse_completion(&body).map_err(|m| sent(ErrorKind::InvalidReply, &m))
 }
 
 /// Status, headers and body of one HTTP/1.1 response. Redirects and non-2xx are errors.
-fn parse_http(raw: &[u8]) -> Result<Vec<u8>, (ErrorKind, String)> {
+fn parse_http(raw: &[u8], eof: bool) -> Result<Option<Vec<u8>>, (ErrorKind, String)> {
     let invalid = |m: &str| (ErrorKind::InvalidReply, m.to_string());
-    let split = raw
-        .windows(4)
-        .position(|w| w == b"\r\n\r\n")
-        .filter(|p| *p <= MAX_HEAD_BYTES)
-        .ok_or_else(|| invalid("no HTTP head"))?;
+    let split = match raw.windows(4).position(|w| w == b"\r\n\r\n") {
+        Some(p) if p <= MAX_HEAD_BYTES => p,
+        None if !eof && raw.len() <= MAX_HEAD_BYTES + 3 => return Ok(None),
+        _ => return Err(invalid("no HTTP head")),
+    };
     let head = std::str::from_utf8(&raw[..split]).map_err(|_| invalid("unreadable HTTP head"))?;
     let mut body = raw[split + 4..].to_vec();
     let mut lines = head.split("\r\n");
@@ -165,32 +222,77 @@ fn parse_http(raw: &[u8]) -> Result<Vec<u8>, (ErrorKind, String)> {
         }
     }
     if chunked {
-        body = dechunk(&body).ok_or_else(|| invalid("bad chunked body"))?;
+        match dechunk(&body).map_err(|_| invalid("bad chunked body"))? {
+            Some(decoded) => body = decoded,
+            None if !eof => return Ok(None),
+            None => return Err(invalid("the reply ended early")),
+        }
     } else if let Some(n) = length {
+        if n > MAX_REPLY_BYTES {
+            return Err((ErrorKind::Oversize, "reply exceeds the bound".into()));
+        }
         if body.len() < n {
-            return Err(invalid("the reply ended early"));
+            return if eof {
+                Err(invalid("the reply ended early"))
+            } else {
+                Ok(None)
+            };
         }
         body.truncate(n);
+    } else if !eof {
+        return Ok(None);
     }
     if body.len() > MAX_REPLY_BYTES {
         return Err((ErrorKind::Oversize, "reply exceeds the bound".into()));
     }
-    Ok(body)
+    Ok(Some(body))
 }
 
-fn dechunk(mut raw: &[u8]) -> Option<Vec<u8>> {
+fn dechunk(mut raw: &[u8]) -> Result<Option<Vec<u8>>, ()> {
     let mut out = Vec::new();
     loop {
-        let eol = raw.windows(2).position(|w| w == b"\r\n")?;
-        let size = std::str::from_utf8(&raw[..eol]).ok()?;
-        let size = usize::from_str_radix(size.split(';').next()?.trim(), 16).ok()?;
+        let Some(eol) = raw.windows(2).position(|w| w == b"\r\n") else {
+            return Ok(None);
+        };
+        let size = std::str::from_utf8(&raw[..eol]).map_err(|_| ())?;
+        let size = size.split(';').next().ok_or(())?;
+        if size.is_empty() || !size.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(());
+        }
+        let size = usize::from_str_radix(size, 16).map_err(|_| ())?;
         raw = &raw[eol + 2..];
         if size == 0 {
-            return Some(out);
+            loop {
+                let Some(eol) = raw.windows(2).position(|w| w == b"\r\n") else {
+                    return Ok(None);
+                };
+                if eol == 0 {
+                    return Ok(Some(out));
+                }
+                let trailer = &raw[..eol];
+                let colon = trailer.iter().position(|b| *b == b':').ok_or(())?;
+                if colon == 0
+                    || !trailer[..colon]
+                        .iter()
+                        .all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(b))
+                    || trailer[colon + 1..]
+                        .iter()
+                        .any(|b| b.is_ascii_control() && *b != b'\t')
+                {
+                    return Err(());
+                }
+                raw = &raw[eol + 2..];
+            }
         }
         // Bound the size first: a hostile chunk size must not overflow `size + 2`.
-        if size > MAX_REPLY_BYTES || raw.len() < size + 2 || out.len() + size > MAX_REPLY_BYTES {
-            return None;
+        if size > MAX_REPLY_BYTES || out.len() + size > MAX_REPLY_BYTES {
+            return Err(());
+        }
+        if raw.len() < size + 2 {
+            return Ok(None);
+        }
+        if &raw[size..size + 2] != b"\r\n" {
+            return Err(());
         }
         out.extend_from_slice(&raw[..size]);
         raw = &raw[size + 2..];
@@ -253,16 +355,99 @@ fn parse_completion(body: &[u8]) -> Result<ChatReply, String> {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::net::TcpListener;
+
+    #[test]
+    fn socket_timeouts_are_capped_by_the_remaining_round_budget() {
+        let limit = Duration::from_secs(1);
+        assert_eq!(
+            remaining(Instant::now() + limit * 10, limit, false).unwrap(),
+            limit
+        );
+        let left = remaining(Instant::now() + limit, limit * 10, true).unwrap();
+        assert!(!left.is_zero() && left <= limit);
+        for dispatched in [false, true] {
+            let error = remaining(Instant::now() - limit, limit, dispatched).unwrap_err();
+            assert_eq!(
+                (error.kind, error.dispatched),
+                (ErrorKind::Timeout, dispatched)
+            );
+        }
+    }
+
+    #[test]
+    fn an_expired_round_sends_nothing_after_connecting() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let stream = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut peer, _) = listener.accept().unwrap();
+        let error = exchange(
+            stream,
+            b"headers",
+            b"body",
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            Instant::now() - Duration::from_secs(1),
+        )
+        .unwrap_err();
+        let mut bytes = Vec::new();
+        peer.read_to_end(&mut bytes).unwrap();
+        assert!(bytes.is_empty(), "expired request was sent: {bytes:?}");
+        assert_eq!((error.kind, error.dispatched), (ErrorKind::Timeout, false));
+    }
+
+    #[test]
+    fn malformed_chunk_delimiters_and_truncated_trailers_are_refused() {
+        let completion = br#"{"choices":[{"message":{"content":"ok"}}]}"#;
+        for (separator, terminal) in [
+            ("XX", "0\r\n"),
+            ("XX", "0\r\n\r\n"),
+            ("\r\n", "0\r\n"),
+            ("\r\n", "0\r\nX-Trace: synthetic\r\n"),
+        ] {
+            let raw = format!(
+                "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n{}{separator}{terminal}",
+                completion.len(),
+                std::str::from_utf8(completion).unwrap()
+            );
+            assert!(
+                parse_http(raw.as_bytes(), true).is_err(),
+                "accepted {raw:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn framed_bodies_wait_for_every_byte_including_the_trailer_terminator() {
+        for raw in [
+            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}",
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1;x=1\r\n{\r\n1\r\n}\r\n0\r\n\r\n",
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n{}\r\n0\r\nX-Trace: synthetic\r\nOther: value\r\n\r\n",
+        ] {
+            for end in 0..raw.len() {
+                let partial = &raw.as_bytes()[..end];
+                assert_eq!(parse_http(partial, false), Ok(None), "prefix {end} of {raw:?}");
+                assert!(parse_http(partial, true).is_err(), "accepted truncated prefix {end}");
+            }
+            assert_eq!(parse_http(raw.as_bytes(), false), Ok(Some(b"{}".to_vec())));
+        }
+    }
+
+    #[test]
+    fn close_delimited_bodies_require_eof() {
+        let raw = b"HTTP/1.0 200 OK\r\n\r\n{}";
+        assert_eq!(parse_http(raw, false), Ok(None));
+        assert_eq!(parse_http(raw, true), Ok(Some(b"{}".to_vec())));
+    }
 
     #[test]
     fn a_hostile_chunk_size_is_refused_without_panicking() {
-        assert_eq!(dechunk(b"ffffffffffffffff\r\nab\r\n0\r\n\r\n"), None);
-        assert_eq!(dechunk(b"2\r\nab\r\n0\r\n\r\n"), Some(b"ab".to_vec()));
+        assert!(dechunk(b"ffffffffffffffff\r\nab\r\n0\r\n\r\n").is_err());
+        assert_eq!(dechunk(b"2\r\nab\r\n0\r\n\r\n"), Ok(Some(b"ab".to_vec())));
     }
 
     #[test]
     fn http_bodies_are_framed_and_statuses_are_honest() {
-        let ok = |raw: &str| parse_http(raw.as_bytes());
+        let ok = |raw: &str| parse_http(raw.as_bytes(), true).map(|body| body.unwrap());
         assert_eq!(
             ok("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}junk").unwrap(),
             b"{}"

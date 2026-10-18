@@ -424,6 +424,23 @@ impl Reader {
     pub fn interrupt_handle(&self) -> rusqlite::InterruptHandle {
         self.conn.get_interrupt_handle()
     }
+
+    /// Physical row counts for health, without repairing aggregates or holding a service lock.
+    pub fn entry_counts(&self) -> Result<(i64, i64)> {
+        if self
+            .deadline
+            .is_some_and(|at| std::time::Instant::now() >= at)
+        {
+            return Err(Error::Cancelled);
+        }
+        let _guard = WorkGuard::new(&self.conn, u64::MAX, self.deadline)?;
+        Ok(self.conn.query_row(
+            "SELECT (SELECT count(*) FROM main.file),(SELECT count(*) FROM main.dir)",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?)
+    }
+
     pub(crate) fn read<T>(&mut self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
         self.repair_committed()?;
         let tx = self.conn.transaction()?;

@@ -101,8 +101,9 @@ flowchart TB
 own process later (LW-017, named pipe) is an adapter change, not a redesign. Two instances on one dataset class
 are prevented by an exclusive lock file in the state directory (`busy` error to the second).
 
-**State directories.** `%LOCALAPPDATA%\Loomward\v3\<dataset_class>\{catalog.db, state.db, backups\, teacher\,
-lock}` by default; `--state-dir` overrides (the lab uses `G:\loomward-lab\state\`). A root that contains, or is
+**State directories.** The desktop defaults to `%LOCALAPPDATA%\Loomward Data\v3\<dataset_class>\{catalog.db,
+state.db, backups\, teacher\, lock}`, outside its sibling `Loomward` install directory; `--state-dir`
+overrides (the lab uses `G:\loomward-lab\state\`). A root that contains, or is
 contained by, the state directory is refused at grant time and the state directory is excluded by file identity
 during scans. State is never committed (`*.db` is gitignored; `.loomward/` too).
 

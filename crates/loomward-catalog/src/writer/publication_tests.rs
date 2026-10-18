@@ -531,6 +531,88 @@ fn reparent_bounds_the_whole_subtree_and_keeps_the_batch_and_end_run_usable() {
 }
 
 #[test]
+fn reparent_depth_ignores_hidden_remnants_but_preserves_them() {
+    for excluded in [false, true] {
+        let (temp, conn) = depth_fixture();
+        conn.execute(
+            "UPDATE dir SET listing_state='absent_pending' WHERE id=11",
+            [],
+        )
+        .unwrap();
+        let mut moved = observation("spine-1", 10, 0);
+        if excluded {
+            moved.flags = EXCLUDED_FLAGS;
+        }
+        let (results, _) = depth_batch(
+            conn,
+            vec![depth_listing(600, vec![], vec![moved]), depth_end_run()],
+        );
+        for result in results {
+            result.expect("hidden remnants must not reject a shallow visible subtree");
+        }
+        let db = Connection::open(temp.path().join("catalog.db")).unwrap();
+        assert_eq!(
+            db.query_row("SELECT parent_id FROM dir WHERE id=10", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            600
+        );
+        assert_eq!(
+            db.query_row("SELECT listing_state FROM dir WHERE id=11", [], |r| r
+                .get::<_, String>(0))
+                .unwrap(),
+            "absent_pending"
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT count(*) FROM dir WHERE id BETWEEN 11 AND 520",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            510
+        );
+        assert_eq!(
+            db.query_row("SELECT depth FROM dir WHERE id=10", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+    }
+}
+
+#[test]
+fn restoring_a_hidden_subtree_rechecks_its_descendant_depth() {
+    let (temp, conn) = depth_fixture();
+    conn.execute_batch(
+        "UPDATE dir SET parent_id=600 WHERE id=10;
+        UPDATE dir SET listing_state='absent_pending' WHERE id=11;",
+    )
+    .unwrap();
+    let (mut results, _) = depth_batch(
+        conn,
+        vec![
+            depth_listing(10, vec![], vec![observation("spine-2", 12, 0)]),
+            depth_end_run(),
+        ],
+    );
+    assert!(matches!(
+        results.remove(0),
+        Err(Error::Invalid("tree depth limit"))
+    ));
+    results
+        .remove(0)
+        .expect("the rejected restoration must leave rollup usable");
+    let db = Connection::open(temp.path().join("catalog.db")).unwrap();
+    assert_eq!(
+        db.query_row("SELECT listing_state FROM dir WHERE id=11", [], |r| r
+            .get::<_, String>(0))
+            .unwrap(),
+        "absent_pending"
+    );
+}
+
+#[test]
 fn a_shallower_intra_batch_reparent_does_not_trust_stored_depth() {
     let (temp, conn) = depth_fixture();
     assert_eq!(
@@ -1134,6 +1216,44 @@ fn auto_rollback_keeps_the_failing_callers_original_error() {
     assert!(matches!(replies[0].recv().unwrap(), Err(Error::Closed)));
     assert!(replies[2].recv().unwrap_or(Err(Error::Closed)).is_err());
     assert_eq!(old_listing(temp.path()), before);
+}
+
+#[test]
+fn publication_temp_tables_roll_back_creation_and_rows_with_the_savepoint() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    for (name, columns) in [
+        ("listing_seen", "kind INTEGER,id INTEGER,PRIMARY KEY(kind,id)"),
+        ("listing_names", "name TEXT,raw BLOB,kind INTEGER"),
+        ("continuity_entry", "kind INTEGER,name TEXT,raw BLOB,identity BLOB,created_ft INTEGER,matched_id INTEGER"),
+        ("old_file", "id INTEGER PRIMARY KEY,name TEXT,raw BLOB,identity BLOB,created_ft INTEGER,used INTEGER"),
+    ] {
+        let create = format!("CREATE TEMP TABLE {name}({columns})");
+        let insert = format!("INSERT INTO {name} DEFAULT VALUES");
+        {
+            let save = conn.savepoint().unwrap();
+            save.execute_batch(&create).unwrap();
+            save.execute(&insert, []).unwrap();
+        }
+        assert!(!conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_temp_master WHERE name=?1)",
+            [name],
+            |r| r.get::<_, bool>(0),
+        ).unwrap(), "{name} creation survived rollback");
+        conn.execute_batch(&create).unwrap();
+        conn.execute(&insert, []).unwrap();
+        {
+            let save = conn.savepoint().unwrap();
+            save.execute(&format!("DELETE FROM {name}"), []).unwrap();
+            for _ in 0..2 {
+                save.execute(&insert, []).unwrap();
+            }
+        }
+        assert_eq!(
+            conn.query_row(&format!("SELECT count(*) FROM {name}"), [], |r| r.get::<_, i64>(0)).unwrap(),
+            1,
+            "{name} rows survived rollback"
+        );
+    }
 }
 
 #[test]

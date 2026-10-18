@@ -66,6 +66,14 @@ fn supported_attributes(attributes: u32) -> io::Result<()> {
     Ok(())
 }
 
+fn inherited_acl(file: &File) -> io::Result<()> {
+    let (explicit, _) = duplicate_reader::security_metadata(file).map_err(io::Error::other)?;
+    if !explicit.is_empty() {
+        return Err(refused("destination ACL is not inherited"));
+    }
+    Ok(())
+}
+
 fn refused(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)
 }
@@ -719,7 +727,7 @@ impl Staging<'_> {
         }
         Ok(recorded)
     }
-    /// Current preserved metadata of a staged or published entry, read through the bound name.
+    /// Preserved metadata and the inherited-only ACL contract, through the bound name.
     pub fn metadata(
         &self,
         path: &[(&str, ObjectKey)],
@@ -730,17 +738,28 @@ impl Staging<'_> {
         let named = relative(
             pins.last().unwrap(),
             &component(name)?,
-            FILE_READ_ATTRIBUTES,
+            FILE_READ_ATTRIBUTES | READ_CONTROL,
             SHARE,
             false,
             0,
         )?;
         same(&named, recorded)?;
+        inherited_acl(&named)?;
         BasicMetadata::read(&named)
     }
     /// The staging (or published) folder's own preserved metadata.
     pub fn own_metadata(&self) -> io::Result<BasicMetadata> {
-        BasicMetadata::read(&self.pin(false)?)
+        let named = relative(
+            self.destination.parent(),
+            &self.name,
+            FILE_READ_ATTRIBUTES | READ_CONTROL,
+            SHARE,
+            false,
+            0,
+        )?;
+        same(&named, &self.recorded)?;
+        inherited_acl(&named)?;
+        BasicMetadata::read(&named)
     }
     /// A staged or published folder carries no named stream and no extended attributes. Section 6
     /// refuses both on folders at preview, so any found was added later (a hold denies neither).

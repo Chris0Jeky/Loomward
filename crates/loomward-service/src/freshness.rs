@@ -39,7 +39,7 @@ pub(crate) struct Tracker {
     pump: Mutex<Option<std::thread::JoinHandle<()>>>,
     #[cfg(windows)]
     setup: Mutex<()>,
-    /// Roots an explicit scan or duplicates request is claiming. Held across every automatic start.
+    /// Explicit admission fences the shared pool against new automatic starts on every root.
     #[cfg(windows)]
     explicit: Mutex<BTreeMap<i64, usize>>,
 }
@@ -88,6 +88,7 @@ struct Tracked {
     changed: Instant,
     job: Option<loomward_protocol::JobId>,
     started: Option<(u64, Option<Bookmark>)>,
+    completed: Option<(u64, Option<Bookmark>)>,
 }
 
 #[cfg(windows)]
@@ -260,6 +261,22 @@ impl Tracker {
             false
         }
     }
+
+    pub(crate) fn automatic_jobs(&self) -> Vec<loomward_protocol::JobId> {
+        #[cfg(windows)]
+        {
+            self.roots
+                .lock()
+                .unwrap()
+                .values()
+                .filter_map(|r| r.job.clone())
+                .collect()
+        }
+        #[cfg(not(windows))]
+        {
+            Vec::new()
+        }
+    }
 }
 
 pub(crate) fn start(inner: &Arc<Inner>) {
@@ -301,6 +318,14 @@ impl Inner {
         );
         // The native checkpoint queue has one slot; search and publication share this watch.
         let _checkpoint = checkpoint.lock().unwrap();
+        #[cfg(test)]
+        if self
+            .hooks
+            .fail_freshness_checkpoint
+            .swap(false, Ordering::SeqCst)
+        {
+            return Some(false);
+        }
         #[cfg(test)]
         self.hooks.gate(
             loomward_protocol::Command::ScanStart,
@@ -360,6 +385,7 @@ impl Inner {
             };
             if let Some(root) = self.freshness.roots.lock().unwrap().get_mut(&row) {
                 root.started = Some((root.epoch, bookmark));
+                root.completed = None;
                 root.stale_since.get_or_insert(root.at);
                 root.paths.clear();
                 root.targets.clear();
@@ -377,46 +403,58 @@ impl Inner {
             };
             // Flush kernel notifications before comparing the scan's start epoch.
             let healthy = self.freshness_checkpoint(row).unwrap_or(false);
-            let saved = {
+            {
                 let mut roots = self.freshness.roots.lock().unwrap();
                 let Some(root) = roots.get_mut(&row) else {
                     return;
                 };
                 let started = root.started.take();
-                // A successful scan followed by newer hints is new work, not a failed retry.
-                if complete && healthy && matches!(scope, RunScope::FullRoot) {
-                    root.attempts = 0;
-                    root.retry_after = None;
-                }
-                if complete
-                    && matches!(scope, RunScope::FullRoot)
-                    && healthy
-                    && started.is_some_and(|s| s.0 == root.epoch)
-                {
-                    root.at = now_ns();
-                    root.stale_since = None;
-                    root.full = false;
-                    root.auto = false;
-                    root.attempts = 0;
-                    root.caught_up = false;
-                    Some((root.at, started.unwrap().1))
-                } else {
-                    None
-                }
-            };
-            if let Some((at, bookmark)) = saved {
-                // Save the pre-scan head only after publication. Replaying extra hints is safe;
-                // saving a post-scan head could skip a change racing the last directory listing.
-                if save(self, grant, bookmark, at).is_err() {
-                    if let Some(root) = self.freshness.roots.lock().unwrap().get_mut(&row) {
-                        root.dirty(true);
-                        root.auto = false;
-                    }
-                }
+                // A timed-out checkpoint must not discard a completed full run's witness.
+                root.completed =
+                    started.filter(|_| complete && matches!(scope, RunScope::FullRoot));
+            }
+            if healthy {
+                self.freshness_settle(row, grant);
             }
         }
         #[cfg(not(windows))]
         let _ = (grant, scope, complete);
+    }
+
+    #[cfg(windows)]
+    fn freshness_settle(&self, row: i64, grant: i64) {
+        let saved = {
+            let mut roots = self.freshness.roots.lock().unwrap();
+            let Some(root) = roots.get_mut(&row) else {
+                return;
+            };
+            let Some((epoch, bookmark)) = root.completed.take() else {
+                return;
+            };
+            // A successful scan followed by newer hints is new work, not a failed retry.
+            root.attempts = 0;
+            root.retry_after = None;
+            if epoch == root.epoch {
+                root.at = now_ns();
+                root.stale_since = None;
+                root.full = false;
+                root.auto = false;
+                root.caught_up = false;
+                Some((root.at, bookmark))
+            } else {
+                None
+            }
+        };
+        if let Some((at, bookmark)) = saved {
+            // Save the pre-scan head only after publication. Replaying extra hints is safe;
+            // saving a post-scan head could skip a change racing the last directory listing.
+            if save(self, grant, bookmark, at).is_err() {
+                if let Some(root) = self.freshness.roots.lock().unwrap().get_mut(&row) {
+                    root.dirty(true);
+                    root.auto = false;
+                }
+            }
+        }
     }
 }
 
@@ -512,6 +550,7 @@ pub(crate) fn ensure_roots(inner: &Arc<Inner>) {
                 changed: Instant::now(),
                 job: None,
                 started: None,
+                completed: None,
             },
         );
         let weak: Weak<Inner> = Arc::downgrade(inner);
@@ -656,6 +695,16 @@ pub(crate) fn refresh(inner: &Inner) {
             inner.freshness.remove(row.root);
             continue;
         }
+        let pending = inner
+            .freshness
+            .roots
+            .lock()
+            .unwrap()
+            .get(&row.root)
+            .is_some_and(|r| r.completed.is_some());
+        if pending && inner.freshness_checkpoint(row.root) == Some(true) {
+            inner.freshness_settle(row.root, row.grant);
+        }
         let action = {
             let mut roots = inner.freshness.roots.lock().unwrap();
             let Some(root) = roots.get_mut(&row.root) else {
@@ -706,7 +755,7 @@ pub(crate) fn refresh(inner: &Inner) {
         }
         // Start and record under the claim fence, so an explicit request sees every auto job.
         let claimed = inner.freshness.explicit.lock().unwrap();
-        if claimed.contains_key(&row.root) {
+        if !claimed.is_empty() {
             continue;
         }
         #[cfg(test)]
@@ -749,7 +798,11 @@ pub(crate) fn refresh(inner: &Inner) {
                 Ok(job) => {
                     root.job = Some(job.job_id);
                 }
-                Err(loomward_engine::EngineError::Busy { .. }) => {
+                // Admission refusal is deferred work; no run failed or consumed a retry.
+                Err(
+                    loomward_engine::EngineError::Busy { .. }
+                    | loomward_engine::EngineError::ResourceBudget { .. },
+                ) => {
                     root.attempts = root.attempts.saturating_sub(1);
                 }
                 Err(_) => {
@@ -841,6 +894,7 @@ mod tests {
                     changed: Instant::now(),
                     job: None,
                     started: None,
+                    completed: None,
                 },
             );
             replay(
