@@ -9,6 +9,11 @@ export type Phase = 'idle' | 'waiting' | 'granted' | 'cancelled' | 'deadline' | 
 export const PICKER_DEADLINE_MS = 60_000;
 /** The service's busy message for a picker that is already open (`handlers.rs`); its other busy replies are not a dialog. */
 const DIALOG_OPEN = 'a native dialog is already open';
+
+/** Tolerate capitalization, padding and punctuation without swallowing other busy replies. */
+function isDialogOpen(message: string): boolean {
+  return message.trim().toLowerCase().includes(DIALOG_OPEN);
+}
 type Pick = { client: Client; epoch: number; info: typeof session.info; known: readonly string[]; expires: number };
 
 const REFUSAL: Record<NonNullable<RootGrantResult['refusal']>, string> = {
@@ -92,7 +97,7 @@ class GrantPicker {
       pick.expires = Date.now() + PICKER_DEADLINE_MS;
       if (e instanceof LoomwardError && e.code === 'deadline_exceeded') await this.reread(pick);
       // Only this busy means a dialog is up; the cooldown and mutation-capacity busy replies keep their own message.
-      else if (e instanceof LoomwardError && e.code === 'busy' && e.message === DIALOG_OPEN) this.set('deadline', 'A Windows folder dialog may still be open. Check it, then refresh the folder list.');
+      else if (e instanceof LoomwardError && e.code === 'busy' && isDialogOpen(e.message)) this.set('deadline', 'A Windows folder dialog may still be open. Check it, then refresh the folder list.');
       else this.set('failed', e instanceof LoomwardError ? e.message : session.handle(e));
     }
   }
