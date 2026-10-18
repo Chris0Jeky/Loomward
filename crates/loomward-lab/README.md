@@ -25,7 +25,11 @@ through the service, revokes, forgets and closes/reopens the service against the
 Watch hints require an explicit refresh: the service catalogue sink does not yet support automatic
 watch reconciliation. Restart means graceful service teardown/reopen in the same process; process
 crash recovery is readiness row 1. The process stays alive throughout to expose allocation growth.
-Calls request the service's supported 30-second deadline on this shared host, with no error retries.
+Calls use the service's supported 30-second budget on this shared host. A retryable `PartialCoverage`
+from `tree.slice` while aggregates are being repaired is polled every 50 ms within that same total
+budget, with each request limited to the remaining time. Retry time is included in the operation's
+recorded latency. Repair that never settles still fails, and the scan's complete-coverage and exact
+manifest checks still apply. Other errors and mutations are never retried.
 There is at most one cycle per five seconds; slow cycles are not overlapped. The JSONL records each
 operation's latency/error, current Windows handle count, RSS/private bytes, live DB/WAL sizes,
 catalogue row counts and logical bytes. Forget permits only the existing fully anonymised audit.
