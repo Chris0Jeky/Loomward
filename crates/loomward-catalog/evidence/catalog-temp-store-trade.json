@@ -1,0 +1,1242 @@
+{
+  "platform": "KRASPYON / Windows 11",
+  "main": "ae2012c49bab12be5581f00b0152d33189b1391d",
+  "head": "bbf5bfb53b9315ed17201b00e7b25db2dcc00026",
+  "profile": "release",
+  "rows": 1000000,
+  "order": "Each round: bench A/B/C, catalog_perf A/B/C, rollup A/B/C, listing A/B/C; 3 rounds; no own overlap",
+  "memory": "Windows native process high-water RSS and private-commit counters sampled every 100 ms; not a whole-engine bound",
+  "variants": {
+    "a-main": {
+      "source_sha256": {
+        "crates\\loomward-catalog\\src\\backup-evidence.sql": "7f18e91283a819facd209400b00ecb36f195f6eb857cf9cd1d35b37fb9406f06",
+        "crates\\loomward-catalog\\src\\catalog.sql": "aab6b2370b4f3b0dda2c785eb46ba6d72aab62460e12481405d4b71763f3c764",
+        "crates\\loomward-catalog\\src\\client-grant.sql": "192a51ae8237a1706d63b2510ccca834992b1f4a9e3fc0838e8711ec6edda072",
+        "crates\\loomward-catalog\\src\\crashpoint.rs": "36f53310299f0b533279eb1fe46d5904b8a2b72f826cfcd24c6fdb4eee74a606",
+        "crates\\loomward-catalog\\src\\db.rs": "b461fd500bc3cf184741f14ab58fc3f3bf95e79995d3cfb5d1b5e6df7fe10750",
+        "crates\\loomward-catalog\\src\\developer-clutter.sql": "aa6a15106b1cf88616ff3ea4f478815104d3a02ec72cca33b9aa8c0c391a7158",
+        "crates\\loomward-catalog\\src\\developer_clutter.rs": "e7b0b8183c1ae39ef10575889cd1529cf4eced6861fa7ededfe9bd8409d41580",
+        "crates\\loomward-catalog\\src\\duplicates.rs": "9ea65e4b404fb2938859295c7aa6ae1f9857e52a41cfd226ceb8ab32bfe26eb7",
+        "crates\\loomward-catalog\\src\\lib.rs": "d335f2e7b8aadaff6d6648d23b932e2b360cfdf87f7f590380184cf2005e6575",
+        "crates\\loomward-catalog\\src\\model.rs": "065a4dd6b965fa169efa86c27bce329185d72b92bfa8e8b16020e9ed7666addc",
+        "crates\\loomward-catalog\\src\\query.rs": "0075d8ff76ed227d135da6aa6be22cd3cc9f8b514e08b73147e7a8e498527fbf",
+        "crates\\loomward-catalog\\src\\reference-publication.sql": "c902b6f423949c509dc86c39c7b3cd966b9c9a3698228a612953696a2e030df1",
+        "crates\\loomward-catalog\\src\\root-forgotten.sql": "a0ff49d12a35abe01259121ed5995a45d4468e921fd90bb268376f3890e9b669",
+        "crates\\loomward-catalog\\src\\search\\analyze.rs": "dd08206c8e1367958ddfa4e3c1a43ab84dd6480e9baf82249539e91dd37c0041",
+        "crates\\loomward-catalog\\src\\search\\rank.rs": "94491935a50742fdd3dce71114199a156d36c4b19f08d5c07e1e61f44348b5aa",
+        "crates\\loomward-catalog\\src\\search\\tokens.rs": "1189e2e73f086ffe06f071a649f567856a346c1872ca155ba45f47cc4e3206b0",
+        "crates\\loomward-catalog\\src\\search-token.sql": "fc5f69d3097db97e949d91e46b9112fc73091c54b17dac3739d4ce21cd039bd7",
+        "crates\\loomward-catalog\\src\\search.rs": "c5923a586e85a90239a900dace43c1591cea84db07a5d1abfad775e8ec8f235f",
+        "crates\\loomward-catalog\\src\\search.sql": "7c17f97a5f754963a4ef9a9ca2e9c57dc218e5c606b5caa27401699487b3bbfb",
+        "crates\\loomward-catalog\\src\\slice.rs": "869c3e0553ae69405781d05fd2be729ffbf6e0fe9319d348e54b11d6e84bfdce",
+        "crates\\loomward-catalog\\src\\state.sql": "60932761d538052e2b0ba39cde601ba00b6bc8cf5c4482c6016cf7a7c20a4362",
+        "crates\\loomward-catalog\\src\\test_watchdog.rs": "2bd66ccf99c46f6803ec6b57516094c38cf7c8a8a8ef5c64a83771626e60112a",
+        "crates\\loomward-catalog\\src\\writer\\bulk_tests.rs": "4b34047aab27a5adcfdffd73d8a61cc8e6e06699611f0d39a9262082c2c760c2",
+        "crates\\loomward-catalog\\src\\writer\\full_disk_tests.rs": "88df35179f052e679c2746c59c88217887490a57baca9aee1a4f93860e7ee6a9",
+        "crates\\loomward-catalog\\src\\writer\\publication_tests.rs": "82c77d19e40a5436f8c55fd566fd10dfd63feb117a65a0a5cd639549a6a9e5cf",
+        "crates\\loomward-catalog\\src\\writer.rs": "3bd552b96f7ab964b072cd91d92c27887af62e47bdf1b1d968c208daecae455f"
+      },
+      "cargo_target_dir": "C:\\lw\\target\\lane-catalog-fix",
+      "bench_sha256": "897290fbceaddcd625ca177afeebbc334c2d80869680e253586eb023781b9bd4",
+      "catalog_perf_sha256": "b84e1762c0742d760d41f06b7b4d02ed3bb17fc763a6b078f0ea0c54a1251faa",
+      "memory_bounds_sha256": "14d2b834721c183889ab2836ac874dd723010e883fd26af207f974bdea1b5774"
+    },
+    "b-head-file": {
+      "source_sha256": {
+        "crates\\loomward-catalog\\src\\backup-evidence.sql": "7f18e91283a819facd209400b00ecb36f195f6eb857cf9cd1d35b37fb9406f06",
+        "crates\\loomward-catalog\\src\\catalog.sql": "aab6b2370b4f3b0dda2c785eb46ba6d72aab62460e12481405d4b71763f3c764",
+        "crates\\loomward-catalog\\src\\client-grant.sql": "192a51ae8237a1706d63b2510ccca834992b1f4a9e3fc0838e8711ec6edda072",
+        "crates\\loomward-catalog\\src\\crashpoint.rs": "36f53310299f0b533279eb1fe46d5904b8a2b72f826cfcd24c6fdb4eee74a606",
+        "crates\\loomward-catalog\\src\\db.rs": "99437440732b208901f0bb24d3f579912602a253a0dfc1b2335a282eefc4d782",
+        "crates\\loomward-catalog\\src\\developer-clutter.sql": "aa6a15106b1cf88616ff3ea4f478815104d3a02ec72cca33b9aa8c0c391a7158",
+        "crates\\loomward-catalog\\src\\developer_clutter.rs": "e7b0b8183c1ae39ef10575889cd1529cf4eced6861fa7ededfe9bd8409d41580",
+        "crates\\loomward-catalog\\src\\duplicates.rs": "9ea65e4b404fb2938859295c7aa6ae1f9857e52a41cfd226ceb8ab32bfe26eb7",
+        "crates\\loomward-catalog\\src\\lib.rs": "d335f2e7b8aadaff6d6648d23b932e2b360cfdf87f7f590380184cf2005e6575",
+        "crates\\loomward-catalog\\src\\model.rs": "065a4dd6b965fa169efa86c27bce329185d72b92bfa8e8b16020e9ed7666addc",
+        "crates\\loomward-catalog\\src\\query.rs": "009a1a5c45efd488879b4e766caeb14c324619cf6b3d1ceb03185018e6d56259",
+        "crates\\loomward-catalog\\src\\reference-publication.sql": "c902b6f423949c509dc86c39c7b3cd966b9c9a3698228a612953696a2e030df1",
+        "crates\\loomward-catalog\\src\\root-forgotten.sql": "a0ff49d12a35abe01259121ed5995a45d4468e921fd90bb268376f3890e9b669",
+        "crates\\loomward-catalog\\src\\search\\analyze.rs": "dd08206c8e1367958ddfa4e3c1a43ab84dd6480e9baf82249539e91dd37c0041",
+        "crates\\loomward-catalog\\src\\search\\rank.rs": "d27f01d1d445f3573da0ececef24b89bae104c40cd7ad91a1e21daa1a156b2a5",
+        "crates\\loomward-catalog\\src\\search\\tokens.rs": "1189e2e73f086ffe06f071a649f567856a346c1872ca155ba45f47cc4e3206b0",
+        "crates\\loomward-catalog\\src\\search-token.sql": "fc5f69d3097db97e949d91e46b9112fc73091c54b17dac3739d4ce21cd039bd7",
+        "crates\\loomward-catalog\\src\\search.rs": "d96950b008d158fbeb7e42896020d1eb372d35c0a85a38c7addd03956aba2a3f",
+        "crates\\loomward-catalog\\src\\search.sql": "7c17f97a5f754963a4ef9a9ca2e9c57dc218e5c606b5caa27401699487b3bbfb",
+        "crates\\loomward-catalog\\src\\slice.rs": "869c3e0553ae69405781d05fd2be729ffbf6e0fe9319d348e54b11d6e84bfdce",
+        "crates\\loomward-catalog\\src\\state.sql": "60932761d538052e2b0ba39cde601ba00b6bc8cf5c4482c6016cf7a7c20a4362",
+        "crates\\loomward-catalog\\src\\test_watchdog.rs": "2bd66ccf99c46f6803ec6b57516094c38cf7c8a8a8ef5c64a83771626e60112a",
+        "crates\\loomward-catalog\\src\\writer\\bulk_tests.rs": "4b34047aab27a5adcfdffd73d8a61cc8e6e06699611f0d39a9262082c2c760c2",
+        "crates\\loomward-catalog\\src\\writer\\full_disk_tests.rs": "88df35179f052e679c2746c59c88217887490a57baca9aee1a4f93860e7ee6a9",
+        "crates\\loomward-catalog\\src\\writer\\publication_tests.rs": "30d27d6ee6f119d65f2f647cafb2ed6faed983bea5d239e7f50e87fa854951a9",
+        "crates\\loomward-catalog\\src\\writer.rs": "3a20490e8c44e0e0809a7cacbefea9ac09f038f3773bcd6aa5ee45891c2065f1"
+      },
+      "cargo_target_dir": "C:\\lw\\target\\lane-catalog-fix",
+      "bench_sha256": "a622deeab028f04b4d66947379cc425768f67749b967356988c56bdb3c7fb11a",
+      "catalog_perf_sha256": "86cfbeae22339da92ddb022fa8da2e4985d021cfa0addfa95c210ce5b98f9690",
+      "memory_bounds_sha256": "f7d6a8b74215c935e5284a02a699ba58adf47f0ea1816b8e70d6dc9697f199d1"
+    },
+    "c-head-memory": {
+      "source_sha256": {
+        "crates\\loomward-catalog\\src\\backup-evidence.sql": "7f18e91283a819facd209400b00ecb36f195f6eb857cf9cd1d35b37fb9406f06",
+        "crates\\loomward-catalog\\src\\catalog.sql": "aab6b2370b4f3b0dda2c785eb46ba6d72aab62460e12481405d4b71763f3c764",
+        "crates\\loomward-catalog\\src\\client-grant.sql": "192a51ae8237a1706d63b2510ccca834992b1f4a9e3fc0838e8711ec6edda072",
+        "crates\\loomward-catalog\\src\\crashpoint.rs": "36f53310299f0b533279eb1fe46d5904b8a2b72f826cfcd24c6fdb4eee74a606",
+        "crates\\loomward-catalog\\src\\db.rs": "1f39f59ef0602bbe12dad161c62def3380ac91c679fb47662b2c8e74d712fa5e",
+        "crates\\loomward-catalog\\src\\developer-clutter.sql": "aa6a15106b1cf88616ff3ea4f478815104d3a02ec72cca33b9aa8c0c391a7158",
+        "crates\\loomward-catalog\\src\\developer_clutter.rs": "e7b0b8183c1ae39ef10575889cd1529cf4eced6861fa7ededfe9bd8409d41580",
+        "crates\\loomward-catalog\\src\\duplicates.rs": "9ea65e4b404fb2938859295c7aa6ae1f9857e52a41cfd226ceb8ab32bfe26eb7",
+        "crates\\loomward-catalog\\src\\lib.rs": "d335f2e7b8aadaff6d6648d23b932e2b360cfdf87f7f590380184cf2005e6575",
+        "crates\\loomward-catalog\\src\\model.rs": "065a4dd6b965fa169efa86c27bce329185d72b92bfa8e8b16020e9ed7666addc",
+        "crates\\loomward-catalog\\src\\query.rs": "009a1a5c45efd488879b4e766caeb14c324619cf6b3d1ceb03185018e6d56259",
+        "crates\\loomward-catalog\\src\\reference-publication.sql": "c902b6f423949c509dc86c39c7b3cd966b9c9a3698228a612953696a2e030df1",
+        "crates\\loomward-catalog\\src\\root-forgotten.sql": "a0ff49d12a35abe01259121ed5995a45d4468e921fd90bb268376f3890e9b669",
+        "crates\\loomward-catalog\\src\\search\\analyze.rs": "dd08206c8e1367958ddfa4e3c1a43ab84dd6480e9baf82249539e91dd37c0041",
+        "crates\\loomward-catalog\\src\\search\\rank.rs": "d27f01d1d445f3573da0ececef24b89bae104c40cd7ad91a1e21daa1a156b2a5",
+        "crates\\loomward-catalog\\src\\search\\tokens.rs": "1189e2e73f086ffe06f071a649f567856a346c1872ca155ba45f47cc4e3206b0",
+        "crates\\loomward-catalog\\src\\search-token.sql": "fc5f69d3097db97e949d91e46b9112fc73091c54b17dac3739d4ce21cd039bd7",
+        "crates\\loomward-catalog\\src\\search.rs": "d96950b008d158fbeb7e42896020d1eb372d35c0a85a38c7addd03956aba2a3f",
+        "crates\\loomward-catalog\\src\\search.sql": "7c17f97a5f754963a4ef9a9ca2e9c57dc218e5c606b5caa27401699487b3bbfb",
+        "crates\\loomward-catalog\\src\\slice.rs": "869c3e0553ae69405781d05fd2be729ffbf6e0fe9319d348e54b11d6e84bfdce",
+        "crates\\loomward-catalog\\src\\state.sql": "60932761d538052e2b0ba39cde601ba00b6bc8cf5c4482c6016cf7a7c20a4362",
+        "crates\\loomward-catalog\\src\\test_watchdog.rs": "2bd66ccf99c46f6803ec6b57516094c38cf7c8a8a8ef5c64a83771626e60112a",
+        "crates\\loomward-catalog\\src\\writer\\bulk_tests.rs": "4b34047aab27a5adcfdffd73d8a61cc8e6e06699611f0d39a9262082c2c760c2",
+        "crates\\loomward-catalog\\src\\writer\\full_disk_tests.rs": "88df35179f052e679c2746c59c88217887490a57baca9aee1a4f93860e7ee6a9",
+        "crates\\loomward-catalog\\src\\writer\\publication_tests.rs": "30d27d6ee6f119d65f2f647cafb2ed6faed983bea5d239e7f50e87fa854951a9",
+        "crates\\loomward-catalog\\src\\writer.rs": "3a20490e8c44e0e0809a7cacbefea9ac09f038f3773bcd6aa5ee45891c2065f1"
+      },
+      "cargo_target_dir": "C:\\lw\\target\\lane-catalog-fix",
+      "bench_sha256": "b4efc44a2029388e076a80821220151be7cbaf8d4372b594fef76428ec952437",
+      "catalog_perf_sha256": "15938e2b5890be52f177c15b576bea207fa95aed75e6bad1af0d6e2fe949ae15",
+      "memory_bounds_sha256": "dce8c898377f0cc02cd0d276de94e44a8659a5b88f7c1be9503eee58b70b6056"
+    }
+  },
+  "harness_sha256": {
+    "bench": "19d286312bf4bde4a8d74389bbbf067abb747e6c8f0062e72fe6d4a58ed5dd3c",
+    "catalog_perf": "8f2de20a573ef0365a70ebca177fe304d9ca2f492799b3d29afc5d1198b333aa",
+    "memory_bounds": "092c4ff9a50bc9ad85a6c37c7ed7667115800db3103d2c55abcf98dcee97f9c4"
+  },
+  "cargo_lock_sha256": "16c575de936e9a76f973e60d0d0d0b103ff9574ce150833e2d4fc66ac68eac79",
+  "runs": [
+    {
+      "round": 1,
+      "workload": "bench",
+      "variant": "a-main",
+      "exit_code": 0,
+      "peak_rss_bytes": 573108224,
+      "peak_private_bytes": 588230656,
+      "wall_seconds": 22.802574100001948,
+      "result": {
+        "P4": {
+          "insert_seconds": 5.1456527,
+          "met": false,
+          "met_basis": "through_end_run_rows_per_second",
+          "rows_per_second": 194533.33879295818,
+          "target_rows_per_second": 250000,
+          "through_end_run_rows_per_second": 61359.5013302984
+        },
+        "finalise_seconds": 11.1680555,
+        "oracle": {
+          "allocated_known_bytes": "496873078784",
+          "allocation_unknown_files": 10310,
+          "logical_bytes": "500000500000",
+          "matched": true
+        },
+        "all_schema_indexes_present": true,
+        "temporary_directory_removed": true,
+        "phases": {
+          "finalise_memory_high_water": {
+            "peak_pagefile_bytes": 588230656,
+            "peak_working_set_bytes": 573108224,
+            "scope": "process high-water through publication/queries; before isolated index probe"
+          },
+          "publication_memory_high_water": {
+            "peak_pagefile_bytes": 112254976,
+            "peak_working_set_bytes": 116273152,
+            "scope": "process high-water through publication/queries; before isolated index probe"
+          }
+        }
+      }
+    },
+    {
+      "round": 1,
+      "workload": "bench",
+      "variant": "b-head-file",
+      "exit_code": 0,
+      "peak_rss_bytes": 342212608,
+      "peak_private_bytes": 345690112,
+      "wall_seconds": 28.923412000003736,
+      "result": {
+        "P4": {
+          "insert_seconds": 4.9167754,
+          "met": false,
+          "met_basis": "through_end_run_rows_per_second",
+          "rows_per_second": 203588.92130805895,
+          "target_rows_per_second": 250000,
+          "through_end_run_rows_per_second": 47135.827278830264
+        },
+        "finalise_seconds": 16.3197459,
+        "oracle": {
+          "allocated_known_bytes": "496873078784",
+          "allocation_unknown_files": 10310,
+          "logical_bytes": "500000500000",
+          "matched": true
+        },
+        "all_schema_indexes_present": true,
+        "temporary_directory_removed": true,
+        "phases": {
+          "finalise_memory_high_water": {
+            "peak_pagefile_bytes": 345690112,
+            "peak_working_set_bytes": 342212608,
+            "scope": "process high-water through publication/queries; before isolated index probe"
+          },
+          "publication_memory_high_water": {
+            "peak_pagefile_bytes": 111128576,
+            "peak_working_set_bytes": 115388416,
+            "scope": "process high-water through publication/queries; before isolated index probe"
+          }
+        }
+      }
+    },
+    {
+      "round": 1,
+      "workload": "bench",
+      "variant": "c-head-memory",
+      "exit_code": 0,
+      "peak_rss_bytes": 423288832,
+      "peak_private_bytes": 432574464,
+      "wall_seconds": 28.435368400008883,
+      "result": {
+        "P4": {
+          "insert_seconds": 6.1607031,
+          "met": false,
+          "met_basis": "through_end_run_rows_per_second",
+          "rows_per_second": 162481.6167492311,
+          "target_rows_per_second": 250000,
+          "through_end_run_rows_per_second": 43971.94752448374
+        },
+        "finalise_seconds": 16.6038333,
+        "oracle": {
+          "allocated_known_bytes": "496873078784",
+          "allocation_unknown_files": 10310,
+          "logical_bytes": "500000500000",
+          "matched": true
+        },
+        "all_schema_indexes_present": true,
+        "temporary_directory_removed": true,
+        "phases": {
+          "finalise_memory_high_water": {
+            "peak_pagefile_bytes": 432574464,
+            "peak_working_set_bytes": 423288832,
+            "scope": "process high-water through publication/queries; before isolated index probe"
+          },
+          "publication_memory_high_water": {
+            "peak_pagefile_bytes": 112156672,
+            "peak_working_set_bytes": 116117504,
+            "scope": "process high-water through publication/queries; before isolated index probe"
+          }
+        }
+      }
+    },
+    {
+      "round": 1,
+      "workload": "catalog_perf",
+      "variant": "a-main",
+      "exit_code": 0,
+      "peak_rss_bytes": 538443776,
+      "peak_private_bytes": 550440960,
+      "wall_seconds": 29.13094020000426,
+      "result": {
+        "files": 1000000,
+        "bulk_listing_s": 3.2108066,
+        "bulk_end_s": 12.3454905,
+        "duplicate_large_errors": [
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget"
+        ]
+      }
+    },
+    {
+      "round": 1,
+      "workload": "catalog_perf",
+      "variant": "b-head-file",
+      "exit_code": 0,
+      "peak_rss_bytes": 349286400,
+      "peak_private_bytes": 353320960,
+      "wall_seconds": 33.43727090000175,
+      "result": {
+        "files": 1000000,
+        "bulk_listing_s": 3.3778401000000002,
+        "bulk_end_s": 12.5691357,
+        "duplicate_large_errors": [
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget"
+        ]
+      }
+    },
+    {
+      "round": 1,
+      "workload": "catalog_perf",
+      "variant": "c-head-memory",
+      "exit_code": 0,
+      "peak_rss_bytes": 389332992,
+      "peak_private_bytes": 396132352,
+      "wall_seconds": 40.05588059997535,
+      "result": {
+        "files": 1000000,
+        "bulk_listing_s": 2.5476979,
+        "bulk_end_s": 16.3931173,
+        "duplicate_large_errors": [
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget"
+        ]
+      }
+    },
+    {
+      "round": 1,
+      "workload": "rollup",
+      "variant": "a-main",
+      "exit_code": 0,
+      "peak_rss_bytes": 534441984,
+      "peak_private_bytes": 546017280,
+      "wall_seconds": 22.009320900018793,
+      "result": {
+        "case": "rollup",
+        "rows": 1000000,
+        "seconds": 21.8170845,
+        "totals": [
+          1000000,
+          1000000,
+          1000000
+        ]
+      }
+    },
+    {
+      "round": 1,
+      "workload": "rollup",
+      "variant": "b-head-file",
+      "exit_code": 0,
+      "peak_rss_bytes": 195633152,
+      "peak_private_bytes": 194596864,
+      "wall_seconds": 57.21147799998289,
+      "result": {
+        "case": "rollup",
+        "rows": 1000000,
+        "seconds": 56.8867653,
+        "totals": [
+          1000000,
+          1000000,
+          1000000
+        ]
+      }
+    },
+    {
+      "round": 1,
+      "workload": "rollup",
+      "variant": "c-head-memory",
+      "exit_code": 0,
+      "peak_rss_bytes": 342228992,
+      "peak_private_bytes": 345952256,
+      "wall_seconds": 45.5643411000201,
+      "result": {
+        "case": "rollup",
+        "rows": 1000000,
+        "seconds": 45.3919377,
+        "totals": [
+          1000000,
+          1000000,
+          1000000
+        ]
+      }
+    },
+    {
+      "round": 1,
+      "workload": "listing",
+      "variant": "a-main",
+      "exit_code": 0,
+      "peak_rss_bytes": 2193883136,
+      "peak_private_bytes": 2241200128,
+      "wall_seconds": 86.87063260001014,
+      "result": {
+        "case": "listing",
+        "rows": 1000000,
+        "seconds": 86.2647962,
+        "totals": [
+          1000000,
+          1000000,
+          0
+        ]
+      }
+    },
+    {
+      "round": 1,
+      "workload": "listing",
+      "variant": "b-head-file",
+      "exit_code": 0,
+      "peak_rss_bytes": 371089408,
+      "peak_private_bytes": 435499008,
+      "wall_seconds": 84.46539370002574,
+      "result": {
+        "case": "listing",
+        "rows": 1000000,
+        "seconds": 84.0101801,
+        "totals": [
+          1000000,
+          1000000,
+          0
+        ]
+      }
+    },
+    {
+      "round": 1,
+      "workload": "listing",
+      "variant": "c-head-memory",
+      "exit_code": 0,
+      "peak_rss_bytes": 2013790208,
+      "peak_private_bytes": 2056536064,
+      "wall_seconds": 71.3070044000051,
+      "result": {
+        "case": "listing",
+        "rows": 1000000,
+        "seconds": 70.8861685,
+        "totals": [
+          1000000,
+          1000000,
+          0
+        ]
+      }
+    },
+    {
+      "round": 2,
+      "workload": "bench",
+      "variant": "a-main",
+      "exit_code": 0,
+      "peak_rss_bytes": 573366272,
+      "peak_private_bytes": 588668928,
+      "wall_seconds": 21.79774839998572,
+      "result": {
+        "P4": {
+          "insert_seconds": 4.4414784,
+          "met": false,
+          "met_basis": "through_end_run_rows_per_second",
+          "rows_per_second": 225375.631681559,
+          "target_rows_per_second": 250000,
+          "through_end_run_rows_per_second": 60623.91723430017
+        },
+        "finalise_seconds": 12.0701732,
+        "oracle": {
+          "allocated_known_bytes": "496873078784",
+          "allocation_unknown_files": 10310,
+          "logical_bytes": "500000500000",
+          "matched": true
+        },
+        "all_schema_indexes_present": true,
+        "temporary_directory_removed": true,
+        "phases": {
+          "finalise_memory_high_water": {
+            "peak_pagefile_bytes": 588668928,
+            "peak_working_set_bytes": 573366272,
+            "scope": "process high-water through publication/queries; before isolated index probe"
+          },
+          "publication_memory_high_water": {
+            "peak_pagefile_bytes": 112791552,
+            "peak_working_set_bytes": 116232192,
+            "scope": "process high-water through publication/queries; before isolated index probe"
+          }
+        }
+      }
+    },
+    {
+      "round": 2,
+      "workload": "bench",
+      "variant": "b-head-file",
+      "exit_code": 0,
+      "peak_rss_bytes": 342331392,
+      "peak_private_bytes": 347967488,
+      "wall_seconds": 25.005082099989522,
+      "result": {
+        "P4": {
+          "insert_seconds": 5.2924441,
+          "met": false,
+          "met_basis": "through_end_run_rows_per_second",
+          "rows_per_second": 189137.75584327854,
+          "target_rows_per_second": 250000,
+          "through_end_run_rows_per_second": 49894.76476887425
+        },
+        "finalise_seconds": 14.769801,
+        "oracle": {
+          "allocated_known_bytes": "496873078784",
+          "allocation_unknown_files": 10310,
+          "logical_bytes": "500000500000",
+          "matched": true
+        },
+        "all_schema_indexes_present": true,
+        "temporary_directory_removed": true,
+        "phases": {
+          "finalise_memory_high_water": {
+            "peak_pagefile_bytes": 347967488,
+            "peak_working_set_bytes": 342331392,
+            "scope": "process high-water through publication/queries; before isolated index probe"
+          },
+          "publication_memory_high_water": {
+            "peak_pagefile_bytes": 112168960,
+            "peak_working_set_bytes": 115703808,
+            "scope": "process high-water through publication/queries; before isolated index probe"
+          }
+        }
+      }
+    },
+    {
+      "round": 2,
+      "workload": "bench",
+      "variant": "c-head-memory",
+      "exit_code": 0,
+      "peak_rss_bytes": 422555648,
+      "peak_private_bytes": 432394240,
+      "wall_seconds": 22.438282700022683,
+      "result": {
+        "P4": {
+          "insert_seconds": 4.6149368,
+          "met": false,
+          "met_basis": "through_end_run_rows_per_second",
+          "rows_per_second": 216904.59552988896,
+          "target_rows_per_second": 250000,
+          "through_end_run_rows_per_second": 62650.59520071384
+        },
+        "finalise_seconds": 11.362581,
+        "oracle": {
+          "allocated_known_bytes": "496873078784",
+          "allocation_unknown_files": 10310,
+          "logical_bytes": "500000500000",
+          "matched": true
+        },
+        "all_schema_indexes_present": true,
+        "temporary_directory_removed": true,
+        "phases": {
+          "finalise_memory_high_water": {
+            "peak_pagefile_bytes": 432394240,
+            "peak_working_set_bytes": 422555648,
+            "scope": "process high-water through publication/queries; before isolated index probe"
+          },
+          "publication_memory_high_water": {
+            "peak_pagefile_bytes": 111943680,
+            "peak_working_set_bytes": 115638272,
+            "scope": "process high-water through publication/queries; before isolated index probe"
+          }
+        }
+      }
+    },
+    {
+      "round": 2,
+      "workload": "catalog_perf",
+      "variant": "a-main",
+      "exit_code": 0,
+      "peak_rss_bytes": 537677824,
+      "peak_private_bytes": 550543360,
+      "wall_seconds": 23.608126200007973,
+      "result": {
+        "files": 1000000,
+        "bulk_listing_s": 3.1827127,
+        "bulk_end_s": 8.6380958,
+        "duplicate_large_errors": [
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget"
+        ]
+      }
+    },
+    {
+      "round": 2,
+      "workload": "catalog_perf",
+      "variant": "b-head-file",
+      "exit_code": 0,
+      "peak_rss_bytes": 349519872,
+      "peak_private_bytes": 354488320,
+      "wall_seconds": 25.00827560000471,
+      "result": {
+        "files": 1000000,
+        "bulk_listing_s": 2.9127708,
+        "bulk_end_s": 9.7672691,
+        "duplicate_large_errors": [
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget"
+        ]
+      }
+    },
+    {
+      "round": 2,
+      "workload": "catalog_perf",
+      "variant": "c-head-memory",
+      "exit_code": 0,
+      "peak_rss_bytes": 388583424,
+      "peak_private_bytes": 395882496,
+      "wall_seconds": 31.43051700000069,
+      "result": {
+        "files": 1000000,
+        "bulk_listing_s": 2.5152737,
+        "bulk_end_s": 9.4407274,
+        "duplicate_large_errors": [
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget"
+        ]
+      }
+    },
+    {
+      "round": 2,
+      "workload": "rollup",
+      "variant": "a-main",
+      "exit_code": 0,
+      "peak_rss_bytes": 533606400,
+      "peak_private_bytes": 545693696,
+      "wall_seconds": 16.573516300006304,
+      "result": {
+        "case": "rollup",
+        "rows": 1000000,
+        "seconds": 16.433825,
+        "totals": [
+          1000000,
+          1000000,
+          1000000
+        ]
+      }
+    },
+    {
+      "round": 2,
+      "workload": "rollup",
+      "variant": "b-head-file",
+      "exit_code": 0,
+      "peak_rss_bytes": 195981312,
+      "peak_private_bytes": 195842048,
+      "wall_seconds": 49.806680399982724,
+      "result": {
+        "case": "rollup",
+        "rows": 1000000,
+        "seconds": 49.649202,
+        "totals": [
+          1000000,
+          1000000,
+          1000000
+        ]
+      }
+    },
+    {
+      "round": 2,
+      "workload": "rollup",
+      "variant": "c-head-memory",
+      "exit_code": 0,
+      "peak_rss_bytes": 341512192,
+      "peak_private_bytes": 346079232,
+      "wall_seconds": 40.367225699999835,
+      "result": {
+        "case": "rollup",
+        "rows": 1000000,
+        "seconds": 40.2154055,
+        "totals": [
+          1000000,
+          1000000,
+          1000000
+        ]
+      }
+    },
+    {
+      "round": 2,
+      "workload": "listing",
+      "variant": "a-main",
+      "exit_code": 0,
+      "peak_rss_bytes": 2187898880,
+      "peak_private_bytes": 2233663488,
+      "wall_seconds": 141.76675989999785,
+      "result": {
+        "case": "listing",
+        "rows": 1000000,
+        "seconds": 140.9894827,
+        "totals": [
+          1000000,
+          1000000,
+          0
+        ]
+      }
+    },
+    {
+      "round": 2,
+      "workload": "listing",
+      "variant": "b-head-file",
+      "exit_code": 0,
+      "peak_rss_bytes": 369049600,
+      "peak_private_bytes": 433340416,
+      "wall_seconds": 321.9461847000057,
+      "result": {
+        "case": "listing",
+        "rows": 1000000,
+        "seconds": 321.1920278,
+        "totals": [
+          1000000,
+          1000000,
+          0
+        ]
+      }
+    },
+    {
+      "round": 2,
+      "workload": "listing",
+      "variant": "c-head-memory",
+      "exit_code": 0,
+      "peak_rss_bytes": 2013757440,
+      "peak_private_bytes": 2048000000,
+      "wall_seconds": 109.98127059999388,
+      "result": {
+        "case": "listing",
+        "rows": 1000000,
+        "seconds": 109.2030257,
+        "totals": [
+          1000000,
+          1000000,
+          0
+        ]
+      }
+    },
+    {
+      "round": 3,
+      "workload": "bench",
+      "variant": "a-main",
+      "exit_code": 0,
+      "peak_rss_bytes": 573485056,
+      "peak_private_bytes": 589279232,
+      "wall_seconds": 46.289151899982244,
+      "result": {
+        "P4": {
+          "insert_seconds": 7.5828792,
+          "met": false,
+          "met_basis": "through_end_run_rows_per_second",
+          "rows_per_second": 132008.03726373488,
+          "target_rows_per_second": 250000,
+          "through_end_run_rows_per_second": 30765.113690458536
+        },
+        "finalise_seconds": 24.9540069,
+        "oracle": {
+          "allocated_known_bytes": "496873078784",
+          "allocation_unknown_files": 10310,
+          "logical_bytes": "500000500000",
+          "matched": true
+        },
+        "all_schema_indexes_present": true,
+        "temporary_directory_removed": true,
+        "phases": {
+          "finalise_memory_high_water": {
+            "peak_pagefile_bytes": 589279232,
+            "peak_working_set_bytes": 573485056,
+            "scope": "process high-water through publication/queries; before isolated index probe"
+          },
+          "publication_memory_high_water": {
+            "peak_pagefile_bytes": 112644096,
+            "peak_working_set_bytes": 116682752,
+            "scope": "process high-water through publication/queries; before isolated index probe"
+          }
+        }
+      }
+    },
+    {
+      "round": 3,
+      "workload": "bench",
+      "variant": "b-head-file",
+      "exit_code": 0,
+      "peak_rss_bytes": 342179840,
+      "peak_private_bytes": 347090944,
+      "wall_seconds": 38.628772399999434,
+      "result": {
+        "P4": {
+          "insert_seconds": 8.7222273,
+          "met": false,
+          "met_basis": "through_end_run_rows_per_second",
+          "rows_per_second": 114764.37904799843,
+          "target_rows_per_second": 250000,
+          "through_end_run_rows_per_second": 32066.705395049932
+        },
+        "finalise_seconds": 22.4939824,
+        "oracle": {
+          "allocated_known_bytes": "496873078784",
+          "allocation_unknown_files": 10310,
+          "logical_bytes": "500000500000",
+          "matched": true
+        },
+        "all_schema_indexes_present": true,
+        "temporary_directory_removed": true,
+        "phases": {
+          "finalise_memory_high_water": {
+            "peak_pagefile_bytes": 347090944,
+            "peak_working_set_bytes": 342179840,
+            "scope": "process high-water through publication/queries; before isolated index probe"
+          },
+          "publication_memory_high_water": {
+            "peak_pagefile_bytes": 111071232,
+            "peak_working_set_bytes": 114896896,
+            "scope": "process high-water through publication/queries; before isolated index probe"
+          }
+        }
+      }
+    },
+    {
+      "round": 3,
+      "workload": "bench",
+      "variant": "c-head-memory",
+      "exit_code": 0,
+      "peak_rss_bytes": 423190528,
+      "peak_private_bytes": 433070080,
+      "wall_seconds": 32.952000199991744,
+      "result": {
+        "P4": {
+          "insert_seconds": 5.8566912,
+          "met": false,
+          "met_basis": "through_end_run_rows_per_second",
+          "rows_per_second": 170915.78944780288,
+          "target_rows_per_second": 250000,
+          "through_end_run_rows_per_second": 39436.18291381609
+        },
+        "finalise_seconds": 19.5261153,
+        "oracle": {
+          "allocated_known_bytes": "496873078784",
+          "allocation_unknown_files": 10310,
+          "logical_bytes": "500000500000",
+          "matched": true
+        },
+        "all_schema_indexes_present": true,
+        "temporary_directory_removed": true,
+        "phases": {
+          "finalise_memory_high_water": {
+            "peak_pagefile_bytes": 433070080,
+            "peak_working_set_bytes": 423190528,
+            "scope": "process high-water through publication/queries; before isolated index probe"
+          },
+          "publication_memory_high_water": {
+            "peak_pagefile_bytes": 112635904,
+            "peak_working_set_bytes": 116432896,
+            "scope": "process high-water through publication/queries; before isolated index probe"
+          }
+        }
+      }
+    },
+    {
+      "round": 3,
+      "workload": "catalog_perf",
+      "variant": "a-main",
+      "exit_code": 0,
+      "peak_rss_bytes": 538849280,
+      "peak_private_bytes": 550334464,
+      "wall_seconds": 33.046996199991554,
+      "result": {
+        "files": 1000000,
+        "bulk_listing_s": 3.4144527,
+        "bulk_end_s": 14.8429639,
+        "duplicate_large_errors": [
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget"
+        ]
+      }
+    },
+    {
+      "round": 3,
+      "workload": "catalog_perf",
+      "variant": "b-head-file",
+      "exit_code": 0,
+      "peak_rss_bytes": 348024832,
+      "peak_private_bytes": 352456704,
+      "wall_seconds": 34.84597729999223,
+      "result": {
+        "files": 1000000,
+        "bulk_listing_s": 5.2030017,
+        "bulk_end_s": 12.9913984,
+        "duplicate_large_errors": [
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget"
+        ]
+      }
+    },
+    {
+      "round": 3,
+      "workload": "catalog_perf",
+      "variant": "c-head-memory",
+      "exit_code": 0,
+      "peak_rss_bytes": 388747264,
+      "peak_private_bytes": 396611584,
+      "wall_seconds": 42.98879200001829,
+      "result": {
+        "files": 1000000,
+        "bulk_listing_s": 4.1229212,
+        "bulk_end_s": 13.7403304,
+        "duplicate_large_errors": [
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget"
+        ]
+      }
+    },
+    {
+      "round": 3,
+      "workload": "rollup",
+      "variant": "a-main",
+      "exit_code": 0,
+      "peak_rss_bytes": 534040576,
+      "peak_private_bytes": 546029568,
+      "wall_seconds": 24.022643700009212,
+      "result": {
+        "case": "rollup",
+        "rows": 1000000,
+        "seconds": 22.4987333,
+        "totals": [
+          1000000,
+          1000000,
+          1000000
+        ]
+      }
+    },
+    {
+      "round": 3,
+      "workload": "rollup",
+      "variant": "b-head-file",
+      "exit_code": 0,
+      "peak_rss_bytes": 195788800,
+      "peak_private_bytes": 194969600,
+      "wall_seconds": 54.64722179999808,
+      "result": {
+        "case": "rollup",
+        "rows": 1000000,
+        "seconds": 54.4478439,
+        "totals": [
+          1000000,
+          1000000,
+          1000000
+        ]
+      }
+    },
+    {
+      "round": 3,
+      "workload": "rollup",
+      "variant": "c-head-memory",
+      "exit_code": 0,
+      "peak_rss_bytes": 341508096,
+      "peak_private_bytes": 346071040,
+      "wall_seconds": 40.88233909997507,
+      "result": {
+        "case": "rollup",
+        "rows": 1000000,
+        "seconds": 40.6400419,
+        "totals": [
+          1000000,
+          1000000,
+          1000000
+        ]
+      }
+    },
+    {
+      "round": 3,
+      "workload": "listing",
+      "variant": "a-main",
+      "exit_code": 0,
+      "peak_rss_bytes": 2194821120,
+      "peak_private_bytes": 2234576896,
+      "wall_seconds": 92.29362939999555,
+      "result": {
+        "case": "listing",
+        "rows": 1000000,
+        "seconds": 91.4940647,
+        "totals": [
+          1000000,
+          1000000,
+          0
+        ]
+      }
+    },
+    {
+      "round": 3,
+      "workload": "listing",
+      "variant": "b-head-file",
+      "exit_code": 0,
+      "peak_rss_bytes": 369774592,
+      "peak_private_bytes": 434147328,
+      "wall_seconds": 131.3216104999883,
+      "result": {
+        "case": "listing",
+        "rows": 1000000,
+        "seconds": 129.0540717,
+        "totals": [
+          1000000,
+          1000000,
+          0
+        ]
+      }
+    },
+    {
+      "round": 3,
+      "workload": "listing",
+      "variant": "c-head-memory",
+      "exit_code": 0,
+      "peak_rss_bytes": 2016837632,
+      "peak_private_bytes": 2050576384,
+      "wall_seconds": 136.22185309999622,
+      "result": {
+        "case": "listing",
+        "rows": 1000000,
+        "seconds": 132.9965678,
+        "totals": [
+          1000000,
+          1000000,
+          0
+        ]
+      }
+    }
+  ],
+  "summary": {
+    "P4 insert rows/s (bench)": {
+      "a-main": {
+        "median": 194533.33879295818,
+        "min": 132008.03726373488,
+        "max": 225375.631681559
+      },
+      "b-head-file": {
+        "median": 189137.75584327854,
+        "min": 114764.37904799843,
+        "max": 203588.92130805895
+      },
+      "c-head-memory": {
+        "median": 170915.78944780288,
+        "min": 162481.6167492311,
+        "max": 216904.59552988896
+      }
+    },
+    "Through EndRun rows/s (bench)": {
+      "a-main": {
+        "median": 60623.91723430017,
+        "min": 30765.113690458536,
+        "max": 61359.5013302984
+      },
+      "b-head-file": {
+        "median": 47135.827278830264,
+        "min": 32066.705395049932,
+        "max": 49894.76476887425
+      },
+      "c-head-memory": {
+        "median": 43971.94752448374,
+        "min": 39436.18291381609,
+        "max": 62650.59520071384
+      }
+    },
+    "Listing files/s (catalog_perf)": {
+      "a-main": {
+        "median": 311448.2198958978,
+        "min": 292872.705485128,
+        "max": 314197.38262897555
+      },
+      "b-head-file": {
+        "median": 296047.16931390564,
+        "min": 192196.74673563917,
+        "max": 343315.718490449
+      },
+      "c-head-memory": {
+        "median": 392511.2157136056,
+        "min": 242546.4740873534,
+        "max": 397571.0476358895
+      }
+    },
+    "Through EndRun files/s (catalog_perf)": {
+      "a-main": {
+        "median": 64282.64988587805,
+        "min": 54772.26170103387,
+        "max": 84596.582374209
+      },
+      "b-head-file": {
+        "median": 62707.814481037836,
+        "min": 54961.96601722527,
+        "max": 78864.10515159341
+      },
+      "c-head-memory": {
+        "median": 55980.849533575405,
+        "min": 52796.03805014686,
+        "max": 83640.00568718583
+      }
+    },
+    "P4 publication peak RSS MiB (bench)": {
+      "a-main": {
+        "median": 110.88671875,
+        "min": 110.84765625,
+        "max": 111.27734375
+      },
+      "b-head-file": {
+        "median": 110.04296875,
+        "min": 109.57421875,
+        "max": 110.34375
+      },
+      "c-head-memory": {
+        "median": 110.73828125,
+        "min": 110.28125,
+        "max": 111.0390625
+      }
+    },
+    "P4 through EndRun peak RSS MiB (bench)": {
+      "a-main": {
+        "median": 546.8046875,
+        "min": 546.55859375,
+        "max": 546.91796875
+      },
+      "b-head-file": {
+        "median": 326.359375,
+        "min": 326.328125,
+        "max": 326.47265625
+      },
+      "c-head-memory": {
+        "median": 403.5859375,
+        "min": 402.98046875,
+        "max": 403.6796875
+      }
+    },
+    "Rollup peak RSS MiB": {
+      "a-main": {
+        "median": 509.30078125,
+        "min": 508.88671875,
+        "max": 509.68359375
+      },
+      "b-head-file": {
+        "median": 186.71875,
+        "min": 186.5703125,
+        "max": 186.90234375
+      },
+      "c-head-memory": {
+        "median": 325.69140625,
+        "min": 325.6875,
+        "max": 326.375
+      }
+    },
+    "Rollup peak private commit MiB": {
+      "a-main": {
+        "median": 520.72265625,
+        "min": 520.4140625,
+        "max": 520.734375
+      },
+      "b-head-file": {
+        "median": 185.9375,
+        "min": 185.58203125,
+        "max": 186.76953125
+      },
+      "c-head-memory": {
+        "median": 330.0390625,
+        "min": 329.92578125,
+        "max": 330.046875
+      }
+    },
+    "Rollup seconds": {
+      "a-main": {
+        "median": 21.8170845,
+        "min": 16.433825,
+        "max": 22.4987333
+      },
+      "b-head-file": {
+        "median": 54.4478439,
+        "min": 49.649202,
+        "max": 56.8867653
+      },
+      "c-head-memory": {
+        "median": 40.6400419,
+        "min": 40.2154055,
+        "max": 45.3919377
+      }
+    },
+    "Long-name listing peak RSS MiB": {
+      "a-main": {
+        "median": 2092.25,
+        "min": 2086.54296875,
+        "max": 2093.14453125
+      },
+      "b-head-file": {
+        "median": 352.64453125,
+        "min": 351.953125,
+        "max": 353.8984375
+      },
+      "c-head-memory": {
+        "median": 1920.5,
+        "min": 1920.46875,
+        "max": 1923.40625
+      }
+    },
+    "Long-name listing peak private commit MiB": {
+      "a-main": {
+        "median": 2131.05859375,
+        "min": 2130.1875,
+        "max": 2137.375
+      },
+      "b-head-file": {
+        "median": 414.03515625,
+        "min": 413.265625,
+        "max": 415.32421875
+      },
+      "c-head-memory": {
+        "median": 1955.58203125,
+        "min": 1953.125,
+        "max": 1961.265625
+      }
+    },
+    "Long-name listing seconds": {
+      "a-main": {
+        "median": 91.4940647,
+        "min": 86.2647962,
+        "max": 140.9894827
+      },
+      "b-head-file": {
+        "median": 129.0540717,
+        "min": 84.0101801,
+        "max": 321.1920278
+      },
+      "c-head-memory": {
+        "median": 109.2030257,
+        "min": 70.8861685,
+        "max": 132.9965678
+      }
+    }
+  },
+  "decision": {
+    "p4_insert_loss_percent": 2.7736032204855876,
+    "through_end_run_loss_percent": 22.248793167457237,
+    "memory_variant_all_listing_runs_over_600_mib": true,
+    "retain_file": true
+  }
+}

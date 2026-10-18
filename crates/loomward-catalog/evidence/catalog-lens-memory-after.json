@@ -1,0 +1,22 @@
+[
+    {
+        "case":  "rollup",
+        "rows":  1000000,
+        "peak_rss_bytes":  196014080,
+        "limit_bytes":  419430400,
+        "within_limit":  true,
+        "exit_code":  0,
+        "result":  "{\"case\":\"rollup\",\"rows\":1000000,\"seconds\":93.7826923,\"totals\":[1000000,1000000,1000000]}\n",
+        "progress":  ""
+    },
+    {
+        "case":  "listing",
+        "rows":  1000000,
+        "peak_rss_bytes":  370843648,
+        "limit_bytes":  419430400,
+        "within_limit":  true,
+        "exit_code":  0,
+        "result":  "{\"case\":\"listing\",\"rows\":1000000,\"seconds\":256.8625182,\"totals\":[1000000,1000000,0]}\n",
+        "progress":  "published pass 0: 132.875s\npublished pass 1: 247.225s\n"
+    }
+]
