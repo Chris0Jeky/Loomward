@@ -522,11 +522,12 @@ mod tests {
     use std::{collections::HashMap, path::PathBuf};
     type DirectoryRows = BTreeMap<Vec<u16>, (Option<FileIdObs>, u32, u64)>;
     type Rows = HashMap<FileIdObs, DirectoryRows>;
-    /// h2-scan finding 1: the watched reconcile's final publication takes the same fence.
+    /// h2-scan finding 1 on the watched path: the window between reconcile's last cancel check
+    /// and its final publication.
     #[test]
-    fn revocation_before_watched_publication_never_publishes_complete_coverage() {
+    fn revocation_before_watched_publication_ends_the_job_cancelled() {
         use super::super::tests::{revoke_at_publication, Tree};
-        revoke_at_publication("reconcile", |root, sink, cancel, options| {
+        revoke_at_publication("reconcile", |root, sink, cancel| {
             reconcile(
                 &Tree,
                 root,
@@ -534,7 +535,10 @@ mod tests {
                 sink,
                 Arc::new(ByteBudget::new(crate::budgets::SCAN_BYTES)),
                 cancel,
-                options,
+                ScanOptions {
+                    workers: 1,
+                    ..Default::default()
+                },
                 &Mutex::new(Dirty::default()),
                 || true,
             )
@@ -1497,6 +1501,7 @@ mod native_tests {
         let path = parent.join("root");
         std::fs::create_dir_all(&path).unwrap();
         std::fs::create_dir(parent.join("sibling")).unwrap();
+        std::fs::create_dir(tree.path().join("state")).unwrap();
         std::fs::write(path.join("before"), b"before").unwrap();
         let Some(root) = grant(&path) else { return };
         let engine = Engine::open(crate::EngineConfig::new(

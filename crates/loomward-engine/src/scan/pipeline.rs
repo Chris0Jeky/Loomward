@@ -37,8 +37,6 @@ pub struct ScanOptions {
     pub scope: RunScope,
     /// Loomward state path, opened metadata-only to obtain its exclusion identity.
     pub excluded_path: Option<PathBuf>,
-    /// The engine job's cancellation fence; a complete finish is published only under it.
-    pub(crate) fence: Option<crate::jobs::JobContext>,
 }
 impl Default for ScanOptions {
     fn default() -> Self {
@@ -49,7 +47,6 @@ impl Default for ScanOptions {
             max_listing_entries: 2_000_000,
             scope: RunScope::FullRoot,
             excluded_path: None,
-            fence: None,
         }
     }
 }
@@ -1007,26 +1004,31 @@ pub fn run_scan<S: DirSource>(
             .map_err(|_| EngineError::PermissionDenied {
                 message: "root open refused".into(),
             })?;
+    // The basis is part of the identity: the same IDs under another basis no longer bind what
+    // the grant bound (a verified root reading unverified, or the reverse), docs/41 admission.
     if root.expected.is_some_and(|e| {
         e.id != identity.id
             || e.volume_serial != identity.volume_serial
             || e.volume_guid != identity.volume_guid
+            || e.basis != identity.basis
     }) {
         sink.root_identity_changed(root.root_id());
         return Err(EngineError::PermissionDenied {
             message: "root_identity_changed".into(),
         });
     }
+    // A state path that cannot be opened or carries no ID fails closed: excluding nothing would
+    // count Loomward's own state as data and still call the coverage complete.
     let excluded = match &options.excluded_path {
-        Some(path) if path.exists() => vec![
-            source
-                .open_root(path)
-                .map_err(|_| EngineError::PermissionDenied {
-                    message: "state exclusion identity unavailable".into(),
-                })?
-                .1,
-        ],
-        _ => Vec::new(),
+        Some(path) => vec![source
+            .open_root(path)
+            .ok()
+            .map(|(_, state)| state)
+            .filter(|state| state.id.is_some())
+            .ok_or_else(|| EngineError::PermissionDenied {
+                message: "state exclusion identity unavailable".into(),
+            })?],
+        None => Vec::new(),
     };
     if excluded
         .iter()

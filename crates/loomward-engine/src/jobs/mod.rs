@@ -45,13 +45,6 @@ pub struct JobContext {
     registry: Weak<Registry>,
     events: Arc<Bus>,
 }
-impl std::fmt::Debug for JobContext {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("JobContext")
-            .field("job_id", &self.job_id)
-            .finish_non_exhaustive()
-    }
-}
 impl JobContext {
     /// Store and publish exact final scan counters. A missing wire strategy stays unknown.
     pub fn set_scan_report(&self, report: &crate::scan::ScanReport) -> EngineResult<()> {

@@ -379,20 +379,33 @@ fn scan_source_allows_identity_unverified_only_when_the_root_does() {
     }
 }
 
-/// #219: an identity-unverified root is scanned unwatched (the watch reopens by file ID); a
-/// verified root on the same watch-capable sink is watched.
+/// #219: an identity-unverified root is never watched (the watch reopens by file ID); a
+/// verified root on the same watch-capable sink is watched. On this NTFS host the unverified
+/// grant is forged, so its scan also ends `root_identity_changed` (h2-scan finding 2): the
+/// opened root's basis is not the grant's. It is still refused before any watch starts.
 #[cfg(windows)]
 #[test]
 fn identity_unverified_roots_are_never_watched() {
+    use loomward_protocol::JobState;
     use loomward_windows::enumerate::NativeSource;
     let temp = canonical_tempdir();
     if skip_elevated() {
         return;
     }
     let (_, id) = NativeSource::default().open_root(temp.path()).unwrap();
-    for (name, basis, watched) in [
-        ("rt_watch_verified", IdBasis::PostOpen, true),
-        ("rt_watch_unverified", IdBasis::Unverified, false),
+    for (name, basis, watched, end) in [
+        (
+            "rt_watch_verified",
+            IdBasis::PostOpen,
+            true,
+            JobState::Completed,
+        ),
+        (
+            "rt_watch_unverified",
+            IdBasis::Unverified,
+            false,
+            JobState::Failed,
+        ),
     ] {
         let root = GrantedRoot::new(
             RootId::new(name).unwrap(),
@@ -400,11 +413,15 @@ fn identity_unverified_roots_are_never_watched() {
             DatasetClass::Synthetic,
             OpenedIdentity { basis, ..id },
         );
-        let e = Engine::open(EngineConfig::new("unused".into(), DatasetClass::Synthetic)).unwrap();
+        let e = Engine::open(EngineConfig::new(
+            std::env::temp_dir(),
+            DatasetClass::Synthetic,
+        ))
+        .unwrap();
         e.set_scan_sink(Arc::new(MemorySink::default())).unwrap();
         let job = e.scan_start(&root, None).unwrap();
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        while e.job_status(&job.job_id).unwrap().state != loomward_protocol::JobState::Completed {
+        while e.job_status(&job.job_id).unwrap().state != end {
             assert!(std::time::Instant::now() < deadline, "{name}");
             std::thread::sleep(Duration::from_millis(2));
         }
@@ -1575,7 +1592,11 @@ fn native_scan_job_reports_exact_final_progress() {
         DatasetClass::Synthetic,
         identity,
     );
-    let e = Engine::open(EngineConfig::new("unused".into(), DatasetClass::Synthetic)).unwrap();
+    let e = Engine::open(EngineConfig::new(
+        std::env::temp_dir(),
+        DatasetClass::Synthetic,
+    ))
+    .unwrap();
     e.set_scan_sink(Arc::new(MemorySink::default())).unwrap();
     let job = e.scan_start(&root, None).unwrap();
     // A liveness bound only: the claim is the exact final counts, not how fast a loaded host scans.
@@ -2572,7 +2593,11 @@ fn a_sink_without_watch_support_scans_unwatched() {
         DatasetClass::Synthetic,
         identity,
     );
-    let e = Engine::open(EngineConfig::new("unused".into(), DatasetClass::Synthetic)).unwrap();
+    let e = Engine::open(EngineConfig::new(
+        std::env::temp_dir(),
+        DatasetClass::Synthetic,
+    ))
+    .unwrap();
     let sink = Arc::new(Unwatched(MemorySink::default()));
     e.set_scan_sink(sink.clone()).unwrap();
     let job = e.scan_start(&root, None).unwrap();
@@ -3022,32 +3047,25 @@ fn slow_grant_open_allows_state_writes_and_rechecks_the_grant() {
         }
     }
 }
-/// h2-scan finding 1: a revocation that lands after coverage was computed but before it was
-/// published must not leave a complete sweep. `at` names the publication point; `scan` runs one
-/// engine scan job with its cancellation fence in the options.
+/// h2-scan finding 1, as far as it reaches the engine: a revocation that lands after coverage
+/// was computed but before it was published still ends the job `Cancelled`, never `Complete`.
+/// The durable writer separately refuses that late finish (`EndRun` requires an active grant,
+/// and revocation commits durably before it cancels); the memory sink here has no grant.
 pub(super) fn revoke_at_publication(
     at: &'static str,
-    scan: impl Fn(
-            &GrantedRoot,
-            Arc<dyn ScanSink>,
-            Arc<AtomicBool>,
-            ScanOptions,
-        ) -> EngineResult<ScanReport>
+    scan: impl Fn(&GrantedRoot, Arc<dyn ScanSink>, Arc<AtomicBool>) -> EngineResult<ScanReport>
         + Send
         + Sync
         + 'static,
 ) {
-    use loomward_protocol::JobKind;
+    use loomward_protocol::{CoverageState, JobKind, JobState};
     use std::sync::{mpsc, Mutex};
     let e = Engine::open(EngineConfig::new("unused".into(), DatasetClass::Synthetic)).unwrap();
-    let sink = Arc::new(CompleteFinishes::default());
     let root = root();
     let root_id = root.root_id().clone();
     let (reached, at_publication) = mpsc::channel();
     let (go, wait) = mpsc::channel::<()>();
     let wait = Arc::new(Mutex::new(wait));
-    let (done, outcome) = mpsc::channel();
-    let job_sink = sink.clone();
     e.register_job_runner(
         JobKind::Scan,
         Arc::new(move |ctx, _| {
@@ -3063,91 +3081,47 @@ pub(super) fn revoke_at_publication(
                     }
                 }))
             });
-            let options = ScanOptions {
-                workers: 1,
-                fence: Some(ctx.clone()),
-                ..Default::default()
-            };
-            let report = scan(&root, job_sink.clone(), ctx.cancel.clone(), options);
-            done.send(report.as_ref().map(|r| r.complete).ok()).unwrap();
-            Ok(loomward_protocol::CoverageState::Partial)
+            // As the production runners do.
+            let report = scan(&root, Arc::new(MemorySink::default()), ctx.cancel.clone())?;
+            ctx.set_scan_report(&report)?;
+            Ok(if report.coverage_complete() {
+                CoverageState::Complete
+            } else {
+                CoverageState::Partial
+            })
         }),
     );
-    e.job_submit(crate::jobs::JobSpec::new(
-        JobKind::Scan,
-        Some(root_id.clone()),
-    ))
-    .unwrap();
+    let job = e
+        .job_submit(crate::jobs::JobSpec::new(
+            JobKind::Scan,
+            Some(root_id.clone()),
+        ))
+        .unwrap();
     at_publication.recv_timeout(Duration::from_secs(5)).unwrap();
     e.scan_cancel_root(&RootKey::Fixture(root_id.clone()), &root_id)
         .unwrap();
     go.send(()).unwrap();
-    let complete = outcome.recv_timeout(Duration::from_secs(5)).unwrap();
-    assert_ne!(
-        complete,
-        Some(true),
-        "{at}: a revoked scan reported complete"
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let job = loop {
+        let job = e.job_status(&job.job_id).unwrap();
+        if matches!(
+            job.state,
+            JobState::Cancelled | JobState::Completed | JobState::Failed
+        ) {
+            break job;
+        }
+        assert!(std::time::Instant::now() < deadline, "{at}: {job:?}");
+        std::thread::sleep(Duration::from_millis(2));
+    };
+    assert_eq!(
+        (job.state, job.coverage),
+        (JobState::Cancelled, Some(CoverageState::Cancelled)),
+        "{at}"
     );
-    assert!(
-        !sink.complete.load(Ordering::Acquire),
-        "{at}: a revoked root got a complete sweep"
-    );
-}
-/// A memory sink that remembers whether any finish authorised absence reconciliation.
-#[derive(Default)]
-struct CompleteFinishes {
-    memory: MemorySink,
-    complete: AtomicBool,
-}
-impl ScanSink for CompleteFinishes {
-    fn watch_dirty(&self, root: &RootId) -> EngineResult<()> {
-        self.memory.watch_dirty(root)
-    }
-    fn recover_interrupted(&self) -> EngineResult<()> {
-        self.memory.recover_interrupted()
-    }
-    fn begin_run(&self, root: &RootId, run: u64, scope: &RunScope) -> EngineResult<()> {
-        self.memory.begin_run(root, run, scope)
-    }
-    fn prepare_listing(
-        &self,
-        root: &RootId,
-        run: u64,
-        parent: Option<u64>,
-        name: &[u16],
-        identity: OpenedIdentity,
-    ) -> EngineResult<ListingTicket> {
-        self.memory
-            .prepare_listing(root, run, parent, name, identity)
-    }
-    fn refresh_listing(
-        &self,
-        root: &RootId,
-        run: u64,
-        ticket: ListingTicket,
-    ) -> EngineResult<ListingTicket> {
-        self.memory.refresh_listing(root, run, ticket)
-    }
-    fn consume(&self, root: &RootId, message: ScanMessage) -> EngineResult<()> {
-        self.memory.consume(root, message)
-    }
-    fn finish_run(
-        &self,
-        root: &RootId,
-        run: u64,
-        scope: &RunScope,
-        complete: bool,
-    ) -> EngineResult<()> {
-        self.complete.fetch_or(complete, Ordering::AcqRel);
-        self.memory.finish_run(root, run, scope, complete)
-    }
-    fn fence_root(&self, root: &RootId) -> EngineResult<()> {
-        self.memory.fence_root(root)
-    }
 }
 #[test]
-fn revocation_before_publication_never_publishes_complete_coverage() {
-    revoke_at_publication("run_scan", |root, sink, cancel, options| {
+fn revocation_before_publication_ends_the_job_cancelled() {
+    revoke_at_publication("run_scan", |root, sink, cancel| {
         run_scan(
             &Tree,
             root,
@@ -3155,7 +3129,10 @@ fn revocation_before_publication_never_publishes_complete_coverage() {
             sink,
             Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES)),
             cancel,
-            options,
+            ScanOptions {
+                workers: 1,
+                ..Default::default()
+            },
         )
     });
 }
