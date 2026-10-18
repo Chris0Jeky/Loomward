@@ -754,3 +754,224 @@ Checks ran on Windows with `CARGO_TARGET_DIR=C:/lw/target/fresh-583`,
 
 Hosted CI, non-Windows execution and app/Tauri/browser behaviour were not tested.
 No commit, push, PR mutation or merge was performed in this fix round.
+
+
+## Issue #592: bounded failed-watcher recovery (2026-10-17)
+
+Worktree `C:/lw/wt/watch-592`, branch `feat/592-watcher-restart`, starting HEAD
+`00bb610b4a50c8ab5449cd69efd507ff0ad03437` (includes #590). Windows 11 Home on
+KRASPYON. Changes are left uncommitted for the driver; no PR, push or merge.
+
+### Policy and changed boundary
+
+This supersedes the preceding note that watcher restart has no policy. The service's existing
+200 ms pump notices failed or missing watchers and waits 5 seconds before retrying. Backoff
+doubles to 600 seconds; a rolling queue permits at most 12 attempts per root per hour. A completed
+catch-up or full refresh resets the short delay, while retaining the rolling-hour history.
+No extra timer or background worker is introduced. The existing setup mutex serializes native
+replacement with other setup, removal and stop; the old watcher is joined outside the tracker
+mutex so its final callback can drain. Every replacement revalidates the grant and native identity.
+Removal discards pending retry state; stop halts the pump and clears all roots.
+
+A replacement uses the existing persisted-bookmark catch-up. If continuity is missing or the
+journal moved, wrapped or cannot be read, it schedules the existing full-root fallback. The stale
+timestamp remains, with optional fixed-token freshness `reason: watch_restarting`, until a
+completed catch-up/full pass proves coverage. Search never grants retry budget. Automatic scans
+wait while the watcher is unavailable, and successful native replacement grants a fresh bounded
+scan budget. Existing explicit-owner pre-emption and scan retry limits remain intact.
+
+The optional reason uses the existing bounded snake_case `UnknownReason` type. Its JSON Schema,
+Rust DTO and generated app type agree; the new synthetic DTO fixture exercises round-trip parity.
+No general effects, reach, capability gates or grant permissions changed. `HUMAN_TODO.md` and
+all driver-owned checkpoint/policy files are unchanged; this issue needs no new owner decision.
+
+### Test-first evidence
+
+Before production changes, `cargo test -p loomward-service f3_failed_watch -- --nocapture`
+ran the first two regressions: **1 passed, 1 failed**. The failure was
+`failed watch never restarted` after the synthetic clock reached the five-second deadline.
+The test seam is compiled only in service tests: it stops/removes a watch and records the same
+`RootDirty` hint; a second test-only hook forces replacement opens to fail.
+
+Seven new tests cover:
+
+- No restart before the deadline, stale reason/timestamp during recovery, missing-bookmark full
+  fallback, and `live` only after a completed pass.
+- A real Windows watcher failure: temporarily rename a synthetic granted root, wait for the
+  native watcher to report failure, restore it, change a synthetic file during the coverage gap,
+  replace the watch, and verify the refreshed catalogue contains the new size.
+- Repeated open failures at 5/10/20/40/80/160/320/600/600 seconds, no attempts between deadlines,
+  and the rolling-hour cap even when successful recovery repeatedly resets the short delay.
+- Concurrent restart entry cannot spend another attempt while native setup is in flight;
+  revocation fences the open and leaves no watcher.
+- Pending retries disappear on revoke and stop.
+- A scan begun during backoff cannot claim coverage after replacement. This extra regression
+  failed before the epoch fence (**0 passed, 1 failed**, `epoch-red.log`): the old implementation
+  let its publication clear stale state. Replacement now advances the epoch after native I/O is armed, invalidating
+  any pass begun while the watcher was unavailable; a later fully watched pass returns to live.
+
+Backoff/hourly-cap tests advance an injected `Instant`; they do not sleep for an hour or shorten
+production delays. The real native failure test uses the actual Windows API and a synthetic tree.
+
+### Verification
+
+Commands run from the lane worktree using `CARGO_TARGET_DIR=C:/lw/target/watch-592`,
+`CARGO_BUILD_JOBS=3`, `RUST_TEST_THREADS=3`; each Cargo command includes
+`--manifest-path C:/lw/wt/watch-592/Cargo.toml`. Full results follow below.
+
+
+| Command | Result |
+|---|---|
+| `cargo test -p loomward-service f3_failed_watch -- --nocapture` (completed implementation) | 6 passed, 0 failed (`restart-green.log`) |
+| `cargo test -p loomward-windows` | 122 passed, 0 failed (`windows.log`) |
+| `$env:PYTHONPATH='C:/lw/wt/watch-592/python'; py -3 -m unittest discover -s C:/lw/wt/watch-592/tests` (Python leg of `scripts/verify.py`) | 279 run, 278 passed, 1 existing skip (`python.log`) |
+| `npm.cmd --prefix app run check` | 416 files, 0 errors/warnings (`app-check.log`) |
+| `npm.cmd --prefix app run test` | 488 passed in 47 files (`app-test.log`) |
+| `npm.cmd --prefix app run build` | exit 0 (`app-build.log`) |
+| `py -3 scripts/test_app.py` | ALL PASS, 276 PASS messages; loopback only, no console/page errors or dialogs (`app-e2e.log`) |
+| `py -3 scripts/gen_contracts_ts.py --check` | generated type up to date |
+
+The first protocol run caught the fixture roster missing the new DTO example. Registering its
+filename in the existing exact-file-set test fixes the oversight without weakening the assertion.
+The app's dev-fixture build prints a large-chunk advisory; the production build and
+browser assertions pass. No unrelated UI/bundle work was added.
+
+
+| Final command after the epoch fix | Result |
+|---|---|
+| `cargo test -p loomward-service` (twice) | Each 323 passed, 0 failed, 1 existing ignored (322 unit + 1 integration); `service-final-1.log`, `service-final-2.log` |
+| `cargo test -p loomward-protocol` | 54 passed, 0 failed (`protocol-final.log`); schema/DTO parity and exact fixture roster pass |
+| `cargo fmt --all --check` | exit 0 (`fmt-final.log`) |
+| `cargo clippy --workspace --all-targets -- -D warnings` | exit 0 (`clippy-final.log`) |
+
+
+The native-open boundary has its own regression: a named test-only gate holds replacement
+immediately before `Watcher::start`, while a scan begins without coverage. Advancing the epoch
+before native open failed this test (**0 passed, 1 failed**, `native-arm-red.log`):
+`scan begun before native arm falsely went live`. The fence now advances only after native I/O
+is armed and installation is recorded under the tracker lock. Replay ignores only that expected
+single epoch increment; notifications delivered during startup still invalidate continuity.
+The first workspace attempt was deliberately cancelled to apply this correction; it is not a pass.
+The earlier six-test and 323-test receipts above predate this final boundary correction; final
+seven-test, service and workspace results are recorded below.
+
+
+The first seven-test run passed the native-arm regression but its backoff sibling's final,
+immediate `Live` checkpoint observed transient stale state under load (6 passed, 1 failed).
+That sibling passed alone (`backoff-isolated.log`, 1 passed). The three new positive recovery
+controls now resume the existing pump and use the established `f3_wait_live` settled-job/freshness
+oracle, which lets late checkpoint hints complete their bounded fallback. Their pre-repair stale
+assertions are unchanged, and no existing test, production delay or retry limit was weakened.
+
+
+### Final proof after native-arm fencing and fixture synchronization
+
+`cargo test -p loomward-service f3_failed_watch -- --nocapture`: **7 passed, 0 failed**
+(`restart-seven.log`). Subsequent commands below use the same lane target, three build jobs and
+three Rust test threads; the earlier Windows/protocol/Python/app checks exercise unchanged files.
+
+
+The first full service run on the final code (`service-proof-1.log`, three test threads) had
+**322 passed, 1 failed, 1 ignored**. The unchanged
+`a_duplicates_job_started_past_its_deadline_reports_the_started_job` expected a deadline error
+but received a queued job. An isolated one-thread run also failed, on its retry with `Cancelled`
+(`duplicates-deadline-isolated.log`, 0 passed, 1 failed). Its 200 ms request deadline and
+250 ms outer-clock gate are unchanged. These observations do not establish a clean pass or
+prove a baseline regression; the test was not altered or waived. Subsequent service/workspace
+runs use `RUST_TEST_THREADS=1` to reduce contention. The earlier seven watcher regressions passed.
+
+
+Final serial service run (`service-proof-2.log`, `RUST_TEST_THREADS=1`):
+**324 passed, 0 failed, 1 existing ignored** (323 unit + 1 integration). The unchanged
+duplicates deadline fixture passed in this run. Unit execution took 1,321.25 seconds under
+shared-host load; the earlier failing parallel/isolated receipts remain part of this record.
+
+
+The final workspace run reported an unchanged engine integration failure:
+`concurrent_create_delete_rename_grow_reconciles_exactly_to_fresh_scan` in
+`loomward-engine/tests/pathological.rs`. It failed during lab setup at `roots.list` with
+`DeadlineExceeded` (`the read did not finish within its deadline`), before the concurrent
+mutation/reconciliation assertions. That target finished **8 passed, 1 failed** in 495.51 seconds.
+The full `--no-fail-fast` run continues; isolated follow-up is recorded below when complete.
+
+
+The HTTP `serve` target reported **48 passed, 1 failed** in 91.81 seconds:
+`followup_proposed_static_overlap_leaves_no_active_grant`. Its helper at `serve.rs:1381`
+labels a child that has not exited within **3 seconds** as `overlapping static server started`,
+then kills it; it does not establish that a listening server was observed. The failure therefore
+records the unchanged exit-deadline assertion, not proof of a successful overlapping bind.
+An isolated follow-up of the unchanged test remains required after the workspace run.
+
+
+Final test review releases the new first recovery test's `Explicit` guard after its recorded
+automatic job completes, before `f3_wait_live` waits for any bounded fallback. Holding the guard
+would block that fallback under late hints. This is test teardown only; production code and
+negative assertions are unchanged. The workspace binary predates this one-line test edit;
+the focused seven-test suite and formatting/lint checks are re-proved after it below.
+
+
+Final clock review samples `Instant::now` per failed root, at its retry decision, instead of
+once before the whole root loop. Slow setup/catch-up on an earlier root therefore cannot age
+another root's retry/budget timestamps. The private test wrapper still supplies a fixed instant;
+the same seven focused tests and scoped service lint re-prove this small clock-source correction.
+The long workspace run predates this clock-source change and the test guard-release line;
+it is retained as broad integration evidence, not an exact-final-tree clean result.
+
+### Completed lane receipt (2026-10-18, Windows 11)
+
+`cargo test --workspace --no-fail-fast` completed with exit 101: **1,490 passed,
+6 failed, 2 ignored**, across 83 target summaries (`workspace-proof.log`). Counts take the
+last summary per Cargo target, excluding nested subprocess-test summaries. Five targets failed:
+
+| Target / failing test | Observed failure | Isolated follow-up |
+|---|---|---|
+| engine `pathological`: `concurrent_create_delete_rename_grow_reconciles_exactly_to_fresh_scan` | setup `roots.list` exceeded its deadline | 1 passed, 0 failed, 6.96 s; 4,000-file reconciliation verified |
+| HTTP `serve`: `followup_proposed_static_overlap_leaves_no_active_grant` | child did not exit within the helper's 3 s bound | 1 passed, 0 failed, 0.64 s |
+| lab binary: `windows::soak::tests::three_cycles_scan_query_watch_forget_and_restart` | `tree.slice` returned retryable `PartialCoverage`, aggregates being repaired | 1 passed, 0 failed, 4.90 s |
+| operations `head_anchor_concurrency`: `two_stores_appending_to_one_operation_make_one_linear_chain` | append returned SQLite `DatabaseBusy` | 1 passed, 0 failed, 0.84 s |
+| service: `tests::a_scan_started_past_its_deadline_reports_the_started_job` | expected deadline error, received queued job | 1 passed, 0 failed, 1.42 s |
+| service: `tests::deadlines_bound_the_wait_and_set_retry_flags` | elapsed-time assertion exceeded 300 ms | 1 passed, 0 failed, 0.87 s |
+
+All seven watcher regressions passed in that workspace run. The service target reported
+321 passed, 2 failed, 1 ignored. The isolated passes establish that these failures did not
+reproduce alone; they do not turn the workspace result green or establish baseline causality.
+No unrelated assertion, deadline or SQLite policy was changed.
+
+Each isolated command ran the corresponding already-built executable below with
+`--exact <test name from the table> --test-threads=1 --nocapture`:
+
+| Target | Executable below `C:/lw/target/watch-592/debug/deps/` | Log below `C:/lw/target/watch-592/` |
+|---|---|---|
+| engine | `pathological-9e41ee6e2ea1ce1e.exe` | `engine-churn-isolated.log` |
+| HTTP | `serve-b1d725fae086a5d0.exe` | `http-overlap-isolated.log` |
+| lab | `loomward_lab-a633c600c7ccf142.exe` | `lab-soak-isolated.log` |
+| operations | `head_anchor_concurrency-c3b31a00ac7276f3.exe` | `operations-concurrency-isolated.log` |
+| service scan | `loomward_service-ecf04115e014e70a.exe` | `scan-deadline-isolated.log` |
+| service wait | `loomward_service-ecf04115e014e70a.exe` | `service-wait-deadline-isolated.log` |
+
+After both final source adjustments, using the lane target, three build jobs and
+`RUST_TEST_THREADS=1`, the exact final source passed:
+
+| Command (Cargo uses `--manifest-path C:/lw/wt/watch-592/Cargo.toml`) | Result |
+|---|---|
+| `cargo test -p loomward-service f3_failed_watch -- --nocapture` | 7 passed, 0 failed (`restart-final.log`) |
+| `cargo fmt --all --check` | exit 0 (`fmt-final-tree.log`) |
+| `cargo clippy --workspace --all-targets -- -D warnings` | exit 0 (`clippy-final-tree.log`) |
+
+**Changed:** failed-watch replacement, bounded retry state, cancellation/epoch fences,
+optional bounded `watch_restarting` freshness reason with schema/fixture/generated-type parity,
+seven regression tests, and the F3 policy/receipt.
+
+**Verified:** focused final-tree regressions, formatting and workspace lint; full-service
+commands twice (one failing, one serial green), Windows/protocol/Python/app checks above;
+workspace failures retained with all six isolated follow-ups passing. `git diff --check`
+passes. Protected files, including `HUMAN_TODO.md`, remain unchanged. Work is left uncommitted
+for the driver; no push, PR, merge or external deployment occurred.
+
+**NOT verified:** a clean full-workspace run, full-service/workspace execution after the last
+clock-source and test guard-release edits, hosted CI, non-Windows behavior, Tauri, and an
+hour-long real-clock retry soak. The hourly cap is tested with the injected monotonic clock.
+
+**Residual risk:** shared-host deadline, repair-state and SQLite-contention failures remain
+visible in the broad run, despite isolated passes. Retry history is intentionally in-memory
+and resets when the service or root grant is recreated, as specified in docs/46.

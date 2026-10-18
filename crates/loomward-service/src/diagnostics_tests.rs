@@ -238,8 +238,8 @@ fn a_scanned_hostile_lab_root_never_reaches_the_bundle() {
     assert_eq!(r["filesystem"], "ntfs");
     assert_eq!(r["identity_mode"], "verified");
     assert_eq!(bundle["counts"]["roots_active"], 1);
-    assert_eq!(bundle["stores"]["catalog_schema_version"], 8);
-    assert_eq!(bundle["stores"]["state_schema_version"], 8);
+    assert_eq!(bundle["stores"]["catalog_schema_version"], 9);
+    assert_eq!(bundle["stores"]["state_schema_version"], 9);
     assert_eq!(bundle["host"]["os_family"], "windows");
     assert!(bundle["host"]["os_build"].as_u64().is_some_and(|b| b > 0));
     assert!(bundle["host"]["logical_processors"].as_u64().is_some());
@@ -284,6 +284,9 @@ fn both_dataset_classes_preview_and_http_cannot_save() {
 
 #[test]
 fn save_writes_exactly_the_previewed_bytes_and_never_returns_the_path() {
+    if export_refuses_elevation() {
+        return;
+    }
     let tmp = temp_root();
     let out = tmp.path().join("out");
     std::fs::create_dir(&out).unwrap();
@@ -339,6 +342,9 @@ fn a_changed_or_missing_preview_writes_nothing_and_opens_no_dialog() {
 
 #[test]
 fn cancel_writes_nothing_and_a_retried_save_never_writes_twice() {
+    if export_refuses_elevation() {
+        return;
+    }
     let tmp = temp_root();
     let out = tmp.path().join("out");
     std::fs::create_dir(&out).unwrap();
@@ -371,6 +377,9 @@ fn cancel_writes_nothing_and_a_retried_save_never_writes_twice() {
 /// is never asked about.
 #[test]
 fn a_replace_is_confirmed_by_loomward_and_a_decline_writes_nothing() {
+    if export_refuses_elevation() {
+        return;
+    }
     let tmp = temp_root();
     let out = tmp.path().join("out");
     std::fs::create_dir(&out).unwrap();
@@ -427,6 +436,9 @@ fn a_folder_that_resolves_to_a_share_is_refused_unread() {
 #[cfg(windows)]
 #[test]
 fn unsupported_targets_are_refused_before_anything_is_written() {
+    if export_refuses_elevation() {
+        return;
+    }
     let tmp = temp_root();
     let out = tmp.path().join("out");
     std::fs::create_dir_all(out.join("a-folder")).unwrap();
@@ -504,10 +516,41 @@ fn unsupported_targets_are_refused_before_anything_is_written() {
     assert_eq!(names(&out), before);
 }
 
+/// Hosted runners are elevated and the pinned export folder refuses an elevated token before any
+/// write (fails closed, invariant 2): prove the refusal, then skip a test that needs a real write.
+#[cfg(windows)]
+fn export_refuses_elevation() -> bool {
+    if !loomward_windows::enumerate::running_elevated() {
+        return false;
+    }
+    let tmp = temp_root();
+    assert_eq!(
+        write_export(&tmp.path().join("elevated.json"), b"{}"),
+        Err(DiagnosticsSaveRefusal::UnsupportedTarget)
+    );
+    eprintln!("skipped: elevated token; the export folder refuses elevation (invariant 2)");
+    true
+}
+
+#[cfg(not(windows))]
+fn export_refuses_elevation() -> bool {
+    false
+}
+
 /// A failed write leaves the target as it was and no temporary file behind.
 #[cfg(windows)]
 #[test]
 fn a_failed_write_leaves_the_target_and_no_partial_file() {
+    if loomward_windows::enumerate::running_elevated() {
+        // The pinned export folder refuses an elevated token before any write (fails closed).
+        let tmp = temp_root();
+        assert_eq!(
+            write_export(&tmp.path().join("elevated.json"), b"{}"),
+            Err(DiagnosticsSaveRefusal::UnsupportedTarget)
+        );
+        eprintln!("skipped: elevated token; the export folder refuses elevation (invariant 2)");
+        return;
+    }
     let tmp = temp_root();
     let target = tmp.path().join("read-only.json");
     std::fs::write(&target, b"keep").unwrap();
@@ -524,9 +567,8 @@ fn a_failed_write_leaves_the_target_and_no_partial_file() {
     assert_eq!(names(tmp.path()), ["read-only.json"]);
 }
 
-/// Only the owner closing the dialog is `cancelled_by_user` (#437). A dialog that never opened
-/// (another one open, no owner window yet, no dialog on the adapter) is a refusal that says so, and
-/// writes nothing, so a retry after the cause clears is not read as the owner declining.
+/// Only a known user cancellation is `cancelled_by_user` (#437). Dialog failures and a backend
+/// result that cannot distinguish failure from cancellation each say so and write nothing.
 #[test]
 fn a_dialog_that_never_opened_is_not_reported_as_a_cancel() {
     let tmp = temp_root();
@@ -537,6 +579,7 @@ fn a_dialog_that_never_opened_is_not_reported_as_a_cancel() {
     for (why, expected) in [
         (SaveDialog::Busy, "dialog_busy"),
         (SaveDialog::Unavailable, "dialog_unavailable"),
+        (SaveDialog::NoSelection, "dialog_no_selection"),
     ] {
         let saves = Saves::never_opens(why);
         let r = save(&svc, &saves, &d);
@@ -614,10 +657,128 @@ fn cloud_placeholder_attributes_are_recognised() {
     assert!(!placeholder_bits(REPARSE_POINT));
 }
 
+#[cfg(windows)]
+#[test]
+fn an_existing_diagnostic_target_is_found_with_windows_name_casing() {
+    if export_refuses_elevation() {
+        return;
+    }
+    let tmp = temp_root();
+    let original = tmp.path().join("report.json");
+    std::fs::write(&original, b"chosen").unwrap();
+    let checked = check_target(&tmp.path().join("REPORT.JSON")).unwrap();
+    assert!(
+        checked.exists,
+        "an existing file must require replacement consent"
+    );
+    assert_eq!(write_to(&checked, b"previewed"), Ok(()));
+    assert_eq!(std::fs::read(original).unwrap(), b"previewed");
+    assert_eq!(names(tmp.path()).len(), 1);
+}
+
+/// A parent or ancestor replaced during confirmation cannot redirect either kind of export.
+#[cfg(windows)]
+#[test]
+fn diagnostic_export_stays_in_the_pinned_folder_after_a_junction_swap() {
+    if export_refuses_elevation() {
+        return;
+    }
+    for (existing, readonly) in [(true, false), (false, false), (true, true)] {
+        for ancestor in [false, true] {
+            let tmp = temp_root();
+            let selected = tmp.path().join("selected");
+            let moved = tmp.path().join("moved");
+            let other = tmp.path().join("other");
+            let suffix = if ancestor { "nested" } else { "" };
+            let folder = selected.join(suffix);
+            let unrelated = other.join(suffix);
+            std::fs::create_dir_all(&folder).unwrap();
+            std::fs::create_dir_all(&unrelated).unwrap();
+            if existing {
+                std::fs::write(folder.join("report.json"), b"chosen").unwrap();
+                std::fs::write(unrelated.join("report.json"), b"unrelated").unwrap();
+            }
+            let checked = check_target(&folder.join("report.json")).unwrap();
+            assert_eq!(checked.exists, existing);
+            // The swap happens while the owner's replace confirmation could be open.
+            let relocated = match std::fs::rename(&selected, &moved) {
+                Ok(()) => {
+                    let made = std::process::Command::new("cmd")
+                        .args(["/C", "mklink", "/J"])
+                        .arg(&selected)
+                        .arg(&other)
+                        .output()
+                        .unwrap();
+                    assert!(made.status.success(), "{made:?}");
+                    true
+                }
+                Err(e) => {
+                    // Windows refuses to rename an ancestor with an open descendant directory.
+                    assert!(
+                        ancestor,
+                        "the direct parent swap must exercise a real junction"
+                    );
+                    assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied);
+                    false
+                }
+            };
+            let pinned = if relocated { &moved } else { &selected }.join(suffix);
+            if readonly {
+                let mut perms = std::fs::metadata(pinned.join("report.json"))
+                    .unwrap()
+                    .permissions();
+                perms.set_readonly(true);
+                std::fs::set_permissions(pinned.join("report.json"), perms).unwrap();
+            }
+            let result = write_to(&checked, b"previewed");
+            let other_names = names(&unrelated);
+            let other_bytes = std::fs::read(unrelated.join("report.json")).ok();
+            // Remove only the synthetic junction before the fixture cleans up its directories.
+            if relocated {
+                std::fs::remove_dir(&selected).unwrap();
+            }
+            if readonly {
+                let mut perms = std::fs::metadata(pinned.join("report.json"))
+                    .unwrap()
+                    .permissions();
+                #[allow(clippy::permissions_set_readonly_false)]
+                perms.set_readonly(false);
+                std::fs::set_permissions(pinned.join("report.json"), perms).unwrap();
+            }
+            assert_eq!(
+                other_bytes.as_deref(),
+                existing.then_some(b"unrelated".as_slice()),
+                "export escaped the chosen folder (existing={existing}, ancestor={ancestor})"
+            );
+            assert_eq!(other_names.len(), usize::from(existing));
+            assert_eq!(
+                result,
+                if readonly {
+                    Err(DiagnosticsSaveRefusal::WriteFailed)
+                } else {
+                    Ok(())
+                }
+            );
+            assert_eq!(
+                std::fs::read(pinned.join("report.json")).unwrap(),
+                if readonly {
+                    b"chosen".as_slice()
+                } else {
+                    b"previewed".as_slice()
+                }
+            );
+            assert_eq!(names(&pinned), ["report.json"]);
+        }
+    }
+}
+
 /// A file that appears between the replace check and the rename was never confirmed: it is left
 /// as it was and no temporary file survives (#437).
 #[test]
 fn a_file_that_appears_after_the_check_is_not_replaced() {
+    if export_refuses_elevation() {
+        return;
+    }
     let tmp = temp_root();
     let target = tmp.path().join("late.json");
     let checked = check_target(&target).unwrap();

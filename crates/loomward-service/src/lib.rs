@@ -154,6 +154,10 @@ impl Drop for Service {
         loop {
             match Arc::try_unwrap(inner) {
                 Ok(inner) => {
+                    #[cfg(test)]
+                    if let Some(after_check) = inner.hooks.after_drop_check.lock().unwrap().take() {
+                        after_check();
+                    }
                     drop(inner);
                     return;
                 }
@@ -1036,6 +1040,16 @@ impl Inner {
             }) => {
                 if let Some(g) = &grant {
                     clients::project(command, g, &mut map);
+                    if command.validate_client_result(&map).is_err() {
+                        return ResponseEnvelope::error(
+                            Some(id),
+                            fail(
+                                ErrorCode::InternalError,
+                                "the service produced an invalid client result",
+                            ),
+                            None,
+                        );
+                    }
                 }
                 let meta = self.meta(started, &map, catalog_rev, state_rev);
                 ResponseEnvelope::ok_object(id, map, meta)
@@ -1144,11 +1158,21 @@ impl Inner {
         // explicit confirmation; a synthetic lab root may list unverified freely.
         let filesystem = self.root_filesystem(root)?;
         let unverified = !loomward_windows::enumerate::verifies_identity(&filesystem);
-        if unverified && self.dataset == DatasetClass::Personal && !confirmed_unverified {
-            return Err(Refused::IdentityUnverified);
-        }
+        let text = root.to_string_lossy();
+        let display_path = text.strip_prefix(r"\\?\").unwrap_or(&text).to_string();
         let _m = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
         let conn = self.db();
+        let existing = db::active_grant(&conn, &volume_key, &file_id, &display_path)
+            .map_err(|_| Refusal::IdentityUnavailable)?;
+        if unverified
+            && self.dataset == DatasetClass::Personal
+            && !confirmed_unverified
+            && !existing
+                .as_ref()
+                .is_some_and(|(_, mode)| mode == "unverified")
+        {
+            return Err(Refused::IdentityUnverified);
+        }
         let origin = match self.dataset {
             DatasetClass::Synthetic => {
                 if file_id.len() != 16 {
@@ -1162,45 +1186,49 @@ impl Inner {
             }
             DatasetClass::Personal => "owner_granted",
         };
-        if let Some(grant) = db::active_grant(&conn, &volume_key, &file_id)
-            .map_err(|_| Refusal::IdentityUnavailable)?
-        {
-            if let Some(root) =
-                db::root_for_grant(&conn, grant).map_err(|_| Refusal::IdentityUnavailable)?
-            {
-                return Ok((root, false));
-            }
-        }
-        if db::active_grants(&conn).map_err(|_| Refusal::IdentityUnavailable)?
-            >= db::MAX_ACTIVE_ROOTS
+        if existing.is_none()
+            && db::active_grants(&conn).map_err(|_| Refusal::IdentityUnavailable)?
+                >= db::MAX_ACTIVE_ROOTS
         {
             return Err(Refused::RootLimit);
         }
         drop(conn);
-        let text = root.to_string_lossy();
-        let display_path = text.strip_prefix(r"\\?\").unwrap_or(&text).to_string();
+        #[cfg(test)]
+        if existing.is_some() {
+            self.hooks
+                .gate(Command::RootsRequestGrant, "grant_observed");
+        }
         let display_name = root.file_name().map_or_else(
             || display_path.clone(),
             |n| n.to_string_lossy().into_owned(),
         );
+        let fresh = existing.is_none();
+        let observation = RootObservation {
+            volume_key,
+            display_name: display_name.chars().take(260).collect(),
+            display_path,
+            root_file_id: Some(file_id),
+            // The volume's real filesystem: NTFS/ReFS keep durable references; the writer marks
+            // any other filesystem's grant identity-unverified.
+            filesystem: Some(filesystem),
+            origin: origin.into(),
+            granted_via: via.into(),
+            observed_at_ns: now_ns(),
+        };
+        let command = match existing {
+            Some((grant_id, _)) => WriteCommand::RefreshRoot {
+                grant_id,
+                observation,
+            },
+            None => WriteCommand::RegisterRoot(observation),
+        };
         let reply = self
             .catalog
             .writer()
-            .call(WriteCommand::RegisterRoot(RootObservation {
-                volume_key,
-                display_name: display_name.chars().take(260).collect(),
-                display_path,
-                root_file_id: Some(file_id),
-                // The volume's real filesystem: NTFS/ReFS keep durable references; the writer marks
-                // any other filesystem's grant identity-unverified.
-                filesystem: Some(filesystem),
-                origin: origin.into(),
-                granted_via: via.into(),
-                observed_at_ns: now_ns(),
-            }))
+            .call(command)
             .map_err(|_| Refusal::IdentityUnavailable)?;
         match reply {
-            WriteReply::Root { root_id, .. } => Ok((root_id, true)),
+            WriteReply::Root { root_id, .. } => Ok((root_id, fresh)),
             _ => Err(Refusal::IdentityUnavailable.into()),
         }
     }

@@ -94,6 +94,28 @@ describe('duplicates jobs', () => {
     await syncing;
     expect(store.book).toEqual({});
   });
+  it.each(['revoked', 'unchanged', 'missing'])('revalidates a retained report outside the newest 50 jobs: %s', async (outcome) => {
+    const retained = job({ rev: 3, state: 'completed', duplicates: DUPLICATES_FIXTURE });
+    const newer = Array.from({ length: 50 }, (_, i) => job({ root_id: `rt_new_${i}`, job_id: `jb_new_${i}`, seq: i + 2, state: 'completed' }));
+    let answer!: () => void;
+    const pending = new Promise<void>((resolve) => { answer = resolve; });
+    const call = vi.fn(async (r: { request_id: string; command: string }) => {
+      if (r.command === 'jobs.list') return { protocol: 'loomward/3', request_id: r.request_id, ok: true, result: { jobs: newer }, meta: {} };
+      await pending;
+      if (outcome === 'missing') return { protocol: 'loomward/3', request_id: r.request_id, ok: false, error: { code: 'not_found', message: 'job gone', retryable: false, detail: null } };
+      return { protocol: 'loomward/3', request_id: r.request_id, ok: true, result: { job: outcome === 'unchanged' ? retained : { ...retained, rev: 4, duplicates: undefined } }, meta: {} };
+    });
+    session.client = new Client({ call } as unknown as Transport);
+    const store = new Duplicates();
+    store.apply(retained);
+    const syncing = store.sync();
+    expect(store.book.rt_fixture?.duplicates).toBeUndefined();
+    await vi.waitFor(() => expect(call).toHaveBeenCalledWith(expect.objectContaining({ command: 'jobs.get', payload: { job_id: retained.job_id } }), undefined));
+    expect(store.book.rt_fixture?.duplicates).toBeUndefined();
+    answer(); await syncing;
+    expect(store.book.rt_fixture?.duplicates).toEqual(outcome === 'unchanged' ? DUPLICATES_FIXTURE : undefined);
+    if (outcome === 'missing') expect(store.problem).toBe('job gone');
+  });
   it('drops inspect and cancel answers that arrive after the engine restarted', async () => {
     for (const command of ['duplicates.inspect', 'duplicates.cancel']) {
       let asked = false;

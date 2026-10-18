@@ -9,13 +9,15 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// What a Rust-side save dialog came to. Only `Cancelled` is the owner's choice; the other two say the
-/// dialog never opened, so a report cannot call them a cancel (invariant 4). Nothing is written in any.
+/// What a Rust-side save dialog came to. Only `Cancelled` identifies the owner's choice;
+/// failure and an ambiguous dialog result must not be reported as a cancel (invariant 4).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SaveDialog {
     Chosen(PathBuf),
     /// The owner closed the dialog without choosing a file.
     Cancelled,
+    /// No path was returned, but the dialog backend cannot distinguish cancellation from failure.
+    NoSelection,
     /// Another dialog is open, so this one was not stacked on it.
     Busy,
     /// There is no dialog to open: no owner window yet, no start folder, or an adapter without one.
@@ -52,10 +54,11 @@ pub trait NativeDialogs: Send + Sync {
     /// Native modal listing recipient, model, fields and every item of the summary. `true` only on
     /// explicit accept. A display-budget refusal is an error, not an owner decline.
     fn confirm_disclosure(&self, summary: &DisclosureSummary) -> Result<bool, crate::ErrorBody>;
-    /// #219: one-line native confirmation that a picked folder's volume cannot verify file
-    /// identity and will be listed read-only, never acted on. `true` only on explicit accept;
+    /// #219: names the Rust-selected folder and its filesystem, explaining that it cannot verify
+    /// file identity and will be listed read-only, never acted on. `true` only on explicit accept;
     /// an adapter without it refuses.
-    fn confirm_identity_unverified(&self) -> bool {
+    fn confirm_identity_unverified(&self, folder: &std::path::Path, filesystem: &str) -> bool {
+        let _ = (folder, filesystem);
         false
     }
 }

@@ -1,4 +1,6 @@
 //! Read-only observations by default, with opt-in lab effects. Identity is never an operation grant.
+#[cfg(all(windows, feature = "diagnostics-export"))]
+pub mod diagnostics;
 #[cfg(any(feature = "content-read", test))]
 pub mod duplicate_reader;
 #[cfg(all(windows, feature = "copy-primitives"))]

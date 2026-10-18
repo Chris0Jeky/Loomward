@@ -247,12 +247,14 @@ describe('mock revocation', () => {
     expect((await revoke(true)).meta.catalog_rev).toBe('2');
     expect((await revoke(true)).meta.catalog_rev).toBe('2'); // nothing left to delete
     expect((await revoke(true, 'rt_mock_9')).meta.catalog_rev).toBe('3');
-    expect((await c.call('tree.children', { node_id: 'nd_1', sort: 'size_desc', basis: 'logical', limit: 1, cursor: null })).meta.catalog_rev).toBe('3');
+    expect((await c.call('tree.children', { node_id: 'nd_2', sort: 'size_desc', basis: 'logical', limit: 1, cursor: null })).meta.catalog_rev).toBe('3');
+    await expect(c.call('tree.children', { node_id: 'nd_1', sort: 'size_desc', basis: 'logical', limit: 1, cursor: null })).rejects.toMatchObject({ code: 'not_found' });
   });
 
   it('binds paging cursors to catalog_rev: a cursor from before a purge is stale_generation (semantics 5)', async () => {
     const c = client();
-    const kids = (cursor: string | null) => c.call('tree.children', { node_id: 'nd_1', sort: 'size_desc', basis: 'logical', limit: 2, cursor });
+    // Page the surviving root: the purged root itself must now answer not_found.
+    const kids = (cursor: string | null) => c.call('tree.children', { node_id: 'nd_2', sort: 'size_desc', basis: 'logical', limit: 2, cursor });
     const hits = (cursor: string | null) => c.call('search.query', { root_id: null, text: '', extension: null, min_bytes: null, max_bytes: null, modified_after: null, modified_before: null, kind: 'any', limit: 2, cursor });
     const k = (await kids(null)).result.next_cursor!;
     const s = (await hits(null)).result.next_cursor!;

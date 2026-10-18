@@ -7,6 +7,41 @@ const now = () => new Date('2026-10-01T00:00:00Z');
 const client = () => new Client(createMockTransport({ now }));
 
 describe('mock slices for the atlas', () => {
+  it('does not confuse a node index with an unrelated revoked root ID', async () => {
+    const c = client();
+    const before = (await c.call('node.inspect', { node_id: 'nd_9' })).result;
+    expect(before.root_id).toBe('rt_mock_1');
+    await c.call('roots.revoke', { root_id: 'rt_mock_9', purge_catalog: true });
+    expect((await c.call('node.inspect', { node_id: 'nd_9' })).result).toEqual(before);
+  });
+  it.each(['revoke', 'purge', 'forget', 'grant'])('excludes an inactive root from catalogue traversal and direct reads: %s', async (via) => {
+    const c = client();
+    const request = { anchor: { kind: 'atlas' as const }, depth: 8, max_nodes: 6000, min_share: 0, basis: 'logical' as const, include_files: true };
+    const before = (await c.call('tree.slice', request)).result;
+    const alpha = before.nodes.find(n => n.name === 'Synthetic Alpha')!;
+    const descendant = before.nodes.find(n => n.parent === before.nodes.indexOf(alpha))!;
+    const beta = before.nodes.find(n => n.name === 'Synthetic Beta')!;
+    if (via === 'grant') await c.call('grants.revoke', { grant_id: 'gr_mock_root_0' });
+    else await c.call('roots.revoke', { root_id: 'rt_mock_1', purge_catalog: via === 'purge' });
+    if (via === 'forget') await c.call('roots.forget', { root_id: 'rt_mock_1' });
+    const after = (await c.call('tree.slice', request)).result;
+    expect(after.nodes.some(n => n.node_id === alpha.node_id || n.node_id === descendant.node_id)).toBe(false);
+    expect(after.root_generations.map(r => r.root_id)).not.toContain('rt_mock_1');
+    expect(after.nodes[0]?.logical_bytes).toBe(beta.logical_bytes);
+    expect(after.nodes[0]?.allocated_bytes).toBe(beta.allocated_bytes);
+    expect(after.nodes[0]?.size_unknown_files).toBe(beta.size_unknown_files);
+    expect(after.nodes[0]?.files).toBe(beta.files);
+    expect(after.nodes[0]?.dirs).toBe(beta.dirs + 1);
+    expect(after.nodes[0]?.child_count).toBe(1);
+    expect((await c.call('tree.children', { node_id: 'nd_0', sort: 'name_asc', basis: 'logical', limit: 100, cursor: null })).result.items.map(n => n.node_id)).toEqual([beta.node_id]);
+    for (const node_id of [alpha.node_id, descendant.node_id]) {
+      await expect(c.call('node.inspect', { node_id })).rejects.toMatchObject({ code: 'not_found' });
+      await expect(c.call('tree.children', { node_id, sort: 'name_asc', basis: 'logical', limit: 100, cursor: null })).rejects.toMatchObject({ code: 'not_found' });
+      await expect(c.call('tree.slice', { ...request, anchor: { kind: 'node', node_id } })).rejects.toMatchObject({ code: 'not_found' });
+      await expect(c.call('threads.meaning', { node_ids: [node_id] })).rejects.toMatchObject({ code: 'not_found' });
+    }
+    await expect(c.call('tree.slice', { ...request, anchor: { kind: 'root', root_id: 'rt_mock_1' } })).rejects.toMatchObject({ code: 'not_found' });
+  });
   it('marks slices under the scanning root provisional, and the rest consistent', async () => {
     const c = client();
     const top = (await c.call('tree.slice', { anchor: { kind: 'atlas' }, depth: 1, max_nodes: 16, min_share: 0, basis: 'logical', include_files: false })).result;

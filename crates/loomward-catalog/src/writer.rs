@@ -991,9 +991,13 @@ pub(crate) fn wal_cut(conn: &Connection, wait: Duration, vacuum: &mut bool) -> b
                 crate::crashpoint::hit("VACUUM main");
                 conn.execute_batch("VACUUM main")
             });
-            // Changing temp_store drops temporary objects; the listing tables are recreated lazily.
+            // Only a changed temp_store drops temporary objects; listing tables are recreated lazily.
             let restore = conn.pragma_update(None, "temp_store", temp);
-            let views = crate::db::grant_view(conn);
+            let views = if temp == 1 {
+                Ok(())
+            } else {
+                crate::db::grant_view(conn)
+            };
             result?;
             restore?;
             views
@@ -1114,7 +1118,7 @@ fn prepare_state(
         {
             Ok(None)
         }
-        WriteCommand::RegisterRoot(o) => {
+        WriteCommand::RegisterRoot(o) | WriteCommand::RefreshRoot { observation: o, .. } => {
             let dataset: String = conn.query_row(
                 "SELECT value FROM st.meta WHERE key='dataset_class'",
                 [],
@@ -1177,9 +1181,28 @@ fn prepare_state(
             } else {
                 "verified"
             };
-            tx.execute("INSERT INTO st.root_grant(volume_key,root_file_id,display_path,origin,granted_via,state,granted_at_ns,lab_root_id,identity_mode) VALUES (?1,?2,?3,?4,?5,'active',?6,?7,?8)",params![o.volume_key,o.root_file_id,o.display_path,o.origin,o.granted_via,o.observed_at_ns,lab,mode])?;
-            let grant = tx.last_insert_rowid();
-            state_revision(&tx)?;
+            let grant = if let WriteCommand::RefreshRoot { grant_id, .. } = c {
+                // A recyclable unverified ID also needs the same stored path.
+                let stored_mode: String = tx.query_row(
+                    "SELECT identity_mode FROM st.root_grant WHERE id=?1 AND volume_key=?2 AND root_file_id=?3 AND state='active' AND (identity_mode='verified' OR display_path=?4)",
+                    params![grant_id,o.volume_key,o.root_file_id,o.display_path],
+                    |r| r.get(0),
+                ).optional()?.ok_or(Error::NotFound)?;
+                if o.filesystem.is_some() && stored_mode != mode {
+                    return Err(Error::Invalid(
+                        "root identity mode changed; revoke and grant again",
+                    ));
+                }
+                if tx.execute("UPDATE st.root_grant SET filesystem=?2 WHERE id=?1 AND state='active' AND ?2 IS NOT NULL AND filesystem IS NOT ?2", params![grant_id,o.filesystem])? > 0 {
+                    state_revision(&tx)?;
+                }
+                *grant_id
+            } else {
+                tx.execute("INSERT INTO st.root_grant(volume_key,root_file_id,display_path,origin,granted_via,state,granted_at_ns,lab_root_id,identity_mode,filesystem) VALUES (?1,?2,?3,?4,?5,'active',?6,?7,?8,?9)",params![o.volume_key,o.root_file_id,o.display_path,o.origin,o.granted_via,o.observed_at_ns,lab,mode,o.filesystem])?;
+                let grant = tx.last_insert_rowid();
+                state_revision(&tx)?;
+                grant
+            };
             tx.commit()?;
             Ok(Some(Prepared::Id(grant)))
         }
@@ -1614,7 +1637,7 @@ fn apply(
     prepared: Option<Prepared>,
 ) -> Result<WriteReply> {
     match c {
-        WriteCommand::RegisterRoot(o) => {
+        WriteCommand::RegisterRoot(o) | WriteCommand::RefreshRoot { observation: o, .. } => {
             let grant = match prepared {
                 Some(Prepared::Id(id)) => id,
                 _ => return Err(Error::Invalid("grant not committed")),
@@ -2354,106 +2377,98 @@ fn rebuild_multilink(conn: &Connection, root: i64) -> Result<()> {
     conn.execute("UPDATE file SET flags=flags | ?2 WHERE dir_id IN (SELECT d.id FROM dir d JOIN visible_dir v ON v.id=d.id JOIN root r ON r.id=d.root_id WHERE r.volume_id=?1 AND d.listing_state!='excluded') AND file_id IN (SELECT file_id FROM multilink WHERE volume_id=?1)",params![volume,HARDLINK_SUSPECTED])?;
     Ok(())
 }
-/// One directory read, one postorder propagation, one prepared update per visible directory.
+/// File-backed postorder, with at most one batch of directory IDs on the heap.
 pub(crate) fn rollup(conn: &Connection, root: i64, clean: bool) -> Result<()> {
-    struct Item {
-        id: i64,
-        parent: Option<i64>,
-        totals: Totals,
-        noid: i64,
-        excluded: bool,
-        children: Vec<usize>,
+    conn.execute_batch("CREATE TEMP TABLE IF NOT EXISTS rollup_work(id INTEGER PRIMARY KEY,depth INTEGER NOT NULL) STRICT;
+        CREATE INDEX IF NOT EXISTS rollup_postorder ON rollup_work(depth DESC,id DESC); DELETE FROM rollup_work")?;
+    // Child lookups must use parent_id; the root_id index scans the whole root per directory.
+    conn.execute("WITH RECURSIVE walk(id,depth) AS (
+        SELECT id,0 FROM dir WHERE root_id=?1 AND parent_id IS NULL AND listing_state!='absent_pending'
+        UNION ALL SELECT d.id,w.depth+1 FROM walk w JOIN dir d INDEXED BY dir_by_logical ON d.parent_id=w.id
+            WHERE d.root_id=?1 AND d.listing_state!='absent_pending' AND w.depth<512)
+        INSERT INTO rollup_work SELECT id,depth FROM walk", [root])?;
+    let max_depth: Option<i64> =
+        conn.query_row("SELECT max(depth) FROM rollup_work", [], |r| r.get(0))?;
+    match max_depth {
+        None => return Err(Error::NotFound),
+        Some(512..) => return Err(Error::Invalid("tree depth limit")),
+        _ => {}
     }
-    let mut items = {
-        let mut s=conn.prepare("SELECT id,parent_id,own_files,own_logical,own_allocated,own_alloc_unknown,own_skipped,own_errors,own_newest_ft,listing_state,own_noid FROM dir WHERE root_id=?1 AND listing_state!='absent_pending'")?;
-        let rows = s
-            .query_map([root], |r| {
-                Ok(Item {
-                    id: r.get(0)?,
-                    parent: r.get(1)?,
-                    totals: Totals {
-                        files: r.get::<_, i64>(2)? as u64,
-                        logical: r.get::<_, i64>(3)? as u64,
-                        allocated: r.get::<_, i64>(4)? as u64,
-                        allocation_unknown: r.get::<_, i64>(5)? as u64,
-                        skipped: r.get::<_, i64>(6)? as u64,
-                        errors: r.get::<_, i64>(7)? as u64,
-                        newest_ft: r.get(8)?,
-                        complete: clean
-                            && r.get::<_, String>(9)? == "complete"
-                            && r.get::<_, i64>(6)? == 0
-                            && r.get::<_, i64>(7)? == 0,
-                        ..Totals::default()
-                    },
-                    noid: r.get(10)?,
-                    excluded: r.get::<_, String>(9)? == "excluded",
-                    children: Vec::new(),
-                })
+    let mut batch = conn.prepare("SELECT id,depth FROM rollup_work WHERE (depth,id)<(?1,?2) ORDER BY depth DESC,id DESC LIMIT 1024")?;
+    let mut own = conn.prepare("SELECT own_files,own_logical,own_allocated,own_alloc_unknown,own_skipped,own_errors,own_newest_ft,own_noid,listing_state FROM dir WHERE id=?1")?;
+    let mut children = conn.prepare("SELECT sub_files,sub_dirs,sub_logical,sub_allocated,sub_alloc_unknown,sub_skipped,sub_errors,sub_newest_ft,sub_complete,sub_noid,listing_state FROM dir INDEXED BY dir_by_logical WHERE parent_id=?1 AND root_id=?2 AND listing_state!='absent_pending'")?;
+    let mut update=conn.prepare_cached("UPDATE dir SET depth=?2,sub_files=?3,sub_dirs=?4,sub_logical=?5,sub_allocated=?6,sub_alloc_unknown=?7,sub_skipped=?8,sub_errors=?9,sub_newest_ft=?10,sub_complete=?11,sub_noid=?12,agg_valid_rev=dirty_rev WHERE id=?1")?;
+    let mut after = (512, i64::MAX);
+    loop {
+        let ids = batch
+            .query_map(params![after.0, after.1], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        rows
-    };
-    for item in items.iter_mut().filter(|d| d.excluded) {
-        // An excluded directory's own totals predate its exclusion: never count them.
-        item.totals = Totals::default();
-        item.noid = 0;
-    }
-    let by_id: HashMap<_, _> = items.iter().enumerate().map(|(i, d)| (d.id, i)).collect();
-    let Some(start) = items.iter().position(|d| d.parent.is_none()) else {
-        return Err(Error::NotFound);
-    };
-    for i in 0..items.len() {
-        if let Some(p) = items[i].parent.and_then(|p| by_id.get(&p).copied()) {
-            items[p].children.push(i);
+        if ids.is_empty() {
+            break;
+        }
+        for (id, depth) in ids {
+            let (mut t, mut noid) = own.query_row([id], |r| {
+                let state: String = r.get(8)?;
+                if state == "excluded" {
+                    return Ok((Totals::default(), 0u64));
+                }
+                Ok((
+                    Totals {
+                        files: r.get::<_, i64>(0)? as u64,
+                        logical: r.get::<_, i64>(1)? as u64,
+                        allocated: r.get::<_, i64>(2)? as u64,
+                        allocation_unknown: r.get::<_, i64>(3)? as u64,
+                        skipped: r.get::<_, i64>(4)? as u64,
+                        errors: r.get::<_, i64>(5)? as u64,
+                        newest_ft: r.get(6)?,
+                        complete: clean
+                            && state == "complete"
+                            && r.get::<_, i64>(4)? == 0
+                            && r.get::<_, i64>(5)? == 0,
+                        ..Totals::default()
+                    },
+                    r.get::<_, i64>(7)? as u64,
+                ))
+            })?;
+            let mut rows = children.query(params![id, root])?;
+            while let Some(r) = rows.next()? {
+                t.files = checked(t.files, r.get::<_, i64>(0)? as u64)?;
+                t.dirs = checked(
+                    t.dirs,
+                    checked(
+                        r.get::<_, i64>(1)? as u64,
+                        u64::from(r.get::<_, String>(10)? != "excluded"),
+                    )?,
+                )?;
+                t.logical = checked(t.logical, r.get::<_, i64>(2)? as u64)?;
+                t.allocated = checked(t.allocated, r.get::<_, i64>(3)? as u64)?;
+                t.allocation_unknown = checked(t.allocation_unknown, r.get::<_, i64>(4)? as u64)?;
+                t.skipped = checked(t.skipped, r.get::<_, i64>(5)? as u64)?;
+                t.errors = checked(t.errors, r.get::<_, i64>(6)? as u64)?;
+                t.newest_ft = t.newest_ft.max(r.get(7)?);
+                t.complete &= r.get::<_, bool>(8)?;
+                noid = checked(noid, r.get::<_, i64>(9)? as u64)?;
+            }
+            update.execute(params![
+                id,
+                depth,
+                t.files as i64,
+                t.dirs as i64,
+                t.logical as i64,
+                t.allocated as i64,
+                t.allocation_unknown as i64,
+                t.skipped as i64,
+                t.errors as i64,
+                t.newest_ft,
+                t.complete,
+                noid as i64
+            ])?;
+            after = (depth, id);
         }
     }
-    let mut order = vec![(start, 0)];
-    let mut cursor = 0;
-    while cursor < order.len() {
-        let (i, depth) = order[cursor];
-        if depth > 511 {
-            return Err(Error::Invalid("tree depth limit"));
-        }
-        for child in &items[i].children {
-            order.push((*child, depth + 1));
-        }
-        cursor += 1;
-    }
-    let mut update=conn.prepare_cached("UPDATE dir SET depth=?2,sub_files=?3,sub_dirs=?4,sub_logical=?5,sub_allocated=?6,sub_alloc_unknown=?7,sub_skipped=?8,sub_errors=?9,sub_newest_ft=?10,sub_complete=?11,sub_noid=?12,agg_valid_rev=dirty_rev WHERE id=?1")?;
-    for (i, depth) in order.into_iter().rev() {
-        let t = items[i].totals.clone();
-        let noid = items[i].noid;
-        update.execute(params![
-            items[i].id,
-            depth,
-            t.files as i64,
-            t.dirs as i64,
-            t.logical as i64,
-            t.allocated as i64,
-            t.allocation_unknown as i64,
-            t.skipped as i64,
-            t.errors as i64,
-            t.newest_ft,
-            t.complete,
-            noid
-        ])?;
-        // A visible excluded directory is not counted, like an excluded file.
-        let counted = u64::from(!items[i].excluded);
-        if let Some(p) = items[i].parent.and_then(|p| by_id.get(&p).copied()) {
-            let a = &mut items[p];
-            a.totals.files = checked(a.totals.files, t.files)?;
-            a.totals.dirs = checked(a.totals.dirs, t.dirs + counted)?;
-            a.totals.logical = checked(a.totals.logical, t.logical)?;
-            a.totals.allocated = checked(a.totals.allocated, t.allocated)?;
-            a.totals.allocation_unknown =
-                checked(a.totals.allocation_unknown, t.allocation_unknown)?;
-            a.totals.skipped = checked(a.totals.skipped, t.skipped)?;
-            a.totals.errors = checked(a.totals.errors, t.errors)?;
-            a.totals.newest_ft = a.totals.newest_ft.max(t.newest_ft);
-            a.totals.complete &= t.complete;
-            a.noid += noid;
-        }
-    }
+    conn.execute_batch("DROP TABLE rollup_work")?;
     Ok(())
 }
 #[cfg(test)]
@@ -3105,7 +3120,7 @@ mod tests {
             assert_eq!(
                 conn.query_row("PRAGMA temp_store", [], |r| r.get::<_, i64>(0))
                     .unwrap(),
-                2
+                1
             );
             conn.execute_batch(
                 "SELECT count(*) FROM temp.root_grant; SELECT count(*) FROM temp.visible_dir",

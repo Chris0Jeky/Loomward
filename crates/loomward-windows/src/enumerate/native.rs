@@ -1690,12 +1690,15 @@ mod cancellation_tests {
             }
         }
     }
-    /// #219: each relist of an unverified directory rechecks containment by normalised path; a
-    /// failed recheck refuses the listing before any entry is emitted.
+    /// #375: unverified Find reaches containment even without IDs; NTFS refuses those missing
+    /// IDs first. Both modes also enforce containment on an ordinary relist.
     #[test]
     fn unverified_relist_refuses_when_containment_cannot_be_proven() {
         let temp = super::super::tests::canonical_tempdir();
         if running_elevated() {
+            eprintln!(
+                "skipped: elevated token; native enumeration refuses elevation (invariant 2)"
+            );
             return;
         }
         std::fs::create_dir(temp.path().join("child")).unwrap();
@@ -1716,7 +1719,28 @@ mod cancellation_tests {
                     ListOutcome::Incomplete(IncompleteReason::Io(1234)),
                     "{strategy:?}"
                 );
+                assert_eq!(
+                    failing.find_with_identity(
+                        dir,
+                        &mut |_| panic!("unproven containment listed"),
+                        |_| None
+                    ),
+                    ListOutcome::Incomplete(IncompleteReason::Io(1234)),
+                    "unverified Find must reach containment without IDs"
+                );
             }
+            let (verified, _) = NativeSource::default()
+                .with_filesystem("NTFS")
+                .open_root(temp.path())
+                .unwrap();
+            assert_eq!(
+                failing.find_with_identity(
+                    &verified,
+                    &mut |_| panic!("unbound NTFS pins listed"),
+                    |_| None
+                ),
+                ListOutcome::Incomplete(IncompleteReason::IdentityUnverified)
+            );
         }
     }
     #[test]

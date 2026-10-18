@@ -111,6 +111,29 @@ mod lab_copy {
         );
     }
 
+    fn count_plan_reads(svc: &Service, path: &Path) -> Arc<std::sync::atomic::AtomicUsize> {
+        use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+        let conn = rusqlite::Connection::open(path).unwrap();
+        let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = reads.clone();
+        conn.authorizer(Some(move |ctx: AuthContext<'_>| {
+            if matches!(
+                ctx.action,
+                AuthAction::Read {
+                    table_name: "op_plan",
+                    column_name: "plan"
+                }
+            ) {
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            Authorization::Allow
+        }))
+        .unwrap();
+        *svc.inner.copies.store.as_ref().unwrap().lock().unwrap() =
+            loomward_operations::Store::new(conn).unwrap();
+        reads
+    }
+
     /// Scan the lab root and return the lab with the nodes of its folders `a` and `b`.
     fn scanned() -> Option<(Lab, String, String)> {
         let lab = lab()?;
@@ -438,6 +461,11 @@ mod lab_copy {
         // A status call reaps both the worker and its resident wire-ID entry. Historical status and
         // start-once still come from the durable plan after the entry has gone.
         reap_copy(svc, &op);
+        let reads = count_plan_reads(
+            svc,
+            &loomward_catalog::sqlite_dir(&lab.path.parent().unwrap().join("state"))
+                .join("state.db"),
+        );
         assert_eq!(settle_copy(svc, &op)["state"], "committed");
         let e = err(call(
             svc,
@@ -445,6 +473,36 @@ mod lab_copy {
             json!({"operation_id": op, "digest": digest(&p)}),
         ));
         assert_eq!(reason(&e), Some("copy_already_started"));
+        assert_eq!(
+            reads.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "historical status and start-once must use the wire-ID index, not deserialize plans"
+        );
+    }
+
+    #[test]
+    fn fencing_an_unrelated_grant_does_not_read_historical_plans() {
+        let Some((lab, a, b)) = scanned() else { return };
+        let svc = &lab.svc;
+        let p = preview(svc, &a, &b);
+        let op = p["operation_id"].as_str().unwrap().to_owned();
+        let consent = json!({"operation_id": op, "digest": digest(&p)});
+        ok("copy.approve", call(svc, "copy.approve", consent.clone()));
+        ok("copy.start", call(svc, "copy.start", consent));
+        assert_eq!(settle_copy(svc, &op)["state"], "committed");
+        reap_copy(svc, &op);
+        let reads = count_plan_reads(
+            svc,
+            &loomward_catalog::sqlite_dir(&lab.path.parent().unwrap().join("state"))
+                .join("state.db"),
+        );
+        svc.inner.copies_fence(-1);
+        assert_eq!(
+            reads.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "fencing must use the grant index, not deserialize unrelated history"
+        );
+        assert_eq!(settle_copy(svc, &op)["state"], "committed");
     }
 
     /// #569 item 2: shutdown cancels the workers and waits a bounded time; a worker stuck in a blocking

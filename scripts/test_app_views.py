@@ -80,7 +80,8 @@ class FakeEngine:
         self.simulate_overrides: list = []
         self.plan_mode = 'executable'  # 'executable', 'malformed', or a 'safe' nonexecutable reply
         self.slice_queue: list[tuple[float, str]] = []  # (delay, root name) per tree.slice call, then the default
-        self.events: queue.Queue[dict] = queue.Queue()
+        self.subscribers: set[queue.Queue[dict]] = set()
+        self.events_lock = threading.Lock()
         self.seq = 0
         self.server: ThreadingHTTPServer | None = None
         self.process_error: str | None = None
@@ -107,7 +108,13 @@ class FakeEngine:
 
     def invalidate(self) -> None:
         self.seq += 1
-        self.events.put({'protocol': 'loomward/3', 'epoch': EPOCH, 'seq': self.seq, 'event': 'tree.invalidated', 'at': '2026-10-01T00:00:00Z', 'catalog_rev': str(self.seq + 1), 'state_rev': None, 'data': {'root_id': None, 'generation': None, 'scope': 'all', 'node_ids': []}})
+        self.publish({'protocol': 'loomward/3', 'epoch': EPOCH, 'seq': self.seq, 'event': 'tree.invalidated', 'at': '2026-10-01T00:00:00Z', 'catalog_rev': str(self.seq + 1), 'state_rev': None, 'data': {'root_id': None, 'generation': None, 'scope': 'all', 'node_ids': []}})
+
+    def publish(self, event: dict) -> None:
+        # Navigation can leave an old SSE connection alive; it must not steal the new page's events.
+        with self.events_lock:
+            for subscriber in self.subscribers:
+                subscriber.put(event)
 
     def fake_root(self, name: str) -> dict:
         return {'root_id': f'rt_picked_{len(self.roots) + 1}', 'display_path': {'text': name, 'truncated': False}, 'origin': 'owner_granted', 'dataset_class': 'personal', 'volume_id': None,
@@ -117,7 +124,7 @@ class FakeEngine:
     def land(self, name: str) -> None:
         self.roots.append(self.fake_root(name))
         self.seq += 1
-        self.events.put({'protocol': 'loomward/3', 'epoch': EPOCH, 'seq': self.seq, 'event': 'roots.changed', 'at': '2026-10-01T00:00:00Z', 'catalog_rev': str(self.seq + 1), 'state_rev': None, 'data': {'roots': self.roots}})
+        self.publish({'protocol': 'loomward/3', 'epoch': EPOCH, 'seq': self.seq, 'event': 'roots.changed', 'at': '2026-10-01T00:00:00Z', 'catalog_rev': str(self.seq + 1), 'state_rev': None, 'data': {'roots': self.roots[:]}})
 
     def result(self, req: dict):
         cmd, p = req['command'], req.get('payload') or {}
@@ -333,20 +340,27 @@ class FakeEngine:
                     self.send_header('Content-Type', 'text/event-stream')
                     self.send_header('Cache-Control', 'no-store')
                     self.end_headers()
+                    events: queue.Queue[dict] = queue.Queue()
+                    with engine.events_lock:
+                        engine.subscribers.add(events)
+                        seq = engine.seq
                     try:
-                        hello = {'protocol': 'loomward/3', 'epoch': EPOCH, 'seq': engine.seq, 'event': 'stream.hello', 'at': '2026-10-01T00:00:00Z', 'catalog_rev': None, 'state_rev': None,
-                                 'data': {'session_started_at': '2026-10-01T00:00:00Z', 'epoch': EPOCH, 'last_seq': engine.seq, 'oldest_replayable_seq': 1, 'dataset_class': 'synthetic'}}
-                        self.wfile.write(f'id: {EPOCH}.{engine.seq}\nevent: stream.hello\ndata: '.encode() + json.dumps(hello).encode() + b'\n\n')
+                        hello = {'protocol': 'loomward/3', 'epoch': EPOCH, 'seq': seq, 'event': 'stream.hello', 'at': '2026-10-01T00:00:00Z', 'catalog_rev': None, 'state_rev': None,
+                                 'data': {'session_started_at': '2026-10-01T00:00:00Z', 'epoch': EPOCH, 'last_seq': seq, 'oldest_replayable_seq': 1, 'dataset_class': 'synthetic'}}
+                        self.wfile.write(f'id: {EPOCH}.{seq}\nevent: stream.hello\ndata: '.encode() + json.dumps(hello).encode() + b'\n\n')
                         self.wfile.flush()
                         while True:
                             try:
-                                ev = engine.events.get(timeout=0.1)
+                                ev = events.get(timeout=0.1)
                                 self.wfile.write(f"id: {ev['epoch']}.{ev['seq']}\nevent: {ev['event']}\ndata: {json.dumps(ev)}\n\n".encode())
                             except queue.Empty:
                                 self.wfile.write(b': heartbeat\n\n')
                             self.wfile.flush()
                     except OSError:
                         pass
+                    finally:
+                        with engine.events_lock:
+                            engine.subscribers.discard(events)
                     return
                 file = (DIST / ('index.html' if path in ('/', '') else path.lstrip('/'))).resolve()
                 try:
@@ -381,6 +395,7 @@ class FakeEngine:
 
 def check_explorer_mock(page: Page, base: str, shoot) -> None:
     page.goto(f'{base}/?transport=mock#/explorer')
+    page.reload()  # a hash-only navigation retains the roots revoked by the collections check
     expect(page.get_by_role('heading', name='Explorer', level=1)).to_be_visible()
     expect(rows(page).first).to_be_visible()
     main = page.locator('main')

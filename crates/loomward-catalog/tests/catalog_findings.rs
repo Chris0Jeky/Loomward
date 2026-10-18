@@ -2,6 +2,47 @@
 use loomward_catalog::*;
 use rusqlite::{params, Connection};
 
+#[test]
+fn retained_file_under_a_placeholder_keeps_excluded_coverage() {
+    let temp = tempfile::tempdir().unwrap();
+    let c = Catalog::open(temp.path(), "synthetic").unwrap();
+    c.writer().set_bulk_first_scan(false);
+    let (grant, root) = root(&c, 1);
+    let folder = entry("folder", 2, 1);
+    let scan = run(&c, grant);
+    c.writer()
+        .call(listing(scan, root, vec![], vec![folder.clone()]))
+        .unwrap();
+    let db = Connection::open(temp.path().join("catalog.db")).unwrap();
+    let dir = db
+        .query_row("SELECT id FROM dir WHERE name='folder'", [], |r| r.get(0))
+        .unwrap();
+    c.writer()
+        .call(listing(scan, dir, vec![entry("old.txt", 3, 1)], vec![]))
+        .unwrap();
+    finish(&c, scan);
+    let scan = run(&c, grant);
+    let mut placeholder = folder;
+    placeholder.flags = 1 << 3;
+    c.writer()
+        .call(listing(scan, root, vec![], vec![placeholder]))
+        .unwrap();
+    finish(&c, scan);
+    let page = c
+        .reader()
+        .unwrap()
+        .search(&SearchRequest {
+            text: "old.txt".into(),
+            kind: "file".into(),
+            limit: 10,
+            work_budget: 50_000_000,
+            ..SearchRequest::default()
+        })
+        .unwrap();
+    assert_eq!(page.hits.len(), 1);
+    assert_eq!(page.hits[0].row.coverage, "excluded");
+}
+
 fn root(c: &Catalog, id: u8) -> (i64, i64) {
     let WriteReply::Root {
         grant_id, dir_id, ..

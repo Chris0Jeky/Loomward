@@ -1,0 +1,90 @@
+{
+  "limits": "generated fixture, first search run included; no filesystem enumeration, service, HTTP or cold-cache claim; resolver compares exact SQL separately",
+  "resolve_1024_depth20_ms": 526.2016000000001,
+  "resolve_prepared_1024_depth20_ms": 183.76770000000002,
+  "resolve_sql_calls": 21504,
+  "search": [
+    {
+      "budget_hit": false,
+      "case": "owner_common",
+      "has_cursor": true,
+      "hits": 100,
+      "ms": 7.6259,
+      "next_key": 281474976710756,
+      "run": 0
+    },
+    {
+      "budget_hit": false,
+      "case": "owner_common",
+      "has_cursor": true,
+      "hits": 100,
+      "ms": 3.2867,
+      "next_key": 281474976710756,
+      "run": 1
+    },
+    {
+      "budget_hit": false,
+      "case": "owner_common",
+      "has_cursor": true,
+      "hits": 100,
+      "ms": 3.4090000000000003,
+      "next_key": 281474976710756,
+      "run": 2
+    },
+    {
+      "budget_hit": true,
+      "case": "narrow_scope_common",
+      "has_cursor": true,
+      "hits": 0,
+      "ms": 945.7335999999999,
+      "next_key": 281474977169251,
+      "run": 0
+    },
+    {
+      "budget_hit": true,
+      "case": "narrow_scope_common",
+      "has_cursor": true,
+      "hits": 0,
+      "ms": 855.9369,
+      "next_key": 281474977169260,
+      "run": 1
+    },
+    {
+      "budget_hit": true,
+      "case": "narrow_scope_common",
+      "has_cursor": true,
+      "hits": 0,
+      "ms": 846.8954,
+      "next_key": 281474977169260,
+      "run": 2
+    },
+    {
+      "budget_hit": false,
+      "case": "disjoint_ancestors",
+      "has_cursor": false,
+      "hits": 100,
+      "ms": 18.944200000000002,
+      "next_key": null,
+      "run": 0
+    },
+    {
+      "budget_hit": false,
+      "case": "disjoint_ancestors",
+      "has_cursor": false,
+      "hits": 100,
+      "ms": 14.3237,
+      "next_key": null,
+      "run": 1
+    },
+    {
+      "budget_hit": false,
+      "case": "disjoint_ancestors",
+      "has_cursor": false,
+      "hits": 100,
+      "ms": 16.3119,
+      "next_key": null,
+      "run": 2
+    }
+  ],
+  "synthetic_files": 10000100
+}

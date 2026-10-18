@@ -1,0 +1,8 @@
+{
+  "def": "SearchFreshness",
+  "value": {
+    "state": "stale",
+    "at": "2026-10-17T12:00:00Z",
+    "reason": "watch_restarting"
+  }
+}

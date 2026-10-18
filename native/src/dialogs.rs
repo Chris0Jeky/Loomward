@@ -107,10 +107,9 @@ impl DesktopDialogs {
     /// holds no personal data. One dialog at a time. Whatever this dialog asks about an existing
     /// file, the service replaces one only after [`REPLACE_TITLE`] is accepted.
     ///
-    /// Only a dialog that opened and closed without a file is `Cancelled`. Another dialog open is
-    /// `Busy`; no picker (no owner window yet, or no start folder) is `Unavailable` (#437).
-    /// ponytail: `rfd` reports a dialog that failed to open as `None` too, so that one still reads
-    /// as a cancel; telling them apart needs a lower-level dialog call.
+    /// Another dialog open is `Busy`; no picker (no owner window yet, or no start folder) is
+    /// `Unavailable` (#437). rfd erases cancellation and errors into `None`, so no returned location
+    /// is `NoSelection`, never a claimed user cancellation.
     pub fn save_with(
         &self,
         title: &str,
@@ -131,7 +130,7 @@ impl DesktopDialogs {
                 .set_file_name(default_name)
                 .add_filter("Loomward diagnostic bundle", &["json"]),
         )
-        .map_or(SaveDialog::Cancelled, SaveDialog::Chosen)
+        .map_or(SaveDialog::NoSelection, SaveDialog::Chosen)
     }
 }
 
@@ -229,14 +228,21 @@ impl NativeDialogs for DesktopDialogs {
     }
 
     /// Personal sessions only (the picker never opens in a synthetic one); Cancel is the default.
-    fn confirm_identity_unverified(&self) -> bool {
+    fn confirm_identity_unverified(&self, folder: &Path, filesystem: &str) -> bool {
         if self.dataset != DatasetClass::Personal {
             return false;
         }
         let Ok(_active) = self.active.try_lock() else {
             return false;
         };
-        (self.ask)(UNVERIFIED_TITLE, UNVERIFIED_TEXT)
+        (self.ask)(
+            UNVERIFIED_TITLE,
+            &format!(
+                "{} ({}): {UNVERIFIED_TEXT}",
+                visible(&folder.to_string_lossy()),
+                visible(filesystem)
+            ),
+        )
     }
 
     /// Refuses a summary of another dataset class without asking.
@@ -434,14 +440,23 @@ mod tests {
                     .push((title.to_owned(), text.to_owned()));
                 accept
             });
-            assert_eq!(dialogs.confirm_identity_unverified(), expected, "{class:?}");
+            assert_eq!(
+                dialogs.confirm_identity_unverified(Path::new("synthetic-folder"), "exFAT"),
+                expected,
+                "{class:?}"
+            );
             let asked = asked.lock().unwrap();
             if class == DatasetClass::Personal {
                 assert_eq!(
                     *asked,
-                    [(UNVERIFIED_TITLE.to_owned(), UNVERIFIED_TEXT.to_owned())]
+                    [(
+                        UNVERIFIED_TITLE.to_owned(),
+                        format!("synthetic-folder (exFAT): {UNVERIFIED_TEXT}")
+                    )]
                 );
                 assert!(!UNVERIFIED_TEXT.contains('\n'));
+                assert!(asked[0].1.contains("synthetic-folder"));
+                assert!(asked[0].1.contains("exFAT"));
             } else {
                 assert!(asked.is_empty());
             }
@@ -480,6 +495,17 @@ mod tests {
     }
 
     #[test]
+    fn save_dialog_none_does_not_identify_a_user_cancel() {
+        let dialogs = DesktopDialogs::new(DatasetClass::Synthetic);
+        *dialogs.picker.lock().unwrap() = Some(rfd::FileDialog::new());
+        // rfd erases both cancellation and COM errors into None.
+        assert_eq!(
+            dialogs.save_with("Synthetic save", "bundle.json", |_| None),
+            SaveDialog::NoSelection
+        );
+    }
+
+    #[test]
     fn save_dialog_opens_in_every_session_retitled_and_one_at_a_time() {
         let title = "Loomward: save a synthetic bundle";
         let name = "loomward-diagnostics-20261011-120000.json";
@@ -502,10 +528,10 @@ mod tests {
                 }),
                 SaveDialog::Chosen(chosen)
             );
-            // The owner closing the dialog is the one cancel.
+            // No location: cancellation versus a backend failure is unknown.
             assert_eq!(
                 dialogs.save_with(title, name, |_| None),
-                SaveDialog::Cancelled
+                SaveDialog::NoSelection
             );
             let active = dialogs.active.lock().unwrap();
             assert_eq!(

@@ -46,6 +46,8 @@ pub(crate) struct Hooks {
     pub closed: Mutex<Vec<(Command, &'static str)>>,
     pub arrived: Mutex<Vec<(Command, &'static str)>>,
     pub opened: std::sync::Condvar,
+    /// #369: attempt a weak upgrade after Drop's final ownership check, before releasing Inner.
+    pub after_drop_check: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     /// How far ahead of the wall clock the collection page loop reads time (`Inner::past`).
     pub skew: Mutex<Duration>,
     /// How far ahead of the wall clock a read's receiver reads time once it starts waiting.
@@ -63,6 +65,8 @@ pub(crate) struct Hooks {
     pub fail_explicit_retry: std::sync::atomic::AtomicBool,
     #[cfg(windows)]
     pub fail_automatic_start: std::sync::atomic::AtomicBool,
+    #[cfg(windows)]
+    pub fail_watch_start: std::sync::atomic::AtomicBool,
     #[cfg(windows)]
     pub fail_freshness_checkpoint: std::sync::atomic::AtomicBool,
 }
@@ -2840,6 +2844,32 @@ fn dropping_the_service_waits_for_workers_that_already_replied() {
 }
 
 #[test]
+fn drop_rejects_a_weak_upgrade_after_its_last_check() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let hooks = svc.inner.hooks.clone();
+    let weak = Arc::downgrade(&svc.inner);
+    let pump = weak.clone();
+    let (attempted, attempt) = std::sync::mpsc::sync_channel(1);
+    *hooks.after_drop_check.lock().unwrap() = Some(Box::new(move || {
+        // Keep any successful upgrade alive beyond Drop's return, as a paused pump would.
+        attempted.send(pump.upgrade()).unwrap();
+    }));
+
+    drop(svc);
+
+    let transient = attempt
+        .try_recv()
+        .expect("Drop must run the last-check hook");
+    assert!(
+        transient.is_none(),
+        "a Weak upgrade after Drop's last check kept Inner alive past its return"
+    );
+    assert!(weak.upgrade().is_none());
+    std::fs::remove_file(tmp.path().join("catalog.db")).unwrap();
+}
+
+#[test]
 fn drop_waits_for_a_weak_upgrade_after_its_last_count_check() {
     let tmp = temp_root();
     let svc = open(tmp.path(), DatasetClass::Synthetic);
@@ -3404,15 +3434,15 @@ impl Gate {
 /// A registered, granted lab root filled with a small synthetic tree:
 /// `top.bin` (100), `a/{1,2,3}.bin` (10, 20, 30), `a/deep/x.bin` (5), and an empty `b`.
 #[cfg(windows)]
-struct Lab {
+pub(crate) struct Lab {
     _tmp: tempfile::TempDir,
-    path: std::path::PathBuf,
-    svc: Service,
-    root: String,
+    pub(crate) path: std::path::PathBuf,
+    pub(crate) svc: Service,
+    pub(crate) root: String,
 }
 
 #[cfg(windows)]
-fn lab() -> Option<Lab> {
+pub(crate) fn lab() -> Option<Lab> {
     if loomward_windows::enumerate::running_elevated() {
         eprintln!("skipped: elevated token; the native scan refuses elevation (invariant 2)");
         return None;
@@ -3501,7 +3531,7 @@ fn walk(dir: &Path) -> (u64, u64, u64) {
 }
 
 #[cfg(windows)]
-fn start(svc: &Service, root: &str, mode: &str) -> String {
+pub(crate) fn start(svc: &Service, root: &str, mode: &str) -> String {
     let (job, _) = ok(
         "scan.start",
         call(svc, "scan.start", json!({"root_id": root, "mode": mode})),
@@ -3510,7 +3540,7 @@ fn start(svc: &Service, root: &str, mode: &str) -> String {
 }
 
 #[cfg(windows)]
-fn settle(svc: &Service, job: &str) -> Payload {
+pub(crate) fn settle(svc: &Service, job: &str) -> Payload {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let (j, _) = ok("jobs.get", call(svc, "jobs.get", json!({"job_id": job})));
@@ -6139,6 +6169,158 @@ fn identity_unverified_cli_grants_need_explicit_confirmation() {
     assert_eq!(grant_identity(&svc, root).0, "verified");
 }
 
+#[cfg(windows)]
+#[test]
+fn regrant_backfills_a_legacy_null_filesystem_without_replacing_the_grant() {
+    if loomward_windows::enumerate::running_elevated() {
+        eprintln!("skipped: elevated token; native identity reads refuse elevation (invariant 2)");
+        return;
+    }
+    let tmp = temp_root();
+    let folder = tmp.path().join("synthetic-folder");
+    std::fs::create_dir(&folder).unwrap();
+    let folder = folder.canonicalize().unwrap();
+    let svc = open(&tmp.path().join("state"), DatasetClass::Personal);
+    let (root, _) = svc.inner.grant(&folder, "cli_flag", false).unwrap();
+    let before = crate::db::active_grants(&svc.inner.db()).unwrap();
+    svc.inner
+        .db()
+        .execute_batch(
+            "UPDATE main.volume SET filesystem=NULL; UPDATE st.root_grant SET filesystem=NULL",
+        )
+        .unwrap();
+    assert_eq!(
+        svc.inner.grant(&folder, "cli_flag", false).unwrap(),
+        (root, false)
+    );
+    let filesystem: Option<String> = svc
+        .inner
+        .db()
+        .query_row("SELECT filesystem FROM main.volume", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(filesystem.as_deref(), Some("NTFS"));
+    assert_eq!(
+        svc.inner
+            .db()
+            .query_row("SELECT filesystem FROM st.root_grant", [], |r| r
+                .get::<_, String>(0))
+            .unwrap(),
+        "NTFS"
+    );
+    assert_eq!(crate::db::active_grants(&svc.inner.db()).unwrap(), before);
+}
+
+#[cfg(windows)]
+#[test]
+fn stored_unverified_grant_needs_no_second_cli_confirmation_after_restart() {
+    if loomward_windows::enumerate::running_elevated() {
+        eprintln!("skipped: elevated token; native identity reads refuse elevation (invariant 2)");
+        return;
+    }
+    let tmp = temp_root();
+    let folder = tmp.path().join("synthetic-folder");
+    std::fs::create_dir(&folder).unwrap();
+    let folder = folder.canonicalize().unwrap();
+    let state = tmp.path().join("state");
+    let svc = open(&state, DatasetClass::Personal);
+    *svc.inner.hooks.filesystem.lock().unwrap() = Some("exFAT");
+    let (root, _) = svc.inner.grant(&folder, "cli_flag", true).unwrap();
+    drop(svc);
+    let svc = open(&state, DatasetClass::Personal);
+    *svc.inner.hooks.filesystem.lock().unwrap() = Some("exFAT");
+    assert_eq!(
+        svc.inner.grant(&folder, "cli_flag", false).unwrap(),
+        (root, false)
+    );
+    assert_eq!(grant_identity(&svc, root).0, "unverified");
+    let (key, id) = crate::lab::identity(&folder).unwrap();
+    assert_eq!(
+        crate::db::active_grant(&svc.inner.db(), &key, &id, "Another synthetic root").unwrap(),
+        None,
+        "a recyclable ID cannot transfer the saved permission to another path"
+    );
+    let other = tmp.path().join("synthetic-other");
+    std::fs::create_dir(&other).unwrap();
+    assert_eq!(
+        svc.inner
+            .grant(&other.canonicalize().unwrap(), "cli_flag", false),
+        Err(crate::Refused::IdentityUnverified)
+    );
+    svc.inner
+        .catalog
+        .writer()
+        .call(WriteCommand::RevokeGrant {
+            grant_id: svc
+                .inner
+                .db()
+                .query_row("SELECT grant_id FROM main.root WHERE id=?1", [root], |r| {
+                    r.get(0)
+                })
+                .unwrap(),
+            revoked_at_ns: crate::now_ns(),
+        })
+        .unwrap();
+    assert_eq!(
+        svc.inner.grant(&folder, "cli_flag", false),
+        Err(crate::Refused::IdentityUnverified)
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn revocation_between_regrant_lookup_and_write_cannot_reuse_confirmation() {
+    if loomward_windows::enumerate::running_elevated() {
+        eprintln!("skipped: elevated token; native identity reads refuse elevation (invariant 2)");
+        return;
+    }
+    let tmp = temp_root();
+    let folder = tmp.path().join("synthetic-folder");
+    std::fs::create_dir(&folder).unwrap();
+    let folder = folder.canonicalize().unwrap();
+    let svc = open(&tmp.path().join("state"), DatasetClass::Personal);
+    *svc.inner.hooks.filesystem.lock().unwrap() = Some("exFAT");
+    let (root, _) = svc.inner.grant(&folder, "cli_flag", true).unwrap();
+    let grant = svc
+        .inner
+        .db()
+        .query_row("SELECT grant_id FROM main.root WHERE id=?1", [root], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    svc.inner
+        .hooks
+        .closed
+        .lock()
+        .unwrap()
+        .push((Command::RootsRequestGrant, "grant_observed"));
+    let peer = svc.inner.clone();
+    let regrant = std::thread::spawn(move || peer.grant(&folder, "cli_flag", false));
+    svc.inner.hooks.until("regrant observed", |hooks| {
+        hooks
+            .arrived
+            .lock()
+            .unwrap()
+            .contains(&(Command::RootsRequestGrant, "grant_observed"))
+    });
+    // The catalogue connection can revoke independently of the service's mutation mutex.
+    svc.inner
+        .catalog
+        .writer()
+        .call(WriteCommand::RevokeGrant {
+            grant_id: grant,
+            revoked_at_ns: crate::now_ns(),
+        })
+        .unwrap();
+    svc.inner
+        .hooks
+        .open(Command::RootsRequestGrant, "grant_observed");
+    assert!(
+        regrant.join().unwrap().is_err(),
+        "a revoked grant cannot supply a saved confirmation"
+    );
+    assert_eq!(crate::db::active_grants(&svc.inner.db()).unwrap(), 0);
+}
+
 /// #219: the desktop picker asks the one-line native confirmation only for a volume that cannot
 /// verify identity; declining grants nothing and reports `cancelled_by_user`.
 #[cfg(windows)]
@@ -6152,7 +6334,9 @@ fn picker_confirms_identity_unverified_volumes_explicitly() {
         fn confirm_disclosure(&self, _: &DisclosureSummary) -> Result<bool, ErrorBody> {
             Ok(false)
         }
-        fn confirm_identity_unverified(&self) -> bool {
+        fn confirm_identity_unverified(&self, folder: &Path, filesystem: &str) -> bool {
+            assert_eq!(folder, self.0.canonicalize().unwrap());
+            assert_eq!(filesystem, "FAT32");
             self.2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.1
         }

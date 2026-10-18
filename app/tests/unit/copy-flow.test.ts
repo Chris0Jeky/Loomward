@@ -1,8 +1,13 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CopyFlow, refusalReason } from '../../src/lib/stores/copy.svelte';
 import { Client, LoomwardError } from '../../src/lib/transport/client';
 import { createMockTransport } from '../../src/lib/transport/mock';
 import type { CopyPreview, CopyStatus } from '../../src/lib/contracts.gen';
+import { session } from '../../src/lib/stores/session.svelte';
+import type { EventEnvelope } from '../../src/lib/contracts.gen';
+
+const engine = (epoch: string) => (session as unknown as { onEvent(e: EventEnvelope): void }).onEvent({ protocol: 'loomward/3', event: 'stream.hello', epoch, seq: 0, at: '2026-10-01T00:00:00Z', catalog_rev: null, state_rev: null, data: { epoch } });
+afterEach(() => { (session as unknown as { streamEpoch: string | null }).streamEpoch = null; });
 
 const digest = `sha256:${'a'.repeat(64)}`;
 const manifest: CopyPreview = {
@@ -146,6 +151,50 @@ describe('copy UI lifecycle (scripted transport only; no file effects)', () => {
     call.mockResolvedValueOnce({ result: { ...status('needs_attention'), refusal: { code: 'source_changed', node_id: 'nd_source' } } } as never);
     await f.refresh(client);
     expect(f.canApprove).toBe(false); expect(f.canAbandon).toBe(true); expect(f.canCancel).toBe(false);
+  });
+  it.each([false, true])('allows local abandonment of a missing uncertain operation only after engine restart: %s', async (restarted) => {
+    engine('engine_one');
+    const f = selected(), { client, call } = scripted();
+    f.observe(session.epoch);
+    await f.review(client); await f.approve(client);
+    call.mockRejectedValueOnce(new Error('start response lost'));
+    await f.start(client);
+    if (restarted) engine('engine_two');
+    else engine('engine_one'); // a heartbeat is not a restart
+    f.observe(session.epoch + (restarted ? 0 : 1)); // an unrelated invalidation is not a restart either
+    call.mockRejectedValueOnce(new LoomwardError({ code: 'not_found', message: 'unknown copy operation', retryable: false, detail: null }));
+    await f.refresh(client);
+    expect(f.locked).toBe(true);
+    expect(f.canAbandon).toBe(restarted);
+    expect(f.canApprove).toBe(false);
+    expect(f.canStart).toBe(false);
+    expect(f.canCancel).toBe(false);
+    await f.abandon(client);
+    expect(call).toHaveBeenCalledTimes(4); // resetting a missing operation sends no mutation
+    if (restarted) {
+      expect(f.locked).toBe(false);
+      expect(f.preview).toBeNull(); expect(f.status).toBeNull(); expect(f.approval).toBeNull();
+      expect(f.items).toEqual([]); expect(f.parent).toBeNull();
+      expect(f.notice).toContain('not verified');
+      expect(f.select([{ node_id: 'nd_new', name: 'New selection' }])).toBe(true);
+    } else {
+      expect(f.uncertain).toBe(true);
+      expect(f.problem).toContain('not_found');
+    }
+  });
+  it('recovers after a confirmed restart even when the preview preceded the first stream hello', async () => {
+    const f = selected(), { client, call } = scripted();
+    await f.review(client); await f.approve(client);
+    call.mockRejectedValueOnce(new Error('start response lost'));
+    await f.start(client);
+    engine('engine_one');
+    engine('engine_two');
+    call.mockRejectedValueOnce(new LoomwardError({ code: 'not_found', message: 'unknown copy operation', retryable: false, detail: null }));
+    await f.refresh(client);
+    expect(f.canAbandon).toBe(true);
+    await f.abandon(client);
+    expect(f.locked).toBe(false);
+    expect(call).toHaveBeenCalledTimes(4);
   });
 
   it('invalidates consent after an engine refusal and reports unknown status honestly', async () => {

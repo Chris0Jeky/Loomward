@@ -631,6 +631,9 @@ pub enum SearchFreshnessState {
 pub struct SearchFreshness {
     pub state: SearchFreshnessState,
     pub at: Option<Timestamp>,
+    /// Fixed service token explaining stale coverage, e.g. `watch_restarting`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<crate::types::UnknownReason>,
 }
 
 impl<'de> Deserialize<'de> for SearchFreshness {
@@ -641,6 +644,8 @@ impl<'de> Deserialize<'de> for SearchFreshness {
             state: SearchFreshnessState,
             #[serde(deserialize_with = "crate::types::required_nullable")]
             at: Option<Timestamp>,
+            #[serde(default, deserialize_with = "crate::types::optional_present")]
+            reason: Option<crate::types::UnknownReason>,
         }
         let f = Fields::deserialize(deserializer)?;
         let timed = matches!(
@@ -657,6 +662,7 @@ impl<'de> Deserialize<'de> for SearchFreshness {
         Ok(Self {
             state: f.state,
             at: f.at,
+            reason: f.reason,
         })
     }
 }
