@@ -24,6 +24,39 @@ fn lab() -> (tempfile::TempDir, Destination) {
 }
 
 #[test]
+fn copy_staged_writes_and_metadata_keep_file_and_ancestry_pinned() {
+    if skip_elevated() {
+        return;
+    }
+    let (temp, destination) = lab();
+    let mut stage = destination.stage("staging").unwrap();
+    let child = stage.create_directory(&[], "child").unwrap();
+    let file = stage.create_file(&[("child", child)], "payload").unwrap();
+    let mut reader = std::io::Cursor::new(b"payload").chain(std::io::empty());
+    struct Attempt<'a, R>(&'a Path, R);
+    impl<R: Read> Read for Attempt<'_, R> {
+        fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+            assert_rename_blocked(&self.0.join("staging/child/payload"));
+            assert_rename_blocked(&self.0.join("staging/child"));
+            assert_rename_blocked(&self.0.join("staging"));
+            self.1.read(bytes)
+        }
+    }
+    file.write_and_flush(&mut Attempt(temp.path(), &mut reader), 7)
+        .unwrap();
+    assert_rename_blocked(&temp.path().join("staging/child/payload"));
+    assert_rename_blocked(&temp.path().join("staging/child"));
+    let metadata = BasicMetadata::read(&file.file).unwrap();
+    file.set_metadata(metadata).unwrap();
+    drop(file);
+    stage.publish("published").unwrap();
+    assert_eq!(
+        fs::read(temp.path().join("published/child/payload")).unwrap(),
+        b"payload"
+    );
+}
+
+#[test]
 fn journaled_staging_lists_entries_before_and_after_publish() {
     if skip_elevated() {
         return;
@@ -830,6 +863,7 @@ fn source_fixture(
     let expected = enumerate::OpenedIdentity {
         id: Some(enumerate::FileIdObs::Id128(root.object.file_id)),
         basis: enumerate::IdBasis::PostOpen,
+        volume_guid: None,
         volume_serial: Some(root.object.volume_serial.parse().unwrap()),
         attributes: root.attributes,
         reparse_tag: Some(0),

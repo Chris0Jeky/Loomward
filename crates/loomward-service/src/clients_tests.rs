@@ -37,6 +37,7 @@ pub(crate) fn root(svc: &Service, name: &str, id: u8, files: Option<&[(&str, u64
         dir_id,
     } = w
         .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_guid: None,
             volume_key: "fixture".into(),
             display_name: name.into(),
             display_path: format!(r"Synthetic Parent\Synthetic Owner\{name}"),
@@ -646,6 +647,82 @@ fn a_client_path_starts_at_the_granted_root_and_the_owner_keeps_the_absolute_one
 }
 
 const ALL_FIELDS: [&str; 4] = ["path", "size", "modified", "attributes"];
+
+fn schema_validator(definition: &str) -> jsonschema::Validator {
+    let mut schema: Value = serde_json::from_str(include_str!(
+        "../../../contracts/v3/view-service.schema.json"
+    ))
+    .unwrap();
+    schema.as_object_mut().unwrap().remove("anyOf");
+    schema["$ref"] = json!(format!("#/$defs/{definition}"));
+    jsonschema::draft202012::options()
+        .should_validate_formats(true)
+        .build(&schema)
+        .unwrap()
+}
+
+fn check_client_reply_schema(command: Command) {
+    let tmp = temp_root();
+    let svc = open(tmp.path());
+    let alpha = root(&svc, "Alpha", 1, Some(ALPHA));
+    let page = ok(as_owner(
+        &svc,
+        "search.query",
+        search("report", 10, Value::Null),
+    ));
+    let payload = match command {
+        Command::SearchQuery => search("report", 10, Value::Null),
+        Command::NodeInspect => json!({"node_id": page["hits"][0]["row"]["node_id"]}),
+        _ => unreachable!(),
+    };
+    let owner = ok(as_owner(&svc, command.as_str(), payload.clone()));
+    assert!(schema_validator(command.result_def()).is_valid(&owner));
+    let commands: Value =
+        serde_json::from_str(include_str!("../../../contracts/v3/commands.json")).unwrap();
+    let validator = schema_validator(
+        commands["commands"][command.as_str()]["client_result"]
+            .as_str()
+            .unwrap(),
+    );
+    let envelope_validator = schema_validator("ResponseEnvelope");
+    for mask in 0..16 {
+        let mask = if command == Command::NodeInspect {
+            15 - mask
+        } else {
+            mask
+        };
+        let fields: Vec<_> = ALL_FIELDS
+            .iter()
+            .enumerate()
+            .filter_map(|(i, field)| (mask & (1 << i) != 0).then_some(*field))
+            .collect();
+        svc.grant_client("ask:local", std::slice::from_ref(&alpha), &fields, None)
+            .unwrap();
+        let reply = as_client(&svc, "ask:local", command.as_str(), payload.clone());
+        let envelope = serde_json::to_value(&reply).unwrap();
+        assert!(envelope_validator.is_valid(&envelope));
+        let result = ok(reply);
+        let errors: Vec<_> = validator
+            .iter_errors(&result)
+            .map(|e| e.to_string())
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "{} fields {fields:?}: {errors:?}",
+            command.as_str()
+        );
+    }
+}
+
+#[test]
+fn client_search_replies_match_the_declared_schema() {
+    check_client_reply_schema(Command::SearchQuery);
+}
+
+#[test]
+fn client_inspect_replies_match_the_declared_schema() {
+    check_client_reply_schema(Command::NodeInspect);
+}
 
 /// Rescan the root recovered for an existing grant, without issuing a new owner grant.
 fn rescan(svc: &Service, grant: i64, files: &[(&str, u64)]) -> RootId {

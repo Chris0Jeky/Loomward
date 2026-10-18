@@ -116,6 +116,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     } = c
         .writer()
         .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_guid: None,
             volume_key: "synthetic-search-bench".into(),
             display_name: "Synthetic search bench".into(),
             display_path: "Synthetic search bench root".into(),

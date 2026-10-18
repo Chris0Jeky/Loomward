@@ -44,6 +44,7 @@ fn register(lab: &Lab, volume: &str, name: &str, id: u8) -> Root {
         .c
         .writer()
         .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_guid: None,
             volume_key: volume.into(),
             display_name: name.into(),
             display_path: format!(r"C:\Synthetic\{name}"),

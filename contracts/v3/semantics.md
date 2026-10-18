@@ -349,6 +349,17 @@ Conformance tests MUST validate **complete** envelopes with the payload discrimi
 through `commands.json`, so that, for example, an `EventEnvelope` with `event: "job.state"` and a data object that
 is not a `JobResult` fails. Implementations MUST enable `format` validation for `date-time` in tests.
 
+`commands.json`'s `result` describes the complete owner reply. For a client principal under an
+LW-067 grant, `search.query` and `node.inspect` use the command's `client_result` instead:
+`ClientSearchPage` and `ClientNodeDetail`. The service validates the owner-shaped result before
+projection and the final client result after projection. Other commands have no client result.
+`ClientEntryRow` always carries node reference, kind, name, extension, extension family and
+coverage. Path, size, modified time and attributes are present only when the grant discloses
+them; withheld fields are absent, while disclosed unknown values remain null. Client node
+detail contains only its row, root and optionally a root-relative display path; owner identity,
+timestamps, subtree totals, threads, exclusions, capabilities, memberships and suggestions stay
+with the owner. Unverified federated hits are not part of the client contract.
+
 ## 11. Disclosure
 
 The Rust-owned native disclosure dialog pages synthetic summaries within its display limits;
@@ -608,10 +619,12 @@ never omitted, `null` or zero; `recent_errors` is always `{"unknown": "not_retai
 `diagnostics.save {digest}` exists on the desktop adapter only (HTTP answers `capability_unavailable`), in every
 dataset class. A digest other than the held preview's is `refused` / `preview_changed` before any dialog opens.
 Rust opens the native save dialog (one dialog at a time with the pickers, 2 s cooldown: `busy`). When the
-chosen file exists, Loomward asks its own question naming it (Cancel the default) before replacing it. Cancel
-in either is `cancelled_by_user` and writes nothing; it is the only thing that is. A save dialog that never opened is
+chosen file exists, Loomward asks its own question naming it (Cancel the default) before replacing it. A confirmed
+user cancellation is `cancelled_by_user` and writes nothing. A save dialog that never opened is
 `refused` and says why: `dialog_busy` (another dialog is open) or `dialog_unavailable` (no owner window yet, no start
-folder, or no dialog on the adapter). A relative,
+folder, or no dialog on the adapter). If the backend returns no path but cannot distinguish cancellation from
+an error (rfd on Windows), the outcome is `refused` / `dialog_no_selection`: no location was returned, and nothing
+was written. This never claims that the owner cancelled or that the dialog opened. A relative,
 network, device or verbatim path, a device name, a stream name, a parent folder that is missing or resolves (through a junction or link) to a share, or an existing target
 that is not a regular file or is a link or reparse point is `unsupported_target`; an existing online-only cloud
 placeholder is `cloud_placeholder`; a write

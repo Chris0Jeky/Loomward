@@ -11,7 +11,7 @@
 //! and cannot be replayed by another client, a re-grant or the owner.
 //!
 //! The projection runs after the owner-shaped result passed its contract check, at the boundary,
-//! so no handler or adapter redacts on its own.
+//! then passes the client result contract check, so no handler or adapter redacts on its own.
 
 use crate::handlers::encode;
 use crate::{bare_row, fail, now_ns, sql_error, Inner, Out, Service};

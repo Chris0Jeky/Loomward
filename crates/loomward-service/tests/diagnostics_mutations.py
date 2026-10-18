@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[3]
 OUT = ROOT / '.loomward/diagnostics-bundle'
 SERVICE = 'crates/loomward-service/src/diagnostics.rs'
 SVC = ['cargo', 'test', '--offline', '-p', 'loomward-service', '--lib']
+WINDOWS_LIB = ['cargo', 'test', '--offline', '-p', 'loomward-windows', '--all-features', '--lib']
 NATIVE_LIB = ['cargo', 'test', '--offline', '--manifest-path', 'native/Cargo.toml', '--lib']
 T = 'tests::diagnostics_tests::'
 TARGETS = T + 'unsupported_targets_are_refused_before_anything_is_written'
@@ -24,10 +25,10 @@ MUTANTS = [
      '    if paths::network_path(target)', SVC, TARGETS),
     ('namespace-refusal', SERVICE, '        || paths::network_path(target)\n', '', SVC, TARGETS),
     ('device-name-refusal', SERVICE, '        || paths::reserved_device(target)\n', '', SVC, TARGETS),
-    ('stream-name-refusal', SERVICE, "name.as_deref().is_none_or(|n| n.contains(':'))", 'name.is_none()',
-     SVC, TARGETS),
+    ('stream-name-refusal', 'crates/loomward-windows/src/diagnostics.rs',
+     '0 | 47 | 58 | 92', '0 | 47 | 92', WINDOWS_LIB, 'diagnostics::component_names_are_single_children'),
     ('parent-is-directory', SERVICE, '    !paths::network_path(resolved) && is_dir(resolved)', '    !paths::network_path(resolved)',
-     SVC, TARGETS),
+     SVC, T + 'a_folder_that_resolves_to_a_share_is_refused_unread'),
     ('network-resolved-folder', SERVICE, '    !paths::network_path(resolved) && is_dir(resolved)', '    is_dir(resolved)',
      SVC, T + 'a_folder_that_resolves_to_a_share_is_refused_unread'),
     ('replace-confirmation', SERVICE, 'if target.exists && !dialogs.confirm_replace(&target.name()) {', 'if false {',
@@ -35,7 +36,7 @@ MUTANTS = [
     ('existing-target-regular', SERVICE,
      '        Ok(meta) if !meta.is_file() || paths::unsafe_attributes(&meta) => {',
      '        Ok(meta) if meta.is_file() && !meta.is_file() => {', SVC, TARGETS),
-    ('partial-file-cleanup', SERVICE, '        let _ = std::fs::remove_file(&temporary);\n', '',
+    ('partial-file-cleanup', 'crates/loomward-windows/src/diagnostics.rs', '        if written.is_err() {', '        if false {',
      SVC, T + 'a_failed_write_leaves_the_target_and_no_partial_file'),
     ('shared-dialog-turn', SERVICE, 'let _dialog = self.dialog_turn()?;', 'let _dialog = ();',
      SVC, T + 'a_second_dialog_is_busy_never_stacked'),

@@ -9,6 +9,7 @@ fn setup() -> (tempfile::TempDir, Catalog, i64, i64, i64) {
     } = c
         .writer()
         .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_guid: None,
             volume_key: "fixture-volume".into(),
             display_name: "Synthetic volume".into(),
             display_path: "Synthetic root".into(),
@@ -235,6 +236,7 @@ fn root_origins_must_match_the_dataset_before_any_grant_is_written() {
             }
             let accepted = (dataset == "personal") == (origin == "owner_granted");
             let result = c.writer().call(WriteCommand::RegisterRoot(RootObservation {
+                volume_guid: None,
                 volume_key: "fixture".into(),
                 display_name: "Fixture".into(),
                 display_path: "Fixture root".into(),
@@ -1710,6 +1712,7 @@ fn revoking_one_root_clears_the_other_roots_cross_root_link_flag() {
         ..
     } = w
         .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_guid: None,
             volume_key: "fixture-volume".into(),
             display_name: "Synthetic volume".into(),
             display_path: "Second synthetic root".into(),
@@ -1789,6 +1792,7 @@ fn multilink_flags_cover_both_roots_in_either_finalisation_order_and_clear_after
             ..
         } = w
             .call(WriteCommand::RegisterRoot(RootObservation {
+                volume_guid: None,
                 volume_key: "fixture-volume".into(),
                 display_name: "Synthetic volume".into(),
                 display_path: "Second synthetic root".into(),
@@ -1894,6 +1898,7 @@ fn grant_survives_a_crash_between_precious_and_derived_commits() {
     assert!(c
         .writer()
         .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_guid: None,
             volume_key: "fixture".into(),
             display_name: "Fixture".into(),
             display_path: "Fixture root".into(),
@@ -2655,4 +2660,105 @@ fn breakdown_and_unique_totals_at_an_excluded_directory_count_nothing() {
         (None, None),
         "unknown, never zero"
     );
+}
+
+#[test]
+fn refresh_root_adopts_legacy_null_guid_once_without_replacing_grant() {
+    for filesystem in ["NTFS", "exFAT"] {
+        let temp = tempfile::tempdir().unwrap();
+        let catalog = Catalog::open(temp.path(), "synthetic").unwrap();
+        let writer = catalog.writer();
+        let mut observation = RootObservation {
+            volume_guid: None,
+            volume_key: "fixture-volume".into(),
+            display_name: "Synthetic volume".into(),
+            display_path: "Synthetic root".into(),
+            root_file_id: Some(vec![1; 16]),
+            filesystem: Some(filesystem.into()),
+            origin: "fixture".into(),
+            granted_via: "fixture".into(),
+            observed_at_ns: 1,
+        };
+        let WriteReply::Root {
+            grant_id, dir_id, ..
+        } = writer
+            .call(WriteCommand::RegisterRoot(observation.clone()))
+            .unwrap()
+        else {
+            panic!("root expected")
+        };
+        let state = Connection::open(temp.path().join("state.db")).unwrap();
+        let revision = || {
+            state
+                .query_row("SELECT state_rev FROM revision", [], |r| r.get::<_, i64>(0))
+                .unwrap()
+        };
+        let before = revision();
+        observation.volume_guid = Some("0123456789abcdef0123456789abcdef".into());
+        for field in ["volume", "id", "guid", "path"] {
+            if field == "path" && filesystem == "NTFS" {
+                continue;
+            }
+            let mut wrong = observation.clone();
+            match field {
+                "volume" => wrong.volume_key = "different-volume".into(),
+                "id" => wrong.root_file_id = Some(vec![2; 16]),
+                "path" => wrong.display_path = "Different synthetic root".into(),
+                // A non-null stored binding must never be replaced.
+                "guid" => {
+                    state
+                        .execute("UPDATE root_grant SET volume_guid='other-guid'", [])
+                        .unwrap();
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                writer
+                    .call(WriteCommand::RefreshRoot {
+                        grant_id,
+                        observation: wrong
+                    })
+                    .is_err(),
+                "{filesystem}: {field}"
+            );
+            state
+                .execute("UPDATE root_grant SET volume_guid=NULL", [])
+                .unwrap();
+            assert_eq!(revision(), before);
+        }
+        for expected_revision in [before + 1, before + 1] {
+            let WriteReply::Root {
+                grant_id: refreshed,
+                dir_id: refreshed_dir,
+                ..
+            } = writer
+                .call(WriteCommand::RefreshRoot {
+                    grant_id,
+                    observation: observation.clone(),
+                })
+                .unwrap()
+            else {
+                panic!("root expected")
+            };
+            assert_eq!((refreshed, refreshed_dir), (grant_id, dir_id));
+            assert_eq!(revision(), expected_revision);
+            assert_eq!(
+                state
+                    .query_row(
+                        "SELECT count(*) FROM root_grant WHERE state='active'",
+                        [],
+                        |r| r.get::<_, i64>(0)
+                    )
+                    .unwrap(),
+                1
+            );
+            assert_eq!(
+                state
+                    .query_row("SELECT volume_guid FROM root_grant", [], |r| r
+                        .get::<_, String>(0))
+                    .unwrap(),
+                observation.volume_guid.as_ref().unwrap().as_str()
+            );
+        }
+    }
 }

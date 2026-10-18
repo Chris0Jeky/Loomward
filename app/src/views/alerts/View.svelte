@@ -30,10 +30,11 @@
       const { result } = await session.client.call('alerts.list', {});
       if (mine !== generation) return;
       report = result;
-      form = formFrom(result.settings);
+      // Refresh observations without replacing thresholds the owner is editing.
+      form ??= formFrom(result.settings);
     } catch (e) {
       if (mine !== generation) return;
-      error = session.handle(e); report = null; form = null;
+      error = session.handle(e); report = null;
     } finally { if (mine === generation) loading = false; }
   }
 

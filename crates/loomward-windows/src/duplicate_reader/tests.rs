@@ -157,15 +157,42 @@ fn copy_primitives_are_wired_only_into_the_service_copy_module() {
                     "copy primitive reference outside windows: {}",
                     path.display()
                 );
+                // Only the service enforces the diagnostic digest, dialog and replace confirmation.
+                assert!(
+                    path.starts_with(windows.parent().unwrap().join("loomward-service"))
+                        || !text.contains("loomward_windows::diagnostics"),
+                    "diagnostic export reference outside service: {}",
+                    path.display()
+                );
             }
         }
+    }
+    // Exercise the scan itself: only the service may consume the diagnostic export writer.
+    for (relative, accepted) in [
+        ("crates/loomward-engine/src/export.rs", false),
+        ("native/src/export.rs", false),
+        ("crates/loomward-service-extra/src/export.rs", false),
+        ("crates/loomward-service/src/diagnostics.rs", true),
+        ("crates/loomward-service/src/copy.rs", true),
+        ("crates/loomward-windows/src/diagnostics.rs", true),
+    ] {
+        let fixture = tempfile::tempdir().unwrap();
+        let source = fixture.path().join(relative);
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::write(&source, "use loomward_windows::diagnostics::ExportFolder;").unwrap();
+        let windows = fixture.path().join("crates/loomward-windows");
+        assert_eq!(
+            std::panic::catch_unwind(|| check(fixture.path(), &windows, &allowed)).is_ok(),
+            accepted,
+            "diagnostic export consumer: {relative}"
+        );
     }
     assert!(include_str!("../../Cargo.toml").contains("copy-primitives = [\"content-read\"]"));
     check(workspace, windows, &allowed);
     assert!(
         std::fs::read_to_string(workspace.join("crates/loomward-service/Cargo.toml"))
             .unwrap()
-            .contains("features = [\"copy-primitives\"]")
+            .contains("features = [\"copy-primitives\", \"diagnostics-export\"]")
     );
 }
 
@@ -558,6 +585,7 @@ mod native {
         crate::enumerate::OpenedIdentity {
             id: None,
             basis: crate::enumerate::IdBasis::None,
+            volume_guid: None,
             volume_serial: None,
             attributes: 0x10,
             reparse_tag: None,

@@ -1366,7 +1366,8 @@ fn followup_refused_start(
         .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
-    let end = Instant::now() + Duration::from_secs(3);
+    // A hang guard, not a latency budget: the refusal must come, however loaded the host (#320).
+    let end = Instant::now() + Duration::from_secs(30);
     let exited = loop {
         if child.try_wait().unwrap().is_some() {
             break true;

@@ -71,16 +71,6 @@ pub fn born_runs(conn: &Connection, table: &str, ids: &[i64]) -> Sql<Vec<(i64, i
     rows
 }
 
-/// Catalogue root of a dir or file row.
-pub fn root_of(conn: &Connection, dir: Option<i64>, file: Option<i64>) -> Sql<Option<i64>> {
-    conn.query_row(
-        "SELECT coalesce((SELECT root_id FROM main.dir WHERE id=?1),
-                         (SELECT d.root_id FROM main.file f JOIN main.dir d ON d.id=f.dir_id WHERE f.id=?2))",
-        params![dir, file],
-        |r| r.get(0),
-    )
-}
-
 pub fn root_generation(conn: &Connection, root: i64) -> Sql<Option<i64>> {
     conn.query_row(
         "SELECT generation FROM main.root WHERE id=?1",
@@ -229,11 +219,17 @@ pub fn lab_root(conn: &Connection, volume_key: &str, file_id: &[u8]) -> Sql<Opti
     .optional()
 }
 
-pub fn active_grant(conn: &Connection, volume_key: &str, file_id: &[u8]) -> Sql<Option<i64>> {
+pub fn active_grant(
+    conn: &Connection,
+    volume_key: &str,
+    file_id: &[u8],
+    display_path: &str,
+    volume_guid: &str,
+) -> Sql<Option<(i64, String)>> {
     conn.query_row(
-        "SELECT id FROM st.root_grant WHERE volume_key=?1 AND root_file_id=?2 AND state='active' ORDER BY id DESC LIMIT 1",
-        params![volume_key, file_id],
-        |r| r.get(0),
+        "SELECT id,identity_mode FROM st.root_grant WHERE volume_key=?1 AND root_file_id=?2 AND state='active' AND (identity_mode='verified' OR display_path=?3) AND (volume_guid=?4 OR volume_guid IS NULL) ORDER BY id DESC LIMIT 1",
+        params![volume_key, file_id, display_path, volume_guid],
+        |r| Ok((r.get(0)?, r.get(1)?)),
     )
     .optional()
 }

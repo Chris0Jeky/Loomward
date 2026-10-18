@@ -43,9 +43,12 @@ pub(crate) struct Hooks {
     pub order: Mutex<Vec<Command>>,
     pub fail_spawn: std::sync::atomic::AtomicBool,
     pub fail_job_list: std::sync::atomic::AtomicBool,
+    pub before_generation_read: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     pub closed: Mutex<Vec<(Command, &'static str)>>,
     pub arrived: Mutex<Vec<(Command, &'static str)>>,
     pub opened: std::sync::Condvar,
+    /// #369: attempt a weak upgrade after Drop's final ownership check, before releasing Inner.
+    pub after_drop_check: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     /// How far ahead of the wall clock the collection page loop reads time (`Inner::past`).
     pub skew: Mutex<Duration>,
     /// How far ahead of the wall clock a read's receiver reads time once it starts waiting.
@@ -63,6 +66,8 @@ pub(crate) struct Hooks {
     pub fail_explicit_retry: std::sync::atomic::AtomicBool,
     #[cfg(windows)]
     pub fail_automatic_start: std::sync::atomic::AtomicBool,
+    #[cfg(windows)]
+    pub fail_watch_start: std::sync::atomic::AtomicBool,
     #[cfg(windows)]
     pub fail_freshness_checkpoint: std::sync::atomic::AtomicBool,
 }
@@ -237,6 +242,133 @@ fn health_job_list_failure_is_an_error_not_idle() {
 }
 
 #[test]
+fn health_counts_active_jobs_beyond_the_history_page() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let (release, held) = std::sync::mpsc::channel();
+    let held = Mutex::new(held);
+    svc.inner.engine.register_job_runner(
+        JobKind::Scan,
+        Arc::new(move |_, _| {
+            held.lock().unwrap().recv().unwrap();
+            Ok(CoverageState::Complete)
+        }),
+    );
+    let active = svc
+        .inner
+        .engine
+        .job_submit(loomward_engine::jobs::JobSpec::new(
+            JobKind::Scan,
+            Some(RootId::new("rt_fixture").unwrap()),
+        ))
+        .unwrap();
+    svc.inner.engine.register_job_runner(
+        JobKind::Teacher,
+        Arc::new(|_, _| Ok(CoverageState::Complete)),
+    );
+    for _ in 0..50 {
+        let job = svc
+            .inner
+            .engine
+            .job_submit(loomward_engine::jobs::JobSpec::new(JobKind::Teacher, None))
+            .unwrap();
+        let until = Instant::now() + Duration::from_secs(10);
+        while !matches!(
+            svc.inner.engine.job_status(&job.job_id).unwrap().state,
+            JobState::Completed
+        ) {
+            assert!(Instant::now() < until, "synthetic job did not finish");
+            std::thread::yield_now();
+        }
+    }
+    let (history, _) = ok("jobs.list", call(&svc, "jobs.list", json!({"limit":50})));
+    assert_eq!(history["jobs"].as_array().unwrap().len(), 50);
+    assert!(history["jobs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|j| j["job_id"] != json!(active.job_id)));
+    let (health, _) = ok("health.get", call(&svc, "health.get", json!({})));
+    // Release before asserting, so even a red regression never strands its runner.
+    svc.inner.engine.job_cancel(&active.job_id).unwrap();
+    let (cancelling, _) = ok("health.get", call(&svc, "health.get", json!({})));
+    release.send(()).unwrap();
+    assert_eq!(health["jobs_running"], 1);
+    assert_eq!(cancelling["jobs_running"], 1);
+    let until = Instant::now() + Duration::from_secs(10);
+    while svc.inner.engine.job_status(&active.job_id).unwrap().state != JobState::Cancelled {
+        assert!(Instant::now() < until, "synthetic scan did not finish");
+        std::thread::yield_now();
+    }
+    let (idle, _) = ok("health.get", call(&svc, "health.get", json!({})));
+    assert_eq!(idle["jobs_running"], 0);
+}
+
+fn generation_read_race(command: &str) {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let (root, _) = fixture(&svc, 2);
+    let slice = root_slice(&svc, root);
+    let node = slice["nodes"][0]["node_id"].clone();
+    let payload = match command {
+        "tree.slice" => {
+            json!({"anchor":{"kind":"root","root_id":svc.inner.root_id(root)},"depth":2,"max_nodes":64,"min_share":0.0,"basis":"logical","include_files":true})
+        }
+        "tree.children" => {
+            json!({"node_id":node,"sort":"name_asc","basis":"logical","limit":50,"cursor":null})
+        }
+        "stats.breakdown" => json!({"node_id":node,"by":"extension","basis":"logical","limit":10}),
+        _ => json!({"node_id":node}),
+    };
+    let generation = svc
+        .inner
+        .db()
+        .query_row("SELECT generation FROM root WHERE id=?1", [root], |r| {
+            r.get::<_, i64>(0)
+        })
+        .unwrap() as u64;
+    let mut req = request(command, payload);
+    req.expected_generation = Some(Generation(generation));
+    ok(command, svc.call(req.clone(), &CallContext::http()));
+    let path = loomward_catalog::sqlite_dir(&svc.inner.state_dir).join("catalog.db");
+    *svc.inner.hooks.before_generation_read.lock().unwrap() = Some(Box::new(move || {
+        rusqlite::Connection::open(path)
+            .unwrap()
+            .execute(
+                "UPDATE root SET generation=generation+1 WHERE id=?1",
+                [root],
+            )
+            .unwrap();
+    }));
+    let error = err(svc.call(req.clone(), &CallContext::http()));
+    assert_eq!(error.code, ErrorCode::StaleGeneration, "{command}");
+    assert_eq!(reason(&error), Some("generation_changed"));
+    req.expected_generation = Some(Generation(generation + 1));
+    ok(command, svc.call(req, &CallContext::http()));
+}
+
+#[test]
+fn generation_race_node_inspect() {
+    generation_read_race("node.inspect");
+}
+#[test]
+fn generation_race_tree_path() {
+    generation_read_race("tree.path");
+}
+#[test]
+fn generation_race_tree_slice() {
+    generation_read_race("tree.slice");
+}
+#[test]
+fn generation_race_tree_children() {
+    generation_read_race("tree.children");
+}
+#[test]
+fn generation_race_breakdown() {
+    generation_read_race("stats.breakdown");
+}
+
+#[test]
 fn roots_list_keeps_a_root_mid_scan_with_unknown_totals() {
     // Every scan dirties its root's aggregates; the list must stay available with an
     // honest unknown for that root, not fail for every root (review of #358).
@@ -324,6 +456,7 @@ fn placement_revoked_only_volumes_stay_visible_but_are_not_targets() {
         .catalog
         .writer()
         .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_guid: None,
             volume_key: "revoked".into(),
             display_name: "Revoked target".into(),
             display_path: "Synthetic target".into(),
@@ -631,6 +764,7 @@ fn volumes_list_observes_space_through_a_second_root_when_the_first_is_unobserva
         .catalog
         .writer()
         .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_guid: None,
             volume_key,
             display_name: "Second".into(),
             display_path: second.canonicalize().unwrap().display().to_string(),
@@ -685,6 +819,7 @@ fn a_stalled_personal_volume_shares_one_reader_across_distinct_grant_roots() {
         .catalog
         .writer()
         .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_guid: None,
             volume_key: "vsn_healthy".into(),
             display_name: "Healthy".into(),
             display_path: healthy.display().to_string(),
@@ -1873,6 +2008,7 @@ pub(super) fn fixture(svc: &Service, files: u64) -> (i64, i64) {
         dir_id,
     } = w
         .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_guid: None,
             volume_key: "fixture".into(),
             display_name: "Synthetic".into(),
             display_path: "Synthetic root".into(),
@@ -2776,6 +2912,7 @@ fn register_as(svc: &Service, file_id: u8, origin: &str) -> (i64, i64) {
         .catalog
         .writer()
         .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_guid: None,
             volume_key: "fixture".into(),
             display_name: format!("Synthetic {file_id}"),
             display_path: format!("Synthetic root {file_id}"),
@@ -2837,6 +2974,32 @@ fn dropping_the_service_waits_for_workers_that_already_replied() {
         std::fs::remove_file(tmp.path().join("catalog.db")).unwrap();
         opener.join().unwrap();
     }
+}
+
+#[test]
+fn drop_rejects_a_weak_upgrade_after_its_last_check() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let hooks = svc.inner.hooks.clone();
+    let weak = Arc::downgrade(&svc.inner);
+    let pump = weak.clone();
+    let (attempted, attempt) = std::sync::mpsc::sync_channel(1);
+    *hooks.after_drop_check.lock().unwrap() = Some(Box::new(move || {
+        // Keep any successful upgrade alive beyond Drop's return, as a paused pump would.
+        attempted.send(pump.upgrade()).unwrap();
+    }));
+
+    drop(svc);
+
+    let transient = attempt
+        .try_recv()
+        .expect("Drop must run the last-check hook");
+    assert!(
+        transient.is_none(),
+        "a Weak upgrade after Drop's last check kept Inner alive past its return"
+    );
+    assert!(weak.upgrade().is_none());
+    std::fs::remove_file(tmp.path().join("catalog.db")).unwrap();
 }
 
 #[test]
@@ -3404,15 +3567,15 @@ impl Gate {
 /// A registered, granted lab root filled with a small synthetic tree:
 /// `top.bin` (100), `a/{1,2,3}.bin` (10, 20, 30), `a/deep/x.bin` (5), and an empty `b`.
 #[cfg(windows)]
-struct Lab {
+pub(crate) struct Lab {
     _tmp: tempfile::TempDir,
-    path: std::path::PathBuf,
-    svc: Service,
-    root: String,
+    pub(crate) path: std::path::PathBuf,
+    pub(crate) svc: Service,
+    pub(crate) root: String,
 }
 
 #[cfg(windows)]
-fn lab() -> Option<Lab> {
+pub(crate) fn lab() -> Option<Lab> {
     if loomward_windows::enumerate::running_elevated() {
         eprintln!("skipped: elevated token; the native scan refuses elevation (invariant 2)");
         return None;
@@ -3501,7 +3664,7 @@ fn walk(dir: &Path) -> (u64, u64, u64) {
 }
 
 #[cfg(windows)]
-fn start(svc: &Service, root: &str, mode: &str) -> String {
+pub(crate) fn start(svc: &Service, root: &str, mode: &str) -> String {
     let (job, _) = ok(
         "scan.start",
         call(svc, "scan.start", json!({"root_id": root, "mode": mode})),
@@ -3510,7 +3673,7 @@ fn start(svc: &Service, root: &str, mode: &str) -> String {
 }
 
 #[cfg(windows)]
-fn settle(svc: &Service, job: &str) -> Payload {
+pub(crate) fn settle(svc: &Service, job: &str) -> Payload {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let (j, _) = ok("jobs.get", call(svc, "jobs.get", json!({"job_id": job})));
@@ -5408,6 +5571,7 @@ fn personal_scan_start_refuses_unknown_lab_and_revoked_roots() {
     // The catalogue never registers a lab root in a personal store; a row that says so anyway
     // (a planted or corrupted catalogue) is still refused by the scan gate.
     let lab_root = RootObservation {
+        volume_guid: None,
         volume_key: "fixture".into(),
         display_name: "Lab".into(),
         display_path: "Lab root".into(),
@@ -5629,6 +5793,7 @@ fn obsolete_listing_revisions_are_refused_and_never_complete() {
     let identity = OpenedIdentity {
         id: None,
         basis: IdBasis::None,
+        volume_guid: None,
         volume_serial: None,
         attributes: 0x10,
         reparse_tag: None,
@@ -5739,6 +5904,7 @@ fn a_failed_end_run_releases_the_root() {
     let identity = OpenedIdentity {
         id: None,
         basis: IdBasis::None,
+        volume_guid: None,
         volume_serial: None,
         attributes: 0x10,
         reparse_tag: None,
@@ -6139,6 +6305,176 @@ fn identity_unverified_cli_grants_need_explicit_confirmation() {
     assert_eq!(grant_identity(&svc, root).0, "verified");
 }
 
+#[cfg(windows)]
+#[test]
+fn regrant_backfills_a_legacy_null_filesystem_without_replacing_the_grant() {
+    if loomward_windows::enumerate::running_elevated() {
+        eprintln!("skipped: elevated token; native identity reads refuse elevation (invariant 2)");
+        return;
+    }
+    let tmp = temp_root();
+    let folder = tmp.path().join("synthetic-folder");
+    std::fs::create_dir(&folder).unwrap();
+    let folder = folder.canonicalize().unwrap();
+    let svc = open(&tmp.path().join("state"), DatasetClass::Personal);
+    let (root, _) = svc.inner.grant(&folder, "cli_flag", false).unwrap();
+    let before = crate::db::active_grants(&svc.inner.db()).unwrap();
+    svc.inner
+        .db()
+        .execute_batch(
+            "UPDATE main.volume SET filesystem=NULL; UPDATE st.root_grant SET filesystem=NULL,volume_guid=NULL",
+        )
+        .unwrap();
+    assert_eq!(
+        svc.inner.grant(&folder, "cli_flag", false).unwrap(),
+        (root, false)
+    );
+    let filesystem: Option<String> = svc
+        .inner
+        .db()
+        .query_row("SELECT filesystem FROM main.volume", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(filesystem.as_deref(), Some("NTFS"));
+    assert_eq!(
+        svc.inner
+            .db()
+            .query_row("SELECT filesystem FROM st.root_grant", [], |r| r
+                .get::<_, String>(0))
+            .unwrap(),
+        "NTFS"
+    );
+    assert_eq!(crate::db::active_grants(&svc.inner.db()).unwrap(), before);
+}
+
+#[cfg(windows)]
+#[test]
+fn stored_unverified_grant_needs_no_second_cli_confirmation_after_restart() {
+    if loomward_windows::enumerate::running_elevated() {
+        eprintln!("skipped: elevated token; native identity reads refuse elevation (invariant 2)");
+        return;
+    }
+    let tmp = temp_root();
+    let folder = tmp.path().join("synthetic-folder");
+    std::fs::create_dir(&folder).unwrap();
+    let folder = folder.canonicalize().unwrap();
+    let state = tmp.path().join("state");
+    let svc = open(&state, DatasetClass::Personal);
+    *svc.inner.hooks.filesystem.lock().unwrap() = Some("exFAT");
+    let (root, _) = svc.inner.grant(&folder, "cli_flag", true).unwrap();
+    svc.inner
+        .db()
+        .execute("UPDATE st.root_grant SET volume_guid=NULL", [])
+        .unwrap();
+    drop(svc);
+    let svc = open(&state, DatasetClass::Personal);
+    *svc.inner.hooks.filesystem.lock().unwrap() = Some("exFAT");
+    svc.inner
+        .db()
+        .execute("UPDATE st.root_grant SET volume_guid=NULL", [])
+        .unwrap();
+    assert_eq!(
+        svc.inner.grant(&folder, "cli_flag", false).unwrap(),
+        (root, false)
+    );
+    assert_eq!(grant_identity(&svc, root).0, "unverified");
+    let (key, id) = crate::lab::identity(&folder).unwrap();
+    let guid: String = svc
+        .inner
+        .db()
+        .query_row(
+            "SELECT volume_guid FROM st.root_grant WHERE state='active'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        crate::db::active_grant(&svc.inner.db(), &key, &id, "Another synthetic root", &guid)
+            .unwrap(),
+        None,
+        "a recyclable ID cannot transfer the saved permission to another path"
+    );
+    let other = tmp.path().join("synthetic-other");
+    std::fs::create_dir(&other).unwrap();
+    assert_eq!(
+        svc.inner
+            .grant(&other.canonicalize().unwrap(), "cli_flag", false),
+        Err(crate::Refused::IdentityUnverified)
+    );
+    svc.inner
+        .catalog
+        .writer()
+        .call(WriteCommand::RevokeGrant {
+            grant_id: svc
+                .inner
+                .db()
+                .query_row("SELECT grant_id FROM main.root WHERE id=?1", [root], |r| {
+                    r.get(0)
+                })
+                .unwrap(),
+            revoked_at_ns: crate::now_ns(),
+        })
+        .unwrap();
+    assert_eq!(
+        svc.inner.grant(&folder, "cli_flag", false),
+        Err(crate::Refused::IdentityUnverified)
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn revocation_between_regrant_lookup_and_write_cannot_reuse_confirmation() {
+    if loomward_windows::enumerate::running_elevated() {
+        eprintln!("skipped: elevated token; native identity reads refuse elevation (invariant 2)");
+        return;
+    }
+    let tmp = temp_root();
+    let folder = tmp.path().join("synthetic-folder");
+    std::fs::create_dir(&folder).unwrap();
+    let folder = folder.canonicalize().unwrap();
+    let svc = open(&tmp.path().join("state"), DatasetClass::Personal);
+    *svc.inner.hooks.filesystem.lock().unwrap() = Some("exFAT");
+    let (root, _) = svc.inner.grant(&folder, "cli_flag", true).unwrap();
+    let grant = svc
+        .inner
+        .db()
+        .query_row("SELECT grant_id FROM main.root WHERE id=?1", [root], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    svc.inner
+        .hooks
+        .closed
+        .lock()
+        .unwrap()
+        .push((Command::RootsRequestGrant, "grant_observed"));
+    let peer = svc.inner.clone();
+    let regrant = std::thread::spawn(move || peer.grant(&folder, "cli_flag", false));
+    svc.inner.hooks.until("regrant observed", |hooks| {
+        hooks
+            .arrived
+            .lock()
+            .unwrap()
+            .contains(&(Command::RootsRequestGrant, "grant_observed"))
+    });
+    // The catalogue connection can revoke independently of the service's mutation mutex.
+    svc.inner
+        .catalog
+        .writer()
+        .call(WriteCommand::RevokeGrant {
+            grant_id: grant,
+            revoked_at_ns: crate::now_ns(),
+        })
+        .unwrap();
+    svc.inner
+        .hooks
+        .open(Command::RootsRequestGrant, "grant_observed");
+    assert!(
+        regrant.join().unwrap().is_err(),
+        "a revoked grant cannot supply a saved confirmation"
+    );
+    assert_eq!(crate::db::active_grants(&svc.inner.db()).unwrap(), 0);
+}
+
 /// #219: the desktop picker asks the one-line native confirmation only for a volume that cannot
 /// verify identity; declining grants nothing and reports `cancelled_by_user`.
 #[cfg(windows)]
@@ -6152,7 +6488,9 @@ fn picker_confirms_identity_unverified_volumes_explicitly() {
         fn confirm_disclosure(&self, _: &DisclosureSummary) -> Result<bool, ErrorBody> {
             Ok(false)
         }
-        fn confirm_identity_unverified(&self) -> bool {
+        fn confirm_identity_unverified(&self, folder: &Path, filesystem: &str) -> bool {
+            assert_eq!(folder, self.0.canonicalize().unwrap());
+            assert_eq!(filesystem, "FAT32");
             self.2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.1
         }
@@ -6222,6 +6560,7 @@ fn an_unverified_run_flags_every_published_row() {
         let identity = OpenedIdentity {
             id: None,
             basis,
+            volume_guid: None,
             volume_serial: None,
             attributes: 0x10,
             reparse_tag: None,
@@ -6464,3 +6803,56 @@ mod alerts_tests;
 #[cfg(test)]
 #[path = "clutter_tests.rs"]
 mod clutter_tests;
+
+#[test]
+fn active_grant_matches_guid_and_unverified_path_together() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let guid = "00000000000000000000000000000001";
+    let WriteReply::Root { grant_id, .. } = svc
+        .inner
+        .catalog
+        .writer()
+        .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_guid: Some(guid.into()),
+            volume_key: "fixture-volume".into(),
+            root_file_id: Some(vec![1; 16]),
+            display_name: "Synthetic volume".into(),
+            display_path: "Synthetic root".into(),
+            filesystem: Some("exFAT".into()),
+            origin: "fixture".into(),
+            granted_via: "fixture".into(),
+            observed_at_ns: 1,
+        }))
+        .unwrap()
+    else {
+        panic!()
+    };
+    let conn = svc.inner.db();
+    assert_eq!(
+        crate::db::active_grant(&conn, "fixture-volume", &[1; 16], "Synthetic root", guid).unwrap(),
+        Some((grant_id, "unverified".into()))
+    );
+    assert_eq!(
+        crate::db::active_grant(
+            &conn,
+            "fixture-volume",
+            &[1; 16],
+            "Another synthetic root",
+            guid
+        )
+        .unwrap(),
+        None
+    );
+    assert_eq!(
+        crate::db::active_grant(
+            &conn,
+            "fixture-volume",
+            &[1; 16],
+            "Synthetic root",
+            "00000000000000000000000000000002"
+        )
+        .unwrap(),
+        None
+    );
+}

@@ -120,6 +120,40 @@ fn checked_tail(conn: &Connection, op: u64) -> rusqlite::Result<Result<(u64, Vec
     })
 }
 
+// Decode only the routing metadata; manifests and source signatures are skipped without allocation.
+#[derive(Default, serde::Deserialize)]
+struct PlanLookup {
+    #[serde(default)]
+    operation_id: String,
+    #[serde(default)]
+    grants: Vec<i64>,
+}
+
+/// `backfill` keeps the first plan for a wire ID: old data may already hold a duplicate start, and a
+/// UNIQUE abort there would stop every later open of the journal.
+fn index_plan(conn: &Connection, op: u64, plan: &str, backfill: bool) -> rusqlite::Result<()> {
+    // Old opaque/unreadable plans have no usable wire ID or grants, as before this index.
+    let lookup = serde_json::from_str::<PlanLookup>(plan).unwrap_or_default();
+    conn.execute(
+        if backfill {
+            "INSERT INTO op_plan_lookup(op_id,wire_id) VALUES(?1,?2) ON CONFLICT(wire_id) DO NOTHING"
+        } else {
+            "INSERT INTO op_plan_lookup(op_id,wire_id) VALUES(?1,?2)"
+        },
+        params![
+            op as i64,
+            (!lookup.operation_id.is_empty()).then_some(lookup.operation_id)
+        ],
+    )?;
+    for grant in lookup.grants {
+        conn.execute(
+            "INSERT OR IGNORE INTO op_plan_grant(grant_id,op_id) VALUES(?1,?2)",
+            params![grant, op as i64],
+        )?;
+    }
+    Ok(())
+}
+
 impl Store {
     /// Open the journal's database with the precious-state pragmas of ADR-V3-22 and ensure its tables.
     pub fn open(path: &Path) -> rusqlite::Result<Store> {
@@ -134,8 +168,9 @@ impl Store {
         let current = {
             let tx = conn.transaction_with_behavior(TransactionBehavior::Deferred)?;
             let current: bool = tx.query_row(
-                "SELECT count(*)=7 FROM sqlite_schema
-                 WHERE (type='table' AND name IN ('op_journal','op_journal_head','op_plan'))
+                "SELECT count(*)=9 FROM sqlite_schema
+                 WHERE (type='table' AND name IN ('op_journal','op_journal_head','op_plan',
+                                                 'op_plan_lookup','op_plan_grant'))
                     OR (type='trigger' AND name IN ('op_journal_no_replace','op_journal_no_update',
                                                     'op_journal_no_delete','op_plan_no_update'))",
                 [],
@@ -151,6 +186,12 @@ impl Store {
                 "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='op_journal_head')",
                 [], |r| r.get(0),
             )?;
+            let indexed: bool = tx.query_row(
+                "SELECT count(*)=2 FROM sqlite_schema WHERE type='table'
+                 AND name IN ('op_plan_lookup','op_plan_grant')",
+                [],
+                |r| r.get(0),
+            )?;
             tx.execute_batch(SCHEMA_SQL)?;
             if !anchored {
                 // Trust legacy tails once, only when introducing the head table, never on later opens.
@@ -159,6 +200,19 @@ impl Store {
                     SELECT op_id,seq,chain FROM op_journal AS j
                     WHERE seq=(SELECT max(seq) FROM op_journal WHERE op_id=j.op_id)",
                 )?;
+            }
+            if !indexed {
+                // One-time legacy migration, one plan at a time, under the same write transaction.
+                let mut plans = tx.prepare("SELECT op_id,plan FROM op_plan ORDER BY op_id")?;
+                let mut rows = plans.query([])?;
+                while let Some(row) = rows.next()? {
+                    index_plan(
+                        &tx,
+                        row.get::<_, i64>(0)? as u64,
+                        &row.get::<_, String>(1)?,
+                        true,
+                    )?;
+                }
             }
             tx.commit()?;
         }
@@ -239,11 +293,36 @@ impl Store {
     /// Record the executor's plan for `op`, once. Written after `started` and before any effect; a second
     /// write is refused, so recovery always reads the plan the run used.
     pub fn set_plan(&mut self, op: u64, plan: &str) -> rusqlite::Result<()> {
-        self.conn.execute(
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute(
             "INSERT INTO op_plan(op_id,plan) VALUES(?1,?2)",
             params![op as i64, plan],
         )?;
+        index_plan(&tx, op, plan, false)?;
+        tx.commit()?;
         Ok(())
+    }
+
+    /// Resolve the service wire ID without reading a manifest. A match is not effect authority.
+    pub fn operation_by_wire_id(&self, id: &str) -> rusqlite::Result<Option<u64>> {
+        self.conn
+            .query_row(
+                "SELECT op_id FROM op_plan_lookup WHERE wire_id=?1",
+                [id],
+                |r| Ok(r.get::<_, i64>(0)? as u64),
+            )
+            .optional()
+    }
+
+    /// Operations using a grant, including recovered runs with no resident worker.
+    pub fn operations_for_grant(&self, grant: i64) -> rusqlite::Result<Vec<u64>> {
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT op_id FROM op_plan_grant WHERE grant_id=?1 ORDER BY op_id")?;
+        let rows = stmt.query_map([grant], |r| Ok(r.get::<_, i64>(0)? as u64))?;
+        rows.collect()
     }
 
     pub fn plan(&self, op: u64) -> rusqlite::Result<Option<String>> {
@@ -308,6 +387,130 @@ fn insert_head(conn: &Connection, op: u64, row: &Row) -> rusqlite::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn plan_lookup_is_written_with_the_plan() {
+        let mut store = Store::new(Connection::open_in_memory().unwrap()).unwrap();
+        store
+            .set_plan(
+                1,
+                r#"{"operation_id":"cp_first","grants":[7,8,7],"manifest":{"items":[]}}"#,
+            )
+            .unwrap();
+        let wire: String = store
+            .conn
+            .query_row(
+                "SELECT wire_id FROM op_plan_lookup WHERE op_id=1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(wire, "cp_first");
+        let grants: i64 = store
+            .conn
+            .query_row(
+                "SELECT count(*) FROM op_plan_grant WHERE op_id=1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(grants, 2);
+        assert_eq!(store.operation_by_wire_id("cp_first").unwrap(), Some(1));
+        assert_eq!(store.operation_by_wire_id("cp_missing").unwrap(), None);
+        assert_eq!(store.operations_for_grant(7).unwrap(), vec![1]);
+        assert!(store.operations_for_grant(9).unwrap().is_empty());
+        // A duplicate wire ID must roll back the plan as well as its lookup entries.
+        assert!(store
+            .set_plan(2, r#"{"operation_id":"cp_first","grants":[9]}"#)
+            .is_err());
+        assert!(store.plan(2).unwrap().is_none());
+        // A failure after the wire lookup was inserted must roll back all three tables.
+        store
+            .conn
+            .execute_batch(
+                "CREATE TRIGGER fail_grant BEFORE INSERT ON op_plan_grant
+            WHEN NEW.grant_id=9 BEGIN SELECT RAISE(ABORT,'injected grant write failure'); END;",
+            )
+            .unwrap();
+        assert!(store
+            .set_plan(2, r#"{"operation_id":"cp_second","grants":[8,9]}"#)
+            .is_err());
+        assert!(store.plan(2).unwrap().is_none());
+        assert_eq!(store.operation_by_wire_id("cp_second").unwrap(), None);
+        assert_eq!(store.operations_for_grant(8).unwrap(), vec![1]);
+    }
+
+    #[test]
+    fn legacy_plan_lookup_migrates_once_without_rewriting_plans_or_journals() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        let conn = Connection::open(&path).unwrap();
+        // Actual pre-index schema, including the independent journal head and immutable plan.
+        conn.execute_batch(include_str!(
+            "../tests/fixtures/journal-before-plan-index.sql"
+        ))
+        .unwrap();
+        let row = Replay::new(1).row_for(&Entry {
+            epoch: 0,
+            record: Record::Started {
+                digest: [1; 32],
+                items: 1,
+            },
+        });
+        insert_row(&conn, 1, &row).unwrap();
+        insert_head(&conn, 1, &row).unwrap();
+        let plan = r#"{"operation_id":"cp_legacy","grants":[4,5],"manifest":{"items":[]}}"#;
+        conn.execute("INSERT INTO op_plan VALUES(1,?1)", [plan])
+            .unwrap();
+        conn.execute("INSERT INTO op_plan VALUES(2,'not a readable plan')", [])
+            .unwrap();
+        conn.execute("INSERT INTO op_plan VALUES(3,'{}')", [])
+            .unwrap();
+        // A duplicate start left by the old start-once race: the backfill keeps the first and still opens.
+        conn.execute("INSERT INTO op_plan VALUES(4,?1)", [plan])
+            .unwrap();
+        drop(conn);
+        let store = Store::open(&path).unwrap();
+        let wire: String = store
+            .conn
+            .query_row(
+                "SELECT wire_id FROM op_plan_lookup WHERE op_id=1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(wire, "cp_legacy");
+        assert_eq!(store.plan(1).unwrap().as_deref(), Some(plan));
+        assert_eq!(
+            store.plan(2).unwrap().as_deref(),
+            Some("not a readable plan")
+        );
+        assert_eq!(store.rows(1).unwrap(), vec![row.clone()]);
+        assert_eq!(store.replay(1).unwrap().unwrap().seq, 1);
+        assert_eq!(store.operation_by_wire_id("cp_legacy").unwrap(), Some(1));
+        assert_eq!(store.operation_by_wire_id("").unwrap(), None);
+        // The duplicate keeps no wire ID (first wins) but stays grant-indexed, so a revoke fences it.
+        assert_eq!(store.operations_for_grant(4).unwrap(), vec![1, 4]);
+        let grants: i64 = store
+            .conn
+            .query_row(
+                "SELECT count(*) FROM op_plan_grant WHERE op_id=1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(grants, 2);
+        drop(store);
+        let locker = Connection::open(&path).unwrap();
+        locker.execute_batch("BEGIN IMMEDIATE").unwrap();
+        // Reopening an indexed database is read-only, even while another writer holds the lock.
+        let reopened = Store::open(&path).unwrap();
+        assert_eq!(reopened.plan(1).unwrap().as_deref(), Some(plan));
+        assert_eq!(reopened.operation_by_wire_id("cp_legacy").unwrap(), Some(1));
+        assert_eq!(reopened.operations_for_grant(5).unwrap(), vec![1, 4]);
+        assert_eq!(reopened.rows(1).unwrap(), vec![row]);
+        locker.execute_batch("ROLLBACK").unwrap();
+    }
+
     use super::*;
     use std::cell::{Cell, RefCell};
 

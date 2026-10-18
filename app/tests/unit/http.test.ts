@@ -102,6 +102,24 @@ describe('http transport', () => {
     expect(err).toMatchObject({ code: 'stale_generation', retryable: true });
   });
 
+  it('preserves cancellation after headers arrive while the response body is still loading', async () => {
+    const controller = new AbortController();
+    const cancelled = new DOMException('view was left', 'AbortError');
+    let reading!: () => void;
+    const started = new Promise<void>((resolve) => { reading = resolve; });
+    const t = createHttpTransport({
+      base: 'http://x', token: 't',
+      fetchImpl: asFetch(async (_url, init) => new Response(new ReadableStream<Uint8Array>({
+        start(body) { init.signal!.addEventListener('abort', () => body.error(init.signal!.reason), { once: true }); },
+        pull() { reading(); },
+      }))),
+    });
+    const pending = new Client(t).call('roots.list', {}, { signal: controller.signal });
+    await started;
+    controller.abort(cancelled);
+    await expect(pending).rejects.toBe(cancelled);
+  });
+
   it('treats network failure, non-200, non-JSON and foreign envelopes as transport faults', async () => {
     const mk = (f: () => Promise<Response>) => new Client(createHttpTransport({ base: 'http://x', token: 't', fetchImpl: asFetch(f) }));
     await expect(mk(async () => { throw new TypeError('Failed to fetch'); }).call('roots.list', {})).rejects.toBeInstanceOf(TransportError);

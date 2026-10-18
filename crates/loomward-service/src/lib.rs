@@ -154,6 +154,10 @@ impl Drop for Service {
         loop {
             match Arc::try_unwrap(inner) {
                 Ok(inner) => {
+                    #[cfg(test)]
+                    if let Some(after_check) = inner.hooks.after_drop_check.lock().unwrap().take() {
+                        after_check();
+                    }
                     drop(inner);
                     return;
                 }
@@ -552,6 +556,13 @@ pub(crate) fn catalog_error(e: loomward_catalog::Error) -> ErrorBody {
         E::StaleGeneration => fail(
             ErrorCode::StaleGeneration,
             "the catalogue moved; restart from the first page",
+        ),
+        E::GenerationMismatch => with_reason(
+            fail(
+                ErrorCode::StaleGeneration,
+                "the root has a different generation",
+            ),
+            "generation_changed",
         ),
         E::RepairRequired => fail(ErrorCode::PartialCoverage, "aggregates are being repaired"),
         E::ResourceBudget => fail(ErrorCode::ResourceBudget, "catalogue budget exceeded"),
@@ -1036,6 +1047,16 @@ impl Inner {
             }) => {
                 if let Some(g) = &grant {
                     clients::project(command, g, &mut map);
+                    if command.validate_client_result(&map).is_err() {
+                        return ResponseEnvelope::error(
+                            Some(id),
+                            fail(
+                                ErrorCode::InternalError,
+                                "the service produced an invalid client result",
+                            ),
+                            None,
+                        );
+                    }
                 }
                 let meta = self.meta(started, &map, catalog_rev, state_rev);
                 ResponseEnvelope::ok_object(id, map, meta)
@@ -1105,6 +1126,13 @@ impl Inner {
     /// reports; `unknown` when it reports none), observed through the same guarded, non-elevated
     /// open a scan uses. Fails closed.
     pub(crate) fn root_filesystem(&self, root: &Path) -> Result<String, Refusal> {
+        self.root_observation(root)
+            .map(|(filesystem, _)| filesystem)
+    }
+    fn root_observation(
+        &self,
+        root: &Path,
+    ) -> Result<(String, loomward_windows::enumerate::OpenedIdentity), Refusal> {
         #[cfg(windows)]
         {
             use loomward_engine::scan::source::DirSource;
@@ -1114,14 +1142,17 @@ impl Inner {
                 Some(name) => source.with_filesystem(name),
                 None => source,
             };
-            let (dir, _) = source
+            let (dir, identity) = source
                 .with_identity_unverified()
                 .open_root(root)
                 .map_err(|_| Refusal::IdentityUnavailable)?;
-            Ok(match dir.filesystem() {
-                "" => "unknown".into(),
-                name => name.chars().take(32).collect(),
-            })
+            Ok((
+                match dir.filesystem() {
+                    "" => "unknown".into(),
+                    name => name.chars().take(32).collect(),
+                },
+                identity,
+            ))
         }
         #[cfg(not(windows))]
         {
@@ -1139,16 +1170,38 @@ impl Inner {
         via: &str,
         confirmed_unverified: bool,
     ) -> Result<(i64, bool), Refused> {
-        let (volume_key, file_id) = lab::identity(root)?;
+        let (filesystem, identity) = self.root_observation(root)?;
+        let volume_key = format!(
+            "vsn_{}",
+            identity.volume_serial.ok_or(Refusal::IdentityUnavailable)?
+        );
+        let file_id = match identity.id {
+            Some(loomward_windows::enumerate::FileIdObs::Id128(id)) => id.to_vec(),
+            Some(loomward_windows::enumerate::FileIdObs::Id64(id)) => id.to_le_bytes().to_vec(),
+            None => return Err(Refusal::IdentityUnavailable.into()),
+        };
+        let volume_guid = format!(
+            "{:032x}",
+            identity.volume_guid.ok_or(Refusal::IdentityUnavailable)?
+        );
         // #219: a personal root on a volume that cannot verify identity needs the owner's
         // explicit confirmation; a synthetic lab root may list unverified freely.
-        let filesystem = self.root_filesystem(root)?;
         let unverified = !loomward_windows::enumerate::verifies_identity(&filesystem);
-        if unverified && self.dataset == DatasetClass::Personal && !confirmed_unverified {
-            return Err(Refused::IdentityUnverified);
-        }
+        let text = root.to_string_lossy();
+        let display_path = text.strip_prefix(r"\\?\").unwrap_or(&text).to_string();
         let _m = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
         let conn = self.db();
+        let existing = db::active_grant(&conn, &volume_key, &file_id, &display_path, &volume_guid)
+            .map_err(|_| Refusal::IdentityUnavailable)?;
+        if unverified
+            && self.dataset == DatasetClass::Personal
+            && !confirmed_unverified
+            && !existing
+                .as_ref()
+                .is_some_and(|(_, mode)| mode == "unverified")
+        {
+            return Err(Refused::IdentityUnverified);
+        }
         let origin = match self.dataset {
             DatasetClass::Synthetic => {
                 if file_id.len() != 16 {
@@ -1162,45 +1215,50 @@ impl Inner {
             }
             DatasetClass::Personal => "owner_granted",
         };
-        if let Some(grant) = db::active_grant(&conn, &volume_key, &file_id)
-            .map_err(|_| Refusal::IdentityUnavailable)?
-        {
-            if let Some(root) =
-                db::root_for_grant(&conn, grant).map_err(|_| Refusal::IdentityUnavailable)?
-            {
-                return Ok((root, false));
-            }
-        }
-        if db::active_grants(&conn).map_err(|_| Refusal::IdentityUnavailable)?
-            >= db::MAX_ACTIVE_ROOTS
+        if existing.is_none()
+            && db::active_grants(&conn).map_err(|_| Refusal::IdentityUnavailable)?
+                >= db::MAX_ACTIVE_ROOTS
         {
             return Err(Refused::RootLimit);
         }
         drop(conn);
-        let text = root.to_string_lossy();
-        let display_path = text.strip_prefix(r"\\?\").unwrap_or(&text).to_string();
+        #[cfg(test)]
+        if existing.is_some() {
+            self.hooks
+                .gate(Command::RootsRequestGrant, "grant_observed");
+        }
         let display_name = root.file_name().map_or_else(
             || display_path.clone(),
             |n| n.to_string_lossy().into_owned(),
         );
+        let fresh = existing.is_none();
+        let observation = RootObservation {
+            volume_guid: Some(volume_guid),
+            volume_key,
+            display_name: display_name.chars().take(260).collect(),
+            display_path,
+            root_file_id: Some(file_id),
+            // The volume's real filesystem: NTFS/ReFS keep durable references; the writer marks
+            // any other filesystem's grant identity-unverified.
+            filesystem: Some(filesystem),
+            origin: origin.into(),
+            granted_via: via.into(),
+            observed_at_ns: now_ns(),
+        };
+        let command = match existing {
+            Some((grant_id, _)) => WriteCommand::RefreshRoot {
+                grant_id,
+                observation,
+            },
+            None => WriteCommand::RegisterRoot(observation),
+        };
         let reply = self
             .catalog
             .writer()
-            .call(WriteCommand::RegisterRoot(RootObservation {
-                volume_key,
-                display_name: display_name.chars().take(260).collect(),
-                display_path,
-                root_file_id: Some(file_id),
-                // The volume's real filesystem: NTFS/ReFS keep durable references; the writer marks
-                // any other filesystem's grant identity-unverified.
-                filesystem: Some(filesystem),
-                origin: origin.into(),
-                granted_via: via.into(),
-                observed_at_ns: now_ns(),
-            }))
+            .call(command)
             .map_err(|_| Refusal::IdentityUnavailable)?;
         match reply {
-            WriteReply::Root { root_id, .. } => Ok((root_id, true)),
+            WriteReply::Root { root_id, .. } => Ok((root_id, fresh)),
             _ => Err(Refusal::IdentityUnavailable.into()),
         }
     }

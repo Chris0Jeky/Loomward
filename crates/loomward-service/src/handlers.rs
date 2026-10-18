@@ -749,7 +749,7 @@ impl Inner {
             .read_reader(work)?
             .entry_counts()
             .map_err(catalog_error)?;
-        let jobs = self.engine.job_list(&decode_exact(json!({"limit": 50}))?);
+        let jobs = self.engine.active_job_count();
         #[cfg(test)]
         let jobs = if self
             .hooks
@@ -763,19 +763,7 @@ impl Inner {
         } else {
             jobs
         };
-        let running = jobs
-            .map(|l| {
-                l.jobs
-                    .iter()
-                    .filter(|j| {
-                        matches!(
-                            j.state,
-                            JobState::Queued | JobState::Running | JobState::CancelRequested
-                        )
-                    })
-                    .count()
-            })
-            .map_err(ErrorBody::from)?;
+        let running = jobs.map_err(ErrorBody::from)?;
         let revs = self.revisions()?;
         let scrub_pending: bool = self
             .db()
@@ -855,7 +843,7 @@ impl Inner {
             .optional()
             .map_err(sql_error)?
             .ok_or_else(|| fail(ErrorCode::NotFound, "unknown grant"))?;
-        if state != "active" {
+        if state != "active" && state != "identity_changed" {
             // A prior revoke may have committed its grant but failed feature cleanup.
             self.engine
                 .learning_redact_revoked()
@@ -866,6 +854,7 @@ impl Inner {
                     "the grant's root identity changed",
                 )
             })?;
+            self.copies_fence(grant)?;
             return Ok((ts_ns(at), self.revisions()?));
         }
         let at = now_ns();
@@ -877,7 +866,7 @@ impl Inner {
             })
             .map_err(catalog_error)?;
         // Copies using the grant are fenced next (docs/47 section 5): no effect step starts after.
-        self.copies_fence(grant);
+        let copy_fence = self.copies_fence(grant);
         let root = db::root_for_grant(&self.db(), grant).map_err(sql_error)?;
         if let Some(root) = root {
             self.freshness.remove(root);
@@ -899,6 +888,7 @@ impl Inner {
         if let Ok(list) = self.root_list(None) {
             self.publish(EventName::RootsChanged, list, Some(revs.0), Some(revs.1));
         }
+        copy_fence?;
         redaction?;
         Ok((ts_ns(at), revs))
     }
@@ -984,7 +974,7 @@ impl Inner {
         if changed.is_err() {
             return;
         }
-        self.copies_fence(grant);
+        let _ = self.copies_fence(grant);
         let row = db::root_for_grant(&self.db(), grant);
         if let Ok(Some(row)) = row {
             self.freshness.remove(row);
@@ -1103,11 +1093,12 @@ impl Inner {
         }
         // #219: a volume that cannot verify file identity is granted only after the owner's
         // explicit native confirmation; declining is a cancellation, not a refusal.
-        let unverified = match self.root_filesystem(&path) {
-            Ok(fs) => !loomward_windows::enumerate::verifies_identity(&fs),
+        let filesystem = match self.root_filesystem(&path) {
+            Ok(fs) => fs,
             Err(r) => return refused(r),
         };
-        if unverified && !dialogs.confirm_identity_unverified() {
+        let unverified = !loomward_windows::enumerate::verifies_identity(&filesystem);
+        if unverified && !dialogs.confirm_identity_unverified(&path, &filesystem) {
             return Ok(out(
                 json!({"outcome": "cancelled_by_user", "root": null, "refusal": null}),
                 None,
@@ -1232,35 +1223,26 @@ impl Inner {
         })
     }
 
-    /// `expected_generation` on a root-anchored read (section 5): the anchor's root generation
-    /// must still be the one the caller holds.
+    /// Bind section 5's precondition; the reader checks it inside the result's transaction.
     fn check_generation(
         &self,
         expected: Option<Generation>,
         key: NodeKey,
+        reader: &mut Reader,
     ) -> Result<(), ErrorBody> {
         let Some(expected) = expected else {
             return Ok(());
         };
-        let (dir, file) = match key {
-            NodeKey::Dir(d) => (Some(d), None),
-            NodeKey::File(f) => (None, Some(f)),
-            _ => {
-                return Err(fail(
-                    ErrorCode::InvalidRequest,
-                    "expected_generation needs an anchor inside one root",
-                ))
-            }
-        };
-        let conn = self.db();
-        let root = db::root_of(&conn, dir, file)
-            .map_err(sql_error)?
-            .ok_or_else(|| fail(ErrorCode::NotFound, "unknown node"))?;
-        if db::root_generation(&conn, root).map_err(sql_error)? != Some(expected.get() as i64) {
-            return Err(stale(
-                "the root has a newer generation",
-                "generation_changed",
+        if !matches!(key, NodeKey::Dir(_) | NodeKey::File(_)) {
+            return Err(fail(
+                ErrorCode::InvalidRequest,
+                "expected_generation needs an anchor inside one root",
             ));
+        }
+        reader.expect_generation(key, expected.get());
+        #[cfg(test)]
+        if let Some(before_read) = self.hooks.before_generation_read.lock().unwrap().take() {
+            before_read();
         }
         Ok(())
     }
@@ -1287,7 +1269,7 @@ impl Inner {
                 "this command needs a directory or file node",
             ));
         }
-        self.check_generation(req.expected_generation, key)?;
+        self.check_generation(req.expected_generation, key, &mut reader)?;
         let value = read(&mut reader, key).map_err(catalog_error)??;
         self.sealed(value, revs)
     }
@@ -1307,7 +1289,7 @@ impl Inner {
             Anchor::Node { node_id } => self.node(node_id, &mut reader)?,
         };
         if !matches!(r.anchor, Anchor::Atlas {}) {
-            self.check_generation(req.expected_generation, anchor)?;
+            self.check_generation(req.expected_generation, anchor, &mut reader)?;
         }
         let slice = reader
             .slice(&SliceRequest {
@@ -1333,7 +1315,7 @@ impl Inner {
                 "tree.children needs a directory node",
             ));
         };
-        self.check_generation(req.expected_generation, key)?;
+        self.check_generation(req.expected_generation, key, &mut reader)?;
         let bind = binding(req);
         let cursor = match &r.cursor {
             None => None,
@@ -1521,7 +1503,7 @@ impl Inner {
                 "stats.breakdown needs a directory node",
             ));
         };
-        self.check_generation(req.expected_generation, key)?;
+        self.check_generation(req.expected_generation, key, &mut reader)?;
         let by = match r.by {
             BreakdownRequestBy::ExtFamily => "ext_family",
             BreakdownRequestBy::Extension => "extension",

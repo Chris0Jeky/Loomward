@@ -4,7 +4,11 @@ import { createMockTransport } from '../../src/lib/transport/mock';
 import type { DiagnosticsSaveRefusal } from '../../src/lib/contracts.gen';
 import { canonicalText, matches, SAVE_REFUSAL_WORDS } from '../../src/views/health/diagnostics';
 
-const ALL_REFUSALS: DiagnosticsSaveRefusal[] = ['preview_changed', 'unsupported_target', 'cloud_placeholder', 'write_failed', 'dialog_busy', 'dialog_unavailable'];
+const ALL_REFUSALS: DiagnosticsSaveRefusal[] = ['preview_changed', 'unsupported_target', 'cloud_placeholder', 'write_failed', 'dialog_busy', 'dialog_unavailable', 'dialog_no_selection'];
+
+it('describes an ambiguous save dialog result without claiming the owner cancelled', () => {
+  expect(SAVE_REFUSAL_WORDS).toHaveProperty('dialog_no_selection', expect.stringContaining('cancelled or failed'));
+});
 
 it('reproduces the exact previewed bytes from the received bundle and checks them against the digest', async () => {
   const c = new Client(createMockTransport());

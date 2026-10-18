@@ -11,11 +11,12 @@ const feed = (e: EventEnvelope) => (session as unknown as { onEvent(e: EventEnve
 describe('session resync', () => {
   afterEach(() => { (session as unknown as { streamEpoch: string | null }).streamEpoch = null; });
 
-  it('does not resync on the first hello nor on a heartbeat hello of the same epoch', () => {
+  it('resyncs after the initial subscription, but not on a same-epoch heartbeat', () => {
     const before = session.epoch;
     feed(hello('e1'));
+    expect(session.epoch).toBe(before + 1);
     feed(hello('e1'));
-    expect(session.epoch).toBe(before);
+    expect(session.epoch).toBe(before + 1);
   });
 
   it('resyncs when a hello names a different epoch (the engine restarted)', () => {

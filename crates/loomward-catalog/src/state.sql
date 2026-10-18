@@ -1,13 +1,14 @@
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;   -- dataset_class, instance_id
 CREATE TABLE root_grant (
-  id INTEGER PRIMARY KEY AUTOINCREMENT, volume_key TEXT NOT NULL,
+  id INTEGER PRIMARY KEY AUTOINCREMENT, volume_key TEXT NOT NULL, volume_guid TEXT,
   root_file_id BLOB NOT NULL CHECK (length(root_file_id) IN (8,16)), display_path TEXT NOT NULL,
   origin TEXT NOT NULL CHECK (origin IN ('fixture','lab_generated','owner_granted')),
   granted_via TEXT NOT NULL CHECK (granted_via IN ('desktop_picker','cli_flag','fixture')),
   lab_root_id INTEGER REFERENCES lab_root(id),                    -- required when origin = 'lab_generated'
   state TEXT NOT NULL CHECK (state IN ('active','revoked','identity_changed')),
   granted_at_ns INTEGER NOT NULL, revoked_at_ns INTEGER,
-  identity_mode TEXT NOT NULL DEFAULT 'verified' CHECK (identity_mode IN ('verified','unverified'))) STRICT;
+  identity_mode TEXT NOT NULL DEFAULT 'verified' CHECK (identity_mode IN ('verified','unverified')),
+  filesystem TEXT CHECK (filesystem IS NULL OR length(filesystem) <= 32)) STRICT;
   -- identity_mode 'unverified' (#219): FAT, exFAT or unknown filesystem; metadata only, never acted on
 CREATE TABLE lab_root (                   -- synthetic state.db only; written by `loomward-lab generate --register`
   id INTEGER PRIMARY KEY AUTOINCREMENT, volume_key TEXT NOT NULL, root_file_id BLOB NOT NULL,

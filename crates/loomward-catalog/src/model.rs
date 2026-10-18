@@ -61,6 +61,8 @@ pub enum Sort {
 /// Observed names/metadata only. No library method enumerates or opens these display paths.
 #[derive(Clone, Debug)]
 pub struct RootObservation {
+    /// Handle-derived GUID as 32 lowercase hexadecimal digits; unknown for non-native fixtures.
+    pub volume_guid: Option<String>,
     pub volume_key: String,
     pub display_name: String,
     pub display_path: String,
@@ -209,6 +211,11 @@ pub struct Totals {
 #[derive(Clone, Debug)]
 pub enum WriteCommand {
     RegisterRoot(RootObservation),
+    /// Refresh a specific active grant; never recreate one after revocation.
+    RefreshRoot {
+        grant_id: i64,
+        observation: RootObservation,
+    },
     BeginRun {
         grant_id: i64,
         mode: String,

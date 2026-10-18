@@ -50,6 +50,7 @@ impl Plan {
         enumerate::OpenedIdentity {
             id: Some(enumerate::FileIdObs::Id128(self.source_root_id)),
             basis: enumerate::IdBasis::PostOpen,
+            volume_guid: None,
             volume_serial: Some(self.source_root_volume),
             attributes: self.source_root_attributes,
             reparse_tag: Some(0),
@@ -308,6 +309,8 @@ pub enum Point {
     Creating(u32),
     /// Before a named stream's create step.
     CreatingStream(u32),
+    /// After the item cancellation check, before the potentially blocking source open.
+    OpeningSource(u32),
     /// Inside a stream's chunk loop, between effect steps: the bytes handed to the writer so far.
     Chunk(u64),
 }
@@ -398,7 +401,7 @@ pub struct Control {
     /// journaled staging by identity, and a first verification mismatch is redone.
     pub removal: bool,
     hook: Option<Hook>,
-    /// Set once a revocation or emergency stop has committed its `fenced` record (the new epoch).
+    /// Set before journaling a stop, so a failed append cannot leave admission open.
     fenced: AtomicBool,
     /// The per-run admission lock: every effect step holds it from its fence read until its one
     /// bounded OS call returns, so a revocation waits for at most the step in flight.
@@ -469,7 +472,7 @@ impl Control {
         }
         Ok(step)
     }
-    /// Raise the in-memory fence (after the journal committed it), then wait up to `wait` for the step
+    /// Raise the in-memory fence, then wait up to `wait` for the step
     /// in flight. `Some(renamed)` once acknowledged; `None` while that step has not returned.
     fn fence(&self, wait: Duration) -> Option<bool> {
         self.fenced.store(true, Ordering::SeqCst);
@@ -540,7 +543,7 @@ enum Stop {
     /// Journal and disk disagree, or an error with no section 7 code: `needs_attention`, touch nothing.
     Attention(Option<Refusal>),
     Cancel,
-    /// A newer control owns the journal; leave its decision intact.
+    /// Another control changed the journal: observe its decision without settling it again.
     Superseded,
     Crashed,
     Journal(String),
@@ -613,6 +616,7 @@ struct Cancellable<'a, R>(
 impl<'a, R> Cancellable<'a, R> {
     fn new(reader: &'a mut R, control: &'a Control) -> Result<Self, Stop> {
         let step = control.admit()?;
+        control.check()?;
         Ok(Cancellable(reader, control, 0, Some(step)))
     }
 }
@@ -686,9 +690,10 @@ impl Journal<'_> {
         replay(self.store, self.op).map_err(|e| Stop::Journal(format!("{e:?}")))
     }
 
-    fn check_copying(&self) -> Result<(), Stop> {
+    fn check_copying(&self, control: &Control) -> Result<(), Stop> {
+        // A detached worker's Control is not the reopened service's Control: read the durable stop.
         let head = self.replay()?;
-        if head.state != OpState::Copying || head.epoch != self.epoch {
+        if head.state != OpState::Copying || (head.epoch != self.epoch && !control.fenced()) {
             return Err(Stop::Superseded);
         }
         Ok(())
@@ -714,7 +719,7 @@ pub fn status(store: &Mutex<Store>, op: u64) -> Result<Outcome, Fault> {
         .map_err(|e| Fault::Journal(e.to_string()))?;
     let mut state = r.state;
     let mut unjournaled_items = Vec::new();
-    // Recovery cannot journal needs_attention from every state (e.g. blocked or staged).
+    // Recovery cannot journal needs_attention from every state (e.g. preparing).
     // Re-observe those waiting states, and recorded attention, so later status reads keep the damage visible.
     if !state.is_terminal()
         && (state == OpState::NeedsAttention || !state.can_transition(OpState::NeedsAttention))
@@ -928,7 +933,7 @@ impl Runner<'_, '_> {
                 }
             };
             let made = path_of(&item.name, &self.keys).and_then(|(path, name)| {
-                self.journal.check_copying()?;
+                self.journal.check_copying(self.control)?;
                 match item.kind {
                     Kind::Directory => self
                         .staging
@@ -1105,6 +1110,7 @@ impl Runner<'_, '_> {
         self.control.check()?;
         let item = self.item(i);
         let (relative, expected) = &self.plan.sources[i];
+        self.control.at(Point::OpeningSource(i as u32))?;
         let mut source = Source::open(
             &self.plan.source_root,
             &self.plan.root_identity(),
@@ -1126,7 +1132,7 @@ impl Runner<'_, '_> {
             return Err(Stop::Refused(Refusal::SourceChanged, None));
         }
         self.control.at(Point::Writing(i as u32))?;
-        self.journal.check_copying()?;
+        self.journal.check_copying(self.control)?;
         let digest = file
             .write_and_flush(&mut Cancellable::new(&mut source, self.control)?, item.size)
             .map_err(|e| self.write_error(&e))?;
@@ -1135,7 +1141,7 @@ impl Runner<'_, '_> {
             self.control.at(Point::CreatingStream(i as u32))?;
             let stream = {
                 let _step = self.control.admit()?;
-                self.journal.check_copying()?;
+                self.journal.check_copying(self.control)?;
                 file.create_stream(name).map_err(|e| io_refusal(&e))?
             };
             let mut reader = source
@@ -1464,6 +1470,7 @@ pub fn fence(
     {
         // One store lock across the read and the append: no record slips between them.
         let mut s = store.lock().unwrap_or_else(|e| e.into_inner());
+        control.fenced.store(true, Ordering::SeqCst);
         let r = s
             .replay(op)
             .map_err(|e| Fault::Journal(e.to_string()))?
@@ -1800,7 +1807,8 @@ pub fn recover(store: &Mutex<Store>, op: u64, control: &Control) -> Result<Outco
             // observed damage; an unavailable destination or entry must be retried on a later open.
             if matches!(
                 attention,
-                loomward_operations::Attention::Unjournaled(_)
+                loomward_operations::Attention::StagingMismatch
+                    | loomward_operations::Attention::Unjournaled(_)
                     | loomward_operations::Attention::EntryMismatch(_)
             ) && !disk.observation_failed.get()
                 && r.state.can_transition(OpState::NeedsAttention)
@@ -1810,7 +1818,10 @@ pub fn recover(store: &Mutex<Store>, op: u64, control: &Control) -> Result<Outco
                     code: None,
                 })?;
             }
-            status(store, op)
+            let mut outcome = status(store, op)?;
+            // Report the failed check now even when it must not become a durable damage finding.
+            outcome.state = OpState::NeedsAttention;
+            Ok(outcome)
         }
         Decision::Settled | Decision::Resume(_) => status(store, op),
     }

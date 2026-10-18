@@ -15,6 +15,8 @@ mod backups;
 pub use backups::*;
 mod clutter;
 pub use clutter::*;
+mod clients;
+pub use clients::*;
 mod inventory;
 pub use inventory::*;
 mod common;

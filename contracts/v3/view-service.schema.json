@@ -1001,6 +1001,69 @@
       "required": ["collection_id", "name"],
       "properties": { "collection_id": { "$ref": "#/$defs/CollectionId" }, "name": { "type": "string", "maxLength": 64 } }
     },
+    "ClientEntryRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node_id", "kind", "name", "extension", "ext_family", "coverage"],
+      "properties": {
+        "node_id": {"$ref": "#/$defs/NodeId"},
+        "kind": {"enum": ["dir", "file"]},
+        "name": {"type": "string", "maxLength": 260},
+        "extension": {"type": ["string", "null"], "maxLength": 32},
+        "ext_family": {"anyOf": [{"$ref": "#/$defs/ExtFamily"}, {"type": "null"}]},
+        "logical_bytes": {"$ref": "#/$defs/NullableBytes", "$comment": "Null for a search folder whose aggregate is unsettled; never present its old aggregate as a current size."},
+        "allocated_bytes": {"$ref": "#/$defs/NullableBytes"},
+        "files": {"$ref": "#/$defs/NullableCount"},
+        "dirs": {"$ref": "#/$defs/NullableCount"},
+        "modified_at": {"$ref": "#/$defs/NullableTimestamp"},
+        "attributes": {"type": "array", "maxItems": 16, "uniqueItems": true, "items": {"$ref": "#/$defs/FileAttribute"}},
+        "flags": {"type": "array", "maxItems": 13, "uniqueItems": true, "items": {"$ref": "#/$defs/EntryFlag"}},
+        "coverage": {"$ref": "#/$defs/CoverageState"},
+        "location_hint": {"anyOf": [{"$ref": "#/$defs/DisplayPath"}, {"type": "null"}], "$comment": "Search and collection results only: the parent's display path."}
+      },
+      "$comment": "LW-067 client projection. Fields outside the disclosure grant are absent; a disclosed unknown remains null. Owner EntryRow stays complete."
+    },
+    "ClientSearchHit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["row", "root_id", "match_kind", "highlights"],
+      "properties": {
+        "row": {"$ref": "#/$defs/ClientEntryRow"},
+        "root_id": {"$ref": "#/$defs/RootId"},
+        "path": {"$ref": "#/$defs/DisplayPath", "$comment": "Root-relative path of the hit itself, display only."},
+        "match_kind": {"$ref": "#/$defs/SearchMatchKind"},
+        "source": {"$ref": "#/$defs/SearchSource", "$comment": "Federated extension; absent means own."},
+        "freshness": {"$ref": "#/$defs/SearchFreshness", "$comment": "Federated extension: how fresh this hit's root is (docs/46 section 7)."},
+        "score": {"$ref": "#/$defs/Fraction", "$comment": "Federated extension: a relative rank signal in 0..1, never a probability and not comparable across sources."},
+        "highlights": {"type": "array", "maxItems": 8, "items": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "integer", "minimum": 0, "maximum": 1024}}, "$comment": "Half-open UTF-16 offsets into row.name; best effort and may be empty."}
+      }
+    },
+    "ClientSearchPage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["generation", "hits", "next_cursor", "budget_hit", "index_state", "partial", "substring_searched", "roots"],
+      "properties": {
+        "generation": {"$ref": "#/$defs/NullableGeneration"},
+        "hits": {"type": "array", "maxItems": 100, "items": {"$ref": "#/$defs/ClientSearchHit"}},
+        "next_cursor": {"anyOf": [{"$ref": "#/$defs/Cursor"}, {"type": "null"}]},
+        "budget_hit": {"type": "boolean"},
+        "index_state": {"enum": ["current", "building", "stale"], "$comment": "building: a searched root is being scanned; stale: a searched root is stale or failed. The index itself follows every catalogue commit."},
+        "partial": {"type": "boolean", "$comment": "A searched root does not have complete coverage: no hit is not proof of absence."},
+        "substring_searched": {"type": "boolean", "$comment": "False when full inner-substring matching was unavailable. In v1, one character searches whole names (including the name up to a dot) only; two characters also search name and word starts. Matching words separately requires at least two characters per word for starts and three for inner matches. Ranked search can also use short token prefixes."},
+        "roots": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/SearchRootCoverage"}}
+      }
+    },
+    "ClientNodeDetail": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["row", "root_id"],
+      "properties": {
+        "row": {"$ref": "#/$defs/ClientEntryRow"},
+        "root_id": {"$ref": "#/$defs/RootId"},
+        "display_path": {"$ref": "#/$defs/DisplayPath"}
+      },
+      "$comment": "LW-067 client projection: root-relative display_path is present only with path disclosure. Owner-only detail is never exposed."
+    },
     "NodeDetail": {
       "type": "object",
       "additionalProperties": false,
@@ -1092,12 +1155,13 @@
       "required": ["state", "at"],
       "properties": {
         "state": { "enum": ["live", "caught_up", "stale", "everything_live", "verified", "semantic_stale"], "$comment": "docs/46 section 7: live (watched now), caught_up (journal catch-up at at), stale (since at), everything_live (Everything's own journal, not yet verified), verified (checked natively at at), semantic_stale (the name changed after embedding)." },
-        "at": { "$ref": "#/$defs/NullableTimestamp", "$comment": "Required for caught_up, stale and verified; null for the other states." }
+        "at": { "$ref": "#/$defs/NullableTimestamp", "$comment": "Required for caught_up, stale and verified; null for the other states." },
+        "reason": { "$ref": "#/$defs/UnknownReason", "$comment": "Optional fixed service token explaining stale coverage, e.g. watch_restarting." }
       },
       "allOf": [{
-        "if": { "additionalProperties": false, "properties": { "state": { "enum": ["caught_up", "stale", "verified"] }, "at": true } },
-        "then": { "additionalProperties": false, "properties": { "state": true, "at": { "$ref": "#/$defs/Timestamp" } } },
-        "else": { "additionalProperties": false, "properties": { "state": true, "at": { "type": "null" } } }
+        "if": { "additionalProperties": false, "properties": { "state": { "enum": ["caught_up", "stale", "verified"] }, "at": true, "reason": true } },
+        "then": { "additionalProperties": false, "properties": { "state": true, "reason": true, "at": { "$ref": "#/$defs/Timestamp" } } },
+        "else": { "additionalProperties": false, "properties": { "state": true, "reason": true, "at": { "type": "null" } } }
       }]
     },
     "SearchUnverifiedHit": {
@@ -2994,7 +3058,7 @@
     "DiagnosticsPreviewResult": {"type": "object", "additionalProperties": false, "required": ["bundle", "bytes", "digest"], "properties": {"bundle": {"$ref": "#/$defs/DiagnosticsBundle"}, "bytes": {"$ref": "#/$defs/ByteCount", "$comment": "Length of the exact UTF-8 serialisation diagnostics.save writes."}, "digest": {"$ref": "#/$defs/Digest", "$comment": "SHA-256 of those bytes."}}},
     "DiagnosticsSaveRequest": {"type": "object", "additionalProperties": false, "required": ["digest"], "properties": {"digest": {"$ref": "#/$defs/Digest"}}, "$comment": "Tauri adapter only. The digest of the preview the owner saw; Rust opens the native save dialog and the webview never supplies a path."},
     "DiagnosticsSaveOutcome": {"enum": ["saved", "cancelled_by_user", "refused"]},
-    "DiagnosticsSaveRefusal": {"enum": ["preview_changed", "unsupported_target", "cloud_placeholder", "write_failed", "dialog_busy", "dialog_unavailable"]},
+    "DiagnosticsSaveRefusal": {"enum": ["preview_changed", "unsupported_target", "cloud_placeholder", "write_failed", "dialog_busy", "dialog_unavailable", "dialog_no_selection"]},
     "DiagnosticsSaveResult": {"type": "object", "additionalProperties": false, "required": ["outcome", "bytes_written", "refusal"], "properties": {"outcome": {"$ref": "#/$defs/DiagnosticsSaveOutcome"}, "bytes_written": {"$ref": "#/$defs/NullableBytes"}, "refusal": {"anyOf": [{"$ref": "#/$defs/DiagnosticsSaveRefusal"}, {"type": "null"}]}}, "$comment": "Never the chosen path: it stays in Rust."},
     "AlertSettings": {"type": "object", "additionalProperties": false, "required": ["notifications_enabled", "low_space_free_percent", "low_space_free_bytes", "growth_window_days", "growth_bytes"], "properties": {"notifications_enabled": {"type": "boolean", "$comment": "Off until the owner enables it; gates local OS notifications only. The in-app list is always available."}, "low_space_free_percent": {"type": "integer", "minimum": 1, "maximum": 50}, "low_space_free_bytes": {"$ref": "#/$defs/ByteCount"}, "growth_window_days": {"type": "integer", "minimum": 1, "maximum": 90}, "growth_bytes": {"$ref": "#/$defs/ByteCount"}}, "$comment": "Low free space when free < max(capacity x low_space_free_percent, low_space_free_bytes). Fast growth when a granted root's net logical growth between the oldest and newest complete scans inside growth_window_days reaches growth_bytes. alerts.configure replaces the whole record."},
     "AlertKind": {"enum": ["low_space", "fast_growth"]},

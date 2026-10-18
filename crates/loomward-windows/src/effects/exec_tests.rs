@@ -5,6 +5,151 @@ use super::*;
 use loomward_operations::{approve, tree, Code};
 use std::{fs, sync::atomic::AtomicU32};
 
+#[test]
+fn copy_fence_append_failure_still_stops_admission() {
+    use loomward_operations::store::fault::{Kind, Stage};
+    for stage in [Stage::Row, Stage::Head, Stage::Ack] {
+        let Some(lab) = Lab::new() else { return };
+        fs::write(lab.src().join("f"), b"payload").unwrap();
+        let op = lab.start(&["f"]);
+        lab.store
+            .lock()
+            .unwrap()
+            .set_fault(Some(Box::new(move |record, at| {
+                (matches!(record, Record::Fenced { .. }) && at == stage).then_some(Kind::Full)
+            })));
+        let control = Control::new(false);
+        assert!(fence(
+            &lab.store,
+            op,
+            &control,
+            loomward_operations::FenceCause::GrantRevoked
+        )
+        .is_err());
+        assert!(
+            control.fenced(),
+            "{stage:?}: journal failure left admission open"
+        );
+        assert!(matches!(control.admit(), Err(Stop::Cancel)));
+    }
+}
+
+#[test]
+fn copy_recovery_persists_replaced_staged_file_attention() {
+    for state in [OpState::Copying, OpState::Blocked, OpState::Staged] {
+        let Some(mut lab) = Lab::new() else { return };
+        fs::write(lab.src().join("f"), b"payload").unwrap();
+        let op = lab.start(&["f"]);
+        let point = if state == OpState::Staged {
+            Point::Verified(0)
+        } else {
+            Point::Identities(0)
+        };
+        let control = Control::new(false).with_hook(move |p, _| {
+            if p == point {
+                Flow::Crash
+            } else {
+                Flow::Continue
+            }
+        });
+        assert!(matches!(run(&lab.store, op, &control), Err(Fault::Crashed)));
+        if state != OpState::Copying {
+            let mut store = lab.store.lock().unwrap();
+            let epoch = store.replay(op).unwrap().unwrap().epoch;
+            store
+                .append(
+                    op,
+                    epoch,
+                    Record::Transition {
+                        to: state,
+                        code: (state == OpState::Blocked).then_some(Refusal::SourceInUse),
+                    },
+                )
+                .unwrap();
+        }
+        let staging = lab.dest().join(&staging_dirs(&lab)[0]);
+        fs::rename(staging.join("f"), lab.dest().join("displaced")).unwrap();
+        fs::write(staging.join("f"), b"replacement").unwrap();
+        lab.reopen();
+        assert_eq!(
+            recover(&lab.store, op, &Control::new(false)).unwrap().state,
+            OpState::NeedsAttention
+        );
+        lab.reopen();
+        assert_eq!(
+            status(&lab.store, op).unwrap().state,
+            OpState::NeedsAttention
+        );
+        assert_eq!(fs::read(staging.join("f")).unwrap(), b"replacement");
+    }
+}
+
+#[test]
+fn copy_old_worker_checks_durable_stop_before_preallocation() {
+    for attention in [true, false] {
+        let Some(lab) = Lab::new() else { return };
+        fs::write(lab.src().join("f"), b"payload").unwrap();
+        let op = lab.start(&["f"]);
+        let db = lab.tmp.path().join("state/state.db");
+        let dest = lab.dest();
+        let control = Control::new(false).with_hook(move |p, _| {
+            if p == Point::OpeningSource(0) {
+                // Gate the source open while a reopened service uses a different Control.
+                let reopened = Mutex::new(Store::open(&db).unwrap());
+                if attention {
+                    let mut store = reopened.lock().unwrap();
+                    let epoch = store.replay(op).unwrap().unwrap().epoch;
+                    store
+                        .append(
+                            op,
+                            epoch,
+                            Record::Transition {
+                                to: OpState::NeedsAttention,
+                                code: None,
+                            },
+                        )
+                        .unwrap();
+                } else {
+                    fence(
+                        &reopened,
+                        op,
+                        &Control::new(false),
+                        loomward_operations::FenceCause::GrantRevoked,
+                    )
+                    .unwrap();
+                }
+            }
+            Flow::Continue
+        });
+        let _ = run(&lab.store, op, &control);
+        if attention {
+            assert_eq!(
+                status(&lab.store, op).unwrap().state,
+                OpState::NeedsAttention,
+                "old worker overwrote the reopened service's decision"
+            );
+        }
+        let staging = fs::read_dir(dest).unwrap().next().unwrap().unwrap().path();
+        let file = fs::File::open(staging.join("f")).unwrap();
+        let info = info::<FILE_STANDARD_INFO>(&file, FileStandardInfo).unwrap();
+        assert_eq!(
+            info.AllocationSize, 0,
+            "stale worker preallocated after durable fence"
+        );
+        assert_eq!(info.EndOfFile, 0);
+    }
+}
+
+#[test]
+fn copy_cancelled_worker_cannot_begin_preallocation() {
+    let control = Control::new(false);
+    control.cancel();
+    assert!(matches!(
+        Cancellable::new(&mut std::io::empty(), &control),
+        Err(Stop::Cancel)
+    ));
+}
+
 pub(super) const DATE: &str = "2026-10-17";
 
 #[test]
@@ -1026,13 +1171,10 @@ fn recovery_records_unjournaled_batch_damage() {
         assert_eq!(recovered.unjournaled_items, ["f"]);
         lab.reopen();
         assert_eq!(status(&lab.store, op).unwrap().unjournaled_items, ["f"]);
+        // Blocked -> needs_attention is a journal edge (#634): the damage is durable in both cases.
         assert_eq!(
             replay(&lab.store, op).unwrap().state,
-            if blocked {
-                OpState::Blocked
-            } else {
-                OpState::NeedsAttention
-            }
+            OpState::NeedsAttention
         );
         assert!(
             leftover.exists(),
@@ -1081,7 +1223,8 @@ fn recovery_observation_failure(published: bool) {
         identity::observe(&blocked).is_err(),
         "observation really failed"
     );
-    recover(&lab.store, op, &Control::new(false)).unwrap();
+    let unavailable = recover(&lab.store, op, &Control::new(false)).unwrap();
+    assert_eq!(unavailable.state, OpState::NeedsAttention);
     assert_eq!(
         replay(&lab.store, op).unwrap().state,
         before,
@@ -1107,6 +1250,39 @@ fn recovery_observation_failure(published: bool) {
         .unwrap(),
         b"payload"
     );
+}
+
+#[test]
+fn recovery_persists_confirmed_staging_damage() {
+    for replaced in [false, true] {
+        let Some(mut lab) = Lab::new() else { return };
+        fs::write(lab.src().join("f"), b"payload").unwrap();
+        let op = lab.start(&["f"]);
+        let control = Control::new(false).with_hook(|p, _| {
+            if p == Point::Identities(0) {
+                Flow::Crash
+            } else {
+                Flow::Continue
+            }
+        });
+        assert!(matches!(run(&lab.store, op, &control), Err(Fault::Crashed)));
+        let staging = lab.dest().join(&staging_dirs(&lab)[0]);
+        fs::rename(&staging, lab.dest().join("displaced")).unwrap();
+        if replaced {
+            fs::create_dir(&staging).unwrap();
+        }
+        lab.reopen();
+        assert_eq!(
+            recover(&lab.store, op, &Control::new(false)).unwrap().state,
+            OpState::NeedsAttention
+        );
+        lab.reopen();
+        assert_eq!(
+            replay(&lab.store, op).unwrap().state,
+            OpState::NeedsAttention
+        );
+        assert_eq!(fs::read(lab.dest().join("displaced/f")).unwrap(), b"");
+    }
 }
 
 #[test]

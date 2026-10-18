@@ -185,6 +185,8 @@ stateDiagram-v2
   copying --> blocked: resumable item refusal
   copying --> needs_attention: non-resumable item refusal, or journal and disk disagree
   blocked --> copying: owner resumes (native confirmation)
+  blocked --> needs_attention: recovery finds journal and staging disagree
+  staged --> needs_attention: recovery finds journal and staging disagree
   copying --> cancelling: owner cancels
   blocked --> cancelling: owner abandons
   copying --> cancelling: grant revoked or emergency stop (fenced)
@@ -239,6 +241,15 @@ Store checks for its tables and triggers in a deferred read transaction. An exis
 write lock to open; creation or migration takes `BEGIN IMMEDIATE` and re-checks head-table existence
 under that lock before deciding whether to anchor legacy tails. Replay also explicitly uses a deferred
 transaction, regardless of an adopted connection's default transaction mode.
+
+The executor plan and its wire-ID and grant lookup rows commit in one transaction. Historical status
+and start-once checks use the unique wire-ID index; revocation selects only operations indexed for
+that grant, including recovered runs without a resident worker. These lookups never decode unrelated
+manifests. On first open of a pre-index journal, Store backfills the lookup tables one plan at a time
+in the schema migration transaction, without changing plans, journal rows or head anchors. Unreadable
+legacy plans remain unreadable and gain no lookup identity. Later opens do not rebuild the indexes.
+Lookup rows locate a journal operation; only the executor's existing grant and native identity checks
+authorise effects. Copy remains synthetic-only; C8 stays closed.
 
 Two `Store` connections to one `state.db` in the same process (for example a copy worker that outlived its
 bounded join, and a later open of the same state directory) serialise on the write lock: each append takes

@@ -13,6 +13,7 @@ fn setup_on(filesystem: &str, files: Vec<Observation>) -> (tempfile::TempDir, Ca
     } = c
         .writer()
         .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_guid: None,
             volume_key: "fixture".into(),
             display_name: "Root".into(),
             display_path: "Synthetic root".into(),
@@ -310,6 +311,7 @@ fn identity_unverified_rows_are_stored_exposed_and_never_duplicate_candidates() 
     let WriteReply::Root { dir_id, .. } = c
         .writer()
         .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_guid: None,
             volume_key: "fixture".into(),
             display_name: "Root".into(),
             display_path: "Synthetic root".into(),

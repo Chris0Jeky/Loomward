@@ -11,6 +11,7 @@ fn refs_legacy_directory_ids_are_not_deduplication_or_reopen_keys() {
         let identity = OpenedIdentity {
             id,
             basis,
+            volume_guid: None,
             volume_serial: Some(1),
             attributes: 0x10,
             reparse_tag: None,
@@ -23,6 +24,7 @@ fn refs_legacy_directory_ids_are_not_deduplication_or_reopen_keys() {
     let identity = OpenedIdentity {
         id,
         basis,
+        volume_guid: None,
         volume_serial: Some(1),
         attributes: 0x10,
         reparse_tag: None,

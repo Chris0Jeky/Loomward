@@ -4,6 +4,12 @@ import { describe, expect, it, vi } from 'vitest';
 import { LoomwardError } from '../../src/lib/transport/client';
 import { fallbackStep, onRefetchError, resolveTrail } from '../../src/views/explorer/refetch';
 import searchExample from '../../../contracts/v3/examples/commands/search.query.result.json';
+import learningStatus from '../../../contracts/v3/examples/commands/learning.status.result.json';
+import learningQueue from '../../../contracts/v3/examples/commands/learning.queue.result.json';
+import alertReport from '../../../contracts/v3/examples/commands/alerts.list.result.json';
+import proposal from '../../../contracts/v3/examples/commands/proposals.get.result.json';
+import { formFrom, settingsFrom } from '../../src/views/alerts/model';
+import { formatBytes } from '../../src/lib/format/bytes';
 
 /** Run the real instance-script functions/effect without a DOM or canvas. State is supplied by
  * the test; imports and rendering are excluded, so deferred replies control the interleaving. */
@@ -27,7 +33,7 @@ function viewScript(view: string, state: Record<string, unknown>, effectContaini
   }
   const effect = effects.find(e => e.includes(effectContaining));
   if (!effect) throw new Error(`Missing ${view} effect containing ${effectContaining}`);
-  const code = ts.transpileModule(`${functions.join('\n')}\nreturn { ${names.join(',')}, effect: (${effect}) };`, {
+  const code = ts.transpileModule(`${functions.join('\n')}\nreturn { ${names.join(',')}, effect: (${effect}), evaluate: expression => eval(expression) };`, {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
   }).outputText;
   return new Function('state', `with (state) { return (() => { ${code} })(); }`)(state) as {
@@ -35,6 +41,12 @@ function viewScript(view: string, state: Record<string, unknown>, effectContaini
     loadStarts(recovery?: unknown, refreshOnly?: boolean): Promise<boolean>;
     effect(): void;
     reload(): void;
+    load(cursor?: string | null, restarted?: boolean): Promise<void>;
+    loadSaved(id: string): Promise<void>;
+    save(): Promise<void>;
+    reset(): void;
+    refit(): Promise<void>;
+    evaluate(expression: string): unknown;
   };
 }
 
@@ -44,6 +56,189 @@ const deferred = <T>() => {
   const promise = new Promise<T>(r => { resolve = r; });
   return { promise, resolve };
 };
+
+function review(call: ReturnType<typeof vi.fn>) {
+  const state = {
+    session: { client: { call }, epoch: 0, handle: (e: Error) => e.message },
+    untrack, LoomwardError, alive: true, generation: 0,
+    status: learningStatus as typeof learningStatus | null,
+    queue: learningQueue as typeof learningQueue | null,
+    error: '', pending: null, selected: 'nd_old', working: false, active: false, gated: false, job: null,
+  };
+  return { state, code: viewScript('review', state, 'session.epoch') };
+}
+
+const staleReview = () => new LoomwardError({ code: 'stale_generation', message: 'Catalogue or feedback changed during review.', retryable: true, detail: null });
+
+describe('Learning review refresh after concurrent feedback', () => {
+  it('restarts status and queue once from the top when feedback invalidates the queue', async () => {
+    const fresh = { ...learningStatus, human_events: 2, model_id: null, calibrated: false, autonomy_allowed: false };
+    let queues = 0;
+    const call = vi.fn(async (command: string) => {
+      if (command === 'learning.queue' && ++queues === 1) throw staleReview();
+      return { result: command === 'learning.status' ? fresh : learningQueue };
+    });
+    const { state, code } = review(call);
+    await code.load('old_cursor');
+    expect(state.status).toEqual(fresh);
+    expect(state.queue).toEqual(learningQueue);
+    expect(state.error).toBe('');
+    expect(state.selected).toBe('');
+    expect(call.mock.calls.map(args => args[0])).toEqual(['learning.status', 'learning.queue', 'learning.status', 'learning.queue']);
+    expect((call.mock.calls.at(-1) as unknown as [string, { cursor: string | null }])[1].cursor).toBeNull();
+  });
+
+  it.each(['stale_generation', 'internal_error'] as const)('keeps %s failures honest and bounds retries', async code => {
+    const failure = new LoomwardError({ code, message: 'Learning unavailable.', retryable: false, detail: null });
+    const call = vi.fn(async (command: string) => {
+      if (command === 'learning.queue') throw failure;
+      return { result: learningStatus };
+    });
+    const { state, code: view } = review(call);
+    await view.load();
+    expect(state.status).toEqual(learningStatus);
+    expect(state.queue).toBeNull();
+    expect(state.error).toBe('Learning unavailable.');
+    expect(call).toHaveBeenCalledTimes(code === 'stale_generation' ? 4 : 2);
+  });
+
+  it.each(['superseded', 'unmounted'])('does not retry a stale reply after the request is %s', async mode => {
+    let reject!: (error: Error) => void;
+    const response = new Promise<never>((_, fail) => { reject = fail; });
+    const call = vi.fn(async (command: string) => command === 'learning.queue' ? response : { result: learningStatus });
+    const { state, code } = review(call);
+    const loading = code.load();
+    if (mode === 'unmounted') state.alive = false;
+    else state.generation++;
+    reject(staleReview());
+    await loading;
+    expect(call).toHaveBeenCalledTimes(2);
+    expect(state.status).toBe(learningStatus);
+    expect(state.error).toBe('');
+  });
+});
+
+describe('Learning resources fail independently', () => {
+  it('keeps current status and refit availability when the queue exceeds its file budget', async () => {
+    const fresh = { ...learningStatus, gate: null, human_events: 10001 };
+    const call = vi.fn(async (command: string) => {
+      if (command === 'learning.queue') throw new LoomwardError({ code: 'resource_budget', message: 'Queue exceeds 10000 files.', retryable: false, detail: null });
+      if (command === 'learning.refit' || command === 'jobs.get') return { result: { job: { job_id: 'job_refit', state: 'completed' } } };
+      return { result: fresh };
+    });
+    const { state, code } = review(call);
+    await code.load();
+    expect(state.status).toEqual(fresh);
+    expect(state.queue).toBeNull();
+    expect(state.error).toContain('Queue exceeds');
+    expect(call).toHaveBeenCalledTimes(2);
+    await code.refit();
+    expect(call).toHaveBeenCalledWith('learning.refit', {});
+    expect(call).toHaveBeenCalledWith('jobs.get', { job_id: 'job_refit' });
+  });
+
+  it('invalidates status when its own read fails', async () => {
+    const { state, code } = review(vi.fn(async (command: string) => {
+      if (command === 'learning.status') throw new Error('Status unavailable');
+      return { result: learningQueue };
+    }));
+    await code.load();
+    expect(state.status).toBeNull();
+    expect(state.error).toBe('Status unavailable');
+  });
+});
+
+describe('Saved tier scenario source', () => {
+  it('labels a historical plan with its ineligible saved source while keeping the eligible selector', async () => {
+    const historical = { ...proposal, summary: { ...proposal.summary, source_volume_id: 'vol_a', status: 'stale' } };
+    const volumes = [
+      { volume_id: 'vol_a', display_name: 'Synthetic A', source_eligible: false },
+      { volume_id: 'vol_b', display_name: 'Synthetic B', source_eligible: true },
+    ];
+    const state = {
+      session: { client: { call: vi.fn(async () => ({ result: historical })) }, handle: (e: Error) => e.message },
+      untrack, savedTicket: 0, source: 'vol_b', savedDetail: null, savedError: '', assume: {},
+      volume: (id: string) => volumes.find(v => v.volume_id === id),
+      vname: (id: string) => volumes.find(v => v.volume_id === id)?.display_name ?? id,
+      src: volumes[1], p: proposal.plan, formatBytes, say: { say: vi.fn() },
+    };
+    const code = viewScript('tiers', state, 'session.epoch');
+    await code.loadSaved('saved_a');
+    expect(state.source).toBe('vol_b');
+    expect(state.savedDetail).toEqual(historical);
+    const source = readFileSync(new URL('../../src/views/tiers/View.svelte', import.meta.url), 'utf8');
+    const target = source.match(/<dt>Target free<\/dt><dd[^>]*>(.*?)<\/dd>/)![1]!;
+    const label = target.replace(/\{([^{}]+)\}/g, (_, expression: string) => String(code.evaluate(expression)));
+    expect(label).toBe(`${formatBytes(proposal.plan.target_free_bytes)} on Synthetic A`);
+  });
+});
+
+function alerts() {
+  const report = { ...alertReport, settings: { ...alertReport.settings, growth_bytes: String(10 * 1024 ** 3) }, defaults: { ...alertReport.defaults, growth_bytes: String(10 * 1024 ** 3) } };
+  const call = vi.fn(async (command: string, settings?: unknown) => ({ result: command === 'alerts.configure' ? { ...report, settings } : report }));
+  const state = {
+    session: { client: { call }, epoch: 0, handle: (e: Error) => e.message },
+    untrack, formFrom, settingsFrom, report: null as typeof alertReport | null,
+    form: null as ReturnType<typeof formFrom> | null, generation: 0,
+    loading: false, saving: false, error: '', notice: '', invalidField: '',
+  };
+  return { state, call, code: viewScript('alerts', state, 'session.epoch') };
+}
+
+describe('Alert threshold edits survive refresh', () => {
+  it('preserves edits across scan invalidation and saves the edited threshold', async () => {
+    const { state, call, code } = alerts();
+    await code.load();
+    expect(state.form?.growthGib).toBe('10');
+    state.form!.growthGib = '20';
+    code.effect();
+    await vi.waitFor(() => expect(state.loading).toBe(false));
+    expect(state.form?.growthGib).toBe('20');
+    await code.save();
+    expect(call).toHaveBeenLastCalledWith('alerts.configure', expect.objectContaining({ growth_bytes: String(20 * 1024 ** 3) }));
+    expect(state.notice).toContain('Thresholds saved');
+    code.reset();
+    expect(state.form?.growthGib).toBe('10');
+  });
+
+  it('retains edits after a failed refresh and recovery', async () => {
+    const { state, call, code } = alerts();
+    await code.load();
+    state.form!.growthGib = '20';
+    call.mockRejectedValueOnce(new Error('Synthetic offline report'));
+    await code.load();
+    expect(state.report).toBeNull();
+    expect(state.form?.growthGib).toBe('20');
+    expect(state.error).toBe('Synthetic offline report');
+    await code.load();
+    expect(state.form?.growthGib).toBe('20');
+  });
+});
+
+describe('Health resources refresh independently', () => {
+  it.each(['health.get', 'roots.list', 'grants.list', 'scans'] as const)('applies revocation and invalidates only the failed %s resource', async failed => {
+    const revokedRoots = { roots: [{ root_id: 'root_a', grant_state: 'revoked' }] };
+    const revokedGrants = { grants: [{ grant_id: 'grant_a', revoked_at: '2026-10-17T12:00:00Z' }] };
+    const freshHealth = { observed_at: '2026-10-17T12:00:00Z' };
+    const state = {
+      session: { client: { call: vi.fn(async (command: string) => {
+        if (command === failed) throw new Error(`Unavailable: ${failed}`);
+        return { result: command === 'roots.list' ? revokedRoots : command === 'grants.list' ? revokedGrants : freshHealth };
+      }) }, epoch: 0, handle: (e: Error) => e.message },
+      scans: { sync: vi.fn(async () => { if (failed === 'scans') throw new Error('Unavailable: scans'); }) },
+      untrack, ticket: 0, error: '',
+      roots: { roots: [{ root_id: 'root_a', grant_state: 'active' }] } as typeof revokedRoots | null,
+      grants: { grants: [{ grant_id: 'grant_a', revoked_at: null }] } as { grants: { grant_id: string; revoked_at: string | null }[] } | null,
+      health: { observed_at: '2026-10-16T12:00:00Z' } as typeof freshHealth | null,
+    };
+    const code = viewScript('health', state, 'session.epoch');
+    await code.load();
+    expect(state.roots).toEqual(failed === 'roots.list' ? null : revokedRoots);
+    expect(state.grants).toEqual(failed === 'grants.list' ? null : revokedGrants);
+    expect(state.health).toEqual(failed === 'health.get' ? null : freshHealth);
+    expect(state.error).toBe(`Unavailable: ${failed}`);
+  });
+});
 
 describe('map slice installation', () => {
   it.each(['atlas', 'observatory'])('%s drops revoked hover information while refreshing a surviving selection', view => {

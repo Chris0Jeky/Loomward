@@ -1118,7 +1118,7 @@ fn prepare_state(
         {
             Ok(None)
         }
-        WriteCommand::RegisterRoot(o) => {
+        WriteCommand::RegisterRoot(o) | WriteCommand::RefreshRoot { observation: o, .. } => {
             let dataset: String = conn.query_row(
                 "SELECT value FROM st.meta WHERE key='dataset_class'",
                 [],
@@ -1181,9 +1181,28 @@ fn prepare_state(
             } else {
                 "verified"
             };
-            tx.execute("INSERT INTO st.root_grant(volume_key,root_file_id,display_path,origin,granted_via,state,granted_at_ns,lab_root_id,identity_mode) VALUES (?1,?2,?3,?4,?5,'active',?6,?7,?8)",params![o.volume_key,o.root_file_id,o.display_path,o.origin,o.granted_via,o.observed_at_ns,lab,mode])?;
-            let grant = tx.last_insert_rowid();
-            state_revision(&tx)?;
+            let grant = if let WriteCommand::RefreshRoot { grant_id, .. } = c {
+                // A recyclable unverified ID also needs the same stored path.
+                let stored_mode: String = tx.query_row(
+                    "SELECT identity_mode FROM st.root_grant WHERE id=?1 AND volume_key=?2 AND root_file_id=?3 AND state='active' AND (identity_mode='verified' OR display_path=?4) AND (volume_guid IS ?5 OR volume_guid IS NULL)",
+                    params![grant_id,o.volume_key,o.root_file_id,o.display_path,o.volume_guid],
+                    |r| r.get(0),
+                ).optional()?.ok_or(Error::NotFound)?;
+                if o.filesystem.is_some() && stored_mode != mode {
+                    return Err(Error::Invalid(
+                        "root identity mode changed; revoke and grant again",
+                    ));
+                }
+                if tx.execute("UPDATE st.root_grant SET filesystem=coalesce(?2,filesystem),volume_guid=coalesce(volume_guid,?3) WHERE id=?1 AND state='active' AND ((?2 IS NOT NULL AND filesystem IS NOT ?2) OR (volume_guid IS NULL AND ?3 IS NOT NULL))", params![grant_id,o.filesystem,o.volume_guid])? > 0 {
+                    state_revision(&tx)?;
+                }
+                *grant_id
+            } else {
+                tx.execute("INSERT INTO st.root_grant(volume_key,root_file_id,display_path,origin,granted_via,state,granted_at_ns,lab_root_id,identity_mode,filesystem,volume_guid) VALUES (?1,?2,?3,?4,?5,'active',?6,?7,?8,?9,?10)",params![o.volume_key,o.root_file_id,o.display_path,o.origin,o.granted_via,o.observed_at_ns,lab,mode,o.filesystem,o.volume_guid])?;
+                let grant = tx.last_insert_rowid();
+                state_revision(&tx)?;
+                grant
+            };
             tx.commit()?;
             Ok(Some(Prepared::Id(grant)))
         }
@@ -1361,7 +1380,7 @@ fn forget_state(conn: &mut Connection, grant: i64, at: i64, expected: Option<i64
         )?;
     }
     tx.execute(
-        "UPDATE st.root_grant SET display_path='forgotten',volume_key='forgotten',root_file_id=zeroblob(8),lab_root_id=NULL WHERE id=?1",
+        "UPDATE st.root_grant SET display_path='forgotten',volume_key='forgotten',volume_guid=NULL,root_file_id=zeroblob(8),lab_root_id=NULL WHERE id=?1",
         [grant],
     )?;
     tx.execute(
@@ -1618,7 +1637,7 @@ fn apply(
     prepared: Option<Prepared>,
 ) -> Result<WriteReply> {
     match c {
-        WriteCommand::RegisterRoot(o) => {
+        WriteCommand::RegisterRoot(o) | WriteCommand::RefreshRoot { observation: o, .. } => {
             let grant = match prepared {
                 Some(Prepared::Id(id)) => id,
                 _ => return Err(Error::Invalid("grant not committed")),
@@ -2352,7 +2371,8 @@ fn rebuild_multilink(conn: &Connection, root: i64) -> Result<()> {
         r.get(0)
     })?;
     conn.execute("DELETE FROM multilink WHERE volume_id=?1", [volume])?;
-    conn.execute("INSERT INTO multilink SELECT ?1,f.file_id,count(*),max(f.allocated) FROM file f JOIN dir d ON d.id=f.dir_id JOIN visible_dir v ON v.id=d.id JOIN root r ON r.id=d.root_id WHERE r.volume_id=?1 AND f.file_id IS NOT NULL AND d.listing_state!='excluded' GROUP BY f.file_id HAVING count(*)>1",[volume])?;
+    // The identity index rejects singletons before the volume/visibility grouping needs scratch.
+    conn.execute("INSERT INTO multilink SELECT ?1,f.file_id,count(*),max(f.allocated) FROM file f JOIN dir d ON d.id=f.dir_id JOIN visible_dir v ON v.id=d.id JOIN root r ON r.id=d.root_id WHERE r.volume_id=?1 AND f.file_id IN (SELECT file_id FROM file WHERE file_id IS NOT NULL GROUP BY file_id HAVING count(*)>1) AND d.listing_state!='excluded' GROUP BY f.file_id HAVING count(*)>1",[volume])?;
     conn.execute("UPDATE file SET flags=flags & ~?2 WHERE dir_id IN (SELECT d.id FROM dir d JOIN root r ON r.id=d.root_id WHERE r.volume_id=?1) AND flags & ?2 != 0",params![volume,HARDLINK_SUSPECTED])?;
     // Only visible rows carry the flag; hidden copies were cleared above and are not counted.
     conn.execute("UPDATE file SET flags=flags | ?2 WHERE dir_id IN (SELECT d.id FROM dir d JOIN visible_dir v ON v.id=d.id JOIN root r ON r.id=d.root_id WHERE r.volume_id=?1 AND d.listing_state!='excluded') AND file_id IN (SELECT file_id FROM multilink WHERE volume_id=?1)",params![volume,HARDLINK_SUSPECTED])?;
@@ -2468,6 +2488,7 @@ mod tests {
         let writer = Writer::start(conn).unwrap();
         writer
             .call(WriteCommand::RegisterRoot(RootObservation {
+                volume_guid: None,
                 volume_key: "fixture".into(),
                 display_name: "Fixture".into(),
                 display_path: "Fixture root".into(),
@@ -2572,6 +2593,7 @@ mod tests {
             Writer::start(crate::db::open_pair(temp.path(), "synthetic").unwrap()).unwrap();
         writer
             .call(WriteCommand::RegisterRoot(RootObservation {
+                volume_guid: None,
                 volume_key: "fixture".into(),
                 display_name: "Fixture".into(),
                 display_path: "Fixture root".into(),
@@ -2643,6 +2665,7 @@ mod tests {
             Writer::start(crate::db::open_pair(temp.path(), "synthetic").unwrap()).unwrap();
         writer
             .call(WriteCommand::RegisterRoot(RootObservation {
+                volume_guid: None,
                 volume_key: "fixture".into(),
                 display_name: "Fixture".into(),
                 display_path: "Fixture root".into(),
@@ -2718,6 +2741,7 @@ mod tests {
         let writer = Writer::start(conn).unwrap();
         writer
             .call(WriteCommand::RegisterRoot(RootObservation {
+                volume_guid: None,
                 volume_key: "fixture".into(),
                 display_name: "Fixture".into(),
                 display_path: "Fixture root".into(),
@@ -2816,6 +2840,7 @@ mod tests {
             result
         };
         let root = enqueue(WriteCommand::RegisterRoot(RootObservation {
+            volume_guid: None,
             volume_key: "fixture".into(),
             display_name: "Fixture".into(),
             display_path: "Fixture root".into(),
@@ -2904,6 +2929,7 @@ mod tests {
             Writer::start(crate::db::open_pair(temp.path(), "synthetic").unwrap()).unwrap();
         writer
             .call(WriteCommand::RegisterRoot(RootObservation {
+                volume_guid: None,
                 volume_key: "fixture".into(),
                 display_name: "Fixture".into(),
                 display_path: "Fixture root".into(),

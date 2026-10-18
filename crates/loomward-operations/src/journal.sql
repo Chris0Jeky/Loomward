@@ -26,3 +26,11 @@ CREATE TABLE IF NOT EXISTS op_plan (
   plan TEXT NOT NULL) STRICT;
 CREATE TRIGGER IF NOT EXISTS op_plan_no_update BEFORE UPDATE ON op_plan
   BEGIN SELECT RAISE(ABORT, 'op_plan is immutable'); END;
+-- Durable plan lookups: written in the plan transaction, never used as effect authority.
+CREATE TABLE IF NOT EXISTS op_plan_lookup (
+  op_id INTEGER PRIMARY KEY CHECK (op_id > 0),
+  wire_id TEXT UNIQUE) STRICT;
+CREATE TABLE IF NOT EXISTS op_plan_grant (
+  grant_id INTEGER NOT NULL,
+  op_id INTEGER NOT NULL CHECK (op_id > 0),
+  PRIMARY KEY (grant_id, op_id)) STRICT, WITHOUT ROWID;

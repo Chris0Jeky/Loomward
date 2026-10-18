@@ -494,7 +494,12 @@ fn reconcile<S: DirSource>(
         report.aggregation_seconds += next.aggregation_seconds;
         report.persistence_seconds += next.persistence_seconds;
         report.totals = next.totals;
-        report.skipped = next.skipped;
+        // A targeted pass cannot clear skips outside its repair scope.
+        report.skipped = if full {
+            next.skipped
+        } else {
+            report.skipped.max(next.skipped)
+        };
         report.failed = next.failed;
         report.limit_hit |= next.limit_hit;
         report.limit_reason = next.limit_reason.or(report.limit_reason);
@@ -648,11 +653,114 @@ mod tests {
             )
             .unwrap();
             assert_eq!(report.complete, cap == 10);
+            assert!(!report.coverage_complete());
             assert_eq!(report.limit_hit, cap == 6);
             assert_eq!(report.enumeration_attempts, if cap == 10 { 8 } else { 6 });
             if cap == 10 {
                 assert_eq!((report.examined, report.skipped, report.failed), (3, 1, 0));
             }
+        }
+    }
+    #[test]
+    fn targeted_repair_preserves_skips_in_a_non_dirty_directory() {
+        use super::super::tests::{root, Tree};
+        struct Source {
+            repairing: AtomicBool,
+        }
+        impl DirSource for Source {
+            type Dir = u64;
+            fn strategy(&self) -> Strategy {
+                Strategy::Portable
+            }
+            fn open_root(
+                &self,
+                path: &std::path::Path,
+            ) -> Result<(u64, OpenedIdentity), SourceError> {
+                Tree.open_root(path)
+            }
+            fn open_child(
+                &self,
+                parent: &u64,
+                entry: &RawEntry<'_>,
+            ) -> Result<(u64, OpenedIdentity), SourceError> {
+                Tree.open_child(parent, entry)
+            }
+            fn list(&self, dir: &u64, sink: &mut dyn FnMut(RawEntry<'_>) -> Flow) -> ListOutcome {
+                if *dir == 4 {
+                    // The skipped entry disappears without a hint for this directory. Only a
+                    // full pass may repair its coverage; the dirty sibling's pass cannot.
+                    if self.repairing.load(Ordering::Acquire) {
+                        return ListOutcome::Complete;
+                    }
+                    return Tree.list(&2, &mut |mut entry| {
+                        entry.name = &[115];
+                        entry.file_id = Some(FileIdObs::Id64(5));
+                        entry.attributes = 0x410;
+                        sink(entry)
+                    });
+                }
+                Tree.list(dir, &mut |entry| {
+                    if *dir == 1 {
+                        let mut sibling = entry.clone();
+                        sibling.name = &[121];
+                        sibling.file_id = Some(FileIdObs::Id64(4));
+                        if sink(sibling) == Flow::Stop {
+                            return Flow::Stop;
+                        }
+                    }
+                    sink(entry)
+                })
+            }
+        }
+        for full in [false, true] {
+            let source = Source {
+                repairing: AtomicBool::new(false),
+            };
+            let sink = Arc::new(RecordingSink::default());
+            let dirty = Mutex::new(Dirty::default());
+            let checkpoints = std::sync::atomic::AtomicUsize::new(0);
+            let report = reconcile(
+                &source,
+                &root(),
+                1,
+                sink.clone(),
+                Arc::new(ByteBudget::new(crate::budgets::SCAN_BYTES)),
+                Arc::new(AtomicBool::new(false)),
+                ScanOptions {
+                    workers: 1,
+                    ..Default::default()
+                },
+                &dirty,
+                || {
+                    if checkpoints.fetch_add(1, Ordering::Relaxed) == 1 {
+                        source.repairing.store(true, Ordering::Release);
+                        dirty.lock().unwrap().record(vec![if full {
+                            Change::RootDirty
+                        } else {
+                            Change::Name {
+                                action: 3,
+                                name: "x\\x".encode_utf16().collect(),
+                            }
+                        }]);
+                    }
+                    true
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                sink.scopes.lock().unwrap()[1],
+                if full {
+                    RunScope::FullRoot
+                } else {
+                    RunScope::Targeted(vec![3])
+                }
+            );
+            assert_eq!(
+                report.skipped,
+                u64::from(!full),
+                "only a full relist can repair the skipped sibling"
+            );
+            assert_eq!(report.coverage_complete(), full, "{report:?}");
         }
     }
     #[test]

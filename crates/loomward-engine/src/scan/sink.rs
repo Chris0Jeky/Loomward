@@ -667,6 +667,7 @@ mod watch_tests {
         OpenedIdentity {
             id: Some(FileIdObs::Id64(id)),
             basis: IdBasis::Listed,
+            volume_guid: None,
             volume_serial: Some(42),
             attributes: 0x10,
             reparse_tag: None,

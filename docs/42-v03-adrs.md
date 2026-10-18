@@ -113,7 +113,14 @@ so an NTFS or ReFS identity failure stays refused exactly as above. A synthetic 
 unverified freely; a personal root needs the owner's explicit confirmation at grant time (the desktop
 picker's one-line native confirmation, or `--allow-identity-unverified` beside `--grant-root`), and the
 grant record carries `identity_mode = 'unverified'` (state schema v5; existing grants migrate
-`verified`). Every grant now records its volume's observed filesystem. Such a root lists metadata only
+`verified`). Every grant records its volume's observed filesystem in precious state (schema v9,
+#375), so rebuilding the derived catalogue preserves that observation. Migration copies known
+legacy catalogue observations; a missing one stays unknown until an explicit re-grant observes it.
+Re-granting the same active native root refreshes this observation without replacing the grant or
+changing its identity mode. A stored unverified grant needs no repeat CLI confirmation for its
+active volume/weak-ID/path binding; a new or revoked grant still needs it. The desktop identity
+warning names the picked folder and filesystem.
+Such a root lists metadata only
 (names, sizes, dates): every listed or post-open ID is dropped, directories report `IdBasis::Unverified`
 and are never released for reopening by ID, and the scan is never watched. Find binds its pins to
 the original handle by path alone, which holds because the pins deny rename and delete while the
@@ -523,7 +530,8 @@ and never writes twice) without a ticket, sharing the pickers' one-dialog lock a
 5. *Loomward confirms a replace itself.* rfd 0.17 opens `IFileSaveDialog` without changing its options, and
    whether its documented `FOS_OVERWRITEPROMPT` default holds was never observed. So when the chosen file exists,
    the service asks `NativeDialogs::confirm_replace` (an app-owned box naming the file, Cancel the default);
-   a decline is `cancelled_by_user` and writes nothing.
+   a decline is `cancelled_by_user` and writes nothing. rfd's save dialog returns no path for both cancellation
+   and a dialog failure; that ambiguous result is `refused` / `dialog_no_selection`, never a claimed user cancel.
 6. *`capabilities.effects.file_write` stays `false`.* That matrix describes effects on the owner's files under a
    grant (invariant 1). The export is listed instead as the one command whose `commands.json` `effects` is
    `owner_picked_export`, and the contract test pins that no other command has an effect.

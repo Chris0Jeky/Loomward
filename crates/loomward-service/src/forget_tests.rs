@@ -17,6 +17,7 @@ fn named(svc: &Service, id: u8, name: &str, path: &str) -> (i64, i64) {
         .catalog
         .writer()
         .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_guid: None,
             volume_key: "fixture".into(),
             display_name: name.into(),
             display_path: path.into(),
@@ -307,10 +308,38 @@ fn holders(dir: &Path, needle: &str) -> Vec<String> {
 }
 
 #[test]
-fn forgetting_removes_state_copy_sidecars_including_orphans() {
+fn forgetting_recovers_migration_journals_before_removing_sidecars() {
+    const CHILD_COPY: &str = "LOOMWARD_FORGET_JOURNAL_FIXTURE";
+    const UNCOMMITTED: &str = "UncommittedMigrationPath";
+    if let Some(copy) = std::env::var_os(CHILD_COPY) {
+        let db = rusqlite::Connection::open(copy).unwrap();
+        db.execute_batch(
+            "PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL;
+             PRAGMA cache_size=1; PRAGMA cache_spill=ON;
+             CREATE TABLE rollback_fixture(payload BLOB);
+             WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<32)
+             INSERT INTO rollback_fixture SELECT zeroblob(4096) FROM n;
+             BEGIN IMMEDIATE",
+        )
+        .unwrap();
+        assert_eq!(
+            db.execute(
+                "UPDATE root_grant SET display_path=?1 WHERE display_path=?2",
+                [UNCOMMITTED, PATH_B],
+            )
+            .unwrap(),
+            1
+        );
+        // Evict the changed grant page to disk, leaving its committed value only in the journal.
+        db.execute_batch("UPDATE rollback_fixture SET payload=randomblob(4096)")
+            .unwrap();
+        // An interrupted process must not run SQLite's rollback-on-drop destructor.
+        std::process::exit(17);
+    }
     let dir = temp_root();
     let svc = open(dir.path(), DatasetClass::Synthetic);
     let (root, grant) = named(&svc, 1, NAME_A, PATH_A);
+    let (_, kept) = named(&svc, 2, "KeptRoot", PATH_B);
     svc.inner.revoke(grant).unwrap();
     // Orphan sidecars and sidecars beside a real migration copy are both owned state.
     let copy = dir.path().join("state.before-v6.db");
@@ -318,6 +347,16 @@ fn forgetting_removes_state_copy_sidecars_including_orphans() {
         .db()
         .execute("VACUUM st INTO ?1", [copy.to_string_lossy().as_ref()])
         .unwrap();
+    let child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "tests::forget_tests::forgetting_recovers_migration_journals_before_removing_sidecars",
+            "--nocapture",
+        ])
+        .env(CHILD_COPY, &copy)
+        .status()
+        .unwrap();
+    assert_eq!(child.code(), Some(17));
     let utf16: Vec<u8> = PATH_A.encode_utf16().flat_map(u16::to_le_bytes).collect();
     for stem in [
         "state.before-v6.db",
@@ -325,11 +364,27 @@ fn forgetting_removes_state_copy_sidecars_including_orphans() {
         "state.start-123.db",
     ] {
         for suffix in ["-wal", "-shm", "-journal"] {
+            if stem == "state.before-v6.db" && suffix == "-journal" {
+                continue; // The child left a real hot journal beside this migration copy.
+            }
             let mut bytes = PATH_A.as_bytes().to_vec();
             bytes.extend_from_slice(&utf16);
             std::fs::write(dir.path().join(format!("{stem}{suffix}")), bytes).unwrap();
         }
     }
+    let journal = std::fs::read(copy.with_extension("db-journal")).unwrap();
+    assert_eq!(
+        &journal[..8],
+        &[0xd9, 0xd5, 0x05, 0xf9, 0x20, 0xa1, 0x63, 0xd7],
+        "the migration fixture must contain a hot SQLite rollback journal"
+    );
+    assert!(journal
+        .windows(PATH_B.len())
+        .any(|w| w == PATH_B.as_bytes()));
+    assert!(
+        crate::handlers::holds(&copy, UNCOMMITTED),
+        "the uncommitted grant page must have reached the database file"
+    );
     ok("roots.forget", forget(&svc, root, None));
     assert!(holders(dir.path(), PATH_A).is_empty());
     for stem in [
@@ -342,6 +397,25 @@ fn forgetting_removes_state_copy_sidecars_including_orphans() {
         }
     }
     assert!(copy.exists(), "keep the scrubbed migration copy");
+    let db = rusqlite::Connection::open(&copy).unwrap();
+    let paths: (String, String) = db
+        .query_row(
+            "SELECT (SELECT display_path FROM root_grant WHERE id=?1),
+                (SELECT display_path FROM root_grant WHERE id=?2)",
+            [grant, kept],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        paths,
+        ("forgotten".into(), PATH_B.into()),
+        "SQLite must roll back the kept grant before scrubbing and removing sidecars"
+    );
+    assert_eq!(
+        db.query_row("PRAGMA integrity_check", [], |r| r.get::<_, String>(0))
+            .unwrap(),
+        "ok"
+    );
 }
 
 #[test]
@@ -834,10 +908,13 @@ fn v1_migration_forget_preserves_the_other_grant_and_clears_every_copy() {
         ),
         41
     );
+    // A legacy grant stays active until its first matching native admission adopts a GUID.
+    let kept = "SELECT count(*) FROM st.root_grant WHERE id=7 AND display_path='KeepServicePathBeta' AND state='active' AND volume_guid IS NULL";
+    assert_eq!(count(&svc, kept), 1);
     let root = count(&svc, "SELECT id FROM main.root WHERE grant_id=41");
     svc.inner.revoke(41).unwrap();
     ok("roots.forget", forget(&svc, root, None));
-    assert_eq!(count(&svc, "SELECT count(*) FROM st.root_grant WHERE id=7 AND display_path='KeepServicePathBeta' AND state='active'"), 1);
+    assert_eq!(count(&svc, kept), 1);
     drop(svc);
     assert!(holders(dir.path(), PATH_A).is_empty());
 }

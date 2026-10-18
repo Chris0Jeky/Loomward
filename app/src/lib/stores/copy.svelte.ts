@@ -1,5 +1,6 @@
 import type { CopyApproval, CopyPreview, CopyRefusalCode, CopyStatus, NodeId } from '../contracts.gen';
 import { Client, LoomwardError } from '../transport/client';
+import { session } from './session.svelte';
 
 export interface CopyItem { node_id: NodeId; name: string }
 
@@ -52,6 +53,8 @@ export class CopyFlow {
   gated = $state(false);
   error = $state<unknown>(null);
   uncertain = $state(false);
+  private missing = $state(false);
+  private engineRestarts = 0;
   private generation = 0;
   private action = '';
   private epoch: number | null = null;
@@ -68,13 +71,14 @@ export class CopyFlow {
   }
   get canCancel(): boolean { return !this.uncertain && !!this.status && ['approved', 'preparing', 'copying', 'staged', 'blocked'].includes(this.status.state); }
   get canAbandon(): boolean {
-    return !this.busy && !!this.preview && !this.uncertain && (!this.status || ['draft', 'approved', 'refused', 'expired', 'blocked', 'needs_attention'].includes(this.status.state));
+    return !this.busy && !!this.preview && (this.missing || (!this.uncertain && (!this.status || ['draft', 'approved', 'refused', 'expired', 'blocked', 'needs_attention'].includes(this.status.state))));
   }
 
   private invalidate(): void {
     if (this.preview || this.approval || this.busy) this.notice = 'Approval invalidated: the selection or destination changed. Build a new preview.';
     this.generation++; this.preview = null; this.approval = null; this.status = null;
     this.problem = ''; this.error = null; this.gated = false;
+    this.missing = false;
   }
   select(items: CopyItem[]): boolean {
     if (this.locked || (this.busy && this.action !== 'preview')) return false;
@@ -117,8 +121,9 @@ export class CopyFlow {
     await this.run('preview', async () => {
       this.approval = null; this.preview = null; this.status = null;
       const generation = ++this.generation;
+      const engineRestarts = session.engineRestarts;
       const { result } = await client.call('copy.preview', { sources: this.items.map(i => i.node_id), destination_node_id: this.parent!.node_id });
-      if (generation === this.generation) { this.preview = result; this.notice = 'Preview ready. Review every refusal before approving.'; }
+      if (generation === this.generation) { this.preview = result; this.engineRestarts = engineRestarts; this.notice = 'Preview ready. Review every refusal before approving.'; }
     });
   }
   async approve(client: Client): Promise<void> {
@@ -135,7 +140,7 @@ export class CopyFlow {
   }
   private accept(status: CopyStatus): void {
     if (status.operation_id !== this.preview?.operation_id || status.digest !== this.preview.digest) throw new Error('Status does not match this operation and preview. Outcome unknown; refresh status.');
-    this.status = status; this.uncertain = false; this.approval = null;
+    this.status = status; this.uncertain = false; this.approval = null; this.missing = false;
     this.notice = `Engine reports ${status.state.replaceAll('_', ' ')}. Nothing resumes automatically.`;
   }
   async start(client: Client): Promise<void> {
@@ -151,13 +156,24 @@ export class CopyFlow {
   async refresh(client: Client): Promise<void> {
     if (!this.preview) return;
     const generation = this.generation;
+    const restarted = this.engineRestarts !== session.engineRestarts;
     await this.run('status', async () => {
       const { result } = await client.call('copy.status', { operation_id: this.preview!.operation_id });
       if (generation === this.generation) this.accept(result);
     }, () => generation !== this.generation);
+    if (generation === this.generation && restarted && this.uncertain && this.error instanceof LoomwardError && this.error.code === 'not_found') {
+      this.missing = true; this.status = null; this.approval = null;
+      this.notice = 'The restarted engine has no record of this operation. Its outcome is not verified. Abandon operation to reset this selection locally; no files will be changed.';
+    }
   }
   async cancel(client: Client): Promise<void> { if (this.canCancel) await this.stop(client, 'copy.cancel'); }
-  async abandon(client: Client): Promise<void> { if (this.canAbandon) await this.stop(client, 'copy.abandon'); }
+  async abandon(client: Client): Promise<void> {
+    if (!this.canAbandon) return;
+    if (this.missing) {
+      this.uncertain = false; this.invalidate(); this.items = []; this.parent = null;
+      this.notice = 'Selection reset locally. The missing operation was not verified; no files were changed by this reset. Select again and build a new preview.';
+    } else await this.stop(client, 'copy.abandon');
+  }
   private async stop(client: Client, command: 'copy.cancel' | 'copy.abandon'): Promise<void> {
     if (this.busy) return;
     const generation = this.generation;
