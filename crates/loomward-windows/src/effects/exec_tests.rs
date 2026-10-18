@@ -1559,10 +1559,20 @@ fn detached_worker_check_and_stream_create_exclude_a_reopened_fence() {
     detached_worker_check_and_create_exclude_fence(Point::CheckedStream(0));
 }
 
+#[test]
+fn detached_worker_check_and_staging_exclude_a_reopened_fence() {
+    detached_worker_check_and_create_exclude_fence(Point::CheckedStaging);
+}
+
+#[test]
+fn detached_worker_check_and_publish_exclude_a_reopened_fence() {
+    detached_worker_check_and_create_exclude_fence(Point::CheckedPublish);
+}
+
 /// #670: a reopened service fences on its own store and `Control` while the detached worker sits
 /// between its durable stop check and the create call. The fence must not be acknowledged while
-/// the create can still follow: once acknowledged, that create either already happened or never
-/// will (creates only; writes and renames are not covered here, #672).
+/// the create can still follow: once acknowledged, that create (or the staging folder's creation, or
+/// the publish rename, #672) either already happened or never will. Writes are not covered here.
 fn detached_worker_check_and_create_exclude_fence(point: Point) {
     let Some(lab) = Lab::new() else { return };
     fs::write(lab.src().join("f.bin"), b"payload").unwrap();
@@ -1570,12 +1580,12 @@ fn detached_worker_check_and_create_exclude_fence(point: Point) {
     let op = lab.start(&["f.bin"]);
     let db = lab.tmp.path().join("state/state.db");
     let dest = lab.dest();
-    let target = move |token: &str| {
-        let file = dest.join(token).join("f.bin");
-        match point {
-            Point::Checked(_) => file,
-            _ => file.with_file_name("f.bin:note"),
-        }
+    let final_name = lab.plan(op).manifest.destination.folder_name;
+    let target = move |token: &str| match point {
+        Point::Checked(_) => dest.join(token).join("f.bin"),
+        Point::CheckedStream(_) => dest.join(token).join("f.bin:note"),
+        Point::CheckedStaging => dest.join(token),
+        _ => dest.join(&final_name),
     };
     let fencer = std::sync::Arc::new(Mutex::new(None));
     let slot = fencer.clone();
@@ -1614,7 +1624,11 @@ fn detached_worker_check_and_create_exclude_fence(point: Point) {
     let _ = run(&lab.store, op, &control);
     let fencer = fencer.lock().unwrap().take().expect("seam reached");
     let (ack, existed_at_ack, path) = fencer.join().unwrap();
-    assert_eq!(ack, Ack::StoppedBeforePublish);
+    // A fresh Control cannot see a rename that finished before its fence (#672 residual).
+    assert!(
+        matches!(ack, Ack::StoppedBeforePublish | Ack::Published),
+        "{ack:?}"
+    );
     assert!(replay(&lab.store, op).unwrap().fenced);
     assert!(
         existed_at_ack || !path.exists(),

@@ -313,6 +313,10 @@ pub enum Point {
     Checked(u32),
     /// Between a named stream create step's durable stop check and its create call (#670).
     CheckedStream(u32),
+    /// Between the staging step's durable stop check and the staging folder's creation (#672).
+    CheckedStaging,
+    /// Between the rename step's durable stop check and the publish rename (#672).
+    CheckedPublish,
     /// After the item cancellation check, before the potentially blocking source open.
     OpeningSource(u32),
     /// Inside a stream's chunk loop, between effect steps: the bytes handed to the writer so far.
@@ -893,6 +897,7 @@ fn copy(journal: &Journal, plan: &Plan, control: &Control, dest: &Destination) -
     // cause (a token-named folder the OS may have left is reported as a leftover by `status`).
     let staged = {
         let _step = control.admit()?;
+        control.at(Point::CheckedStaging)?;
         dest.stage(&token)
     };
     let staging = match staged {
@@ -1342,6 +1347,7 @@ impl Runner<'_, '_> {
             // The rename step: its fence read under the admission lock is the pre-rename check.
             let renamed = {
                 let _step = self.control.admit()?;
+                self.control.at(Point::CheckedPublish)?;
                 let renamed = self.staging.publish(&final_name);
                 if renamed.is_ok() {
                     self.control.renamed.store(true, Ordering::SeqCst);
