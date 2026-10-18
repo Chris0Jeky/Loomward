@@ -317,6 +317,10 @@ pub enum Point {
     Checked(u32),
     /// Between a named stream create step's durable stop check and its create call (#670).
     CheckedStream(u32),
+    /// Between the staging step's durable stop check and the staging folder's creation (#672).
+    CheckedStaging,
+    /// Between the rename step's durable stop check and the publish rename (#672).
+    CheckedPublish,
     /// After the item cancellation check, before the potentially blocking source open.
     OpeningSource(u32),
     /// Inside a stream's chunk loop, between effect steps: the bytes handed to the writer so far.
@@ -702,17 +706,26 @@ impl Journal<'_> {
         self.while_copying(|| Ok(()))
     }
 
+    fn while_copying<T>(&self, effect: impl FnOnce() -> Result<T, Stop>) -> Result<T, Stop> {
+        self.while_in(OpState::Copying, effect)
+    }
+
     /// A detached worker's Control is not the reopened service's Control: read the durable stop, and
     /// keep the database write lock until `effect` returns, so a fence appended by another store
-    /// waits for the effect instead of landing between the check and it (#670). Keep `effect` to one
-    /// bounded create call: another store's fence waits up to its busy timeout, then fails unacknowledged.
-    // ponytail: a create stuck in the OS also holds this store's mutex, so a same-store fence waits for it
+    /// waits for the effect instead of landing between the check and it (#670, #672). Keep `effect` to
+    /// one bounded create or rename call: another store's fence waits up to its busy timeout, then fails
+    /// unacknowledged.
+    // ponytail: a call stuck in the OS also holds this store's mutex, so a same-store fence waits for it
     // rather than answering `PendingInFlightStep`; split the lock from the connection if that bites.
-    fn while_copying<T>(&self, effect: impl FnOnce() -> Result<T, Stop>) -> Result<T, Stop> {
+    fn while_in<T>(
+        &self,
+        state: OpState,
+        effect: impl FnOnce() -> Result<T, Stop>,
+    ) -> Result<T, Stop> {
         self.store
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .while_current(self.op, OpState::Copying, self.epoch, effect)
+            .while_current(self.op, state, self.epoch, effect)
             .map_err(|e| Stop::Journal(e.to_string()))?
             .map_err(|e| Stop::Journal(format!("{e:?}")))?
             .unwrap_or(Err(Stop::Superseded))
@@ -897,7 +910,10 @@ fn copy(journal: &Journal, plan: &Plan, control: &Control, dest: &Destination) -
     // cause (a token-named folder the OS may have left is reported as a leftover by `status`).
     let staged = {
         let _step = control.admit()?;
-        dest.stage(&token)
+        journal.while_in(OpState::Preparing, || {
+            control.at(Point::CheckedStaging)?;
+            Ok(dest.stage(&token))
+        })?
     };
     let staging = match staged {
         Ok(staging) => {
@@ -1346,11 +1362,15 @@ impl Runner<'_, '_> {
             // The rename step: its fence read under the admission lock is the pre-rename check.
             let renamed = {
                 let _step = self.control.admit()?;
-                let renamed = self.staging.publish(&final_name);
-                if renamed.is_ok() {
-                    self.control.renamed.store(true, Ordering::SeqCst);
-                }
-                renamed
+                let (journal, control, staging) = (&self.journal, self.control, &mut self.staging);
+                journal.while_in(OpState::Publishing, || {
+                    control.at(Point::CheckedPublish)?;
+                    let renamed = staging.publish(&final_name);
+                    if renamed.is_ok() {
+                        control.renamed.store(true, Ordering::SeqCst);
+                    }
+                    Ok(renamed)
+                })?
             };
             match renamed {
                 Ok(()) => break,
