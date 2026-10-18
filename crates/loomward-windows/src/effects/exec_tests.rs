@@ -304,7 +304,18 @@ impl Lab {
             protected: false,
             date: DATE,
             destination_root: self.grant(),
+            destination_root_guid: self.grant_guid(),
         }
+    }
+    /// The volume GUID of that grant root, from its pinned handle (as scan admission records it).
+    fn grant_guid(&self) -> Option<u128> {
+        let (_, opened) = <enumerate::NativeSource as enumerate::DirSource>::open_root(
+            &enumerate::NativeSource::default(),
+            &fs::canonicalize(self.tmp.path()).unwrap(),
+        )
+        .unwrap();
+        assert!(opened.volume_guid.is_some());
+        opened.volume_guid
     }
     /// The lab's own folder stands for the destination's lab-root grant: (volume serial, file ID).
     fn grant(&self) -> (u64, [u8; 16]) {
@@ -845,27 +856,44 @@ fn durable_stop_20k_lab() {
     tmp.close().unwrap();
 }
 
-/// H2 for named streams (measured here, C5): a held named-stream handle blocks renaming its ancestor
-/// folder even with delete sharing, while a held default stream does not. Hence the executor releases
-/// stream holds just before publish and re-hashes the streams after (docs/47 section 4, step 2).
+/// H2 is an OS measurement, not product behaviour (#687). The executor relies on publishing after
+/// named-stream holds are released, with default holds retained, then re-hashing the named streams.
 #[test]
-fn h2_named_stream_hold_blocks_publish_default_hold_does_not() {
+fn h2_publish_after_named_hold_release_preserves_hashes_with_default_hold() {
     let Some(lab) = Lab::new() else { return };
     let key = identity::observe(&lab.dest()).unwrap().object;
     let dest = Destination::open(&lab.dest(), &key).unwrap();
-    let mut stage = dest.stage("tok").unwrap();
-    let file = stage.create_file(&[], "f").unwrap();
-    file.write_and_flush(&mut &b"data"[..], 4).unwrap();
-    let stream = file.create_stream("note").unwrap();
-    stream.write_and_flush(&mut &b"n"[..], 1).unwrap();
-    let id = file.identity().unwrap();
-    drop((stream, file));
-    let held = stage.verify(&[], "f", &id).unwrap();
-    let stream_hold = held.verify_stream("note").unwrap();
-    assert_eq!(stage.publish("done").unwrap_err().raw_os_error(), Some(5));
-    drop(stream_hold);
-    stage.publish("done").unwrap();
-    assert_eq!(held.verify_stream("note").unwrap().size, 1);
+    // Always exercise the executor's release-before-publish path as well as the host measurement,
+    // including on hosts where the measurement itself successfully publishes the first staging tree.
+    for measure_held_publish in [true, false] {
+        let mut stage = dest.stage(&format!("tok-{measure_held_publish}")).unwrap();
+        let final_name = format!("done-{measure_held_publish}");
+        let file = stage.create_file(&[], "f").unwrap();
+        file.write_and_flush(&mut &b"data"[..], 4).unwrap();
+        let stream = file.create_stream("note").unwrap();
+        stream.write_and_flush(&mut &b"n"[..], 1).unwrap();
+        let id = file.identity().unwrap();
+        drop((stream, file));
+        let held = stage.verify(&[], "f", &id).unwrap();
+        let stream_hold = held.verify_stream("note").unwrap();
+        let stream_hash = (stream_hold.digest, stream_hold.size);
+        let published = if measure_held_publish {
+            let result = stage.publish(&final_name);
+            println!("H2 publish with named-stream and default-stream holds: {result:?}");
+            result.is_ok()
+        } else {
+            false
+        };
+        drop(stream_hold);
+        if !published {
+            // Product assertion: a default-stream hold alone must not block publish.
+            stage.publish(&final_name).unwrap();
+        }
+        let rehashed = stage.verify(&[], "f", &id).unwrap();
+        assert_eq!((rehashed.digest, rehashed.size), (held.digest, held.size));
+        let stream_rehashed = rehashed.verify_stream("note").unwrap();
+        assert_eq!((stream_rehashed.digest, stream_rehashed.size), stream_hash);
+    }
 }
 
 /// Regression (found by the C5 service lab run): a one-character final name was refused with
@@ -957,6 +985,35 @@ fn a_destination_outside_its_grant_identity_is_refused_before_any_write() {
     assert_eq!(outcome.state, OpState::Refused, "{outcome:?}");
     assert_eq!(outcome.refusal, Some((Refusal::DestinationChanged, None)));
     assert!(lab.dest_names().is_empty());
+}
+
+/// #669: the destination grant root is bound to its volume GUID, not only serial and file ID. A clone
+/// with matching IDs on another volume (a different GUID), or a legacy GUID-less binding, is refused
+/// at preview and again at run, before any write.
+#[test]
+fn a_destination_grant_on_another_volume_guid_is_refused_before_any_write() {
+    let Some(lab) = Lab::new() else { return };
+    fs::write(lab.src().join("f"), b"x").unwrap();
+    let sel = [PathBuf::from("f")];
+    let (src, dest) = (lab.src(), lab.dest());
+    let guid = lab.grant_guid();
+    prepare(&lab.request(&src, &dest, &sel)).unwrap();
+    for wrong in [guid.map(|g| g ^ 1), None] {
+        let mut request = lab.request(&src, &dest, &sel);
+        request.destination_root_guid = wrong;
+        assert_eq!(
+            prepare(&request).unwrap_err().to_string(),
+            "destination_outside_grant",
+            "{wrong:?}"
+        );
+    }
+    for wrong in [guid.map(|g| g ^ 1), None] {
+        let op = lab.start_with(&["f"], |plan| plan.destination_root_guid = wrong);
+        let outcome = run(&lab.store, op, &Control::new(false)).unwrap();
+        assert_eq!(outcome.state, OpState::Refused, "{outcome:?}");
+        assert_eq!(outcome.refusal, Some((Refusal::DestinationChanged, None)));
+        assert!(lab.dest_names().is_empty());
+    }
 }
 
 /// #526: the destination parent replaced between approval and the run (renamed away, a new folder under
