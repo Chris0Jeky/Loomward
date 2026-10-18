@@ -695,18 +695,23 @@ impl Journal<'_> {
     }
 
     fn check_copying(&self) -> Result<(), Stop> {
-        // A detached worker's Control is not the reopened service's Control: read the durable stop.
-        let (state, epoch) = self
-            .store
+        self.while_copying(|| Ok(()))
+    }
+
+    /// A detached worker's Control is not the reopened service's Control: read the durable stop, and
+    /// keep the database write lock until `effect` returns, so a fence appended by another store
+    /// waits for the effect instead of landing between the check and it (#670). Keep `effect` to one
+    /// bounded create call: another store's fence waits up to its busy timeout, then fails unacknowledged.
+    // ponytail: a create stuck in the OS also holds this store's mutex, so a same-store fence waits for it
+    // rather than answering `PendingInFlightStep`; split the lock from the connection if that bites.
+    fn while_copying<T>(&self, effect: impl FnOnce() -> Result<T, Stop>) -> Result<T, Stop> {
+        self.store
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .state_epoch(self.op)
+            .while_current(self.op, OpState::Copying, self.epoch, effect)
             .map_err(|e| Stop::Journal(e.to_string()))?
-            .map_err(|e| Stop::Journal(format!("{e:?}")))?;
-        if state != OpState::Copying || epoch != self.epoch {
-            return Err(Stop::Superseded);
-        }
-        Ok(())
+            .map_err(|e| Stop::Journal(format!("{e:?}")))?
+            .unwrap_or(Err(Stop::Superseded))
     }
 }
 
@@ -956,19 +961,20 @@ impl Runner<'_, '_> {
                 }
             };
             let made = path_of(&item.name, &self.keys).and_then(|(path, name)| {
-                self.journal.check_copying()?;
-                self.control.at(Point::Checked(i as u32))?;
-                match item.kind {
-                    Kind::Directory => self
-                        .staging
-                        .create_directory(&path, name)
-                        .map(|key| (key, None)),
-                    Kind::File => self.staging.create_file(&path, name).and_then(|f| {
-                        let key = f.identity()?;
-                        Ok((key, Some(f)))
-                    }),
-                }
-                .map_err(|e| io_refusal(&e))
+                self.journal.while_copying(|| {
+                    self.control.at(Point::Checked(i as u32))?;
+                    match item.kind {
+                        Kind::Directory => self
+                            .staging
+                            .create_directory(&path, name)
+                            .map(|key| (key, None)),
+                        Kind::File => self.staging.create_file(&path, name).and_then(|f| {
+                            let key = f.identity()?;
+                            Ok((key, Some(f)))
+                        }),
+                    }
+                    .map_err(|e| io_refusal(&e))
+                })
             });
             drop(step);
             match made {
@@ -1165,9 +1171,10 @@ impl Runner<'_, '_> {
             self.control.at(Point::CreatingStream(i as u32))?;
             let stream = {
                 let _step = self.control.admit()?;
-                self.journal.check_copying()?;
-                self.control.at(Point::CheckedStream(i as u32))?;
-                file.create_stream(name).map_err(|e| io_refusal(&e))?
+                self.journal.while_copying(|| {
+                    self.control.at(Point::CheckedStream(i as u32))?;
+                    file.create_stream(name).map_err(|e| io_refusal(&e))
+                })?
             };
             let mut reader = source
                 .stream_reader(&format!(":{name}:$DATA"))
