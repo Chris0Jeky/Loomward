@@ -838,6 +838,12 @@ flowchart LR
 
 ## 12. Security boundary
 
+Lab registrations bind the native volume GUID as well as serial and root file ID (#669).
+State schema v11 adds `lab_root.volume_guid`; legacy NULL bindings and GUID mismatches refuse
+synthetic grants with `synthetic_session_requires_lab_root`, including CLI startup. Re-establish
+provenance explicitly with `loomward-lab generate --register` on a new or empty lab root; opening
+or scanning a legacy registration never adopts its GUID.
+
 | Threat | Control |
 |---|---|
 | A web page or another local process calls the loopback API | Bind `127.0.0.1` only; exact `Host`; `Origin` absent, self, or a CLI-allowlisted loopback origin; 256-bit token header; JSON content type; 64 KiB body; chunked refused; body drained before early replies; CSP, `nosniff`, `no-store`, COOP/CORP as in the Python server |

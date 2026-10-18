@@ -15,9 +15,12 @@ pub fn prospective_dir(path: &Path) -> Result<PathBuf, String> {
         return Err("network_or_removable_unsupported".into());
     }
     let absolute = std::path::absolute(path).map_err(|_| "cannot resolve directory")?;
-    let mut ancestor = absolute.as_path();
-    let mut missing = Vec::new();
-    loop {
+    if network_path(&absolute) {
+        return Err("network_or_removable_unsupported".into());
+    }
+    let mut existing = None;
+    // Inspect root first: even symlink_metadata follows links in intermediate components.
+    for ancestor in absolute.ancestors().collect::<Vec<_>>().into_iter().rev() {
         match std::fs::symlink_metadata(ancestor) {
             Ok(meta) => {
                 if meta.file_type().is_symlink() || unsafe_attributes(&meta) {
@@ -26,31 +29,25 @@ pub fn prospective_dir(path: &Path) -> Result<PathBuf, String> {
                 if !meta.is_dir() {
                     return Err("not_a_directory".into());
                 }
-                // Check every existing ancestor before canonicalisation can follow it.
-                for parent in ancestor.ancestors().skip(1) {
-                    let meta = std::fs::symlink_metadata(parent)
-                        .map_err(|_| "cannot inspect directory")?;
-                    if meta.file_type().is_symlink() || unsafe_attributes(&meta) {
-                        return Err("reparse_or_placeholder".into());
-                    }
-                }
-                break;
+                existing = Some(ancestor);
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                missing.push(ancestor.file_name().ok_or("cannot resolve directory")?);
-                ancestor = ancestor.parent().ok_or("cannot resolve directory")?;
-            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
             Err(_) => return Err("cannot inspect directory".into()),
         }
     }
+    let ancestor = existing.ok_or("cannot resolve directory")?;
     let mut resolved = ancestor
         .canonicalize()
         .map_err(|_| "cannot resolve directory")?;
     if network_path(&resolved) {
         return Err("network_or_removable_unsupported".into());
     }
-    for part in missing.iter().rev() {
-        resolved.push(part);
+    let missing = absolute
+        .strip_prefix(ancestor)
+        .map_err(|_| "cannot resolve directory")?;
+    // An empty suffix would append a trailing separator to a fully existing path.
+    if !missing.as_os_str().is_empty() {
+        resolved.push(missing);
     }
     Ok(resolved)
 }
@@ -643,6 +640,11 @@ mod tests {
                 .join("state")
         );
         assert!(!state.exists());
+        // A fully existing directory resolves exactly to its canonical form, with no trailing separator.
+        assert_eq!(
+            prospective_dir(tmp.path()).unwrap().as_os_str(),
+            tmp.path().canonicalize().unwrap().as_os_str()
+        );
     }
 
     #[test]

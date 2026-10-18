@@ -220,7 +220,13 @@ impl Service {
                     rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
                 )
                 .map_err(|_| refusal_name(Refusal::SyntheticSessionRequiresLabRoot))?;
-                let digest: Option<String> = existing.query_row("SELECT manifest_digest FROM lab_root WHERE volume_key=?1 AND root_file_id=?2", rusqlite::params![volume, file_id], |r| r.get(0))
+                // Preflight is read-only: an unmigrated registration is not provenance.
+                if !existing.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('lab_root') WHERE name='volume_guid')", [], |r| r.get::<_, bool>(0))
+                    .map_err(|_| refusal_name(Refusal::IdentityUnavailable))? {
+                    return Err(refusal_name(Refusal::SyntheticSessionRequiresLabRoot));
+                }
+                let volume_guid = lab::volume_guid(root).map_err(refusal_name)?;
+                let digest: Option<String> = existing.query_row("SELECT manifest_digest FROM lab_root WHERE volume_key=?1 AND root_file_id=?2 AND volume_guid=?3", rusqlite::params![volume, file_id, volume_guid], |r| r.get(0))
                     .optional().map_err(|_| refusal_name(Refusal::IdentityUnavailable))?;
                 if !digest.as_deref().is_some_and(lab::valid_digest) {
                     return Err(refusal_name(Refusal::SyntheticSessionRequiresLabRoot));
@@ -1207,7 +1213,7 @@ impl Inner {
                 if file_id.len() != 16 {
                     return Err(Refusal::IdentityUnavailable.into());
                 }
-                let digest = db::lab_root(&conn, &volume_key, &file_id)
+                let digest = db::lab_root(&conn, &volume_key, &file_id, &volume_guid)
                     .map_err(|_| Refusal::IdentityUnavailable)?
                     .ok_or(Refusal::SyntheticSessionRequiresLabRoot)?;
                 lab::log_digest(&digest)?;

@@ -54,8 +54,7 @@ fn read_tree_from(
     }
     let mut reader = Reader::new(root, expected, |_, _| {})?;
     let (dir, identity) = source.open_root(root).map_err(super::source)?;
-    if identity.id != expected.id
-        || identity.volume_serial != expected.volume_serial
+    if enumerate::expected_identity_matches(identity, *expected).is_err()
         || !matches!(
             identity.basis,
             enumerate::IdBasis::Listed | enumerate::IdBasis::PostOpen
