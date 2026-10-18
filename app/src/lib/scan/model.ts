@@ -150,6 +150,9 @@ export const announcement = (v: ScanView): string => `${v.headline}${v.detail ? 
 const reasonOf = (detail: Record<string, unknown> | null): string | null =>
   typeof detail?.reason === 'string' ? detail.reason : null;
 
+/** The notice for a start that met a running scan; it is only true while that scan runs. */
+export const ALREADY_RUNNING = 'A scan of this root is already running.';
+
 /** Plain-language refusal for a failed `scan.start`. The service decides; this only words it. */
 export function refusalText(code: ErrorCode, detail: Record<string, unknown> | null, message: string): string {
   switch (reasonOf(detail)) {
@@ -162,7 +165,7 @@ export function refusalText(code: ErrorCode, detail: Record<string, unknown> | n
     // `busy` is also the service's answer for a root that is starting or being revoked, a busy writer and too many
     // pending mutations: only a named running job (`job_id`) means this root is already being scanned.
     case 'busy':
-      return typeof detail?.job_id === 'string' ? 'A scan of this root is already running.' : `The service is busy and did not start the scan${message ? `: ${message}` : ''}. Try again shortly.`;
+      return typeof detail?.job_id === 'string' ? ALREADY_RUNNING : `The service is busy and did not start the scan${message ? `: ${message}` : ''}. Try again shortly.`;
     case 'permission_denied': return "This root's grant is not active, so Loomward may not scan it.";
     case 'not_found': return 'The service no longer knows this root. Reload this page and try again.';
     default: return message || 'The service refused the scan without giving a reason.';

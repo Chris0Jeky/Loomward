@@ -388,7 +388,10 @@ impl Inner {
         {
             if self.freshness_checkpoint(row) == Some(false) {
                 if let Some(root) = self.freshness.roots.lock().unwrap().get_mut(&row) {
-                    root.dirty(true);
+                    // Missing coverage is not a new filesystem hint or a new scan epoch.
+                    root.stale_since.get_or_insert(root.at);
+                    root.full = true;
+                    root.auto = true;
                 }
             }
         }
@@ -452,6 +455,10 @@ impl Inner {
     }
 
     pub(crate) fn freshness_finish(&self, grant: i64, scope: &RunScope, complete: bool) {
+        #[cfg(all(test, windows))]
+        if let Some(hook) = self.hooks.before_freshness_finish.lock().unwrap().take() {
+            hook();
+        }
         #[cfg(windows)]
         {
             let Some(row) = db::root_for_grant(&self.db(), grant).ok().flatten() else {
