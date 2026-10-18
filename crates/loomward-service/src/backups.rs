@@ -33,6 +33,11 @@ fn out(result: Value, revs: Option<(i64, i64)>) -> Out {
     }
 }
 
+/// Opens an owner-picked receipt for reading. Red placeholder: a plain open follows links.
+pub(crate) fn open_receipt(path: &Path) -> std::io::Result<std::fs::File> {
+    std::fs::File::open(path)
+}
+
 /// At most [`lb::MAX_INPUT_BYTES`] of an owner-picked regular local file, read-only. Refuses
 /// network, device and verbatim namespaces, reserved device names, stream-colon names, links,
 /// reparse points and cloud placeholders before opening anything (opening a placeholder would
