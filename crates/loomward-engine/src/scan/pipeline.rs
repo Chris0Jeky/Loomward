@@ -97,9 +97,11 @@ impl ScanReport {
 const PENDING: usize = usize::MAX;
 
 #[cfg(test)]
+type PublishHook = Box<dyn FnMut(&str)>;
+#[cfg(test)]
 thread_local! {
     /// Test hook run on the scan thread where coverage is about to be published.
-    pub(super) static BEFORE_PUBLISH: std::cell::RefCell<Option<Box<dyn FnMut(&str)>>> =
+    pub(super) static BEFORE_PUBLISH: std::cell::RefCell<Option<PublishHook>> =
         const { std::cell::RefCell::new(None) };
 }
 #[cfg(test)]
