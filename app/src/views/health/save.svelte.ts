@@ -1,4 +1,5 @@
 import { LoomwardError, TransportError, type Client } from '../../lib/transport/client';
+import { formatBytes } from '../../lib/format/bytes';
 import { formatCount } from '../../lib/format/time';
 import { SAVE_REFUSAL_WORDS } from './diagnostics';
 
@@ -32,7 +33,9 @@ export class SaveTracker {
       const { result } = await client.call('diagnostics.save', { digest: action.digest }, { deadlineMs: 60000, requestId: action.requestId });
       this.pending = null;
       if (result.outcome === 'saved') {
-        return { kind: 'notice', text: `Saved ${formatCount(Number(result.bytes_written))} bytes with digest ${shortDigest(action.digest)}, exactly the text shown. Nothing was uploaded.` };
+        // Null or malformed stays "unknown" (invariant 4): never 0 or NaN via Number().
+        const amount = formatBytes(result.bytes_written) === 'unknown' ? 'unknown' : formatCount(Number(result.bytes_written));
+        return { kind: 'notice', text: `Saved ${amount} bytes with digest ${shortDigest(action.digest)}, exactly the text shown. Nothing was uploaded.` };
       }
       if (result.outcome === 'cancelled_by_user') return { kind: 'notice', text: 'Save cancelled. No file was written.' };
       return { kind: 'problem', text: result.refusal ? SAVE_REFUSAL_WORDS[result.refusal] : 'The save was refused. No file was written.' };

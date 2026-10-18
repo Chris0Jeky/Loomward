@@ -165,18 +165,49 @@ describe('scan requests stay inside their engine generation', () => {
     expect(scans.book.rt_a?.job_id).toBe('jb_next');
   });
 
-  it.each(['sync', 'start', 'cancel'] as const)('still hands a transport fault to the shell after a new epoch (%s)', async (operation) => {
+  it.each(['start', 'cancel'] as const)('still hands a transport fault to the shell after a new epoch (%s)', async (operation) => {
     session.state = 'connected';
     let fail!: (e: Error) => void;
-    session.client = clientWith((c) => c === 'jobs.list' && operation !== 'sync' ? { jobs: [] } :
+    session.client = clientWith((c) => c === 'jobs.list' ? { jobs: [] } :
       new Promise<Reply>((_, reject) => { fail = reject; })).client;
-    const pending = operation === 'sync' ? scans.sync() : operation === 'cancel' ? scans.cancel('rt_a') : scans.start('rt_a', 'full');
+    const pending = operation === 'cancel' ? scans.cancel('rt_a') : scans.start('rt_a', 'full');
     await vi.waitFor(() => expect(fail).toBeTypeOf('function'));
     vi.useFakeTimers();
     scans.onEvent(hello('new_epoch'));
     fail(new TransportError('engine went away'));
     await expect(pending).resolves.toBeUndefined();
     expect(session.state).toBe('unavailable');
+  });
+
+  it.each(['jobs.list', 'jobs.get'] as const)('drops a stale %s transport fault in sync without marking the shell unavailable', async (command) => {
+    session.state = 'connected';
+    let fail!: (e: Error) => void;
+    session.client = clientWith((c) => c === 'jobs.list' && command === 'jobs.get' ? { jobs: [] } :
+      new Promise<Reply>((_, reject) => { fail = reject; })).client;
+    const pending = scans.sync();
+    await vi.waitFor(() => expect(fail).toBeTypeOf('function'));
+    vi.useFakeTimers();
+    scans.onEvent(hello('new_epoch'));
+    fail(new TransportError('engine went away'));
+    await expect(pending).resolves.toBeUndefined();
+    expect(session.state).toBe('connected');
+    expect(scans.problems).toEqual({});
+  });
+
+  it.each(['jobs.list', 'jobs.get'] as const)('still hands a current-generation %s transport fault to the shell', async (command) => {
+    vi.useFakeTimers();
+    session.state = 'connected';
+    session.client = clientWith((c) => {
+      if (c === 'jobs.list' && command === 'jobs.get') return { jobs: [] };
+      throw new TransportError('engine went away');
+    }).client;
+    await expect(scans.sync()).resolves.toBeUndefined();
+    expect(session.state).toBe('unavailable');
+  });
+
+  it('still throws a current-generation jobs.list refusal from sync', async () => {
+    session.client = clientWith(() => ({ error: { code: 'internal_error', message: 'old engine refusal' } })).client;
+    await expect(scans.sync()).rejects.toMatchObject({ code: 'internal_error' });
   });
 
   it('hands a transport fault from adopt to the shell without a busy refusal', async () => {

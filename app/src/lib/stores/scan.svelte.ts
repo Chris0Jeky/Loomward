@@ -91,11 +91,11 @@ class Scans {
     try {
       ({ result } = await c.call('jobs.list', { kinds: ['scan'], limit: 50 }));
     } catch (e) {
+      if (!current()) return;
       if (!(e instanceof LoomwardError)) {
         session.handle(e);
         return;
       }
-      if (!current()) return;
       throw e;
     }
     if (!current()) return;
@@ -111,11 +111,11 @@ class Scans {
         this.apply(result.job);
         this.clearConfirmationProblem(job.root_id!);
       } catch (e) {
+        if (!currentJob()) return;
         if (!(e instanceof LoomwardError)) {
           this.reportUnexpected(job.root_id!, e, "Could not confirm this scan's state", currentJob);
           return;
         }
-        if (!currentJob()) return;
         if (e.code === 'not_found') {
           // This is a local observation, not a new engine revision; don't overwrite a newer snapshot.
           if (this.book[job.root_id!]?.job_id === job.job_id && this.book[job.root_id!]?.rev === job.rev) {

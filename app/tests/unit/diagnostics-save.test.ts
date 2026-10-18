@@ -29,6 +29,53 @@ function setup(answers: Array<'deadline' | 'saved' | 'busy'>) {
   return { client, sent, hold, release: () => open() };
 }
 
+/** A save that answers `saved` once with the given raw bytes_written, bypassing types for malformed payloads. */
+function setupBytesWritten(bytesWritten: unknown) {
+  const inner = createMockTransport();
+  const client = new Client({
+    ...inner, mode: inner.mode, subscribe: inner.subscribe,
+    call: async (req): Promise<ResponseEnvelope> => {
+      if (req.command !== 'diagnostics.save') return inner.call(req);
+      const base = { protocol: 'loomward/3' as const, request_id: req.request_id };
+      return { ...base, ok: true, result: { outcome: 'saved', bytes_written: bytesWritten as string, refusal: null }, meta: { served_at: '2026-10-12T00:00:00Z', elapsed_ms: 0, dataset_class: 'synthetic', budget_hit: false, catalog_rev: null, state_rev: null } };
+    },
+  });
+  return { client };
+}
+
+it('renders unknown instead of 0 bytes when bytes_written is null', async () => {
+  const { client } = setupBytesWritten(null);
+  const report = await new SaveTracker().save(client, DIGEST, String);
+  expect(report?.kind).toBe('notice');
+  expect(report?.text).toContain('unknown');
+  expect(report?.text).not.toContain('0 bytes');
+  expect(report?.text).not.toContain('NaN');
+});
+
+it('renders unknown instead of NaN bytes when bytes_written is not a number', async () => {
+  const { client } = setupBytesWritten(Number.NaN);
+  const report = await new SaveTracker().save(client, DIGEST, String);
+  expect(report?.kind).toBe('notice');
+  expect(report?.text).toContain('unknown');
+  expect(report?.text).not.toContain('NaN');
+  expect(report?.text).not.toContain('0 bytes');
+});
+
+it('renders unknown instead of NaN bytes when bytes_written is a malformed string', async () => {
+  const { client } = setupBytesWritten('not-a-number');
+  const report = await new SaveTracker().save(client, DIGEST, String);
+  expect(report?.kind).toBe('notice');
+  expect(report?.text).toContain('unknown');
+  expect(report?.text).not.toContain('NaN');
+  expect(report?.text).not.toContain('0 bytes');
+});
+
+it('still counts a numeric byte string', async () => {
+  const { client } = setupBytesWritten('2835');
+  const report = await new SaveTracker().save(client, DIGEST, String);
+  expect(report).toEqual({ kind: 'notice', text: `Saved 2,835 bytes with digest ${shortDigest(DIGEST)}, exactly the text shown. Nothing was uploaded.` });
+});
+
 it('keeps the outstanding save after the dialog outlives the wait, and retries it under the same request id', async () => {
   const { client, sent } = setup(['deadline', 'saved']);
   const t = new SaveTracker();
