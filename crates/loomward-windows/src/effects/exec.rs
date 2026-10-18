@@ -1737,13 +1737,7 @@ fn clean(store: &Mutex<Store>, op: u64, plan: &Plan, control: &Control) -> Resul
         });
         // Nothing at all under the journaled name: removed before its record (a crash mid-cleanup).
         // Journal the removal; nothing is touched (C3 recovery's `gone`).
-        let absent = || {
-            let path = h
-                .name
-                .split('/')
-                .fold(plan.destination.join(&token), |p, c| p.join(c));
-            matches!(std::fs::symlink_metadata(path), Err(e) if e.kind() == io::ErrorKind::NotFound)
-        };
+        let absent = || PathDisk::new(plan, &r).gone(staging_id, &h.name);
         match key {
             Some(key) => {
                 keys.insert(h.name.clone(), key.clone());
@@ -1845,6 +1839,19 @@ impl PathDisk {
             disk.observation_failed.set(true);
         }
         disk
+    }
+
+    /// A confirmed absence of a staging entry: its name is not found while the staging name and the
+    /// destination parent still resolve to the journaled objects. A path that now resolves elsewhere (a
+    /// mounted-folder destination temporarily unmounted, a swapped folder) is unknown, not gone (#670).
+    fn gone(&self, staging: ObjectId, name: &str) -> bool {
+        let staged = self.staging.as_ref().is_some_and(|(token, id, planned)| {
+            *id == staging
+                && self
+                    .in_parent(token)
+                    .is_some_and(|o| id.matches(&o, *planned))
+        });
+        staged && self.in_staging(staging, name).is_none() && !self.observation_failed.get()
     }
 
     fn parent_available(&self) -> bool {

@@ -1362,6 +1362,43 @@ fn missing_destination_parent_is_retryable_not_staging_damage() {
     }
 }
 
+/// #670 P2 in cleanup: `NotFound` under the staging name is a confirmed removal only while the staging
+/// folder and its destination parent still resolve to the journaled objects. A path that now resolves
+/// elsewhere (a mounted-folder destination temporarily unmounted, a swapped folder) is unknown.
+#[test]
+fn a_staging_entry_is_gone_only_while_its_staging_and_parent_resolve() {
+    let Some(lab) = Lab::new() else { return };
+    fs::write(lab.src().join("f"), b"payload").unwrap();
+    let op = lab.start(&["f"]);
+    let crash = Control::new(false).with_hook(|p, _| {
+        if p == Point::Identities(0) {
+            Flow::Crash
+        } else {
+            Flow::Continue
+        }
+    });
+    assert!(matches!(run(&lab.store, op, &crash), Err(Fault::Crashed)));
+    let (plan, r) = (lab.plan(op), replay(&lab.store, op).unwrap());
+    let staging = r.staging.unwrap();
+    let dest = lab.dest();
+    let path = dest.join(r.staging_tokens.last().unwrap());
+    let gone = || PathDisk::new(&plan, &r).gone(staging, "f");
+    assert!(!gone(), "present");
+    let (moved, away) = (lab.tmp.path().join("moved"), lab.tmp.path().join("away"));
+    fs::rename(&path, &moved).unwrap();
+    fs::create_dir(&path).unwrap();
+    assert!(!gone(), "another folder under the staging name");
+    fs::remove_dir(&path).unwrap();
+    fs::rename(&dest, &away).unwrap();
+    fs::create_dir_all(&path).unwrap();
+    assert!(!gone(), "another destination parent");
+    fs::remove_dir_all(&dest).unwrap();
+    fs::rename(&away, &dest).unwrap();
+    fs::rename(&moved, &path).unwrap();
+    fs::remove_file(path.join("f")).unwrap();
+    assert!(gone(), "removed from the journaled staging");
+}
+
 #[test]
 fn admitted_step_rechecks_epoch_even_when_control_is_fenced() {
     let Some(lab) = Lab::new() else { return };
