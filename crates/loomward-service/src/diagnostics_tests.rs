@@ -508,6 +508,16 @@ fn unsupported_targets_are_refused_before_anything_is_written() {
 #[cfg(windows)]
 #[test]
 fn a_failed_write_leaves_the_target_and_no_partial_file() {
+    if loomward_windows::enumerate::running_elevated() {
+        // The pinned export folder refuses an elevated token before any write (fails closed).
+        let tmp = temp_root();
+        assert_eq!(
+            write_export(&tmp.path().join("elevated.json"), b"{}"),
+            Err(DiagnosticsSaveRefusal::UnsupportedTarget)
+        );
+        eprintln!("skipped: elevated token; the export folder refuses elevation (invariant 2)");
+        return;
+    }
     let tmp = temp_root();
     let target = tmp.path().join("read-only.json");
     std::fs::write(&target, b"keep").unwrap();
