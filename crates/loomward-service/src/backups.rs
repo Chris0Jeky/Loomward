@@ -376,12 +376,14 @@ impl Inner {
         let evidence = match lb::normalise_backup_receipt(&snapshots, &source) {
             Ok(e) => e,
             Err(e) => {
+                // Utf16Bom maps to the wire's `invalid_json` until its refusal name is decided: a
+                // new BackupImportRefusal value is a shared-contract change (#349, open).
                 return refused(match e {
                     lb::ReceiptError::InputTooLarge => Why::TooLarge,
-                    lb::ReceiptError::InvalidJson => Why::InvalidJson,
+                    lb::ReceiptError::InvalidJson | lb::ReceiptError::Utf16Bom => Why::InvalidJson,
                     lb::ReceiptError::InvalidReceipt => Why::InvalidReceipt,
                     lb::ReceiptError::InvalidSource => Why::InvalidSource,
-                })
+                });
             }
         };
         drop(snapshots);

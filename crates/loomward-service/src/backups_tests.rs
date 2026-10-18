@@ -272,12 +272,15 @@ fn malformed_oversized_and_non_regular_picks_are_refused_by_name() {
     let big = write(tmp.path(), "big.json", vec![b' '; 256 * 1024 + 1]);
     let malformed = write(tmp.path(), "bad.json", "[{");
     let wrong = write(tmp.path(), "wrong.json", "{\"snapshots\":[]}");
+    // UTF-16 with a BOM: the lib names it (Utf16Bom); the wire keeps invalid_json until decided.
+    let utf16 = write(tmp.path(), "utf16.json", [0xff, 0xfe, b'[', 0, b']', 0]);
     let dir = tmp.path().join("folder.json");
     std::fs::create_dir(&dir).unwrap();
     let local = write(tmp.path(), "local.json", snapshots());
     let mut cases = vec![
         (big, "too_large"),
         (malformed, "invalid_json"),
+        (utf16, "invalid_json"),
         (wrong, "invalid_receipt"),
         (dir, "not_a_regular_file"),
         (tmp.path().join("missing.json"), "unreadable"),
