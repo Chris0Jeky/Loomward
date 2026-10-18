@@ -753,6 +753,8 @@ export interface SearchFreshness {
   state: "live" | "caught_up" | "stale" | "everything_live" | "verified" | "semantic_stale";
   /** Required for caught_up, stale and verified; null for the other states. */
   at: NullableTimestamp;
+  /** Optional fixed service token explaining stale coverage, e.g. watch_restarting. */
+  reason?: UnknownReason;
 }
 
 /** A hit from an adapter that is not yet a catalogue row (docs/46 section 5.3): display only, and deliberately without a node_id. Native verification mints one; until then no command accepts this hit. */

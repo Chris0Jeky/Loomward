@@ -467,6 +467,27 @@ that we can delete and rebuild.
 The UI shows the index age per root ("as of 14:02, live") and never presents a stale hit as current
 (invariant 4).
 
+### F3 failed-watcher recovery (#592)
+
+A failed per-root watcher (including a failed initial open) is retried by the existing service
+pump after **5 seconds**, doubling after each attempt to a **10-minute cap**, with at most
+**12 restart attempts per root in a rolling hour of the running service**. Successful native open alone does not reset
+the backoff; a completed catch-up or full refresh does. Recovery retains the hourly history so a
+flapping root cannot reset that limit. These are conservative, reversible service defaults.
+
+Setup, replacement and removal share the existing setup fence: at most one replacement is in
+flight per root. Every open revalidates the active grant and native identity. Revoked/forgotten
+roots are not restarted; `remove()` drops pending retry state, and `stop()` stops the pump and
+clears it. Retries need no search request or new notification and never broaden the granted scope.
+
+Each replacement replays the last persisted bookmark through the existing USN catch-up path.
+A missing, moved, wrapped or unsupported journal requires the existing full-root refresh instead.
+The previous stale timestamp remains visible, with optional freshness `reason: watch_restarting`,
+until catch-up proves continuity or a completed refresh establishes coverage. A replacement handle
+or expired timer alone never makes a hit current. Replacement advances the freshness epoch after native I/O is armed, so a
+scan begun during backoff or native open cannot publish a false live state. Existing scan retry limits and owner pre-emption
+continue to apply; automatic scans are deferred while the replacement watcher is unavailable.
+
 ## 8. Ask
 
 ### 8.1 Provider interface
