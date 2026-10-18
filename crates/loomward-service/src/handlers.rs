@@ -833,16 +833,19 @@ impl Inner {
     /// only then publish `roots.changed`. Monotone: a revoked grant returns its original time.
     pub(crate) fn revoke(&self, grant: i64) -> Result<(Timestamp, (i64, i64)), ErrorBody> {
         let _m = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
-        let (state, revoked_at): (String, Option<i64>) = self
-            .db()
-            .query_row(
-                "SELECT state,revoked_at_ns FROM st.root_grant WHERE id=?1",
-                [grant],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()
-            .map_err(sql_error)?
-            .ok_or_else(|| fail(ErrorCode::NotFound, "unknown grant"))?;
+        // Only row absence is a missing grant; any other store failure (I/O, busy, corrupt)
+        // must not read as gone, or the caller would skip RevokeGrant plus scan cancel/fence.
+        let (state, revoked_at): (String, Option<i64>) = match self.db().query_row(
+            "SELECT state,revoked_at_ns FROM st.root_grant WHERE id=?1",
+            [grant],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ) {
+            Ok(row) => row,
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                return Err(fail(ErrorCode::NotFound, "unknown grant"));
+            }
+            Err(e) => return Err(sql_error(e)),
+        };
         if state != "active" && state != "identity_changed" {
             // A prior revoke may have committed its grant but failed feature cleanup.
             self.engine

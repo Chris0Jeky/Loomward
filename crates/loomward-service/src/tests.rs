@@ -3087,14 +3087,18 @@ fn drop_closes_the_catalogue_with_an_active_telemetry_lease() {
 fn revoke_distinguishes_missing_grants_from_store_failures() {
     let tmp = temp_root();
     let svc = open(tmp.path(), DatasetClass::Synthetic);
-    assert_eq!(svc.inner.revoke(1).unwrap_err().code, ErrorCode::NotFound);
+    // Row absence stays not_found.
+    let missing = svc.inner.revoke(1).unwrap_err();
+    assert_eq!(missing.code, ErrorCode::NotFound);
+    assert_eq!(missing.message.as_str(), "unknown grant");
     let (_, grant) = register(&svc, 1);
+    // A transient non-NotFound store failure (I/O, busy, corrupt) on the active grant must
+    // be internal_error, never a false not_found gone receipt that would skip RevokeGrant.
     // Only this service connection loses the store; the catalogue writer remains intact.
     svc.inner.db().execute_batch("DETACH DATABASE st").unwrap();
-    assert_eq!(
-        svc.inner.revoke(grant).unwrap_err().code,
-        ErrorCode::InternalError
-    );
+    let failed = svc.inner.revoke(grant).unwrap_err();
+    assert_eq!(failed.code, ErrorCode::InternalError);
+    assert_eq!(failed.message.as_str(), "state store error");
 }
 
 /// H1: a rebuilt catalogue reassigns root and volume rows. An ID minted before the rebuild is
