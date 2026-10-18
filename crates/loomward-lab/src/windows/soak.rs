@@ -684,9 +684,7 @@ mod tests {
             eprintln!("skipped under an elevated token: {refused}");
             return;
         }
-        let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/test-roots");
-        fs::create_dir_all(&base).unwrap();
-        let tmp = tempfile::tempdir_in(base.canonicalize().unwrap()).unwrap();
+        let tmp = tempfile::tempdir_in(loomward_service::paths::test_roots_base()).unwrap();
         let lab = tmp.path().join("lab");
         fs::create_dir(&lab).unwrap();
         let root = lab.join("soak");
@@ -708,9 +706,7 @@ mod tests {
             eprintln!("skipped under an elevated token: {refused}");
             return;
         }
-        let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/test-roots");
-        fs::create_dir_all(&base).unwrap();
-        let tmp = tempfile::tempdir_in(base.canonicalize().unwrap()).unwrap();
+        let tmp = tempfile::tempdir_in(loomward_service::paths::test_roots_base()).unwrap();
         let lab = tmp.path().join("lab");
         fs::create_dir(&lab).unwrap();
         let root = lab.join("soak");
