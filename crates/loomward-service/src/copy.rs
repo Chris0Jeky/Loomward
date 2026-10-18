@@ -469,6 +469,7 @@ impl Inner {
             date: &date,
             // The pinned destination must sit under its own grant's verified root (review of #522).
             destination_root: dest.root_id,
+            destination_root_guid: dest.root_guid,
         })
         .map_err(|e| {
             with_reason(
