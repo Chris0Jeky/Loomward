@@ -381,6 +381,7 @@ class FakeEngine:
 
 def check_explorer_mock(page: Page, base: str, shoot) -> None:
     page.goto(f'{base}/?transport=mock#/explorer')
+    page.reload()  # a hash-only navigation retains the roots revoked by the collections check
     expect(page.get_by_role('heading', name='Explorer', level=1)).to_be_visible()
     expect(rows(page).first).to_be_visible()
     main = page.locator('main')
