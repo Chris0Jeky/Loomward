@@ -284,6 +284,9 @@ fn both_dataset_classes_preview_and_http_cannot_save() {
 
 #[test]
 fn save_writes_exactly_the_previewed_bytes_and_never_returns_the_path() {
+    if export_refuses_elevation() {
+        return;
+    }
     let tmp = temp_root();
     let out = tmp.path().join("out");
     std::fs::create_dir(&out).unwrap();
@@ -339,6 +342,9 @@ fn a_changed_or_missing_preview_writes_nothing_and_opens_no_dialog() {
 
 #[test]
 fn cancel_writes_nothing_and_a_retried_save_never_writes_twice() {
+    if export_refuses_elevation() {
+        return;
+    }
     let tmp = temp_root();
     let out = tmp.path().join("out");
     std::fs::create_dir(&out).unwrap();
@@ -371,6 +377,9 @@ fn cancel_writes_nothing_and_a_retried_save_never_writes_twice() {
 /// is never asked about.
 #[test]
 fn a_replace_is_confirmed_by_loomward_and_a_decline_writes_nothing() {
+    if export_refuses_elevation() {
+        return;
+    }
     let tmp = temp_root();
     let out = tmp.path().join("out");
     std::fs::create_dir(&out).unwrap();
@@ -427,6 +436,9 @@ fn a_folder_that_resolves_to_a_share_is_refused_unread() {
 #[cfg(windows)]
 #[test]
 fn unsupported_targets_are_refused_before_anything_is_written() {
+    if export_refuses_elevation() {
+        return;
+    }
     let tmp = temp_root();
     let out = tmp.path().join("out");
     std::fs::create_dir_all(out.join("a-folder")).unwrap();
@@ -502,6 +514,27 @@ fn unsupported_targets_are_refused_before_anything_is_written() {
     assert_eq!(r["outcome"], "refused");
     assert_eq!(r["refusal"], "unsupported_target");
     assert_eq!(names(&out), before);
+}
+
+/// Hosted runners are elevated and the pinned export folder refuses an elevated token before any
+/// write (fails closed, invariant 2): prove the refusal, then skip a test that needs a real write.
+#[cfg(windows)]
+fn export_refuses_elevation() -> bool {
+    if !loomward_windows::enumerate::running_elevated() {
+        return false;
+    }
+    let tmp = temp_root();
+    assert_eq!(
+        write_export(&tmp.path().join("elevated.json"), b"{}"),
+        Err(DiagnosticsSaveRefusal::UnsupportedTarget)
+    );
+    eprintln!("skipped: elevated token; the export folder refuses elevation (invariant 2)");
+    true
+}
+
+#[cfg(not(windows))]
+fn export_refuses_elevation() -> bool {
+    false
 }
 
 /// A failed write leaves the target as it was and no temporary file behind.
@@ -627,6 +660,9 @@ fn cloud_placeholder_attributes_are_recognised() {
 #[cfg(windows)]
 #[test]
 fn an_existing_diagnostic_target_is_found_with_windows_name_casing() {
+    if export_refuses_elevation() {
+        return;
+    }
     let tmp = temp_root();
     let original = tmp.path().join("report.json");
     std::fs::write(&original, b"chosen").unwrap();
@@ -644,6 +680,9 @@ fn an_existing_diagnostic_target_is_found_with_windows_name_casing() {
 #[cfg(windows)]
 #[test]
 fn diagnostic_export_stays_in_the_pinned_folder_after_a_junction_swap() {
+    if export_refuses_elevation() {
+        return;
+    }
     for (existing, readonly) in [(true, false), (false, false), (true, true)] {
         for ancestor in [false, true] {
             let tmp = temp_root();
@@ -737,6 +776,9 @@ fn diagnostic_export_stays_in_the_pinned_folder_after_a_junction_swap() {
 /// as it was and no temporary file survives (#437).
 #[test]
 fn a_file_that_appears_after_the_check_is_not_replaced() {
+    if export_refuses_elevation() {
+        return;
+    }
     let tmp = temp_root();
     let target = tmp.path().join("late.json");
     let checked = check_target(&target).unwrap();
