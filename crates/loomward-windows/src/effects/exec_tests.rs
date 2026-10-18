@@ -1650,6 +1650,34 @@ fn detached_worker_check_and_create_exclude_fence(point: Point) {
     );
 }
 
+/// #672: preserving a staged file's times is an effect too. Once a reopened service's fence is
+/// acknowledged, the detached worker's metadata step either already ran or never will.
+#[test]
+fn detached_worker_check_and_metadata_exclude_a_reopened_fence() {
+    let Some(lab) = Lab::new() else { return };
+    fs::write(lab.src().join("f.bin"), b"payload").unwrap();
+    let op = lab.start(&["f.bin"]);
+    let dest = lab.dest();
+    let (ack, at_ack, after) = fence_inside(
+        &lab,
+        op,
+        Point::CheckedMetadata,
+        false,
+        |control| {
+            let _ = run(&lab.store, op, control);
+        },
+        move |token| {
+            let m = fs::metadata(dest.join(token).join("f.bin")).unwrap();
+            (m.created().unwrap(), m.modified().unwrap())
+        },
+    );
+    assert_eq!(ack, Ack::StoppedBeforePublish);
+    assert_eq!(
+        at_ack, after,
+        "metadata set after the reopened service's fence was acknowledged"
+    );
+}
+
 /// Whether another connection can take the journal's write lock right now, without waiting.
 fn write_lock_free(db: &Path) -> bool {
     let probe = rusqlite::Connection::open(db).unwrap();

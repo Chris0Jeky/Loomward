@@ -321,6 +321,9 @@ pub enum Point {
     CheckedStaging,
     /// Between the rename step's durable stop check and the publish rename (#672).
     CheckedPublish,
+    /// Between a metadata step's durable stop check and its set call: a file, a folder or the staging
+    /// folder (#672).
+    CheckedMetadata,
     /// After the item cancellation check, before the potentially blocking source open.
     OpeningSource(u32),
     /// Inside a stream's chunk loop, between effect steps: the bytes handed to the writer so far.
@@ -1076,9 +1079,12 @@ impl Runner<'_, '_> {
         for (i, file) in &open {
             let meta = preserved(self.item(*i));
             let key = self.control.admit().and_then(|_step| {
-                file.set_metadata(meta)
-                    .and_then(|_| file.identity())
-                    .map_err(|e| with_item(io_refusal(&e), *i as u32))
+                self.journal.while_copying(|| {
+                    self.control.at(Point::CheckedMetadata)?;
+                    file.set_metadata(meta)
+                        .and_then(|_| file.identity())
+                        .map_err(|e| with_item(io_refusal(&e), *i as u32))
+                })
             });
             match key {
                 Ok(key) => {
@@ -1317,13 +1323,16 @@ impl Runner<'_, '_> {
             let (path, name) = path_of(&item.name, &self.keys)?;
             let key = &self.keys[&item.name];
             let step = self.control.admit()?;
-            let changed = self
-                .staging
-                .set_directory_metadata(&path, name, key, preserved(&item))
-                .and_then(|key| {
-                    let now = self.staging.metadata(&path, name, &key)?;
-                    Ok((key, now))
-                });
+            let changed = self.journal.while_copying(|| {
+                self.control.at(Point::CheckedMetadata)?;
+                Ok(self
+                    .staging
+                    .set_directory_metadata(&path, name, key, preserved(&item))
+                    .and_then(|key| {
+                        let now = self.staging.metadata(&path, name, &key)?;
+                        Ok((key, now))
+                    }))
+            })?;
             drop(step);
             match changed {
                 Ok((key, now)) if now == preserved(&item) => {
@@ -1345,11 +1354,14 @@ impl Runner<'_, '_> {
         if let Some(root) = &self.plan.manifest.root {
             let meta = preserved(root);
             let step = self.control.admit()?;
-            let ok = self
-                .staging
-                .set_metadata(meta)
-                .and_then(|_| self.staging.own_metadata())
-                .map(|now| now == meta);
+            let ok = self.journal.while_copying(|| {
+                self.control.at(Point::CheckedMetadata)?;
+                Ok(self
+                    .staging
+                    .set_metadata(meta)
+                    .and_then(|_| self.staging.own_metadata())
+                    .map(|now| now == meta))
+            })?;
             drop(step);
             hit("staging metadata set");
             if !matches!(ok, Ok(true)) {
