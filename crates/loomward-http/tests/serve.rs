@@ -1060,6 +1060,84 @@ fn static_roots_cannot_overlap_grants_or_state_in_either_direction() {
     std::fs::remove_dir_all(base).unwrap();
 }
 
+/// The directory `path` names, relative to the test process's current directory (no cwd change).
+fn relative_to_cwd(path: &std::path::Path) -> PathBuf {
+    let cwd = std::env::current_dir().unwrap();
+    let from: Vec<_> = cwd.components().collect();
+    let to: Vec<_> = path.components().collect();
+    let common = from.iter().zip(&to).take_while(|(a, b)| a == b).count();
+    let mut out = PathBuf::new();
+    for _ in common..from.len() {
+        out.push("..");
+    }
+    for c in &to[common..] {
+        out.push(c.as_os_str());
+    }
+    out
+}
+
+#[test]
+fn static_gate_refuses_a_grant_root_it_cannot_resolve() {
+    // A grant root that does not exist yet has no canonical form, so the overlap test used to
+    // compare its spelling. A spelling that routes through a sibling with `..` (or a relative
+    // path) does not start with the static directory's text, yet once created it lies inside it.
+    let base = static_tree("unresolvable-grant");
+    let dist = base.join("dist");
+    let spellings = [
+        base.join("other").join("..").join("dist").join("grants"),
+        relative_to_cwd(&dist.join("grants")),
+    ];
+    for spelled in spellings {
+        let err = serve(
+            Arc::new(fixture()),
+            Options {
+                static_dir: Some(dist.clone()),
+                grant_roots: vec![spelled.clone()],
+                ..Options::default()
+            },
+        )
+        .err()
+        .unwrap_or_else(|| panic!("static dir accepted unresolvable grant root {spelled:?}"));
+        assert!(err.to_string().contains("grant root #1"), "{err}");
+    }
+    std::fs::remove_dir_all(base).unwrap();
+}
+
+#[test]
+fn static_gate_refuses_existing_grant_roots_in_every_spelling() {
+    let base = static_tree("spellings");
+    let dist = base.join("dist");
+    let grants = dist.join("grants");
+    std::fs::create_dir_all(&grants).unwrap();
+    let full = grants
+        .canonicalize()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let full = full.strip_prefix(r"\\?\").unwrap_or(&full).to_owned();
+    let mut spellings = vec![
+        PathBuf::from(format!("{full}\\")),
+        PathBuf::from(full.replace('\\', "/")),
+        relative_to_cwd(&grants),
+    ];
+    #[cfg(windows)]
+    spellings.push(PathBuf::from(full.to_uppercase()));
+    for spelled in spellings {
+        let err = serve(
+            Arc::new(fixture()),
+            Options {
+                static_dir: Some(dist.clone()),
+                grant_roots: vec![spelled.clone()],
+                ..Options::default()
+            },
+        )
+        .err()
+        .unwrap_or_else(|| panic!("static dir accepted grant root spelled {spelled:?}"));
+        assert!(err.to_string().contains("overlaps"), "{err}");
+    }
+    std::fs::remove_dir_all(base).unwrap();
+}
+
 #[test]
 fn static_files_are_limited_to_four_mib() {
     let base = static_tree("size-limit");
