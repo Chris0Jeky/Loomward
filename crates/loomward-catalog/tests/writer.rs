@@ -648,6 +648,39 @@ fn restart_isolates_an_overdeep_root_and_keeps_healthy_reads_available() {
         );
         c.writer().call(WriteCommand::Barrier).unwrap();
     }
+    // A rescan that fails leaves the still-overdeep root `partial` with invalid aggregates. The next
+    // read's repair must re-quarantine it instead of failing reads of the healthy root (#695 review).
+    {
+        let c = Catalog::open(temp.path(), "synthetic").unwrap();
+        db.execute(
+            "UPDATE root SET state='partial' WHERE id=(SELECT root_id FROM dir WHERE id=?1)",
+            [bad_dir],
+        )
+        .unwrap();
+        let mut reader = c.reader().unwrap();
+        assert_eq!(
+            reader
+                .inspect(NodeKey::Dir(good_dir))
+                .unwrap()
+                .row
+                .logical_bytes
+                .as_deref(),
+            Some("7")
+        );
+        assert!(matches!(
+            reader.inspect(NodeKey::Dir(bad_dir)),
+            Err(Error::RepairRequired)
+        ));
+        assert_eq!(
+            db.query_row(
+                "SELECT state FROM root WHERE id=(SELECT root_id FROM dir WHERE id=?1)",
+                [bad_dir],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            "repairing"
+        );
+    }
     // Once the tree can be repaired, the existing explicit repair clears the pending state.
     db.execute("UPDATE dir SET parent_id=?1 WHERE id>1000", [bad_dir])
         .unwrap();

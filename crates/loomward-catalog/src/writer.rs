@@ -1869,11 +1869,20 @@ fn apply(
             Ok(WriteReply::Done)
         }
         WriteCommand::Repair { root_id } => {
-            rollup(conn, *root_id, false)?;
-            conn.execute(
-                "UPDATE root SET state='partial' WHERE id=?1 AND state='repairing'",
-                [root_id],
-            )?;
+            match rollup(conn, *root_id, false) {
+                Ok(()) => {
+                    conn.execute(
+                        "UPDATE root SET state='partial' WHERE id=?1 AND state='repairing'",
+                        [root_id],
+                    )?;
+                }
+                // Still overdeep (rollup fails before writing): re-quarantine it as restart repair does,
+                // so reads of other roots do not retry and fail on it.
+                Err(Error::Invalid("tree depth limit")) => {
+                    conn.execute("UPDATE root SET state='repairing' WHERE id=?1", [root_id])?;
+                }
+                Err(e) => return Err(e),
+            }
             Ok(WriteReply::Done)
         }
         WriteCommand::ObjectReference { .. } | WriteCommand::ReconcileReference { .. } => {
