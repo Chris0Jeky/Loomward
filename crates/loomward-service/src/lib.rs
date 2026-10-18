@@ -1126,6 +1126,13 @@ impl Inner {
     /// reports; `unknown` when it reports none), observed through the same guarded, non-elevated
     /// open a scan uses. Fails closed.
     pub(crate) fn root_filesystem(&self, root: &Path) -> Result<String, Refusal> {
+        self.root_observation(root)
+            .map(|(filesystem, _)| filesystem)
+    }
+    fn root_observation(
+        &self,
+        root: &Path,
+    ) -> Result<(String, loomward_windows::enumerate::OpenedIdentity), Refusal> {
         #[cfg(windows)]
         {
             use loomward_engine::scan::source::DirSource;
@@ -1135,14 +1142,17 @@ impl Inner {
                 Some(name) => source.with_filesystem(name),
                 None => source,
             };
-            let (dir, _) = source
+            let (dir, identity) = source
                 .with_identity_unverified()
                 .open_root(root)
                 .map_err(|_| Refusal::IdentityUnavailable)?;
-            Ok(match dir.filesystem() {
-                "" => "unknown".into(),
-                name => name.chars().take(32).collect(),
-            })
+            Ok((
+                match dir.filesystem() {
+                    "" => "unknown".into(),
+                    name => name.chars().take(32).collect(),
+                },
+                identity,
+            ))
         }
         #[cfg(not(windows))]
         {
@@ -1160,16 +1170,28 @@ impl Inner {
         via: &str,
         confirmed_unverified: bool,
     ) -> Result<(i64, bool), Refused> {
-        let (volume_key, file_id) = lab::identity(root)?;
+        let (filesystem, identity) = self.root_observation(root)?;
+        let volume_key = format!(
+            "vsn_{}",
+            identity.volume_serial.ok_or(Refusal::IdentityUnavailable)?
+        );
+        let file_id = match identity.id {
+            Some(loomward_windows::enumerate::FileIdObs::Id128(id)) => id.to_vec(),
+            Some(loomward_windows::enumerate::FileIdObs::Id64(id)) => id.to_le_bytes().to_vec(),
+            None => return Err(Refusal::IdentityUnavailable.into()),
+        };
+        let volume_guid = format!(
+            "{:032x}",
+            identity.volume_guid.ok_or(Refusal::IdentityUnavailable)?
+        );
         // #219: a personal root on a volume that cannot verify identity needs the owner's
         // explicit confirmation; a synthetic lab root may list unverified freely.
-        let filesystem = self.root_filesystem(root)?;
         let unverified = !loomward_windows::enumerate::verifies_identity(&filesystem);
         let text = root.to_string_lossy();
         let display_path = text.strip_prefix(r"\\?\").unwrap_or(&text).to_string();
         let _m = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
         let conn = self.db();
-        let existing = db::active_grant(&conn, &volume_key, &file_id, &display_path)
+        let existing = db::active_grant(&conn, &volume_key, &file_id, &display_path, &volume_guid)
             .map_err(|_| Refusal::IdentityUnavailable)?;
         if unverified
             && self.dataset == DatasetClass::Personal
@@ -1211,6 +1233,7 @@ impl Inner {
         );
         let fresh = existing.is_none();
         let observation = RootObservation {
+            volume_guid: Some(volume_guid),
             volume_key,
             display_name: display_name.chars().take(260).collect(),
             display_path,

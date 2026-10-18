@@ -18,6 +18,7 @@ fn fixture() -> (tempfile::TempDir, Service, rusqlite::Connection, i64) {
     } = catalog
         .writer()
         .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_guid: None,
             volume_key: "fixture".into(),
             display_name: "Synthetic".into(),
             display_path: "Synthetic root".into(),

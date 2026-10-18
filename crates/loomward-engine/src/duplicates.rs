@@ -194,6 +194,7 @@ fn duplicate_dataset_class_refusal_precedes_candidate_budget() {
         tmp.path().join("unopened"),
         DatasetClass::Personal,
         OpenedIdentity {
+            volume_guid: None,
             id: None,
             basis: IdBasis::None,
             volume_serial: None,
@@ -251,6 +252,7 @@ fn duplicate_candidate_budget_refuses_before_root_io() {
         OpenedIdentity {
             id: None,
             basis: IdBasis::None,
+            volume_guid: None,
             volume_serial: None,
             attributes: 0,
             reparse_tag: None,
@@ -407,16 +409,17 @@ mod tests {
                 expected,
             );
             let db = rusqlite::Connection::open(tmp.path().join("state.db")).unwrap();
-            db.execute_batch("CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT); INSERT INTO meta VALUES('dataset_class','synthetic'); CREATE TABLE root_grant(display_path TEXT,volume_key TEXT,root_file_id BLOB,state TEXT);").unwrap();
+            db.execute_batch("CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT); INSERT INTO meta VALUES('dataset_class','synthetic'); CREATE TABLE root_grant(display_path TEXT,volume_key TEXT,root_file_id BLOB,state TEXT,volume_guid TEXT);").unwrap();
             let crate::scan::source::FileIdObs::Id128(id) = expected.id.unwrap() else {
                 panic!()
             };
             db.execute(
-                "INSERT INTO root_grant VALUES(?1,?2,?3,'active')",
+                "INSERT INTO root_grant VALUES(?1,?2,?3,'active',?4)",
                 rusqlite::params![
                     root.path().to_str(),
                     format!("vsn_{}", expected.volume_serial.unwrap()),
-                    id.to_vec()
+                    id.to_vec(),
+                    expected.volume_guid.map(|g| format!("{g:032x}")),
                 ],
             )
             .unwrap();

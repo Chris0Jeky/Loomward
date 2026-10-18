@@ -20,6 +20,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     } = c
         .writer()
         .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_guid: None,
             volume_key: "synthetic-memory".into(),
             display_name: "Synthetic".into(),
             display_path: "Synthetic root".into(),

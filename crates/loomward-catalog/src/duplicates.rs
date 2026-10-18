@@ -130,6 +130,7 @@ mod tests {
         } = c
             .writer()
             .call(WriteCommand::RegisterRoot(RootObservation {
+                volume_guid: None,
                 volume_key: "fixture".into(),
                 display_name: "Root".into(),
                 display_path: "Synthetic root".into(),

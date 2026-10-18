@@ -589,6 +589,7 @@ mod tests {
             .writer()
             .call(loomward_catalog::WriteCommand::RegisterRoot(
                 loomward_catalog::RootObservation {
+                    volume_guid: None,
                     volume_key: "fixture".into(),
                     display_name: "Synthetic".into(),
                     display_path: "Synthetic root".into(),

@@ -135,6 +135,7 @@ fn learning_revocation_uses_snapshot_grant(binding: &str) {
         .catalog
         .writer()
         .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_guid: None,
             volume_key: "fixture".into(),
             display_name: "Other synthetic".into(),
             display_path: "Other synthetic root".into(),

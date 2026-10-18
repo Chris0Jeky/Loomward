@@ -21,6 +21,7 @@ impl Lab {
         } = catalog
             .writer()
             .call(WriteCommand::RegisterRoot(RootObservation {
+                volume_guid: None,
                 volume_key: "synthetic-lab".into(),
                 display_name: "Lab".into(),
                 display_path: "Synthetic project lab".into(),

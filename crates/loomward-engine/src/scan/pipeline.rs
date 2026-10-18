@@ -87,6 +87,12 @@ pub struct ScanReport {
     /// Sum of writer time inside sink staging/publication methods.
     pub persistence_seconds: f64,
 }
+impl ScanReport {
+    /// Job coverage, distinct from the traversal EOF used for reconciliation.
+    pub fn coverage_complete(&self) -> bool {
+        self.complete && self.skipped == 0
+    }
+}
 /// `discovered` value while a sighted directory's slot is still being created.
 const PENDING: usize = usize::MAX;
 
@@ -845,6 +851,7 @@ fn reopen_key(identity: OpenedIdentity) -> Option<(u64, FileIdObs)> {
 fn reopen_identity((volume, id): (u64, FileIdObs)) -> OpenedIdentity {
     OpenedIdentity {
         id: Some(id),
+        volume_guid: None,
         volume_serial: Some(volume),
         basis: IdBasis::PostOpen,
         attributes: 0,
@@ -982,10 +989,11 @@ pub fn run_scan<S: DirSource>(
             .map_err(|_| EngineError::PermissionDenied {
                 message: "root open refused".into(),
             })?;
-    if root
-        .expected
-        .is_some_and(|e| e.id != identity.id || e.volume_serial != identity.volume_serial)
-    {
+    if root.expected.is_some_and(|e| {
+        e.id != identity.id
+            || e.volume_serial != identity.volume_serial
+            || e.volume_guid != identity.volume_guid
+    }) {
         sink.root_identity_changed(root.root_id());
         return Err(EngineError::PermissionDenied {
             message: "root_identity_changed".into(),

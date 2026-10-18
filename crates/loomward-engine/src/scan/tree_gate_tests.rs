@@ -115,11 +115,12 @@ fn pair_of(left: &[u8], right: &[u8]) -> Pair {
         panic!("fixture needs native identity")
     };
     conn.execute(
-        "INSERT INTO root_grant(id,display_path,volume_key,root_file_id,state) VALUES(2,?1,?2,?3,'active')",
+        "INSERT INTO root_grant(id,display_path,volume_key,root_file_id,state,volume_guid) VALUES(2,?1,?2,?3,'active',?4)",
         rusqlite::params![
             b.path().to_str().unwrap(),
             format!("vsn_{}", identity.volume_serial.unwrap()),
-            id.as_slice()
+            id.as_slice(),
+            identity.volume_guid.map(|g| format!("{g:032x}")),
         ],
     )
     .unwrap();

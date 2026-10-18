@@ -33,6 +33,7 @@ fn root(c: &Catalog, volume: &str, name: &str, path: &str, id: u8, file: &str) -
         grant_id, dir_id, ..
     } = w
         .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_guid: None,
             volume_key: volume.into(),
             display_name: name.into(),
             display_path: path.into(),

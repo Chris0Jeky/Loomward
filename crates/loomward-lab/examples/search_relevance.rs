@@ -231,6 +231,7 @@ fn main() -> Res<()> {
     } = catalog
         .writer()
         .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_guid: None,
             volume_key: "synthetic-semantic-corpus".into(),
             display_name: "Synthetic semantic corpus".into(),
             display_path: "Synthetic semantic corpus root".into(),

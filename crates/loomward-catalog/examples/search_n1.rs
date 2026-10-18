@@ -23,6 +23,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         for i in 0..2 {
             c.writer()
                 .call(WriteCommand::RegisterRoot(RootObservation {
+                    volume_guid: None,
                     volume_key: format!("synthetic-n1-{i}"),
                     display_name: format!("Synthetic {i}"),
                     display_path: format!("Synthetic {i}"),

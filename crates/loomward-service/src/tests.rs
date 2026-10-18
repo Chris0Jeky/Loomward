@@ -456,6 +456,7 @@ fn placement_revoked_only_volumes_stay_visible_but_are_not_targets() {
         .catalog
         .writer()
         .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_guid: None,
             volume_key: "revoked".into(),
             display_name: "Revoked target".into(),
             display_path: "Synthetic target".into(),
@@ -763,6 +764,7 @@ fn volumes_list_observes_space_through_a_second_root_when_the_first_is_unobserva
         .catalog
         .writer()
         .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_guid: None,
             volume_key,
             display_name: "Second".into(),
             display_path: second.canonicalize().unwrap().display().to_string(),
@@ -817,6 +819,7 @@ fn a_stalled_personal_volume_shares_one_reader_across_distinct_grant_roots() {
         .catalog
         .writer()
         .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_guid: None,
             volume_key: "vsn_healthy".into(),
             display_name: "Healthy".into(),
             display_path: healthy.display().to_string(),
@@ -2005,6 +2008,7 @@ pub(super) fn fixture(svc: &Service, files: u64) -> (i64, i64) {
         dir_id,
     } = w
         .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_guid: None,
             volume_key: "fixture".into(),
             display_name: "Synthetic".into(),
             display_path: "Synthetic root".into(),
@@ -2908,6 +2912,7 @@ fn register_as(svc: &Service, file_id: u8, origin: &str) -> (i64, i64) {
         .catalog
         .writer()
         .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_guid: None,
             volume_key: "fixture".into(),
             display_name: format!("Synthetic {file_id}"),
             display_path: format!("Synthetic root {file_id}"),
@@ -5566,6 +5571,7 @@ fn personal_scan_start_refuses_unknown_lab_and_revoked_roots() {
     // The catalogue never registers a lab root in a personal store; a row that says so anyway
     // (a planted or corrupted catalogue) is still refused by the scan gate.
     let lab_root = RootObservation {
+        volume_guid: None,
         volume_key: "fixture".into(),
         display_name: "Lab".into(),
         display_path: "Lab root".into(),
@@ -5787,6 +5793,7 @@ fn obsolete_listing_revisions_are_refused_and_never_complete() {
     let identity = OpenedIdentity {
         id: None,
         basis: IdBasis::None,
+        volume_guid: None,
         volume_serial: None,
         attributes: 0x10,
         reparse_tag: None,
@@ -5897,6 +5904,7 @@ fn a_failed_end_run_releases_the_root() {
     let identity = OpenedIdentity {
         id: None,
         basis: IdBasis::None,
+        volume_guid: None,
         volume_serial: None,
         attributes: 0x10,
         reparse_tag: None,
@@ -6314,7 +6322,7 @@ fn regrant_backfills_a_legacy_null_filesystem_without_replacing_the_grant() {
     svc.inner
         .db()
         .execute_batch(
-            "UPDATE main.volume SET filesystem=NULL; UPDATE st.root_grant SET filesystem=NULL",
+            "UPDATE main.volume SET filesystem=NULL; UPDATE st.root_grant SET filesystem=NULL,volume_guid=NULL",
         )
         .unwrap();
     assert_eq!(
@@ -6353,17 +6361,35 @@ fn stored_unverified_grant_needs_no_second_cli_confirmation_after_restart() {
     let svc = open(&state, DatasetClass::Personal);
     *svc.inner.hooks.filesystem.lock().unwrap() = Some("exFAT");
     let (root, _) = svc.inner.grant(&folder, "cli_flag", true).unwrap();
+    svc.inner
+        .db()
+        .execute("UPDATE st.root_grant SET volume_guid=NULL", [])
+        .unwrap();
     drop(svc);
     let svc = open(&state, DatasetClass::Personal);
     *svc.inner.hooks.filesystem.lock().unwrap() = Some("exFAT");
+    svc.inner
+        .db()
+        .execute("UPDATE st.root_grant SET volume_guid=NULL", [])
+        .unwrap();
     assert_eq!(
         svc.inner.grant(&folder, "cli_flag", false).unwrap(),
         (root, false)
     );
     assert_eq!(grant_identity(&svc, root).0, "unverified");
     let (key, id) = crate::lab::identity(&folder).unwrap();
+    let guid: String = svc
+        .inner
+        .db()
+        .query_row(
+            "SELECT volume_guid FROM st.root_grant WHERE state='active'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
     assert_eq!(
-        crate::db::active_grant(&svc.inner.db(), &key, &id, "Another synthetic root").unwrap(),
+        crate::db::active_grant(&svc.inner.db(), &key, &id, "Another synthetic root", &guid)
+            .unwrap(),
         None,
         "a recyclable ID cannot transfer the saved permission to another path"
     );
@@ -6534,6 +6560,7 @@ fn an_unverified_run_flags_every_published_row() {
         let identity = OpenedIdentity {
             id: None,
             basis,
+            volume_guid: None,
             volume_serial: None,
             attributes: 0x10,
             reparse_tag: None,
@@ -6776,3 +6803,56 @@ mod alerts_tests;
 #[cfg(test)]
 #[path = "clutter_tests.rs"]
 mod clutter_tests;
+
+#[test]
+fn active_grant_matches_guid_and_unverified_path_together() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let guid = "00000000000000000000000000000001";
+    let WriteReply::Root { grant_id, .. } = svc
+        .inner
+        .catalog
+        .writer()
+        .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_guid: Some(guid.into()),
+            volume_key: "fixture-volume".into(),
+            root_file_id: Some(vec![1; 16]),
+            display_name: "Synthetic volume".into(),
+            display_path: "Synthetic root".into(),
+            filesystem: Some("exFAT".into()),
+            origin: "fixture".into(),
+            granted_via: "fixture".into(),
+            observed_at_ns: 1,
+        }))
+        .unwrap()
+    else {
+        panic!()
+    };
+    let conn = svc.inner.db();
+    assert_eq!(
+        crate::db::active_grant(&conn, "fixture-volume", &[1; 16], "Synthetic root", guid).unwrap(),
+        Some((grant_id, "unverified".into()))
+    );
+    assert_eq!(
+        crate::db::active_grant(
+            &conn,
+            "fixture-volume",
+            &[1; 16],
+            "Another synthetic root",
+            guid
+        )
+        .unwrap(),
+        None
+    );
+    assert_eq!(
+        crate::db::active_grant(
+            &conn,
+            "fixture-volume",
+            &[1; 16],
+            "Synthetic root",
+            "00000000000000000000000000000002"
+        )
+        .unwrap(),
+        None
+    );
+}

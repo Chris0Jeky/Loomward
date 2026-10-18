@@ -147,8 +147,13 @@ fn migrate(path: &Path, schema: &str, version: i64, dataset: &str, precious: boo
         if precious && version < 8 {
             tx.execute_batch(include_str!("client-grant.sql"))?;
         }
+        // v9 persists filesystem evidence; v10 binds grants to a volume GUID.
+        // Column guards also accept the earlier scan branch's v9 GUID-only stores.
         if precious && !tx.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('root_grant') WHERE name='filesystem')", [], |r| r.get::<_, bool>(0))? {
             tx.execute_batch("ALTER TABLE root_grant ADD COLUMN filesystem TEXT CHECK (filesystem IS NULL OR length(filesystem) <= 32)")?;
+        }
+        if precious && !tx.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('root_grant') WHERE name='volume_guid')", [], |r| r.get::<_, bool>(0))? {
+            tx.execute_batch("ALTER TABLE root_grant ADD COLUMN volume_guid TEXT")?;
         }
         if !precious && !tx.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('dir') WHERE name='listing_outcome')", [], |r| r.get::<_, bool>(0))? {
             tx.execute_batch("ALTER TABLE dir ADD COLUMN listing_outcome TEXT CHECK (listing_outcome IN ('complete','partial','denied','excluded','cancelled','unscanned','stale'))")?;
@@ -207,7 +212,7 @@ pub(crate) fn derive_root(
         [grant],
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
     )?;
-    if state != "active" {
+    if state != "active" && state != "identity_changed" {
         return Err(Error::NotFound);
     }
     let name = observation.map_or(path.as_str(), |o| o.display_name.as_str());
@@ -350,7 +355,8 @@ pub(crate) fn open_pair_with(dir: &Path, dataset: &str, ranked: bool) -> Result<
     }
     let tx = conn.transaction()?;
     let grants = {
-        let mut s = tx.prepare("SELECT id FROM st.root_grant WHERE state='active'")?;
+        let mut s = tx
+            .prepare("SELECT id FROM st.root_grant WHERE state IN ('active','identity_changed')")?;
         let rows = s
             .query_map([], |r| r.get::<_, i64>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;

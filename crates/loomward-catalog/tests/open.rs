@@ -373,6 +373,15 @@ fn v1_migration_preserves_precious_history_and_moves_existing_consent_before_reb
         1
     );
     assert_eq!(
+        st.query_row(
+            "SELECT state,volume_guid FROM root_grant WHERE id=1",
+            [],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+        )
+        .unwrap(),
+        ("active".into(), None)
+    );
+    assert_eq!(
         st.query_row("SELECT state FROM root_grant WHERE id=2", [], |r| r
             .get::<_, String>(0))
             .unwrap(),
@@ -406,6 +415,46 @@ fn startup_keeps_seven_owned_backups_and_preserves_migration_backup() {
         .count();
     assert_eq!(count, 7);
     assert!(temp.path().join("state.before-v0.db").exists());
+}
+
+/// A legacy grant stays active, with its GUID unknown until identity-checked admission.
+#[test]
+fn v8_grants_gain_unknown_guid_without_inventing_a_binding() {
+    let temp = tempfile::tempdir().unwrap();
+    drop(Catalog::open(temp.path(), "synthetic").unwrap());
+    let st = Connection::open(temp.path().join("state.db")).unwrap();
+    let has_guid: bool = st
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('root_grant') WHERE name='volume_guid')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    if has_guid {
+        st.execute_batch("ALTER TABLE root_grant DROP COLUMN volume_guid")
+            .unwrap();
+    }
+    st.execute_batch("INSERT INTO root_grant(volume_key,root_file_id,display_path,origin,granted_via,state,granted_at_ns) VALUES('vsn_42',zeroblob(16),'Synthetic root','fixture','fixture','active',0); PRAGMA user_version=8;").unwrap();
+    drop(st);
+    drop(Catalog::open(temp.path(), "synthetic").unwrap());
+    let st = Connection::open(temp.path().join("state.db")).unwrap();
+    let has_guid: bool = st
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('root_grant') WHERE name='volume_guid')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(has_guid, "migration must persist the grant's volume GUID");
+    let row: (String, Option<String>, String) = st
+        .query_row(
+            "SELECT volume_key,volume_guid,state FROM root_grant",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(row, ("vsn_42".into(), None, "active".into()));
+    assert!(temp.path().join("state.before-v8.db").exists());
 }
 
 /// #219: a v4 state store gains `root_grant.identity_mode`, every existing grant `verified`.
@@ -442,7 +491,7 @@ fn v4_state_store_grants_migrate_as_identity_verified() {
 /// `backup_evidence`, keeping their rows, and the table refuses anything but a JSON document.
 #[test]
 fn v6_v5_and_v4_state_stores_reach_v7_with_backup_evidence_and_the_forget_record() {
-    assert_eq!(SCHEMA_VERSION, 9);
+    assert_eq!(SCHEMA_VERSION, 10);
     for (from, downgrade) in [
         // v6 (backups applied): only forget's step runs, and the evidence already there stays.
         (

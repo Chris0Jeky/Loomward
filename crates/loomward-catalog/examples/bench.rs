@@ -122,6 +122,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     } = c
         .writer()
         .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_guid: None,
             volume_key: "synthetic-bench".into(),
             display_name: "Synthetic benchmark".into(),
             display_path: "Synthetic benchmark root".into(),

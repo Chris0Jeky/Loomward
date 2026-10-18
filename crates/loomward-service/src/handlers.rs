@@ -843,7 +843,7 @@ impl Inner {
             .optional()
             .map_err(sql_error)?
             .ok_or_else(|| fail(ErrorCode::NotFound, "unknown grant"))?;
-        if state != "active" {
+        if state != "active" && state != "identity_changed" {
             // A prior revoke may have committed its grant but failed feature cleanup.
             self.engine
                 .learning_redact_revoked()

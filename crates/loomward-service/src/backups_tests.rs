@@ -97,6 +97,7 @@ fn volume(svc: &Service, key: &str) -> String {
         .catalog
         .writer()
         .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_guid: None,
             volume_key: key.into(),
             display_name: "Synthetic".into(),
             display_path: format!("Synthetic {key}"),

@@ -61,6 +61,8 @@ pub enum Sort {
 /// Observed names/metadata only. No library method enumerates or opens these display paths.
 #[derive(Clone, Debug)]
 pub struct RootObservation {
+    /// Handle-derived GUID as 32 lowercase hexadecimal digits; unknown for non-native fixtures.
+    pub volume_guid: Option<String>,
     pub volume_key: String,
     pub display_name: String,
     pub display_path: String,

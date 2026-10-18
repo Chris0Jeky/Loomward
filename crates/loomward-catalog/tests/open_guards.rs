@@ -3,6 +3,7 @@ use rusqlite::Connection;
 
 fn observation() -> RootObservation {
     RootObservation {
+        volume_guid: None,
         volume_key: "fixture-volume".into(),
         display_name: "Synthetic volume".into(),
         display_path: "Synthetic root".into(),
@@ -659,4 +660,114 @@ fn mismatched_witness_token_discards_pending_reference_and_keeps_binding() {
         "discarding a mismatched intent must not bump the revision"
     );
     drop(catalog);
+}
+
+#[test]
+fn both_v9_shapes_migrate_once_without_losing_grant_evidence() {
+    for missing in ["volume_guid", "filesystem"] {
+        let temp = tempfile::tempdir().unwrap();
+        let catalog = Catalog::open(temp.path(), "synthetic").unwrap();
+        let mut root = observation();
+        root.volume_guid = Some("00000000000000000000000000000001".into());
+        catalog
+            .writer()
+            .call(WriteCommand::RegisterRoot(root))
+            .unwrap();
+        drop(catalog);
+        let state = Connection::open(temp.path().join("state.db")).unwrap();
+        state
+            .execute_batch(&format!(
+                "ALTER TABLE root_grant DROP COLUMN {missing}; PRAGMA user_version=9;"
+            ))
+            .unwrap();
+        drop(state);
+        Connection::open(temp.path().join("catalog.db"))
+            .unwrap()
+            .pragma_update(None, "user_version", 9)
+            .unwrap();
+        for _ in 0..2 {
+            let catalog = Catalog::open(temp.path(), "synthetic").unwrap();
+            let state = Connection::open(temp.path().join("state.db")).unwrap();
+            let (guid, filesystem, grants): (Option<String>, Option<String>, i64) = state.query_row(
+                "SELECT volume_guid,filesystem,(SELECT count(*) FROM root_grant) FROM root_grant",
+                [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            ).unwrap();
+            assert_eq!(
+                guid.as_deref(),
+                if missing == "volume_guid" {
+                    None
+                } else {
+                    Some("00000000000000000000000000000001")
+                }
+            );
+            assert_eq!(filesystem.as_deref(), Some("NTFS"));
+            assert_eq!(grants, 1);
+            assert_eq!(
+                state
+                    .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                    .unwrap(),
+                SCHEMA_VERSION
+            );
+            drop(state);
+            drop(catalog);
+        }
+        assert_eq!(
+            std::fs::read_dir(temp.path())
+                .unwrap()
+                .filter_map(|entry| entry.ok())
+                .filter(|e| e
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("state.before-v9"))
+                .count(),
+            1
+        );
+    }
+}
+
+#[test]
+fn refresh_keeps_guid_binding_and_filesystem_together() {
+    let temp = tempfile::tempdir().unwrap();
+    let catalog = Catalog::open(temp.path(), "synthetic").unwrap();
+    let mut root = observation();
+    root.volume_guid = Some("00000000000000000000000000000001".into());
+    let original = catalog
+        .writer()
+        .call(WriteCommand::RegisterRoot(root.clone()))
+        .unwrap();
+    let WriteReply::Root { grant_id, .. } = original else {
+        panic!()
+    };
+    // A matching regrant can refresh filesystem evidence without changing its binding.
+    root.filesystem = Some("ReFS".into());
+    assert_eq!(
+        catalog
+            .writer()
+            .call(WriteCommand::RefreshRoot {
+                grant_id,
+                observation: root.clone()
+            })
+            .unwrap(),
+        original
+    );
+    root.volume_guid = Some("00000000000000000000000000000002".into());
+    root.filesystem = Some("NTFS".into());
+    assert!(matches!(
+        catalog.writer().call(WriteCommand::RefreshRoot {
+            grant_id,
+            observation: root
+        }),
+        Err(Error::NotFound)
+    ));
+    let state = Connection::open(temp.path().join("state.db")).unwrap();
+    assert_eq!(
+        state
+            .query_row(
+                "SELECT volume_guid,filesystem FROM root_grant WHERE id=?1",
+                [grant_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            )
+            .unwrap(),
+        ("00000000000000000000000000000001".into(), "ReFS".into())
+    );
 }
