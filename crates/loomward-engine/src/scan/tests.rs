@@ -2246,6 +2246,148 @@ fn grant_rejects_same_serial_and_file_id_with_a_different_volume_guid() {
 
 #[cfg(windows)]
 #[test]
+fn migrated_legacy_grant_adopts_guid_only_after_matching_identity() {
+    use loomward_catalog::{Catalog, RootObservation, WriteCommand, WriteReply};
+    if skip_elevated() {
+        return;
+    }
+    let state = canonical_tempdir();
+    let directory = canonical_tempdir();
+    let (_, identity) = loomward_windows::enumerate::NativeSource::default()
+        .open_root(directory.path())
+        .unwrap();
+    let volume = format!("vsn_{}", identity.volume_serial.unwrap());
+    let file_id = match identity.id.unwrap() {
+        FileIdObs::Id128(id) => id.to_vec(),
+        FileIdObs::Id64(id) => id.to_le_bytes().to_vec(),
+    };
+    let catalog = Catalog::open(state.path(), "synthetic").unwrap();
+    let WriteReply::Root {
+        grant_id, dir_id, ..
+    } = catalog
+        .writer()
+        .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_guid: None,
+            volume_key: volume.clone(),
+            display_name: "Synthetic legacy root".into(),
+            display_path: directory.path().to_str().unwrap().into(),
+            root_file_id: Some(file_id.clone()),
+            filesystem: Some("NTFS".into()),
+            origin: "fixture".into(),
+            granted_via: "fixture".into(),
+            observed_at_ns: 0,
+        }))
+        .unwrap()
+    else {
+        panic!("expected registered root")
+    };
+    drop(catalog);
+    let conn = rusqlite::Connection::open(state.path().join("state.db")).unwrap();
+    conn.execute_batch("ALTER TABLE root_grant DROP COLUMN volume_guid; PRAGMA user_version=8;")
+        .unwrap();
+    drop(conn);
+    drop(Catalog::open(state.path(), "synthetic").unwrap());
+    let conn = rusqlite::Connection::open(state.path().join("state.db")).unwrap();
+    let stored_guid = || {
+        conn.query_row(
+            "SELECT volume_guid FROM root_grant WHERE id=?1",
+            [grant_id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .unwrap()
+    };
+    let catalog_root = CatalogRootIdentity {
+        row: dir_id,
+        instance: rusqlite::Connection::open(state.path().join("catalog.db"))
+            .unwrap()
+            .query_row("SELECT value FROM meta WHERE key='instance_id'", [], |r| {
+                r.get(0)
+            })
+            .unwrap(),
+    };
+    let admit = || {
+        Engine::open(EngineConfig::new(
+            state.path().into(),
+            DatasetClass::Synthetic,
+        ))
+        .unwrap()
+        .granted_root(
+            RootId::new("rt_legacy_fixture").unwrap(),
+            grant_id,
+            &catalog_root,
+        )
+    };
+    let revision = || {
+        conn.query_row("SELECT state_rev FROM revision WHERE id=1", [], |r| {
+            r.get::<_, i64>(0)
+        })
+        .unwrap()
+    };
+    let before = revision();
+    assert!(stored_guid().is_none());
+    for (column, bad) in [
+        (
+            "volume_key",
+            rusqlite::types::Value::Text("vsn_wrong".into()),
+        ),
+        ("root_file_id", rusqlite::types::Value::Blob(vec![0; 16])),
+    ] {
+        conn.execute(
+            &format!("UPDATE root_grant SET {column}=?1 WHERE id=?2"),
+            rusqlite::params![bad, grant_id],
+        )
+        .unwrap();
+        assert_eq!(
+            admit().unwrap_err().to_body().message.as_str(),
+            "root_identity_changed"
+        );
+        assert!(
+            stored_guid().is_none(),
+            "a mismatched {column} cannot bind a GUID"
+        );
+        conn.execute(
+            "UPDATE root_grant SET volume_key=?1,root_file_id=?2 WHERE id=?3",
+            rusqlite::params![volume, file_id, grant_id],
+        )
+        .unwrap();
+    }
+    // A failed admission transaction must roll back even an already-written GUID.
+    conn.execute_batch("CREATE TRIGGER refuse_adoption_revision BEFORE UPDATE ON revision BEGIN SELECT RAISE(ABORT,'fixture write failure'); END;").unwrap();
+    assert_eq!(
+        admit().unwrap_err().to_body().message.as_str(),
+        "grant store unavailable"
+    );
+    assert!(stored_guid().is_none());
+    assert_eq!(revision(), before);
+    conn.execute_batch("DROP TRIGGER refuse_adoption_revision")
+        .unwrap();
+    assert_eq!(admit().unwrap().expected_identity(), Some(identity));
+    assert_eq!(revision(), before + 1);
+    let guid = format!("{:032x}", identity.volume_guid.unwrap());
+    assert_eq!(stored_guid(), Some(guid));
+    // A new engine and catalogue open must retain the first admission's binding.
+    drop(Catalog::open(state.path(), "synthetic").unwrap());
+    assert!(admit().is_ok());
+    assert_eq!(revision(), before + 1, "only the first admission adopts");
+    let other_guid = format!("{:032x}", identity.volume_guid.unwrap() ^ 1);
+    conn.execute(
+        "UPDATE root_grant SET volume_guid=?1 WHERE id=?2",
+        rusqlite::params![other_guid, grant_id],
+    )
+    .unwrap();
+    assert_eq!(
+        admit().unwrap_err().to_body().message.as_str(),
+        "root_identity_changed"
+    );
+    assert_eq!(
+        stored_guid(),
+        Some(other_guid),
+        "a known GUID must never be rebound"
+    );
+}
+
+#[cfg(windows)]
+#[test]
 fn granted_root_comes_only_from_an_active_durable_grant() {
     if skip_elevated() {
         return;

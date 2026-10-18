@@ -379,7 +379,7 @@ fn v1_migration_preserves_precious_history_and_moves_existing_consent_before_reb
             |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
         )
         .unwrap(),
-        ("identity_changed".into(), None)
+        ("active".into(), None)
     );
     assert_eq!(
         st.query_row("SELECT state FROM root_grant WHERE id=2", [], |r| r
@@ -417,7 +417,7 @@ fn startup_keeps_seven_owned_backups_and_preserves_migration_backup() {
     assert!(temp.path().join("state.before-v0.db").exists());
 }
 
-/// A serial-only legacy grant must not gain permission for the currently mounted volume.
+/// A legacy grant stays active, with its GUID unknown until identity-checked admission.
 #[test]
 fn v8_grants_gain_unknown_guid_without_inventing_a_binding() {
     let temp = tempfile::tempdir().unwrap();
@@ -453,7 +453,7 @@ fn v8_grants_gain_unknown_guid_without_inventing_a_binding() {
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .unwrap();
-    assert_eq!(row, ("vsn_42".into(), None, "identity_changed".into()));
+    assert_eq!(row, ("vsn_42".into(), None, "active".into()));
     assert!(temp.path().join("state.before-v8.db").exists());
 }
 

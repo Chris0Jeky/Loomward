@@ -417,13 +417,18 @@ impl Engine {
         let denied = |message: &str| EngineError::PermissionDenied {
             message: message.into(),
         };
-        let conn = rusqlite::Connection::open_with_flags(
+        let mut conn = rusqlite::Connection::open_with_flags(
             loomward_catalog::sqlite_dir(&self.config.state_dir).join("state.db"),
-            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )
         .map_err(|_| denied("grant store unavailable"))?;
+        conn.pragma_update(None, "synchronous", "FULL")
+            .map_err(|_| denied("grant store unavailable"))?;
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|_| denied("grant store unavailable"))?;
         type GrantRow = (String, String, Vec<u8>, String, String, Option<String>);
-        let row: Option<GrantRow> = conn
+        let row: Option<GrantRow> = tx
             .query_row(
                 "SELECT g.display_path,g.volume_key,g.root_file_id,
                         (SELECT value FROM meta WHERE key='dataset_class'),g.identity_mode,g.volume_guid
@@ -479,13 +484,26 @@ impl Engine {
                 Some(FileIdObs::Id64(id)) => file_id == id.to_le_bytes(),
                 None => false,
             };
+            let observed_guid = identity.volume_guid.map(|g| format!("{g:032x}"));
             if !same_id
                 || identity.volume_serial.map(|s| format!("vsn_{s}")) != Some(volume_key)
-                || volume_guid.is_none()
-                || identity.volume_guid.map(|g| format!("{g:032x}")) != volume_guid
+                || observed_guid.is_none()
+                || (volume_guid.is_some() && observed_guid != volume_guid)
             {
                 return Err(denied("root_identity_changed"));
             }
+            // Legacy grants trust the first GUID only after serial and file ID match.
+            if volume_guid.is_none() {
+                tx.execute(
+                    "UPDATE root_grant SET volume_guid=?1 WHERE id=?2",
+                    rusqlite::params![observed_guid, grant_id],
+                )
+                .and_then(|_| {
+                    tx.execute("UPDATE revision SET state_rev=state_rev+1 WHERE id=1", [])
+                })
+                .map_err(|_| denied("grant store unavailable"))?;
+            }
+            tx.commit().map_err(|_| denied("grant store unavailable"))?;
             let mut root = GrantedRoot::new(root_id, path, dataset_class, identity);
             root.key = RootKey::Grant(grant_id);
             root.allow_identity_unverified = unverified;

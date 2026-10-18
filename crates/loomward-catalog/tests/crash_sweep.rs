@@ -282,7 +282,8 @@ fn prepare(scenario: &str, work: &Path) {
         .unwrap()
         .execute_batch(
             "DROP TABLE root_forgotten; DROP TABLE backup_evidence;
-             ALTER TABLE root_grant DROP COLUMN identity_mode; PRAGMA user_version=4;",
+             ALTER TABLE root_grant DROP COLUMN identity_mode;
+             ALTER TABLE root_grant DROP COLUMN volume_guid; PRAGMA user_version=4;",
         )
         .unwrap();
     Connection::open(store.join("catalog.db"))
@@ -529,7 +530,7 @@ fn verify(store: &Path, acks: &[String], scenario: &str) -> Vec<String> {
             "the v5, v6 and v7 additions",
         );
         want(
-            one(&db, &format!("SELECT count(*) FROM st.root_grant WHERE id=1 AND display_path='{A_PATH}' AND identity_mode='verified' AND volume_guid IS NULL AND state='identity_changed'")).map(|n| n == 1),
+            one(&db, &format!("SELECT count(*) FROM st.root_grant WHERE id=1 AND display_path='{A_PATH}' AND identity_mode='verified' AND volume_guid IS NULL AND state='active'")).map(|n| n == 1),
             "the seeded grant survives without inventing a volume binding",
         );
         return bad;
