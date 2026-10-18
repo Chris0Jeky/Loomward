@@ -500,8 +500,8 @@ impl Inner {
 
     /// docs/47 section 5: called once a grant's revocation is durable. Every copy using the grant is
     /// fenced in the journal. A running one is stopped at its next effect step (at most the step in
-    /// flight completes, waited for up to 30 s; a create, staging or rename step holds the store
-    /// lock until it returns, so a stuck one blocks this fence without bound, #672) and joined:
+    /// flight completes, waited for up to 30 s; a stuck one is answered like a pending fence and the
+    /// run journals the fence once it returns, #672) and joined:
     /// before the rename it cancels itself, after it commits annotated
     /// `grant_revoked`. A run left waiting (blocked, interrupted, publishing) is
     /// then cancelled through the abandon path; `needs_attention` stays for the owner. Q1 applies.

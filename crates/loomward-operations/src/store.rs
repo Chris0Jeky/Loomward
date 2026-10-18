@@ -6,7 +6,12 @@ use crate::recovery::{from_replay, Disk, Recovery};
 use rusqlite::{
     params, Connection, ErrorCode, OptionalExtension, Transaction, TransactionBehavior,
 };
-use std::{collections::HashMap, path::Path, time::Duration};
+use std::{
+    collections::HashMap,
+    path::Path,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 /// Idempotent schema for the journal tables. Lane C5 folds it into the state.db migration.
 pub const SCHEMA_SQL: &str = include_str!("journal.sql");
@@ -86,6 +91,30 @@ pub struct Store {
     /// Replays by operation, reused while the stored tail still matches (another writer, such as the
     /// revocation path, invalidates it by appending).
     cache: HashMap<u64, Replay>,
+    /// The second connection effect steps hold the write lock on (`Store::guard`), opened on first use.
+    guard: Option<Arc<Mutex<Guard>>>,
+}
+
+/// A second connection to the journal's database, only for `while_current` (#672 item 3). An effect
+/// step holds the database write lock on it, not the `Store`, so a step stuck in the OS leaves the
+/// store's readers, and a same-service fence's wait for that step, free. Appends still wait for the
+/// step at the database (busy timeout), so a fence can never land between a check and its effect.
+pub struct Guard {
+    conn: Connection,
+    cache: HashMap<u64, Replay>,
+}
+
+impl Guard {
+    /// `Store::while_current` on this connection.
+    pub fn while_current<T>(
+        &mut self,
+        op: u64,
+        state: crate::state::OpState,
+        epoch: u64,
+        effect: impl FnOnce() -> T,
+    ) -> rusqlite::Result<Result<Option<T>, Invalid>> {
+        while_current(&self.conn, &mut self.cache, op, state, epoch, effect)
+    }
 }
 
 fn load(conn: &Connection, op: u64) -> rusqlite::Result<Vec<Row>> {
@@ -221,7 +250,26 @@ impl Store {
             #[cfg(feature = "fault-injection")]
             fault: None,
             cache: HashMap::new(),
+            guard: None,
         })
+    }
+
+    /// This store's `Guard`, shared by its effect steps (they serialize on the write lock anyway).
+    pub fn guard(&mut self) -> rusqlite::Result<Arc<Mutex<Guard>>> {
+        if let Some(guard) = &self.guard {
+            return Ok(guard.clone());
+        }
+        let path = self.conn.path().filter(|p| !p.is_empty()).ok_or_else(|| {
+            rusqlite::Error::InvalidPath("an in-memory journal has no second connection".into())
+        })?;
+        let conn = Connection::open(path)?;
+        conn.busy_timeout(Duration::from_secs(5))?;
+        let guard = Arc::new(Mutex::new(Guard {
+            conn,
+            cache: HashMap::new(),
+        }));
+        self.guard = Some(guard.clone());
+        Ok(guard)
     }
 
     /// Install (or clear) the append fault hook. Test builds only.
@@ -364,9 +412,7 @@ impl Store {
         epoch: u64,
         effect: impl FnOnce() -> T,
     ) -> rusqlite::Result<Result<Option<T>, Invalid>> {
-        let tx = immediate(&self.conn)?;
-        Ok(current(&tx, &mut self.cache, op)?.map(|head| (head == (state, epoch)).then(effect)))
-        // `tx` rolls back here, releasing the lock: nothing was written.
+        while_current(&self.conn, &mut self.cache, op, state, epoch, effect)
     }
 
     /// Fully re-read and validate the operation, independent of the cached replay.
@@ -383,6 +429,19 @@ impl Store {
     pub fn recover(&self, op: u64, disk: &impl Disk) -> rusqlite::Result<Recovery> {
         Ok(from_replay(op, self.replay(op)?, disk))
     }
+}
+
+fn while_current<T>(
+    conn: &Connection,
+    cache: &mut HashMap<u64, Replay>,
+    op: u64,
+    state: crate::state::OpState,
+    epoch: u64,
+    effect: impl FnOnce() -> T,
+) -> rusqlite::Result<Result<Option<T>, Invalid>> {
+    let tx = immediate(conn)?;
+    Ok(current(&tx, cache, op)?.map(|head| (head == (state, epoch)).then(effect)))
+    // `tx` rolls back here, releasing the lock: nothing was written.
 }
 
 /// A write transaction, retrying lock acquisition only (retrying a write or a lost acknowledgement

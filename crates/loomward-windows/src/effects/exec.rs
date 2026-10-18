@@ -440,6 +440,9 @@ pub struct Control {
     admission: Mutex<()>,
     /// Set inside the rename step when the rename succeeded: the run is on the published side.
     renamed: AtomicBool,
+    /// A fence raised in memory and not yet journaled: the fencer, once the step in flight returns,
+    /// or the run, when it stops on the fence, journals it (`journal_fence`), whichever comes first.
+    unjournaled: Mutex<Option<loomward_operations::FenceCause>>,
 }
 
 /// What an acknowledged revocation says about the run (docs/47 section 5, revocation step 3).
@@ -451,8 +454,8 @@ pub enum Ack {
     StoppedBeforePublish,
     /// The rename had completed: the run confirms and commits, annotated `grant_revoked`.
     Published,
-    /// The step in flight did not return within the wait (stuck I/O); the fence is durable and every
-    /// later step still reads it.
+    /// The step in flight did not return within the wait (stuck I/O). The fence is raised in memory,
+    /// so no later step starts, and the run journals it once that step returns (#672 item 3).
     PendingInFlightStep,
     /// The run had a publish intent and the destination could not be observed after the fence, so
     /// which side of the rename it ended on is unknown (invariant 4). The fence is durable; retry.
@@ -471,6 +474,7 @@ impl Control {
             fenced: AtomicBool::new(false),
             admission: Mutex::new(()),
             renamed: AtomicBool::new(false),
+            unjournaled: Mutex::new(None),
         }
     }
     pub fn with_hook(
@@ -776,20 +780,26 @@ impl Journal<'_> {
     }
 
     /// A detached worker's Control is not the reopened service's Control: read the durable stop, and
-    /// keep the database write lock until `effect` returns, so a fence appended by another store
-    /// waits for the effect instead of landing between the check and it (#670, #672). Keep `effect` to
+    /// keep the database write lock until `effect` returns, so a fence appended by any store waits
+    /// for the effect instead of landing between the check and it (#670, #672). Keep `effect` to
     /// one bounded create, rename, metadata or removal call (chunk writes only check, see
-    /// `Cancellable`): another store's fence waits up to its busy timeout, then fails unacknowledged.
-    // ponytail: a call stuck in the OS also holds this store's mutex, so a same-store fence waits for it
-    // rather than answering `PendingInFlightStep`; split the lock from the connection (#672 item 3, open).
+    /// `Cancellable`): an append waits up to its busy timeout, then fails unacknowledged.
+    /// The lock is held on the store's `Guard` connection, outside the store's mutex: a call stuck in
+    /// the OS leaves status and a same-service fence free (#672 item 3). That fence waits for this
+    /// step under the admission lock instead, and the run journals it when the call returns.
     fn while_in<T>(
         &self,
         state: OpState,
         effect: impl FnOnce() -> Result<T, Stop>,
     ) -> Result<T, Stop> {
-        self.store
+        let guard = self
+            .store
             .lock()
             .unwrap_or_else(|e| e.into_inner())
+            .guard()
+            .map_err(|e| Stop::Journal(e.to_string()))?;
+        let mut guard = guard.lock().unwrap_or_else(|e| e.into_inner());
+        guard
             .while_current(self.op, state, self.epoch, effect)
             .map_err(|e| Stop::Journal(e.to_string()))?
             .map_err(|e| Stop::Journal(format!("{e:?}")))?
@@ -1629,10 +1639,13 @@ fn bare(stream: &str) -> &str {
     stream.trim_start_matches(':').trim_end_matches(":$DATA")
 }
 
-/// Revocation or emergency stop of one operation (docs/47 section 5, steps 1 to 4): commit the fence
-/// (a new epoch) unless the operation is already settled, then wait for at most the run's in-flight
-/// effect step and say which side of publish it is on. Every later step reads the fence under the
-/// admission lock and stops; the journal refuses any advancing record still carrying the old epoch.
+/// Revocation or emergency stop of one operation (docs/47 section 5, steps 1 to 4): unless the
+/// operation is already settled, raise the fence in memory, wait for at most the run's in-flight
+/// effect step, commit the fence (a new epoch) and say which side of publish the run is on. Every later
+/// step reads the fence under the admission lock and stops; the journal refuses any advancing record
+/// still carrying the old epoch. The wait comes first because a step holds the journal's write lock
+/// until its OS call returns (`Journal::while_in`): a stuck one is answered `PendingInFlightStep`
+/// within the wait, and the run journals the fence when the call returns (#672 item 3).
 pub fn fence(
     store: &Mutex<Store>,
     op: u64,
@@ -1649,9 +1662,14 @@ fn fence_waiting(
     cause: loomward_operations::FenceCause,
     wait: Duration,
 ) -> Result<Ack, Fault> {
-    let r = {
-        // One store lock across the read and the append: no record slips between them.
-        let mut s = store.lock().unwrap_or_else(|e| e.into_inner());
+    {
+        // Under the store lock, which `journal_fence` takes: a run stopping on this fence finds it
+        // unjournaled. Recorded before `fenced` is raised, so no run sees the fence without it.
+        let s = store.lock().unwrap_or_else(|e| e.into_inner());
+        *control
+            .unjournaled
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(cause);
         control.fenced.store(true, Ordering::SeqCst);
         let r = s
             .replay(op)
@@ -1660,19 +1678,41 @@ fn fence_waiting(
         if r.state.is_terminal() {
             return Ok(Ack::Settled);
         }
-        s.append(op, r.epoch + 1, Record::Fenced { cause })
-            .map_err(|e| Fault::Journal(format!("{e:?}")))?;
-        r
+    }
+    let Some(renamed) = control.fence(wait) else {
+        return Ok(Ack::PendingInFlightStep);
     };
-    Ok(match control.fence(wait) {
-        None => Ack::PendingInFlightStep,
-        Some(true) => Ack::Published,
-        Some(false) if r.publish.is_none() => Ack::StoppedBeforePublish,
+    let r = journal_fence(store, op, control)?;
+    Ok(match renamed {
+        true => Ack::Published,
+        false if r.publish.is_none() => Ack::StoppedBeforePublish,
         // A fresh Control (a reopened service) never saw a detached worker's rename. The rename step
         // holds the journal's write lock across its check and the rename, so with the fence appended
         // it has either finished or never will: the destination says which (#672).
-        Some(false) => published_on_disk(store, op, &r),
+        false => published_on_disk(store, op, &r),
     })
+}
+
+/// Journal the fence `control` raised in memory, once: by the fencer after the step in flight
+/// returned, or by the run when it stops on that fence. One store lock across the read and the
+/// append: no record slips between them. Returns the replay read before the append.
+fn journal_fence(store: &Mutex<Store>, op: u64, control: &Control) -> Result<Replay, Fault> {
+    let mut s = store.lock().unwrap_or_else(|e| e.into_inner());
+    let mut unjournaled = control
+        .unjournaled
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let r = s
+        .replay(op)
+        .map_err(|e| Fault::Journal(e.to_string()))?
+        .map_err(|e| Fault::Journal(format!("{e:?}")))?;
+    if let Some(cause) = unjournaled.take().filter(|_| !r.state.is_terminal()) {
+        if let Err(e) = s.append(op, r.epoch + 1, Record::Fenced { cause }) {
+            *unjournaled = Some(cause);
+            return Err(Fault::Journal(format!("{e:?}")));
+        }
+    }
+    Ok(r)
 }
 
 fn published_on_disk(store: &Mutex<Store>, op: u64, r: &Replay) -> Ack {
@@ -1710,6 +1750,15 @@ fn finish(
     control: &Control,
     stopped: Result<(), Stop>,
 ) -> Result<Outcome, Fault> {
+    // A fence answered `PendingInFlightStep` becomes durable now that the step has returned.
+    let unjournaled = control
+        .unjournaled
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .is_some();
+    if unjournaled {
+        journal_fence(store, op, control)?;
+    }
     match stopped {
         Ok(()) => {}
         Err(Stop::Crashed) => return Err(Fault::Crashed),
