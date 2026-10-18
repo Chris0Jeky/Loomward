@@ -755,8 +755,8 @@ impl Journal<'_> {
     /// A detached worker's Control is not the reopened service's Control: read the durable stop, and
     /// keep the database write lock until `effect` returns, so a fence appended by another store
     /// waits for the effect instead of landing between the check and it (#670, #672). Keep `effect` to
-    /// one bounded create, rename, metadata or removal call (chunk writes only check, see `Cancellable`): another store's fence waits up to its busy timeout, then fails
-    /// unacknowledged.
+    /// one bounded create, rename, metadata or removal call (chunk writes only check, see
+    /// `Cancellable`): another store's fence waits up to its busy timeout, then fails unacknowledged.
     // ponytail: a call stuck in the OS also holds this store's mutex, so a same-store fence waits for it
     // rather than answering `PendingInFlightStep`; split the lock from the connection (#672 item 3, open).
     fn while_in<T>(
@@ -888,8 +888,9 @@ struct Runner<'a, 'd> {
     /// Deny-write holds on default streams from verification until `committed` (docs/47 section 4;
     /// H2 positive for these), each with the named-stream digests it was verified with.
     holds: Vec<(VerifiedFile, StreamDigests)>,
-    /// Named-stream holds: measured to block the ancestor rename (H2 negative for streams), so they
-    /// are released just before publish and the streams re-hashed through the default holds after.
+    /// Named-stream holds: whether one blocks the ancestor rename depends on the host and location (H2:
+    /// it blocked under the profile %TEMP%, not under a volume-root folder), so they are released just
+    /// before publish regardless and the streams re-hashed through the default holds after.
     stream_holds: Vec<VerifiedFile>,
 }
 

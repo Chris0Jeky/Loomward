@@ -1938,13 +1938,22 @@ fn cancel_ends_the_publish_retry_wait_at_once() {
     fs::write(lab.src().join("top/f.txt:note"), b"kept").unwrap();
     let op = lab.start(&["top"]);
     let dest = lab.dest();
-    // A held named-stream handle under staging refuses the rename (H2 negative for streams).
+    // A handle on the staging folder itself without delete sharing refuses its rename on any volume
+    // (sharing violation). A held named stream does not block everywhere: H2 is host and
+    // location-dependent, and the executor releases stream holds before publish regardless.
     let blocker: std::sync::Arc<Mutex<Option<fs::File>>> = Default::default();
     let held = blocker.clone();
     let control = Control::new(false).with_hook(move |p, c| {
         if p == Point::BeforePublish {
+            use std::os::windows::fs::OpenOptionsExt;
             let staging = fs::read_dir(&dest).unwrap().next().unwrap().unwrap().path();
-            *held.lock().unwrap() = Some(fs::File::open(staging.join("f.txt:note")).unwrap());
+            let folder = fs::OpenOptions::new()
+                .read(true)
+                .share_mode(1 | 2) // FILE_SHARE_READ | FILE_SHARE_WRITE, no FILE_SHARE_DELETE
+                .custom_flags(0x0200_0000) // FILE_FLAG_BACKUP_SEMANTICS: open a directory
+                .open(staging)
+                .unwrap();
+            *held.lock().unwrap() = Some(folder);
             c.cancel();
         }
         Flow::Continue
