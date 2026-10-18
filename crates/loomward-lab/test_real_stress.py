@@ -14,12 +14,27 @@ sys.path.insert(0, str(real_stress.REPO / "python"))
 
 
 class PythonChildGuards(unittest.TestCase):
+    def setUp(self):
+        if os.name != "nt":
+            self.skipTest("Windows-only child scope and log guards")
+        try:
+            real_stress.require_non_elevated()
+        except RuntimeError as error:
+            self.skipTest(str(error))
+
     def fixture(self):
-        base = real_stress.REPO / "target" / "test-roots"
-        base.mkdir(parents=True, exist_ok=True)
-        return tempfile.TemporaryDirectory(dir=base)
+        # The checkout and default temp may both sit under a refused user profile.
+        return tempfile.TemporaryDirectory(prefix="loomward-real-stress-",
+                                           dir=Path(real_stress.REPO.anchor))
 
     def test_child_refuses_hard_link_log_without_writing_or_scanning(self):
+        with tempfile.TemporaryDirectory() as checkout:
+            protected_repo = Path(checkout) / "Users" / "fixture" / "checkout"
+            for repo in (real_stress.REPO, protected_repo):
+                with self.subTest(repo=repo), patch.object(real_stress, "REPO", repo):
+                    self.assert_hard_link_refused()
+
+    def assert_hard_link_refused(self):
         with self.fixture() as temp:
             root = Path(temp) / "scanroot"
             root.mkdir()
@@ -27,16 +42,17 @@ class PythonChildGuards(unittest.TestCase):
             data.write_bytes(b"synthetic fixture")
             log = root.parent / "scope.log"
             os.link(data, log)
-            with patch("loomward.inventory.scan", side_effect=AssertionError("scan reached")) as scan:
-                with self.assertRaises(ValueError):
+            with patch("loomward.inventory.scan", side_effect=AssertionError("scan reached")) as scan, \
+                    patch.object(real_stress, "open_root_log", wraps=real_stress.open_root_log) as open_log:
+                with self.assertRaisesRegex(ValueError, "ordinary single-link file"):
                     self.invoke(root, log)
+                open_log.assert_called_once_with(log)
                 scan.assert_not_called()
             self.assertEqual(data.read_bytes(), b"synthetic fixture")
 
     def invoke(self, root, log):
         with patch.object(sys, "argv", ["real_stress.py", "--python-child", str(root),
-                                      "--label", "synthetic", "--root-log", str(log)]), \
-                patch.object(real_stress, "require_non_elevated"):
+                                      "--label", "synthetic", "--root-log", str(log)]):
             real_stress.main()
 
     def assert_refused(self, root, log):
@@ -79,8 +95,10 @@ class PythonChildGuards(unittest.TestCase):
             (root / "synthetic.txt").write_text("fixture", encoding="utf-8")
             log = root.parent / "scope.log"
             output = io.StringIO()
-            with contextlib.redirect_stdout(output), patch.object(real_stress, "peak_rss", return_value=0):
+            with contextlib.redirect_stdout(output), patch.object(real_stress, "peak_rss", return_value=0), \
+                    patch.object(real_stress, "open_root_log", wraps=real_stress.open_root_log) as open_log:
                 self.invoke(root, log)
+                open_log.assert_called_once_with(log)
             self.assertIn('"files": 1', output.getvalue())
             self.assertIn(str(root), log.read_text(encoding="utf-8"))
 
