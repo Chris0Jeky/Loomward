@@ -1178,6 +1178,9 @@ fn state_kept_inside_the_install_directory_moves_out_once() {
     // Once moved, an old directory that reappears is left alone, never merged.
     std::fs::create_dir_all(&old).unwrap();
     std::fs::write(old.join("later"), b"synthetic").unwrap();
+    let notice = launch::legacy_state_notice(&launch, Some(base.path().as_os_str().to_owned()))
+        .expect("coexisting state homes must be disclosed");
+    assert!(notice.contains("left untouched") && notice.contains("Loomward Data"));
     drop(launch::open(&launch, Some(base.path().as_os_str().to_owned())).unwrap());
     assert!(old.join("later").is_file() && !new.join("later").exists());
     // An explicit --state-dir never migrates.
@@ -1190,6 +1193,35 @@ fn state_kept_inside_the_install_directory_moves_out_once() {
     };
     drop(launch::open(&scratch, Some(other.path().as_os_str().to_owned())).unwrap());
     assert!(legacy.is_dir() && !other.path().join("Loomward Data").exists());
+    assert!(
+        launch::legacy_state_notice(&scratch, Some(other.path().as_os_str().to_owned())).is_none()
+    );
+}
+
+#[test]
+fn an_unavailable_folder_picker_is_not_an_owner_cancel() {
+    let base = tempfile::tempdir().unwrap();
+    let launch = launch_args(&[]).unwrap();
+    let desktop = Desktop::new(
+        launch::open(&launch, Some(base.path().as_os_str().to_owned())).unwrap(),
+        launch.dataset,
+        Arc::new(DesktopDialogs::new(launch.dataset)),
+    );
+    let reply = desktop
+        .call(&request(
+            "roots.request_grant",
+            json!({"purpose": "metadata_scan"}),
+        ))
+        .unwrap();
+    let ResponseEnvelope::Err(error) = reply else {
+        panic!("an unopened picker was reported as a cancellation: {reply:?}");
+    };
+    assert_eq!(
+        error.error.code,
+        loomward_protocol::ErrorCode::CapabilityUnavailable
+    );
+    assert!(error.error.message.contains("folder picker is unavailable"));
+    assert_eq!(ok(&desktop, "roots.list", json!({}))["roots"], json!([]));
 }
 
 #[test]
