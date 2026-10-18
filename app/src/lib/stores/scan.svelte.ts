@@ -155,6 +155,7 @@ class Scans {
         }
       }
       if (!current()) return;
+      if (busyJob) this.busyJobs[rootId] = busyJob;
       this.setProblem(rootId, refusalText(e.code, e.detail, e.message));
       this.dropStaleBusy(rootId);
     } finally {
@@ -211,10 +212,13 @@ class Scans {
   }
 
   /** "Already running" is only true while that scan runs; it must not outlive the job it was about. */
+  /** Judged by the busy job itself: an older finished job in the book (adopt failed) must not hide it. */
   private dropStaleBusy(rootId: string): void {
     const job = this.book[rootId];
-    if (this.problems[rootId] === ALREADY_RUNNING && job && !viewOf(job, 0).active) this.setProblem(rootId, null);
+    if (this.problems[rootId] === ALREADY_RUNNING && job && job.job_id === this.busyJobs[rootId] && !viewOf(job, 0).active)
+      this.setProblem(rootId, null);
   }
+  private busyJobs: Record<string, string> = {};
 
   private setProblem(rootId: string, text: string | null): void {
     const next = { ...this.problems };

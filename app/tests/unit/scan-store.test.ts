@@ -364,6 +364,13 @@ describe('the busy notice about an adopted scan does not outlive it', () => {
     expect(scans.problems.rt_a).toBeUndefined();
   });
 
+  it('keeps the notice when the lookup failed and the book still holds an older finished scan', async () => {
+    scans.onEvent(ev('job.state', { job: job('completed', { job_id: 'jb_old', started_at: '2026-10-10T09:00:00Z', finished_at: '2026-10-10T09:00:05Z', coverage: 'complete' }) }));
+    session.client = busy({ error: { code: 'not_found', message: 'gone' } });
+    await scans.start('rt_a', 'full');
+    expect(scans.problems.rt_a).toContain('already running');
+  });
+
   it('keeps a refusal that is not about a running scan', async () => {
     session.client = clientWith((c) => c === 'scan.start' ? { error: { code: 'permission_denied', message: 'no grant' } } : null).client;
     await scans.start('rt_a', 'full');
