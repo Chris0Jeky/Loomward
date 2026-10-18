@@ -506,7 +506,7 @@ mod tests {
         let reopened = Store::open(&path).unwrap();
         assert_eq!(reopened.plan(1).unwrap().as_deref(), Some(plan));
         assert_eq!(reopened.operation_by_wire_id("cp_legacy").unwrap(), Some(1));
-        assert_eq!(reopened.operations_for_grant(5).unwrap(), vec![1]);
+        assert_eq!(reopened.operations_for_grant(5).unwrap(), vec![1, 4]);
         assert_eq!(reopened.rows(1).unwrap(), vec![row]);
         locker.execute_batch("ROLLBACK").unwrap();
     }
