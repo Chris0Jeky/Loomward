@@ -23,6 +23,8 @@ class Session {
   reason = $state('');
   /** Bumped whenever data may be stale (reconnect, `stream.lagged`, `tree.invalidated`, `roots.changed`). */
   epoch = $state(0);
+  /** Connection/engine identity, unlike `epoch` which also changes for ordinary root refreshes. */
+  connectionEpoch = 0;
   client: Client | null = null;
 
   private listeners = new Set<(ev: EventEnvelope) => void>();
@@ -77,6 +79,7 @@ class Session {
   }
 
   private markUnavailable(reason: string, retry: boolean): void {
+    this.connectionEpoch++;
     this.state = 'unavailable';
     this.info = null;
     this.reason = reason;
@@ -95,6 +98,7 @@ class Session {
       this.attempt = 0;
       this.reason = '';
       this.state = 'connected';
+      this.connectionEpoch++;
       this.epoch++;
     } catch (e) {
       this.markUnavailable(e instanceof Error ? e.message : 'engine not reachable', true);
@@ -118,10 +122,14 @@ class Session {
     if (ev.event === 'stream.hello') {
       const next = (ev.data as unknown as StreamHello).epoch;
       if (typeof next !== 'string') return;
-      if (this.streamEpoch !== null && this.streamEpoch !== next) this.engineRestarts++;
+      if (this.streamEpoch !== null && this.streamEpoch !== next) {
+        this.engineRestarts++;
+        this.connectionEpoch++;
+      }
       if (this.streamEpoch !== next) this.epoch++; // initial subscription or restarted engine
       this.streamEpoch = next;
     } else if (ev.event === 'stream.lagged' || ev.event === 'tree.invalidated' || ev.event === 'roots.changed') {
+      if (ev.event === 'stream.lagged' && ev.data.reason === 'epoch_changed') this.connectionEpoch++;
       this.epoch++; // lagged: epoch_changed, replay_gap and subscriber_overflow all mean refetch
     }
     for (const fn of this.listeners) fn(ev);

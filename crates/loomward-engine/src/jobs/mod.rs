@@ -1,4 +1,4 @@
-//! Kind-dispatched jobs, immediate cancellation and ten-minute terminal retention.
+//! Kind-dispatched jobs, non-joining cancellation and ten-minute terminal retention.
 use crate::{
     events::{random_id, timestamp, Bus},
     Component, Engine, EngineError, EngineResult,
@@ -408,6 +408,8 @@ impl Registry {
     pub(crate) fn cancel_revoked(&self, id: &JobId, events: &Bus) -> EngineResult<Job> {
         self.cancel_inner(id, events, true)
     }
+    /// Visit every ID even after an error. The first error discards the successful snapshots;
+    /// cancellations already applied remain observable through job status and events.
     pub(crate) fn revoke_jobs(
         &self,
         ids: impl Iterator<Item = JobId>,
