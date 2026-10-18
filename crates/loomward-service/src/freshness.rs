@@ -929,6 +929,9 @@ pub(crate) fn refresh(inner: &Inner) {
 }
 
 #[cfg(windows)]
+const RESOLVE_CHILD_SQL: &str = "SELECT id FROM main.dir WHERE parent_id=?1 AND name=?2 AND listing_state NOT IN ('absent_pending','excluded')";
+
+#[cfg(windows)]
 fn resolve(inner: &Inner, root: i64, path: &[Vec<u16>]) -> Option<u64> {
     let conn = inner.db();
     let mut dir: u64 = conn
@@ -938,9 +941,14 @@ fn resolve(inner: &Inner, root: i64, path: &[Vec<u16>]) -> Option<u64> {
             |r| r.get::<_, i64>(0).map(|v| v as u64),
         )
         .ok()?;
+    let mut lookup = conn.prepare_cached(RESOLVE_CHILD_SQL).ok()?;
     for name in path {
         let text = String::from_utf16(name).ok()?;
-        dir=conn.query_row("SELECT id FROM main.dir WHERE parent_id=?1 AND name=?2 AND listing_state NOT IN ('absent_pending','excluded')",params![dir as i64,text],|r|r.get::<_,i64>(0).map(|v|v as u64)).ok()?;
+        dir = lookup
+            .query_row(params![dir as i64, text], |r| {
+                r.get::<_, i64>(0).map(|v| v as u64)
+            })
+            .ok()?;
     }
     Some(dir)
 }
@@ -948,6 +956,55 @@ fn resolve(inner: &Inner, root: i64, path: &[Vec<u16>]) -> Option<u64> {
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn refresh_path_components_reuse_the_prepared_lookup_and_stay_contained() {
+        let temp = crate::tests::temp_root();
+        let svc = crate::Service::open(crate::Config {
+            state_dir: temp.path().to_path_buf(),
+            dataset: loomward_protocol::DatasetClass::Synthetic,
+            allow_personal: false,
+            allow_identity_unverified: false,
+            grant_roots: vec![],
+        })
+        .unwrap();
+        svc.inner.freshness.stop();
+        let (root, _) = crate::tests::fixture(&svc, 0);
+        let row = db::roots(&svc.inner.db(), Some(root)).unwrap().remove(0);
+        let mut leaf = row.dir.unwrap() as i64;
+        let mut path = Vec::new();
+        for depth in 1..=20 {
+            let name = format!("synthetic-\u{3bb}-{depth}");
+            let conn = svc.inner.db();
+            conn.execute("INSERT INTO main.dir(root_id,parent_id,name,id_quality,id_basis,depth,attrs,listing_state,born_run,seen_run) VALUES(?1,?2,?3,'path_observation','none',?4,0,'complete',0,0)", params![root,leaf,name,depth]).unwrap();
+            leaf = conn.last_insert_rowid();
+            path.push(name.encode_utf16().collect());
+        }
+        for _ in 0..3 {
+            assert_eq!(resolve(&svc.inner, root, &path), Some(leaf as u64));
+        }
+        assert_eq!(
+            svc.inner
+                .db()
+                .prepare_cached(RESOLVE_CHILD_SQL)
+                .unwrap()
+                .get_status(rusqlite::StatementStatus::Run),
+            60,
+            "all path components must reuse the same prepared statement"
+        );
+        for state in ["absent_pending", "excluded"] {
+            svc.inner
+                .db()
+                .execute(
+                    "UPDATE main.dir SET listing_state=?1 WHERE id=?2",
+                    params![state, leaf - 1],
+                )
+                .unwrap();
+            assert_eq!(resolve(&svc.inner, root, &path), None);
+        }
+        assert_eq!(resolve(&svc.inner, root, &[vec![0xd800]]), None);
+        assert_eq!(resolve(&svc.inner, i64::MAX, &[]), None);
+    }
 
     #[test]
     fn f3_complete_verified_root_with_null_directory_stays_stale_on_unresolved_record() {
