@@ -360,9 +360,9 @@ fn a_three_round_turn_spawns_a_fresh_broker_for_each_round() {
         model: "m".into(),
     };
     let p = open(&profile, exe(), None).unwrap();
-    let view = EmptyView(Mutex::default());
+    let view = Arc::new(EmptyView(Mutex::default()));
     let mut log = Vec::new();
-    let answer = ask(&view, &p, &profile, "find my report", &mut log).unwrap();
+    let answer = ask(view.clone(), &p, &profile, "find my report", &mut log).unwrap();
     assert_eq!(
         (answer.text.as_str(), answer.rounds),
         ("Nothing matched.", 3)
@@ -385,7 +385,7 @@ fn a_three_round_turn_spawns_a_fresh_broker_for_each_round() {
     // An outage mid-turn ends it; nothing else is tried.
     let p = provider(&format!("http://127.0.0.1:{}", closed_port()), "m");
     let mut log = Vec::new();
-    let e = ask(&view, &p, &profile, "again", &mut log)
+    let e = ask(view.clone(), &p, &profile, "again", &mut log)
         .unwrap_err()
         .error;
     assert_eq!((e.kind, e.dispatched), (ErrorKind::Unreachable, false));
