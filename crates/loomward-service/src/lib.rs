@@ -154,6 +154,10 @@ impl Drop for Service {
         loop {
             match Arc::try_unwrap(inner) {
                 Ok(inner) => {
+                    #[cfg(test)]
+                    if let Some(after_check) = inner.hooks.after_drop_check.lock().unwrap().take() {
+                        after_check();
+                    }
                     drop(inner);
                     return;
                 }

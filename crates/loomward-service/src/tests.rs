@@ -46,6 +46,8 @@ pub(crate) struct Hooks {
     pub closed: Mutex<Vec<(Command, &'static str)>>,
     pub arrived: Mutex<Vec<(Command, &'static str)>>,
     pub opened: std::sync::Condvar,
+    /// #369: attempt a weak upgrade after Drop's final ownership check, before releasing Inner.
+    pub after_drop_check: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     /// How far ahead of the wall clock the collection page loop reads time (`Inner::past`).
     pub skew: Mutex<Duration>,
     /// How far ahead of the wall clock a read's receiver reads time once it starts waiting.
@@ -2839,6 +2841,32 @@ fn dropping_the_service_waits_for_workers_that_already_replied() {
         std::fs::remove_file(tmp.path().join("catalog.db")).unwrap();
         opener.join().unwrap();
     }
+}
+
+#[test]
+fn drop_rejects_a_weak_upgrade_after_its_last_check() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let hooks = svc.inner.hooks.clone();
+    let weak = Arc::downgrade(&svc.inner);
+    let pump = weak.clone();
+    let (attempted, attempt) = std::sync::mpsc::sync_channel(1);
+    *hooks.after_drop_check.lock().unwrap() = Some(Box::new(move || {
+        // Keep any successful upgrade alive beyond Drop's return, as a paused pump would.
+        attempted.send(pump.upgrade()).unwrap();
+    }));
+
+    drop(svc);
+
+    let transient = attempt
+        .try_recv()
+        .expect("Drop must run the last-check hook");
+    assert!(
+        transient.is_none(),
+        "a Weak upgrade after Drop's last check kept Inner alive past its return"
+    );
+    assert!(weak.upgrade().is_none());
+    std::fs::remove_file(tmp.path().join("catalog.db")).unwrap();
 }
 
 #[test]
