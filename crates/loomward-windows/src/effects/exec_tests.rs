@@ -1561,7 +1561,8 @@ fn detached_worker_check_and_stream_create_exclude_a_reopened_fence() {
 
 /// #670: a reopened service fences on its own store and `Control` while the detached worker sits
 /// between its durable stop check and the create call. The fence must not be acknowledged while
-/// the create can still follow: once acknowledged, the object either already existed or never will.
+/// the create can still follow: once acknowledged, that create either already happened or never
+/// will (creates only; writes and renames are not covered here, #672).
 fn detached_worker_check_and_create_exclude_fence(point: Point) {
     let Some(lab) = Lab::new() else { return };
     fs::write(lab.src().join("f.bin"), b"payload").unwrap();
@@ -1598,8 +1599,10 @@ fn detached_worker_check_and_create_exclude_fence(point: Point) {
                 )
                 .unwrap();
                 let token = replay(&reopened, op).unwrap().staging_tokens.pop().unwrap();
+                // Sample before releasing the parked worker, so its create cannot win the race.
+                let existed = target(&token).exists();
                 let _ = tx.send(());
-                (ack, target(&token).exists(), target(&token))
+                (ack, existed, target(&token))
             }));
             // Give an unserialized fence ample time to land inside the window.
             if rx.recv_timeout(Duration::from_millis(500)).is_err() {

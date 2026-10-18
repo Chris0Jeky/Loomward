@@ -495,8 +495,9 @@ impl Inner {
 
     /// docs/47 section 5: called once a grant's revocation is durable. Every copy using the grant is
     /// fenced in the journal. A running one is stopped at its next effect step (at most the step in
-    /// flight completes, waited for up to 30 s) and joined: before the rename it cancels itself, after
-    /// it commits annotated `grant_revoked`. A run left waiting (blocked, interrupted, publishing) is
+    /// flight completes, waited for up to 30 s; a create step holds the journal lock until it
+    /// returns, #672) and joined: before the rename it cancels itself, after it commits annotated
+    /// `grant_revoked`. A run left waiting (blocked, interrupted, publishing) is
     /// then cancelled through the abandon path; `needs_attention` stays for the owner. Q1 applies.
     pub(crate) fn copies_fence(&self, grant: i64) -> Result<(), ErrorBody> {
         #[cfg(windows)]
