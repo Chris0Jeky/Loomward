@@ -65,6 +65,7 @@ pub(crate) struct Hooks {
     pub fail_automatic_start: std::sync::atomic::AtomicBool,
     #[cfg(windows)]
     pub fail_watch_start: std::sync::atomic::AtomicBool,
+    #[cfg(windows)]
     pub fail_freshness_checkpoint: std::sync::atomic::AtomicBool,
 }
 
