@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Client } from '../../src/lib/transport/client';
+import { Client, LoomwardError } from '../../src/lib/transport/client';
 import { createTauriTransport, type TauriApi } from '../../src/lib/transport/tauri';
 import { TransportError } from '../../src/lib/transport/transport';
 
@@ -57,8 +57,13 @@ describe('tauri transport', () => {
     } };
     const t = await createTauriTransport(api, { sleep: async (ms) => { sleeps.push(ms); } });
     const call = t.call({ protocol: 'loomward/3', request_id: 'r_busy', command: 'session.hello', payload: {} });
-    if (stillBusy) await expect(call).rejects.toBeInstanceOf(TransportError);
-    else expect(await call).toEqual({ ok: true });
+    if (stillBusy) {
+      const err = await call.then(() => { throw new Error('expected still-busy retry to reject'); }, (e) => e);
+      expect(err).toBeInstanceOf(LoomwardError);
+      expect(err).not.toBeInstanceOf(TransportError);
+      expect((err as LoomwardError).code).toBe('busy');
+      expect((err as LoomwardError).retryable).toBe(true);
+    } else expect(await call).toEqual({ ok: true });
     expect(sleeps).toEqual([500]);
     expect(bodies).toHaveLength(2);
     expect(bodies[1]).toBe(bodies[0]);
