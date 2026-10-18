@@ -819,9 +819,31 @@ impl Inner {
     fn root_list(&self, work: Option<&crate::ReadWork>) -> Result<Value, ErrorBody> {
         let rows = db::roots(&self.db(), None).map_err(sql_error)?;
         let mut reader = self.read_reader(work)?;
+        // Unique totals share the request's budget (#722): keep a quarter for the rest of the
+        // response, split the remainder over the roots still to measure, and let time a small
+        // root leaves flow to the next. A root past its share reports unknown totals, not a
+        // failed list.
+        let budget_end = work.map(|w| {
+            let now = std::time::Instant::now();
+            now + w.deadline.saturating_duration_since(now) * 3 / 4
+        });
+        let measured = |r: &db::RootRow| {
+            r.dir.is_some() && r.grant_state == "active" && r.state != "never_scanned"
+        };
+        let mut left = rows.iter().filter(|r| measured(r)).count();
         let roots = rows
             .iter()
-            .map(|r| self.root_json(r, Some(&mut reader)))
+            .map(|r| {
+                if let Some(end) = budget_end {
+                    let now = std::time::Instant::now();
+                    reader.unique_totals_cut =
+                        Some(now + end.saturating_duration_since(now) / left.max(1) as u32);
+                    if measured(r) {
+                        left -= 1;
+                    }
+                }
+                self.root_json(r, Some(&mut reader))
+            })
             .collect::<Result<Vec<_>, _>>()?;
         Ok(json!({"roots": roots}))
     }

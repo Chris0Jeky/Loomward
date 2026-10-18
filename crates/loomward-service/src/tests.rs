@@ -401,6 +401,133 @@ fn roots_list_keeps_a_root_mid_scan_with_unknown_totals() {
     assert_eq!(roots["roots"][0]["grant_state"], "active");
 }
 
+/// #722: several large roots cannot push `roots.list` past its deadline. Each root's unique
+/// totals get a share of the budget; a root past its share reports them unknown, the stored
+/// aggregates stay exact, and a small root is still measured exactly.
+#[test]
+fn roots_list_degrades_slow_roots_to_unknown_totals_inside_the_deadline() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let sizes = [200u64, 70_000, 70_000, 70_000];
+    let mut big = 0;
+    for (i, &files) in sizes.iter().enumerate() {
+        let (root, grant) = register(&svc, i as u8 + 1);
+        let dir: i64 = svc
+            .inner
+            .db()
+            .query_row(
+                "SELECT id FROM main.dir WHERE root_id=?1 AND parent_id IS NULL",
+                [root],
+                |r| r.get(0),
+            )
+            .unwrap();
+        big = dir;
+        let w = svc.inner.catalog.writer();
+        let WriteReply::Run(run) = w
+            .call(WriteCommand::BeginRun {
+                grant_id: grant,
+                mode: "full".into(),
+                strategy: "fixture".into(),
+                started_at_ns: 0,
+            })
+            .unwrap()
+        else {
+            panic!()
+        };
+        // Listings are capped, so each 1000 files sit in their own subdirectory.
+        let chunks = files.div_ceil(1000);
+        let subdirs = (0..chunks)
+            .map(|d| {
+                let mut o = Observation::file(format!("d{d}"), 0, Some(0));
+                o.attrs = 0x10;
+                o.file_id = Some(vec![0xD0; 15].into_iter().chain([d as u8 + 1]).collect());
+                o.created_ft = Some(1);
+                o
+            })
+            .collect();
+        w.call(WriteCommand::DirListing(DirListing {
+            run_id: run,
+            dir_id: dir,
+            files: vec![],
+            dirs: subdirs,
+            state: "complete".into(),
+            skipped: 0,
+            errors: 0,
+        }))
+        .unwrap();
+        let children: Vec<i64> = svc
+            .inner
+            .db()
+            .prepare("SELECT id FROM (SELECT id,parent_id FROM main.dir UNION ALL SELECT id,parent_id FROM main.bulk_dir) WHERE parent_id=?1 ORDER BY id")
+            .unwrap()
+            .query_map([dir], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        for (d, child) in children.into_iter().enumerate() {
+            let listed = (d as u64 * 1000..files.min((d as u64 + 1) * 1000))
+                .map(|n| {
+                    let mut o = file(&format!("report-{n}.txt"), 1000);
+                    o.file_id = Some(((n + 1) as u128).to_le_bytes().to_vec());
+                    o
+                })
+                .collect();
+            w.call(WriteCommand::DirListing(DirListing {
+                run_id: run,
+                dir_id: child,
+                files: listed,
+                dirs: vec![],
+                state: "complete".into(),
+                skipped: 0,
+                errors: 0,
+            }))
+            .unwrap();
+        }
+        w.call(WriteCommand::EndRun {
+            run_id: run,
+            state: "completed".into(),
+            finished_at_ns: 1,
+        })
+        .unwrap();
+    }
+    // Calibrate to this machine: a deadline of twice one big root's measured cost leaves each of
+    // the three about half the time it needs, whatever the host speed (the margin keeps a quarter).
+    let started = Instant::now();
+    let measured = svc
+        .inner
+        .catalog
+        .reader()
+        .unwrap()
+        .inspect(loomward_catalog::NodeKey::Dir(big))
+        .unwrap()
+        .subtree
+        .unwrap();
+    assert_eq!(measured.unique_objects, Some(70_000));
+    let deadline = (started.elapsed().as_millis() as i64 * 2).max(400);
+    let mut req = request("roots.list", json!({}));
+    req.deadline_ms = Some(Int::new(deadline).unwrap());
+    let (roots, _) = ok("roots.list", svc.call(req, &CallContext::http()));
+    let roots = roots["roots"].as_array().unwrap();
+    assert_eq!(roots.len(), sizes.len());
+    let mut cut = 0;
+    for (root, files) in roots.iter().zip(sizes) {
+        let totals = &root["totals"];
+        assert_eq!(totals["files"], files, "stored aggregates stay exact");
+        match totals["unique_objects"].as_u64() {
+            Some(n) => assert_eq!(n, files),
+            None => {
+                cut += 1;
+                assert!(totals["unique_allocated_bytes"].is_null());
+            }
+        }
+    }
+    assert!(cut >= 1, "at least one large root must exceed its share");
+    assert_eq!(
+        roots[0]["totals"]["unique_objects"], 200,
+        "the small root is exact"
+    );
+}
+
 fn placement_fixture(svc: &Service) -> (i64, i64, String) {
     let (root, grant) = fixture(svc, 3);
     svc.inner.db().execute("UPDATE main.volume SET capabilities_json=?1,bytes_per_cluster=4096", [json!({"space":{"capacity_bytes":"1048576","free_bytes":"65536","read_only":false}}).to_string()]).unwrap();

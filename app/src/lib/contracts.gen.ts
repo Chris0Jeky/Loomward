@@ -280,11 +280,11 @@ export interface SubtreeTotals {
   complete: boolean;
   /** Alternate data streams and filesystem metadata are not observed in v0.3. */
   stream_coverage: "default_stream_only";
-  /** Distinct (volume_key, file_id) objects within this subtree; null when any entry lacks a native ID. */
+  /** Distinct (volume_key, file_id) objects within this subtree; null when any entry lacks a native ID or the subtree was too large to count within the query budget (steps or wall clock). */
   unique_objects: NullableCount;
-  /** Allocation counted once per unique object within this subtree; null when unique_objects is null or allocation is unknown. */
+  /** Allocation counted once per unique object within this subtree; null when unique_objects is null (including over budget) or allocation is unknown. */
   unique_allocated_bytes: NullableBytes;
-  /** Entries whose object has another observed name anywhere in the dataset or an observed link count above 1; null when the subtree was too large to count within the query budget (unique_objects and unique_allocated_bytes are then null too). */
+  /** Entries whose object has another observed name anywhere in the dataset or an observed link count above 1; null when the subtree was too large to count within the query budget, steps or wall clock (unique_objects and unique_allocated_bytes are then null too). */
   multi_link_entries: NullableCount;
 }
 
