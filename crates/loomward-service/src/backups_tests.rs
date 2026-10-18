@@ -341,6 +341,55 @@ fn the_reader_never_returns_more_than_the_budget() {
 }
 
 #[test]
+fn a_receipt_under_a_symlinked_parent_resolving_off_local_is_refused_pre_open() {
+    let tmp = temp_root();
+    let control = write(tmp.path(), "control.json", snapshots());
+    // The parent is a link to a network share: canonicalising it resolves off-local, so the
+    // receipt is refused before anything is opened, whatever the final component names.
+    let link = tmp.path().join("off-local-parent");
+    #[cfg(windows)]
+    let linked =
+        std::os::windows::fs::symlink_dir(r"\\synthetic-host.invalid\share", &link).is_ok();
+    #[cfg(not(windows))]
+    let linked =
+        std::os::unix::fs::symlink(r"\\synthetic-host.invalid\share", &link).is_ok();
+    if !linked {
+        eprintln!("skipped: cannot create a directory symlink");
+        return;
+    }
+    match read_receipt(&link.join("receipt.json")) {
+        Err(BackupImportRefusal::NotARegularFile) | Err(BackupImportRefusal::Unreadable) => {}
+        other => panic!("symlinked-parent receipt was not refused pre-open: {other:?}"),
+    }
+    // Nothing was opened or stored: the control receipt still reads byte-identical.
+    assert_eq!(read_receipt(&control).unwrap().0, snapshots().as_bytes());
+}
+
+#[test]
+fn a_stream_colon_receipt_is_refused_before_open() {
+    let tmp = temp_root();
+    let regular = write(tmp.path(), "regular.json", snapshots());
+    // An NTFS stream suffix is refused by name before anything is opened; the file on disk is
+    // untouched and still reads as a normal local receipt.
+    assert_eq!(
+        read_receipt(&tmp.path().join("regular.json:stream")).unwrap_err(),
+        BackupImportRefusal::NotARegularFile
+    );
+    #[cfg(not(windows))]
+    {
+        // A colon is a legal file name elsewhere: even a real stream-named file holding a valid
+        // receipt is refused without reading it.
+        let colon = write(tmp.path(), "colon.json:stream", snapshots());
+        assert_eq!(
+            read_receipt(&colon).unwrap_err(),
+            BackupImportRefusal::NotARegularFile
+        );
+        assert_eq!(std::fs::read(&colon).unwrap(), snapshots().as_bytes());
+    }
+    assert_eq!(read_receipt(&regular).unwrap().0, snapshots().as_bytes());
+}
+
+#[test]
 fn unrepresentable_receipt_times_refuse_without_replacing_evidence() {
     let tmp = temp_root();
     let svc = personal(tmp.path());
