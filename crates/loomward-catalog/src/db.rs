@@ -155,6 +155,10 @@ fn migrate(path: &Path, schema: &str, version: i64, dataset: &str, precious: boo
         if precious && !tx.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('root_grant') WHERE name='volume_guid')", [], |r| r.get::<_, bool>(0))? {
             tx.execute_batch("ALTER TABLE root_grant ADD COLUMN volume_guid TEXT")?;
         }
+        // v11: lab provenance must be explicitly re-established, never adopted from a scan.
+        if precious && !tx.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('lab_root') WHERE name='volume_guid')", [], |r| r.get::<_, bool>(0))? {
+            tx.execute_batch("ALTER TABLE lab_root ADD COLUMN volume_guid TEXT")?;
+        }
         if !precious && !tx.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('dir') WHERE name='listing_outcome')", [], |r| r.get::<_, bool>(0))? {
             tx.execute_batch("ALTER TABLE dir ADD COLUMN listing_outcome TEXT CHECK (listing_outcome IN ('complete','partial','denied','excluded','cancelled','unscanned','stale'))")?;
         }
