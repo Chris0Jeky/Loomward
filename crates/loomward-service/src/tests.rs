@@ -4132,6 +4132,33 @@ fn f3_watch_survives_scan_completion_and_reconciles() {
     );
 }
 
+/// #717: NTFS reports the scan's own directory listing (a last-access update) as MODIFIED, which
+/// dirtied the root and started a second, automatic scan about a second after the pressed one.
+#[cfg(windows)]
+#[test]
+fn f3_issue717_a_scan_does_not_dirty_its_own_root_through_reads() {
+    let Some(lab) = lab() else { return };
+    // The fixture's ChangeTimes must precede the scan by more than the clock-tick slack.
+    std::thread::sleep(Duration::from_millis(400));
+    settle(&lab.svc, &start(&lab.svc, &lab.root, "full"));
+    // Lazily flushed notifications arrive within about a second; the pump runs every 200 ms.
+    std::thread::sleep(Duration::from_millis(2500));
+    let (jobs, _) = ok(
+        "jobs.list",
+        call(
+            &lab.svc,
+            "jobs.list",
+            json!({"kinds": ["scan"], "limit": 50}),
+        ),
+    );
+    assert_eq!(jobs["jobs"].as_array().unwrap().len(), 1, "{jobs:?}");
+    assert!(
+        !lab.svc.inner.freshness.stale(1),
+        "tracker={}",
+        lab.svc.inner.freshness.debug(1)
+    );
+}
+
 #[cfg(windows)]
 #[test]
 fn f3_journal_wrap_dirties_scope_until_explicit_full_refresh() {

@@ -70,6 +70,10 @@ impl Drop for Explicit<'_> {
     }
 }
 
+/// FILETIME ticks (100 ns) from 1601-01-01 to the Unix epoch.
+#[cfg(windows)]
+const FILETIME_UNIX_EPOCH: i64 = 116_444_736_000_000_000;
+
 #[cfg(windows)]
 struct Tracked {
     restart: Restart,
@@ -79,6 +83,9 @@ struct Tracked {
     epoch: u64,
     stale_since: Option<i64>,
     at: i64,
+    /// Unix ns of the latest full-root scan's start (or the root's last scan): a hint for a target not
+    /// changed since then is the scan's own read (#717).
+    since: i64,
     caught_up: bool,
     full: bool,
     paths: BTreeSet<Vec<Vec<u16>>>,
@@ -239,6 +246,10 @@ impl Tracker {
                 }
             }
         }
+    }
+    #[cfg(windows)]
+    fn since(&self, row: i64) -> Option<i64> {
+        self.roots.lock().unwrap().get(&row).map(|r| r.since)
     }
     pub(crate) fn stop(&self) {
         #[cfg(windows)]
@@ -444,6 +455,9 @@ impl Inner {
             };
             if let Some(root) = self.freshness.roots.lock().unwrap().get_mut(&row) {
                 root.started = Some((root.epoch, bookmark));
+                if matches!(scope, RunScope::FullRoot) {
+                    root.since = now_ns();
+                }
                 root.completed = None;
                 root.stale_since.get_or_insert(root.at);
                 root.paths.clear();
@@ -623,6 +637,7 @@ fn ensure_roots_with_clock(inner: &Arc<Inner>, now: impl Fn() -> Instant) {
                     epoch: 0,
                     stale_since: Some(row.finished_at_ns.unwrap_or_else(now_ns)),
                     at: row.finished_at_ns.unwrap_or_else(now_ns),
+                    since: row.finished_at_ns.unwrap_or_else(now_ns),
                     caught_up: false,
                     full: true,
                     paths: BTreeSet::new(),
@@ -653,6 +668,7 @@ fn ensure_roots_with_clock(inner: &Arc<Inner>, now: impl Fn() -> Instant) {
         );
         let weak: Weak<Inner> = Arc::downgrade(inner);
         let root_row = row.root;
+        let root_path = grant.path().to_owned();
         #[cfg(test)]
         let fail = inner.hooks.fail_watch_start.load(Ordering::SeqCst);
         #[cfg(not(test))]
@@ -662,6 +678,15 @@ fn ensure_roots_with_clock(inner: &Arc<Inner>, now: impl Fn() -> Instant) {
         } else {
             loomward_windows::watch::Watcher::start(grant.path(), Some(expected), move |changes| {
                 if let Some(inner) = weak.upgrade() {
+                    // A scan lists directories; NTFS reports that read as a modification (#717).
+                    let changes = match inner.freshness.since(root_row) {
+                        Some(ns) => loomward_windows::watch::without_access_only(
+                            &root_path,
+                            changes,
+                            ns / 100 + FILETIME_UNIX_EPOCH,
+                        ),
+                        None => changes,
+                    };
                     inner.freshness.record(root_row, changes);
                 }
             })
@@ -1064,6 +1089,7 @@ mod tests {
                     epoch: 0,
                     stale_since: Some(1),
                     at: 1,
+                    since: 1,
                     caught_up: false,
                     full: true,
                     paths: BTreeSet::new(),

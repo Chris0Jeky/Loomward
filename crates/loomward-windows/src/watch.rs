@@ -54,6 +54,54 @@ pub fn decode(bytes: &[u8]) -> Result<Vec<Change>, SourceError> {
     }
 }
 
+/// 100 ns ticks of slack below `since`: a real change just after it can carry a timestamp that is one
+/// system-clock tick (about 16 ms) older.
+#[cfg(windows)]
+const SINCE_SLACK: i64 = 1_000_000;
+
+/// Drop FILE_ACTION_MODIFIED hints that only report an access-time update (#717).
+///
+/// NTFS delivers a last-access change under the last-write filter bit, so reading or listing a directory
+/// raises MODIFIED for it, and a scan then dirtied its own root. An access-time update never changes
+/// ChangeTime, so a MODIFIED target whose ChangeTime precedes `since` (FILETIME, the start of a scan that
+/// listed everything before it) was only read. Every other hint, and any target that cannot be pinned
+/// below `root` without following a reparse point, is kept; at most 64 distinct names are checked.
+#[cfg(windows)]
+pub fn without_access_only(
+    root: &std::path::Path,
+    changes: Vec<Change>,
+    since: i64,
+) -> Vec<Change> {
+    use std::collections::BTreeMap;
+    let Ok(root) = crate::enumerate::open_readonly_directory(root) else {
+        return changes;
+    };
+    let since = since.saturating_sub(SINCE_SLACK);
+    let mut seen: BTreeMap<Vec<u16>, bool> = BTreeMap::new();
+    let mut quiet = |name: &[u16]| -> bool {
+        if let Some(known) = seen.get(name) {
+            return *known;
+        }
+        let known = seen.len() < 64
+            && (|| -> std::io::Result<bool> {
+                let mut walk: Option<std::fs::File> = None;
+                for part in name.split(|c| *c == 92) {
+                    let parent = walk.as_ref().unwrap_or(&root);
+                    walk = Some(crate::enumerate::open_metadata_child(parent, part)?);
+                }
+                let observed = crate::identity::from_file(walk.as_ref().unwrap())?;
+                Ok(observed.change_time.parse::<i64>().is_ok_and(|t| t < since))
+            })()
+            .unwrap_or(false);
+        seen.insert(name.to_vec(), known);
+        known
+    };
+    changes
+        .into_iter()
+        .filter(|c| !matches!(c, Change::Name { action: 3, name } if quiet(name)))
+        .collect()
+}
+
 #[cfg(windows)]
 mod native {
     use super::*;
@@ -613,5 +661,100 @@ mod tests {
         }
         bytes[12..14].copy_from_slice(&92u16.to_le_bytes());
         assert!(decode(&bytes).is_err());
+    }
+}
+
+#[cfg(all(test, windows))]
+mod access_only_tests {
+    use super::*;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    fn filetime_now() -> i64 {
+        (SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+            / 100) as i64
+            + 116_444_736_000_000_000
+    }
+    fn modified(name: &str) -> Change {
+        Change::Name {
+            action: 3,
+            name: name.encode_utf16().collect(),
+        }
+    }
+    fn fixture() -> tempfile::TempDir {
+        tempfile::tempdir_in(std::fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn modified_hints_not_changed_since_the_scan_began_are_access_updates() {
+        if crate::enumerate::running_elevated() {
+            return;
+        }
+        let tree = fixture();
+        std::fs::create_dir(tree.path().join("sub")).unwrap();
+        let file = tree.path().join("sub").join("a.bin");
+        std::fs::write(&file, b"x").unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        let since = filetime_now();
+        let kept = Change::Name {
+            action: 1,
+            name: "sub".encode_utf16().collect(),
+        };
+        let hints = vec![
+            modified("sub"),
+            modified(r"sub\a.bin"),
+            kept.clone(),
+            modified("missing"),
+            Change::RootDirty,
+        ];
+        // Nothing changed after `since`: both MODIFIED targets were only read. A created, vanished or
+        // overflow hint is never an access update.
+        assert_eq!(
+            without_access_only(tree.path(), hints.clone(), since),
+            vec![kept.clone(), modified("missing"), Change::RootDirty]
+        );
+        // A real attribute change after `since` moves ChangeTime but not LastWriteTime.
+        let mut permissions = std::fs::metadata(&file).unwrap().permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&file, permissions).unwrap();
+        let kept_after = without_access_only(tree.path(), hints.clone(), since);
+        assert!(kept_after.contains(&modified(r"sub\a.bin")));
+        assert!(!kept_after.contains(&modified("sub")));
+        // A scan that began before the fixture existed makes every hint real.
+        assert_eq!(
+            without_access_only(tree.path(), hints.clone(), since - 600_000_000),
+            hints
+        );
+    }
+
+    #[test]
+    fn listing_a_directory_raises_only_hints_the_filter_drops() {
+        if crate::enumerate::running_elevated() {
+            return;
+        }
+        let tree = fixture();
+        let sub = tree.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join("a.bin"), b"x").unwrap();
+        std::thread::sleep(Duration::from_millis(1500)); // creation hints and their lazy flush
+        let (tx, rx) = std::sync::mpsc::channel();
+        let watcher = Watcher::start(tree.path(), None, move |batch| {
+            let _ = tx.send(batch);
+        })
+        .unwrap();
+        let since = filetime_now();
+        std::thread::sleep(Duration::from_millis(100));
+        let _ = std::fs::read_dir(&sub).unwrap().count();
+        let _ = std::fs::read(sub.join("a.bin")).unwrap();
+        std::thread::sleep(Duration::from_millis(1500));
+        watcher.checkpoint().unwrap();
+        watcher.stop();
+        let hints: Vec<Change> = rx.try_iter().flatten().collect();
+        // Hosts with last-access updates disabled raise nothing; where enabled, NTFS reports
+        // the directory as MODIFIED (#717) and the filter must drop it.
+        eprintln!("hints raised by reads: {hints:?}");
+        assert!(without_access_only(tree.path(), hints, since).is_empty());
     }
 }
