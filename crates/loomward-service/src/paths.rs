@@ -42,11 +42,13 @@ pub fn prospective_dir(path: &Path) -> Result<PathBuf, String> {
     if network_path(&resolved) {
         return Err("network_or_removable_unsupported".into());
     }
-    resolved.push(
-        absolute
-            .strip_prefix(ancestor)
-            .map_err(|_| "cannot resolve directory")?,
-    );
+    let missing = absolute
+        .strip_prefix(ancestor)
+        .map_err(|_| "cannot resolve directory")?;
+    // An empty suffix would append a trailing separator to a fully existing path.
+    if !missing.as_os_str().is_empty() {
+        resolved.push(missing);
+    }
     Ok(resolved)
 }
 
@@ -638,6 +640,11 @@ mod tests {
                 .join("state")
         );
         assert!(!state.exists());
+        // A fully existing directory resolves exactly to its canonical form, with no trailing separator.
+        assert_eq!(
+            prospective_dir(tmp.path()).unwrap().as_os_str(),
+            tmp.path().canonicalize().unwrap().as_os_str()
+        );
     }
 
     #[test]
