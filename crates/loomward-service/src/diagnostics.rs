@@ -464,11 +464,18 @@ impl Inner {
             )
         })?;
         let _dialog = self.dialog_turn()?;
-        // Only the owner closing the dialog is a cancel; a dialog that never opened says so.
+        // Only a known user cancellation is a cancel; failures and unknowns stay distinct.
         let target = match dialogs.save_file(SAVE_TITLE, &default_name(&now())) {
             SaveDialog::Chosen(target) => target,
             SaveDialog::Cancelled => {
                 return answer(DiagnosticsSaveOutcome::CancelledByUser, None, None)
+            }
+            SaveDialog::NoSelection => {
+                return answer(
+                    DiagnosticsSaveOutcome::Refused,
+                    None,
+                    Some(Why::DialogNoSelection),
+                )
             }
             SaveDialog::Busy => {
                 return answer(DiagnosticsSaveOutcome::Refused, None, Some(Why::DialogBusy))

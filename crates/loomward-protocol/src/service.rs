@@ -9,13 +9,15 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// What a Rust-side save dialog came to. Only `Cancelled` is the owner's choice; the other two say the
-/// dialog never opened, so a report cannot call them a cancel (invariant 4). Nothing is written in any.
+/// What a Rust-side save dialog came to. Only `Cancelled` identifies the owner's choice;
+/// failure and an ambiguous dialog result must not be reported as a cancel (invariant 4).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SaveDialog {
     Chosen(PathBuf),
     /// The owner closed the dialog without choosing a file.
     Cancelled,
+    /// No path was returned, but the dialog backend cannot distinguish cancellation from failure.
+    NoSelection,
     /// Another dialog is open, so this one was not stacked on it.
     Busy,
     /// There is no dialog to open: no owner window yet, no start folder, or an adapter without one.

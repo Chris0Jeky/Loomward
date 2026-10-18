@@ -608,10 +608,12 @@ never omitted, `null` or zero; `recent_errors` is always `{"unknown": "not_retai
 `diagnostics.save {digest}` exists on the desktop adapter only (HTTP answers `capability_unavailable`), in every
 dataset class. A digest other than the held preview's is `refused` / `preview_changed` before any dialog opens.
 Rust opens the native save dialog (one dialog at a time with the pickers, 2 s cooldown: `busy`). When the
-chosen file exists, Loomward asks its own question naming it (Cancel the default) before replacing it. Cancel
-in either is `cancelled_by_user` and writes nothing; it is the only thing that is. A save dialog that never opened is
+chosen file exists, Loomward asks its own question naming it (Cancel the default) before replacing it. A confirmed
+user cancellation is `cancelled_by_user` and writes nothing. A save dialog that never opened is
 `refused` and says why: `dialog_busy` (another dialog is open) or `dialog_unavailable` (no owner window yet, no start
-folder, or no dialog on the adapter). A relative,
+folder, or no dialog on the adapter). If the backend returns no path but cannot distinguish cancellation from
+an error (rfd on Windows), the outcome is `refused` / `dialog_no_selection`: no location was returned, and nothing
+was written. This never claims that the owner cancelled or that the dialog opened. A relative,
 network, device or verbatim path, a device name, a stream name, a parent folder that is missing or resolves (through a junction or link) to a share, or an existing target
 that is not a regular file or is a link or reparse point is `unsupported_target`; an existing online-only cloud
 placeholder is `cloud_placeholder`; a write
