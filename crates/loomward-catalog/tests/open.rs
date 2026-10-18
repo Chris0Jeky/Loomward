@@ -491,7 +491,7 @@ fn v4_state_store_grants_migrate_as_identity_verified() {
 /// `backup_evidence`, keeping their rows, and the table refuses anything but a JSON document.
 #[test]
 fn v6_v5_and_v4_state_stores_reach_v7_with_backup_evidence_and_the_forget_record() {
-    assert_eq!(SCHEMA_VERSION, 10);
+    assert_eq!(SCHEMA_VERSION, 11);
     for (from, downgrade) in [
         // v6 (backups applied): only forget's step runs, and the evidence already there stays.
         (
@@ -595,4 +595,38 @@ fn a_v7_state_store_reaches_v8_with_client_grants() {
     grant("mcp:b", "[1]", None).unwrap();
     assert!(grant("mcp:c", "{}", None).is_err(), "roots are an array");
     assert!(grant("mcp:c", "1,2", None).is_err(), "roots are JSON");
+}
+
+#[test]
+fn v10_lab_registrations_migrate_without_adopting_a_guid() {
+    let temp = tempfile::tempdir().unwrap();
+    drop(Catalog::open(temp.path(), "synthetic").unwrap());
+    let st = Connection::open(temp.path().join("state.db")).unwrap();
+    st.execute_batch(
+        "ALTER TABLE lab_root DROP COLUMN volume_guid;
+        INSERT INTO lab_root(volume_key,root_file_id,manifest_digest,seed,tier,registered_at_ns)
+        VALUES('vsn_42',zeroblob(16),'synthetic-digest','42','S',123);
+        PRAGMA user_version=10;",
+    )
+    .unwrap();
+    drop(st);
+    drop(Catalog::open(temp.path(), "synthetic").unwrap());
+    let st = Connection::open(temp.path().join("state.db")).unwrap();
+    let row: (String, Option<String>, i64) = st
+        .query_row(
+            "SELECT manifest_digest,volume_guid,registered_at_ns FROM lab_root",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(row, ("synthetic-digest".into(), None, 123));
+    assert_eq!(
+        st.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        SCHEMA_VERSION
+    );
+    assert!(temp.path().join("state.before-v10.db").exists());
+    drop(st);
+    // Reopening must not fill the NULL binding either.
+    drop(Catalog::open(temp.path(), "synthetic").unwrap());
 }

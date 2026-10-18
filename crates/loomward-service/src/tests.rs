@@ -2599,6 +2599,113 @@ fn node_ids_are_sealed_and_tampering_is_not_found() {
     );
 }
 
+// #669: simulate a clone by changing only the registry GUID; serial and file ID stay native.
+fn lab_registration_guid_case(binding: &str) {
+    if !native_identity_available() {
+        return;
+    }
+    let tmp = temp_root();
+    let state = tmp.path().join("state");
+    let root = tmp.path().join("lab");
+    crate::lab::register(
+        &state,
+        &root,
+        "42",
+        "S",
+        &format!("sha256:{}", "00".repeat(32)),
+    )
+    .unwrap();
+    let root = root.canonicalize().unwrap();
+    let svc = open(&state, DatasetClass::Synthetic);
+    let guid = format!(
+        "{:032x}",
+        svc.inner
+            .root_observation(&root)
+            .unwrap()
+            .1
+            .volume_guid
+            .unwrap()
+    );
+    let conn = svc.inner.db();
+    let stored_guid: Option<String> = conn
+        .query_row("SELECT volume_guid FROM st.lab_root", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        stored_guid.as_deref(),
+        Some(guid.as_str()),
+        "new registrations persist their native GUID"
+    );
+    let registered_guid = match binding {
+        "matching" => Some(guid.clone()),
+        "clone" => Some(format!(
+            "{:032x}",
+            u128::from_str_radix(&guid, 16).unwrap() ^ 1
+        )),
+        "legacy" | "unmigrated" => None,
+        _ => unreachable!(),
+    };
+    conn.execute("UPDATE st.lab_root SET volume_guid=?1", [registered_guid])
+        .unwrap();
+    drop(conn);
+    let result = svc.inner.grant(&root, "cli_flag", false);
+    if binding == "matching" {
+        assert!(result.is_ok(), "matching GUID must authorise: {result:?}");
+    } else {
+        assert_eq!(
+            result,
+            Err(crate::Refused::Rule(
+                RootGrantResultRefusal::SyntheticSessionRequiresLabRoot
+            )),
+            "{binding} must require explicit lab re-registration"
+        );
+        assert_eq!(crate::db::active_grants(&svc.inner.db()).unwrap(), 0);
+    }
+    drop(svc);
+    if binding == "unmigrated" {
+        let conn = rusqlite::Connection::open(state.join("state.db")).unwrap();
+        conn.execute_batch("ALTER TABLE lab_root DROP COLUMN volume_guid; PRAGMA user_version=10")
+            .unwrap();
+    }
+    let reopened = Service::open(Config {
+        state_dir: state,
+        dataset: DatasetClass::Synthetic,
+        allow_personal: false,
+        allow_identity_unverified: false,
+        grant_roots: vec![root],
+    });
+    if binding == "matching" {
+        assert!(reopened.is_ok());
+    } else {
+        let error = reopened
+            .err()
+            .expect("CLI preflight must refuse the registration");
+        assert!(
+            error.contains("synthetic_session_requires_lab_root"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn lab_registration_guid_clone_is_refused() {
+    lab_registration_guid_case("clone");
+}
+
+#[test]
+fn lab_registration_guid_legacy_is_refused() {
+    lab_registration_guid_case("legacy");
+}
+
+#[test]
+fn lab_registration_guid_unmigrated_preflight_is_refused() {
+    lab_registration_guid_case("unmigrated");
+}
+
+#[test]
+fn lab_registration_guid_matching_is_accepted() {
+    lab_registration_guid_case("matching");
+}
+
 #[test]
 fn provenance_synthetic_accepts_only_identity_verified_lab_roots() {
     let tmp = temp_root();
@@ -3482,7 +3589,7 @@ fn publish_clamps_negative_revision_to_unknown() {
     assert_eq!(event.state_rev, Some(Generation(7)));
 }
 
-fn native_identity_available() -> bool {
+pub(crate) fn native_identity_available() -> bool {
     #[cfg(windows)]
     if loomward_windows::enumerate::running_elevated() {
         assert!(
@@ -5533,6 +5640,72 @@ fn scan_start_is_refused_outside_registered_lab_roots() {
         reason(&inspected),
         Some("synthetic_session_requires_lab_root")
     );
+}
+
+fn session_gate_lab_guid_case(binding: &str) {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let (root, grant) = register(&svc, 1);
+    let guid = "00000000000000000000000000000001";
+    let conn = svc.inner.db();
+    conn.execute(
+        "UPDATE st.root_grant SET origin='lab_generated',volume_guid=?1 WHERE id=?2",
+        rusqlite::params![guid, grant],
+    )
+    .unwrap();
+    if binding != "missing" {
+        crate::db::insert_lab_root(&conn, "fixture", &[1; 16], guid, "digest", "seed", "S")
+            .unwrap();
+        let registered_guid = match binding {
+            "matching" => Some(guid),
+            "mismatched" => Some("00000000000000000000000000000002"),
+            "null" => None,
+            _ => unreachable!(),
+        };
+        conn.execute("UPDATE st.lab_root SET volume_guid=?1", [registered_guid])
+            .unwrap();
+    }
+    let row = crate::db::roots(&conn, Some(root)).unwrap().remove(0);
+    assert_eq!(row.grant_state, "active");
+    drop(conn);
+    let result = svc.inner.session_root_gate(&row);
+    if binding == "matching" {
+        result.unwrap();
+    } else {
+        let e = result.expect_err("an active lab grant needs a matching registration GUID");
+        assert_eq!(e.code, ErrorCode::PermissionDenied);
+        assert_eq!(reason(&e), Some("synthetic_session_requires_lab_root"));
+    }
+    let stored_guid: String = svc
+        .inner
+        .db()
+        .query_row(
+            "SELECT volume_guid FROM st.root_grant WHERE id=?1",
+            [grant],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored_guid, guid, "the gate must never adopt a GUID");
+}
+
+#[test]
+fn session_gate_lab_guid_null_is_refused() {
+    session_gate_lab_guid_case("null");
+}
+
+#[test]
+fn session_gate_lab_guid_mismatched_is_refused() {
+    session_gate_lab_guid_case("mismatched");
+}
+
+#[test]
+fn session_gate_lab_guid_missing_is_refused() {
+    session_gate_lab_guid_case("missing");
+}
+
+#[test]
+fn session_gate_lab_guid_matching_is_accepted() {
+    session_gate_lab_guid_case("matching");
 }
 
 /// A personal session scans only its own active owner grants: an unknown root, a lab root and

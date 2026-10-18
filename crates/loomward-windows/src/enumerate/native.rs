@@ -666,17 +666,7 @@ fn opened(
     source.cancel.check()?;
     let volume_guid = match root {
         Some(root) => root.volume_guid,
-        None => {
-            let device = volume_device(&file)?;
-            let device = String::from_utf16(&device[..device.len() - 1])
-                .map_err(|_| SourceError::IdentityUnverified)?;
-            let guid = device
-                .strip_prefix(r"\\?\Volume{")
-                .and_then(|s| s.strip_suffix('}'))
-                .ok_or(SourceError::IdentityUnverified)?;
-            u128::from_str_radix(&guid.replace('-', ""), 16)
-                .map_err(|_| SourceError::IdentityUnverified)?
-        }
+        None => volume_guid(&file)?,
     };
     let root = root.map_or_else(|| file.clone(), |root| root.root.clone());
     Ok((
@@ -940,6 +930,18 @@ fn open_by_id(hint: &File, descriptor: &FILE_ID_DESCRIPTOR) -> Result<File, Sour
         return Err(last_error());
     }
     Ok(unsafe { File::from_raw_handle(handle) })
+}
+
+/// Volume GUID queried from this pinned handle, using the same binding as scan admission.
+pub(crate) fn volume_guid(file: &File) -> Result<u128, SourceError> {
+    let device = volume_device(file)?;
+    let device = String::from_utf16(&device[..device.len() - 1])
+        .map_err(|_| SourceError::IdentityUnverified)?;
+    let guid = device
+        .strip_prefix(r"\\?\Volume{")
+        .and_then(|s| s.strip_suffix('}'))
+        .ok_or(SourceError::IdentityUnverified)?;
+    u128::from_str_radix(&guid.replace('-', ""), 16).map_err(|_| SourceError::IdentityUnverified)
 }
 
 /// The `\\?\Volume{GUID}` device path of the volume `file` lives on, NUL-terminated and without the root

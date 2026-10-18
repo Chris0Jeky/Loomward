@@ -224,6 +224,63 @@ fn rejected_chunk_fences_queued_completion_without_deleting_old_entries() {
     }
 }
 
+fn check_lab_root_guid(registered_guid: Option<&str>, observed_guid: Option<&str>, accepted: bool) {
+    let temp = tempfile::tempdir().unwrap();
+    let c = Catalog::open(temp.path(), "synthetic").unwrap();
+    let state = Connection::open(temp.path().join("state.db")).unwrap();
+    state.execute(
+            "INSERT INTO lab_root(id,volume_key,root_file_id,manifest_digest,seed,tier,registered_at_ns,volume_guid) VALUES(1,'fixture',?1,'synthetic-digest','seed','small',0,?2)",
+            rusqlite::params![vec![1u8; 16], registered_guid],
+        ).unwrap();
+    let result = c.writer().call(WriteCommand::RegisterRoot(RootObservation {
+        volume_guid: observed_guid.map(str::to_owned),
+        volume_key: "fixture".into(),
+        display_name: "Fixture".into(),
+        display_path: "Fixture root".into(),
+        root_file_id: Some(vec![1; 16]),
+        filesystem: Some("NTFS".into()),
+        origin: "lab_generated".into(),
+        granted_via: "fixture".into(),
+        observed_at_ns: 0,
+    }));
+    if accepted {
+        assert!(matches!(result, Ok(WriteReply::Root { .. })), "{result:?}");
+    } else {
+        assert!(
+            matches!(result, Err(Error::Invalid("unregistered lab root"))),
+            "registered={registered_guid:?}, observed={observed_guid:?}: {result:?}"
+        );
+    }
+    assert_eq!(
+        state
+            .query_row("SELECT count(*) FROM root_grant", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        i64::from(accepted)
+    );
+}
+
+#[test]
+fn lab_root_mismatched_guid_is_refused() {
+    check_lab_root_guid(Some("lab-guid"), Some("other-guid"), false);
+}
+
+#[test]
+fn lab_root_legacy_null_guid_is_refused() {
+    check_lab_root_guid(None, Some("lab-guid"), false);
+}
+
+#[test]
+fn lab_root_missing_observed_guid_is_refused() {
+    check_lab_root_guid(Some("lab-guid"), None, false);
+    check_lab_root_guid(None, None, false);
+}
+
+#[test]
+fn lab_root_matching_guid_is_accepted() {
+    check_lab_root_guid(Some("lab-guid"), Some("lab-guid"), true);
+}
+
 #[test]
 fn root_origins_must_match_the_dataset_before_any_grant_is_written() {
     for dataset in ["synthetic", "personal"] {
@@ -232,11 +289,11 @@ fn root_origins_must_match_the_dataset_before_any_grant_is_written() {
             let c = Catalog::open(temp.path(), dataset).unwrap();
             let state = Connection::open(temp.path().join("state.db")).unwrap();
             if origin == "lab_generated" {
-                state.execute("INSERT INTO lab_root VALUES(1,'fixture',?1,'synthetic-digest','seed','small',0)", [vec![1u8;16]]).unwrap();
+                state.execute("INSERT INTO lab_root(id,volume_key,root_file_id,manifest_digest,seed,tier,registered_at_ns,volume_guid) VALUES(1,'fixture',?1,'synthetic-digest','seed','small',0,'lab-guid')", [vec![1u8;16]]).unwrap();
             }
             let accepted = (dataset == "personal") == (origin == "owner_granted");
             let result = c.writer().call(WriteCommand::RegisterRoot(RootObservation {
-                volume_guid: None,
+                volume_guid: Some("lab-guid".into()),
                 volume_key: "fixture".into(),
                 display_name: "Fixture".into(),
                 display_path: "Fixture root".into(),

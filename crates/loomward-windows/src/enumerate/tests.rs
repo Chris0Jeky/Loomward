@@ -482,3 +482,37 @@ fn a_supplied_identity_mismatch_is_identity_changed_on_every_open_path() {
         Err(SourceError::IdentityChanged)
     );
 }
+
+#[test]
+fn supplied_identity_requires_exact_volume_guid_binding() {
+    let expected = OpenedIdentity {
+        id: Some(FileIdObs::Id128([1; 16])),
+        basis: IdBasis::PostOpen,
+        volume_serial: Some(7),
+        volume_guid: Some(11),
+        attributes: 0x10,
+        reparse_tag: None,
+    };
+    assert_eq!(expected_identity_matches(expected, expected), Ok(()));
+    for guid in [Some(12), None] {
+        assert_eq!(
+            expected_identity_matches(
+                OpenedIdentity {
+                    volume_guid: guid,
+                    ..expected
+                },
+                expected
+            ),
+            Err(SourceError::IdentityChanged)
+        );
+    }
+    let legacy = OpenedIdentity {
+        volume_guid: None,
+        ..expected
+    };
+    assert_eq!(expected_identity_matches(legacy, legacy), Ok(()));
+    assert_eq!(
+        expected_identity_matches(expected, legacy),
+        Err(SourceError::IdentityChanged)
+    );
+}
