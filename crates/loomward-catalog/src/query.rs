@@ -866,6 +866,7 @@ mod hardening_tests {
                 display_path: "Synthetic root".into(),
                 root_file_id: Some(vec![1; 16]),
                 filesystem: Some("NTFS".into()),
+                volume_guid: None,
                 origin: "fixture".into(),
                 granted_via: "fixture".into(),
                 observed_at_ns: 0,
