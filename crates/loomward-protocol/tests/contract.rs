@@ -46,6 +46,87 @@ struct Schema {
     validators: HashMap<String, Validator>,
 }
 
+#[test]
+fn client_projection_contracts_preserve_omitted_and_unknown_fields() {
+    let mut schema = Schema::load();
+    let owner = read(&contracts().join("examples/commands/node.inspect.result.json"));
+    let owner_page = read(&contracts().join("examples/commands/search.query.result.json"));
+    for mask in 0..16 {
+        let mut row = owner["row"].clone();
+        for (i, fields) in [
+            &["location_hint"][..],
+            &["logical_bytes", "allocated_bytes", "files", "dirs"][..],
+            &["modified_at"][..],
+            &["attributes", "flags"][..],
+        ]
+        .iter()
+        .enumerate()
+        {
+            if mask & (1 << i) == 0 {
+                for field in *fields {
+                    row.as_object_mut().unwrap().remove(*field);
+                }
+            }
+        }
+        let mut node = json!({"row": row, "root_id": owner["root_id"]});
+        let mut hit = owner_page["hits"][0].clone();
+        hit["row"] = row.clone();
+        if mask & 1 != 0 {
+            node["display_path"] = owner["display_path"].clone();
+        } else {
+            hit.as_object_mut().unwrap().remove("path");
+        }
+        let mut page = owner_page.clone();
+        page["hits"] = json!([hit]);
+        for (def, value) in [
+            ("ClientEntryRow", &row),
+            ("ClientSearchHit", &hit),
+            ("ClientNodeDetail", &node),
+            ("ClientSearchPage", &page),
+        ] {
+            assert!(schema.errors(def, value).is_empty(), "{def}: {value}");
+            assert_eq!(roundtrip(def, value).unwrap().unwrap(), *value);
+            let mut invalid = value.clone();
+            invalid["owner_only"] = json!(true);
+            assert!(!schema.errors(def, &invalid).is_empty());
+            assert!(roundtrip(def, &invalid).unwrap().is_err());
+        }
+        for (command, value) in [(Command::NodeInspect, node), (Command::SearchQuery, page)] {
+            command
+                .validate_client_result(value.as_object().unwrap())
+                .unwrap();
+            let mut invalid = value.clone();
+            let row = if command == Command::NodeInspect {
+                &mut invalid["row"]
+            } else {
+                &mut invalid["hits"][0]["row"]
+            };
+            row.as_object_mut().unwrap().remove("node_id");
+            assert!(!schema
+                .errors(command.client_result_def().unwrap(), &invalid)
+                .is_empty());
+            assert!(command
+                .validate_client_result(invalid.as_object().unwrap())
+                .is_err());
+        }
+    }
+    // Optional disclosure fields keep their value constraints when present.
+    for (field, value) in [
+        ("attributes", Value::Null),
+        ("flags", Value::Null),
+        ("logical_bytes", json!(-1)),
+        ("modified_at", json!("yesterday")),
+    ] {
+        let mut row = owner["row"].clone();
+        row[field] = value;
+        assert!(!schema.errors("ClientEntryRow", &row).is_empty());
+        assert!(roundtrip("ClientEntryRow", &row).unwrap().is_err());
+    }
+    assert!(Command::HealthGet
+        .validate_client_result(&Default::default())
+        .is_err());
+}
+
 impl Schema {
     fn load() -> Self {
         Self {

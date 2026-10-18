@@ -27,6 +27,7 @@ subtle = "2.6"
 getrandom = "0.4"
 
 [dev-dependencies]
+jsonschema = { version = "0.58.6", default-features = false }
 loomward-ask = { path = "../loomward-ask", features = ["testkit"] }
 proptest.workspace = true
 loomward-windows = { path = "../loomward-windows", features = ["fixtures"] }

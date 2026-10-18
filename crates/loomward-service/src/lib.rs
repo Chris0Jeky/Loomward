@@ -1036,6 +1036,16 @@ impl Inner {
             }) => {
                 if let Some(g) = &grant {
                     clients::project(command, g, &mut map);
+                    if command.validate_client_result(&map).is_err() {
+                        return ResponseEnvelope::error(
+                            Some(id),
+                            fail(
+                                ErrorCode::InternalError,
+                                "the service produced an invalid client result",
+                            ),
+                            None,
+                        );
+                    }
                 }
                 let meta = self.meta(started, &map, catalog_rev, state_rev);
                 ResponseEnvelope::ok_object(id, map, meta)

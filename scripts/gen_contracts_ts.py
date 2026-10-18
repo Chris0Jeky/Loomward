@@ -128,6 +128,12 @@ def render():
             f"  {lit(name)}: {{ adapters: [{adapters}], wave: {c['wave']}, events: [{events}] }},"
         )
     parts.append("export interface CommandMap {\n" + "\n".join(rows) + "\n}\n")
+    client_rows = [
+        f"  {lit(name)}: {{ request: {c['request']}; result: {c['client_result']} }};"
+        for name, c in cmds["commands"].items() if "client_result" in c
+    ]
+    parts.append("/** Results for grant-scoped client principals; CommandMap remains owner-only. */\n"
+                 "export interface ClientCommandMap {\n" + "\n".join(client_rows) + "\n}\n")
     parts.append("export type CommandKey = keyof CommandMap;\n")
     parts.append(
         "/** Where each command exists (elsewhere: capability_unavailable), its wave and its events. */\n"
@@ -157,6 +163,9 @@ export interface TypedResponseOk<C extends CommandKey> extends Omit<ResponseOk, 
 }
 
 export type TypedResponse<C extends CommandKey> = TypedResponseOk<C> | ResponseError;
+
+export type TypedClientResponse<C extends keyof ClientCommandMap> =
+  (Omit<ResponseOk, "result"> & { result: ClientCommandMap[C]["result"] }) | ResponseError;
 
 export interface TypedEvent<E extends EventKey> extends Omit<EventEnvelope, "event" | "data"> {
   event: E;

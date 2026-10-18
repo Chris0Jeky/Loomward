@@ -147,6 +147,30 @@ commands! {
 }
 
 impl Command {
+    /// The disclosure-projected result for a client principal; absent means no client command.
+    pub const fn client_result_def(self) -> Option<&'static str> {
+        match self {
+            Self::SearchQuery => Some("ClientSearchPage"),
+            Self::NodeInspect => Some("ClientNodeDetail"),
+            _ => None,
+        }
+    }
+
+    /// Validates the final projection, separately from the complete owner result.
+    pub fn validate_client_result(self, result: &Payload) -> Result<(), ErrorBody> {
+        match self {
+            Self::SearchQuery => {
+                decode_exact::<ClientSearchPage>(Value::Object(result.clone())).map(drop)
+            }
+            Self::NodeInspect => {
+                decode_exact::<ClientNodeDetail>(Value::Object(result.clone())).map(drop)
+            }
+            _ => Err(ErrorBody::invalid_request(
+                "this command has no client result",
+            )),
+        }
+    }
+
     /// `None` for a name outside the closed list: the caller answers `unknown_command`.
     pub fn from_name(name: &str) -> Option<Command> {
         Command::ALL.iter().copied().find(|c| c.as_str() == name)
