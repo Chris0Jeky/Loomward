@@ -81,6 +81,53 @@ fn first_scan_fixture(mode: &str, prior: bool) -> (tempfile::TempDir, Connection
 }
 
 #[test]
+fn multilink_finalisation_does_not_group_singleton_file_rows() {
+    let (_temp, conn) = first_scan_fixture("full", false);
+    conn.execute_batch(
+        "WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<10000)
+        INSERT INTO file(dir_id,name,file_id,logical,allocated,attrs,born_run,seen_run)
+        SELECT 1,'synthetic-'||i,CAST(printf('%016d',i) AS BLOB),1,1,0,2,2 FROM n;
+        INSERT INTO file(dir_id,name,file_id,logical,allocated,attrs,born_run,seen_run)
+        VALUES(1,'synthetic-link',CAST('0000000000000001' AS BLOB),1,7,0,2,2),
+              (1,'synthetic-unknown',NULL,1,NULL,0,2,2);",
+    )
+    .unwrap();
+    let steps = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = steps.clone();
+    conn.progress_handler(
+        100,
+        Some(move || {
+            counted.fetch_add(100, Ordering::Relaxed);
+            false
+        }),
+    )
+    .unwrap();
+    rebuild_multilink(&conn, 1).unwrap();
+    conn.progress_handler(0, None::<fn() -> bool>).unwrap();
+    assert_eq!(
+        conn.query_row("SELECT names,allocated FROM multilink", [], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+        })
+        .unwrap(),
+        (2, 7)
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM file WHERE flags & ?1 != 0",
+            [HARDLINK_SUSPECTED],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        2
+    );
+    let steps = steps.load(Ordering::Relaxed);
+    assert!(
+        steps < 400_000,
+        "singleton-heavy finalisation took {steps} SQLite VM steps"
+    );
+}
+
+#[test]
 fn first_scan_batches_staged_payloads_without_charging_unused_reservations() {
     for (mode, prior, run_id, expected) in [
         ("full", false, 2, 1),
