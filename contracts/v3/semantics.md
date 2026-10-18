@@ -144,6 +144,16 @@ table; it never writes a file-operation manifest. A duplicate canonical inputs d
 saved scenario. Saving checks the read's catalogue revision, declarations, active grants and root
 generations before committing, including catalogue changes within a generation.
 
+The engine save digest retains both the candidate projection (including its empty
+`excluded_volumes` member) and the simulation's excluded-volume reasons. These are part of the
+historical explanation, even when the planner scenario is unchanged. Overrides are hashed in
+group-ID order; their request order does not change the scenario's identity. Existing sorted
+digests are unchanged, and stored details remain readable without digest recomputation.
+Pre-#350 digests omitted that candidate member; older unsorted overrides also used array order.
+Re-saving either legacy form can create one new row. This is a deduplication boundary, not
+verification of a legacy digest against current inputs.
+Historical simulations never authorise an effect.
+
 The catalogue adapter reads active granted roots only, in one bounded SQLite snapshot. Missing
 fresh identity-matched link observations leave relief Unknown; default `verified_only` simulation
 pre-rejects those groups. Entry-allocation what-ifs remain explicitly labelled assumptions. Missing
@@ -165,8 +175,10 @@ reason `overlapping_grant_ancestry_unknown`.
 
 Volumes whose recorded roots have no active grant remain visible in `volumes.list` and
 `tiers.model`, with their observed `online` state and a "No active grant" tier note. They are
-excluded from candidates and simulations with `excluded_volumes.reason = "no_active_grant"`; choosing one as
-the source refuses with `invalid_request`, `detail.reason = "no_active_grant"`.
+excluded from the engine snapshot. The service adds them to `excluded_volumes` on both
+`placement.candidates` and `placement.simulate` with `reason = "no_active_grant"`; choosing one
+as the source refuses with `invalid_request`, `detail.reason = "no_active_grant"`. Candidate
+groups themselves come only from active granted roots.
 
 Each `tiers.model` volume has a required `source_eligible` boolean. It is false for offline,
 unknown-tier, missing or unusable capacity/free-space observations, out-of-range planner
