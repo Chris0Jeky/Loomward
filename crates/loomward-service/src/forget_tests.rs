@@ -418,6 +418,33 @@ fn forgetting_recovers_migration_journals_before_removing_sidecars() {
     );
 }
 
+/// #434: a rollback journal beside a migration copy that the forget never writes (an unknown v1 shape
+/// with nothing to scrub) is swept with the copy's sidecars. SQLite leaves a zero-length journal alone.
+#[test]
+fn forgetting_removes_a_journal_beside_an_unwritten_migration_copy() {
+    let dir = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    let (root, grant) = named(&svc, 1, NAME_A, PATH_A);
+    let (_, _kept) = named(&svc, 2, "KeptRoot", PATH_B);
+    svc.inner.revoke(grant).unwrap();
+    let copy = dir.path().join("state.before-v1.db");
+    rusqlite::Connection::open(&copy)
+        .unwrap()
+        .execute_batch(
+            "PRAGMA user_version=1; CREATE TABLE root_grant(id INTEGER PRIMARY KEY, display_path TEXT NOT NULL);
+             INSERT INTO root_grant VALUES(1,'SyntheticUnrelatedPath');",
+        )
+        .unwrap();
+    let journal = dir.path().join("state.before-v1.db-journal");
+    std::fs::write(&journal, b"").unwrap();
+    ok("roots.forget", forget(&svc, root, None));
+    assert!(
+        !journal.exists(),
+        "a migration copy's journal must not survive the forget"
+    );
+    assert!(copy.exists(), "keep the unrelated migration copy");
+}
+
 #[test]
 fn wal_reader_keeps_forget_pending_until_the_copy_can_be_checkpointed() {
     let dir = temp_root();

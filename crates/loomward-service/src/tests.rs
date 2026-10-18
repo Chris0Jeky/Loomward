@@ -5159,32 +5159,56 @@ fn a_duplicates_job_started_past_its_deadline_reports_the_started_job() {
     let svc = &lab.svc;
     settle(svc, &start(svc, &lab.root, "full"));
     f3_wait_live(svc);
-    let after = (Command::DuplicatesInspect, "after");
-    svc.inner.hooks.closed.lock().unwrap().push(after);
     let mut req = request(
         "duplicates.inspect",
         json!({"root_id":lab.root,
         "budget":{"max_candidates":200,"max_bytes":"1024","max_ms":5000}}),
     );
-    req.deadline_ms = Some(Int::new(200).unwrap());
-    let sent = Instant::now();
-    let first = std::thread::scope(|s| {
-        let asking = s.spawn(|| svc.call(req.clone(), &CallContext::http()));
-        svc.inner
-            .hooks
-            .until("duplicates started, past deadline", |h| {
-                h.arrived.lock().unwrap().contains(&after)
-                    && sent.elapsed() > Duration::from_millis(250)
-            });
-        svc.inner.hooks.open(after.0, after.1);
-        asking.join().unwrap()
-    });
+    let first = past_deadline_once(svc, &mut req, Command::DuplicatesInspect);
     assert_eq!(err(first).code, ErrorCode::DeadlineExceeded);
     let (job, _) = ok("duplicates.inspect", svc.call(req, &CallContext::http()));
     assert_eq!(
         settle(svc, job["job"]["job_id"].as_str().unwrap())["state"],
         "completed"
     );
+}
+
+/// #698: sends `req` once, holds its worker after the handler started the job and its caller
+/// before the wait, then runs the service clock (`Hooks::skew`) past the deadline. The caller
+/// therefore answers at its deadline and the worker finishes past it, on any host load; the
+/// generous real deadline leaves the handler's own work out of the race. The clock is reset
+/// before returning, so a retry with the same request_id waits on the real clock.
+#[cfg(windows)]
+fn past_deadline_once(
+    svc: &Service,
+    req: &mut RequestEnvelope,
+    command: Command,
+) -> ResponseEnvelope {
+    let hooks = &svc.inner.hooks;
+    let (after, waiting) = ((command, "after"), (command, "mutate_wait"));
+    hooks.arrived.lock().unwrap().clear();
+    hooks.closed.lock().unwrap().extend([after, waiting]);
+    req.deadline_ms = Some(Int::new(60_000).unwrap());
+    let first = std::thread::scope(|s| {
+        let asking = s.spawn(|| svc.call(req.clone(), &CallContext::http()));
+        hooks.until("job started, caller waiting", |h| {
+            let arrived = h.arrived.lock().unwrap();
+            arrived.contains(&after) && arrived.contains(&waiting)
+        });
+        *hooks.skew.lock().unwrap() = Duration::from_secs(61);
+        hooks.open(waiting.0, waiting.1);
+        let first = asking.join().unwrap();
+        hooks.open(after.0, after.1);
+        first
+    });
+    hooks.until("worker settled", |h| {
+        h.arrived
+            .lock()
+            .unwrap()
+            .contains(&(command, "worker_exit"))
+    });
+    *hooks.skew.lock().unwrap() = Duration::ZERO;
+    first
 }
 
 /// #565 review: a scan that started just past its request deadline reports the real job, and a
@@ -5196,20 +5220,8 @@ fn a_scan_started_past_its_deadline_reports_the_started_job() {
     let svc = &lab.svc;
     settle(svc, &start(svc, &lab.root, "full"));
     f3_wait_live(svc);
-    let after = (Command::ScanStart, "after");
-    svc.inner.hooks.closed.lock().unwrap().push(after);
     let mut req = request("scan.start", json!({"root_id": lab.root, "mode": "full"}));
-    req.deadline_ms = Some(Int::new(200).unwrap());
-    let sent = Instant::now();
-    let first = std::thread::scope(|s| {
-        let asking = s.spawn(|| svc.call(req.clone(), &CallContext::http()));
-        svc.inner.hooks.until("started, past the deadline", |h| {
-            h.arrived.lock().unwrap().contains(&after)
-                && sent.elapsed() > Duration::from_millis(250)
-        });
-        svc.inner.hooks.open(after.0, after.1);
-        asking.join().unwrap()
-    });
+    let first = past_deadline_once(svc, &mut req, Command::ScanStart);
     assert_eq!(err(first).code, ErrorCode::DeadlineExceeded);
     let (job, _) = ok("scan.start", svc.call(req, &CallContext::http()));
     let job = job["job"]["job_id"].as_str().unwrap().to_owned();
