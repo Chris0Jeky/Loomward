@@ -6,25 +6,30 @@
 // breadcrumb) keeps today's error behaviour.
 import { LoomwardError } from '../../lib/transport/client';
 
-/** `root` is the granted root a trail starts in (first crumb only), read while its node ID was live: recovery follows it, not the name. */
+/**
+ * `root` is the granted path of the root a trail starts in (first crumb only), read while its node ID was live. Node and root IDs
+ * are minted per engine session and change on restart or rebuild, so recovery follows this display text, not an ID and not the name.
+ */
 export interface Crumb { id: string; name: string; root?: string }
 
 type FolderPage = { items: { node_id: string; name: string; kind: 'dir' | 'file' }[]; next_cursor: string | null };
 
 /**
  * Rebind display names through fresh read-only listings; names never authorise file effects. When the saved trail knows its
- * root id, the root is found by `rootOf(startId)` alone, so a renamed root is kept and a different root of the same name
- * (or the original gone) is never passed off as it. Without one, a unique name match is the fallback.
+ * root path, the root is found by `rootOf(startId)` (the start's granted path) alone, so a renamed root is kept and a different
+ * root of the same name (or the original gone) is never passed off as it. Without one, a unique name match is the fallback.
  */
 export async function resolveTrail(saved: Crumb[], starts: Crumb[], children: (id: string, cursor: string | null) => Promise<FolderPage>, rootOf?: (id: string) => Promise<string | null>): Promise<Crumb[]> {
   const want = saved[0]?.root;
   let candidate: Crumb | undefined;
   if (want && rootOf) {
+    const found: Crumb[] = [];
     for (const s of starts) {
-      try { if (await rootOf(s.id) === want) { candidate = { ...s, root: want }; break; } } catch (e) {
+      try { if (await rootOf(s.id) === want) found.push({ ...s, root: want }); } catch (e) {
         if (!(e instanceof LoomwardError) || e.code !== 'not_found') throw e;
       }
     }
+    candidate = found.length === 1 ? found[0] : undefined; // two roots reporting one path cannot be told apart
   } else {
     const roots = starts.filter((c) => c.name === saved[0]?.name);
     candidate = roots.length === 1 ? roots[0] : undefined;

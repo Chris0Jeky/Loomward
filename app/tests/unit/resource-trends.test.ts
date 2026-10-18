@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
 import type { TrendSeries } from '../../src/lib/contracts.gen';
-import { segments, trendCarried, trendLabel } from '../../src/views/observatory/trends';
+import { segments, trendAge, trendLabel } from '../../src/views/observatory/trends';
 
 const series = (values: (number | string | null)[], times = values.map((_, i) => i * 1000)): TrendSeries => ({
   key: 'system', metric: 'cpu_busy_fraction', unit: 'fraction', max_gap_ms: 2000, unknowns: [],
@@ -37,14 +37,14 @@ it('refuses unit mismatches and malformed values without drawing them as zero', 
   expect(trendLabel('4096', 'queue')).toBe('unknown');
 });
 
-it('marks a series whose last point is older than the sample as carried, and stays silent when fresh or when ages are unreadable', () => {
+it('states the age of a series whose last point trails the sample, and stays silent when fresh or when ages are unreadable', () => {
   const at = (iso: string) => ({ ...series([0.5]), points: [{ offset_ms: 0, observed_at: iso, value: 0.5 }] }) as TrendSeries;
   const sample = '2026-10-09T12:00:15Z';
-  expect(trendCarried(at('2026-10-09T12:00:15Z'), sample)).toBeNull();
-  expect(trendCarried(at('2026-10-09T12:00:14Z'), sample)).toBeNull(); // within one sampler interval
-  expect(trendCarried(at('2026-10-09T12:00:03Z'), sample)).toBe('Carried forward: last point observed 12 s before this sample');
-  expect(trendCarried(at('2026-10-09T11:58:00Z'), sample)).toBe('Carried forward: last point observed 2 min before this sample');
-  expect(trendCarried(at('not-a-time'), sample)).toBe('Carried forward or stale: the age of the last point is unknown');
-  expect(trendCarried(at('2026-10-09T12:00:03Z'), 'not-a-time')).toBeNull();
-  expect(trendCarried({ ...series([]), points: [] } as TrendSeries, sample)).toBeNull();
+  expect(trendAge(at('2026-10-09T12:00:15Z'), sample)).toBeNull();
+  expect(trendAge(at('2026-10-09T12:00:14Z'), sample)).toBeNull(); // within one sampler interval
+  expect(trendAge(at('2026-10-09T12:00:03Z'), sample)).toBe('Last point observed 12 s before this sample');
+  expect(trendAge(at('2026-10-09T11:58:00Z'), sample)).toBe('Last point observed 2 min before this sample');
+  expect(trendAge(at('not-a-time'), sample)).toBe('The age of the last point is unknown');
+  expect(trendAge(at('2026-10-09T12:00:03Z'), 'not-a-time')).toBeNull();
+  expect(trendAge({ ...series([]), points: [] } as TrendSeries, sample)).toBeNull();
 });
