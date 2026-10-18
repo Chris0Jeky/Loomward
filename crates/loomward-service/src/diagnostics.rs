@@ -8,6 +8,7 @@ use crate::{db, fail, now, paths, Inner, Out};
 use loomward_protocol::*;
 use serde_json::{json, Value};
 use sha2::{Digest as _, Sha256};
+#[cfg(not(windows))]
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -111,7 +112,10 @@ pub(crate) fn folder_allowed(resolved: &Path, is_dir: impl FnOnce(&Path) -> bool
 #[derive(Debug)]
 pub(crate) struct Target {
     path: PathBuf,
+    #[cfg(not(windows))]
     folder: PathBuf,
+    #[cfg(windows)]
+    folder: loomward_windows::diagnostics::ExportFolder,
     pub(crate) exists: bool,
 }
 
@@ -130,8 +134,8 @@ impl Target {
 /// stream name, a parent folder that is missing or resolves to a network path, an existing final
 /// component that is not a regular file or is a link or reparse point, and (named) one that is a
 /// cloud placeholder.
-/// Local junctions and links among the ancestors are followed: the folder is canonicalised and the
-/// target joined to it, so a link swapped into the path later is not followed.
+/// Local junctions and links among the ancestors are resolved before pinning the local directory.
+/// On Windows, checks and writes use that handle even if the directory or an ancestor is renamed.
 pub(crate) fn check_target(target: &Path) -> Result<Target, Why> {
     let name = target.file_name().map(|n| n.to_string_lossy());
     if !target.is_absolute()
@@ -147,7 +151,14 @@ pub(crate) fn check_target(target: &Path) -> Result<Target, Why> {
         return Err(Why::UnsupportedTarget);
     }
     let path = folder.join(target.file_name().ok_or(Why::UnsupportedTarget)?);
-    let exists = match std::fs::symlink_metadata(&path) {
+    #[cfg(windows)]
+    let folder = loomward_windows::diagnostics::ExportFolder::open(&folder)
+        .map_err(|_| Why::UnsupportedTarget)?;
+    #[cfg(windows)]
+    let metadata = folder.metadata(target.file_name().ok_or(Why::UnsupportedTarget)?);
+    #[cfg(not(windows))]
+    let metadata = std::fs::symlink_metadata(&path);
+    let exists = match metadata {
         // Named before the general refusal: an online-only file looks like a plain local file to the owner.
         Ok(meta) if paths::cloud_placeholder(&meta) => return Err(Why::CloudPlaceholder),
         Ok(meta) if !meta.is_file() || paths::unsafe_attributes(&meta) => {
@@ -171,31 +182,46 @@ pub(crate) fn check_target(target: &Path) -> Result<Target, Why> {
 pub(crate) fn write_to(target: &Target, bytes: &[u8]) -> Result<(), Why> {
     let mut nonce = [0u8; 8];
     getrandom::fill(&mut nonce).map_err(|_| Why::WriteFailed)?;
-    let temporary = target.folder.join(format!(
+    let temporary = format!(
         ".loomward-diagnostics-{}.partial",
         nonce.iter().map(|b| format!("{b:02x}")).collect::<String>()
-    ));
-    let written = (|| {
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        drop(file);
-        // A file that appeared since the check was never confirmed for replacement: leave it.
-        // ponytail: this shrinks the check-to-rename gap to microseconds, it does not close it; std has
-        // no no-replace rename, so closing it needs MoveFileEx from the Windows crate.
-        if !target.exists && std::fs::symlink_metadata(&target.path).is_ok() {
-            return Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists));
-        }
-        std::fs::rename(&temporary, &target.path)
-    })();
-    if written.is_err() {
-        let _ = std::fs::remove_file(&temporary);
-        return Err(Why::WriteFailed);
+    );
+    #[cfg(windows)]
+    {
+        target
+            .folder
+            .write_export(
+                target.path.file_name().ok_or(Why::WriteFailed)?,
+                temporary.as_ref(),
+                bytes,
+                target.exists,
+            )
+            .map_err(|_| Why::WriteFailed)
     }
-    Ok(())
+    #[cfg(not(windows))]
+    {
+        let temporary = target.folder.join(temporary);
+        let written = (|| {
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)?;
+            file.write_all(bytes)?;
+            file.sync_all()?;
+            drop(file);
+            // A file that appeared since the check was never confirmed for replacement: leave it.
+            // shortcut: the portable fallback still races; add native no-replace support before shipping it.
+            if !target.exists && std::fs::symlink_metadata(&target.path).is_ok() {
+                return Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists));
+            }
+            std::fs::rename(&temporary, &target.path)
+        })();
+        if written.is_err() {
+            let _ = std::fs::remove_file(&temporary);
+            return Err(Why::WriteFailed);
+        }
+        Ok(())
+    }
 }
 
 /// Check, then write (tests and callers without a dialog: an existing file is replaced).
