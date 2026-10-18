@@ -269,10 +269,24 @@ describe('"Add a folder…" state machine', () => {
     expect(grantPicker).toMatchObject({ phase: 'granted', rootId: 'rt_new' });
   });
 
-  it('a busy that is not an open dialog (cooldown, mutation capacity) shows the service message and credits no later root', async () => {
-    fake({ 'roots.request_grant': { error: 'busy', message: 'native picker cooldown; retry shortly' } });
+  it.each([
+    'a native dialog is already open.',
+    '  a native dialog is already open  ',
+    'A native dialog is already open.',
+  ])('busy dialog-open variant %s stays neutral instead of failing', async (message) => {
+    fake({ 'roots.request_grant': { error: 'busy', message } });
     await grantPicker.ask(['rt_old']);
-    expect(grantPicker).toMatchObject({ phase: 'failed', text: 'native picker cooldown; retry shortly' });
+    expect(grantPicker.phase).toBe('deadline');
+    expect(grantPicker.text).toMatch(/may still be open/);
+  });
+
+  it.each([
+    'native picker cooldown; retry shortly',
+    'native dialog cannot open during cooldown; retry shortly',
+  ])('a busy that is not an open dialog (%s) shows the service message and credits no later root', async (message) => {
+    fake({ 'roots.request_grant': { error: 'busy', message } });
+    await grantPicker.ask(['rt_old']);
+    expect(grantPicker).toMatchObject({ phase: 'failed', text: message });
     grantPicker.sync([root('rt_old'), root('rt_other')]);
     expect(grantPicker.phase).toBe('failed');
     expect(grantPicker.rootId).toBeNull();
