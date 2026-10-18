@@ -64,7 +64,7 @@ const SINCE_SLACK: i64 = 1_000_000;
 /// NTFS delivers a last-access change under the last-write filter bit, so reading or listing a directory
 /// raises MODIFIED for it, and a scan then dirtied its own root. An access-time update never changes
 /// ChangeTime, so a MODIFIED target whose ChangeTime precedes `since` (FILETIME, the start of a scan that
-/// listed everything before it) was only read. Every other hint, and any target that cannot be pinned
+/// listed everything before it) was only read. Only directory targets are dropped. Every other hint, and any target that cannot be pinned
 /// below `root` without following a reparse point, is kept; at most 64 distinct names are checked.
 #[cfg(windows)]
 pub fn without_access_only(
@@ -76,6 +76,15 @@ pub fn without_access_only(
     let Ok(root) = crate::enumerate::open_readonly_directory(root) else {
         return changes;
     };
+    // A clock stepped back past the scan start makes every later ChangeTime look old: keep everything.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(i64::MIN, |d| {
+            (d.as_nanos() / 100) as i64 + 116_444_736_000_000_000
+        });
+    if now < since {
+        return changes;
+    }
     let since = since.saturating_sub(SINCE_SLACK);
     let mut seen: BTreeMap<Vec<u16>, bool> = BTreeMap::new();
     let mut quiet = |name: &[u16]| -> bool {
@@ -89,7 +98,13 @@ pub fn without_access_only(
                     let parent = walk.as_ref().unwrap_or(&root);
                     walk = Some(crate::enumerate::open_metadata_child(parent, part)?);
                 }
-                let observed = crate::identity::from_file(walk.as_ref().unwrap())?;
+                let target = walk.as_ref().unwrap();
+                // Only directories: listing is what raises access-only noise, while a file written before
+                // the scan and flushed later can report MODIFIED with an old ChangeTime (#729 review).
+                if !target.metadata()?.is_dir() {
+                    return Ok(false);
+                }
+                let observed = crate::identity::from_file(target)?;
                 Ok(observed.change_time.parse::<i64>().is_ok_and(|t| t < since))
             })()
             .unwrap_or(false);
@@ -709,11 +724,21 @@ mod access_only_tests {
             modified("missing"),
             Change::RootDirty,
         ];
-        // Nothing changed after `since`: both MODIFIED targets were only read. A created, vanished or
-        // overflow hint is never an access update.
+        // Nothing changed after `since`: the directory was only read and is dropped. A file target, a
+        // created, vanished or overflow hint is never treated as an access update.
         assert_eq!(
             without_access_only(tree.path(), hints.clone(), since),
-            vec![kept.clone(), modified("missing"), Change::RootDirty]
+            vec![
+                modified(r"sub\a.bin"),
+                kept.clone(),
+                modified("missing"),
+                Change::RootDirty
+            ]
+        );
+        // A clock stepped back below `since` keeps every hint.
+        assert_eq!(
+            without_access_only(tree.path(), hints.clone(), filetime_now() + 100_000_000),
+            hints
         );
         // A real attribute change after `since` moves ChangeTime but not LastWriteTime.
         let mut permissions = std::fs::metadata(&file).unwrap().permissions();
@@ -747,7 +772,6 @@ mod access_only_tests {
         let since = filetime_now();
         std::thread::sleep(Duration::from_millis(100));
         let _ = std::fs::read_dir(&sub).unwrap().count();
-        let _ = std::fs::read(sub.join("a.bin")).unwrap();
         std::thread::sleep(Duration::from_millis(1500));
         watcher.checkpoint().unwrap();
         watcher.stop();
