@@ -212,6 +212,74 @@ fn fold_wal(f: &Fixture) {
 }
 
 #[test]
+fn failed_forget_rolls_back_its_temp_table_before_retry_in_the_same_writer() {
+    let f = fixture();
+    revoke(&f, f.grant_a);
+    let state = Connection::open(f.temp.path().join("state.db")).unwrap();
+    state
+        .execute_batch(
+            "CREATE TRIGGER refuse_forget BEFORE DELETE ON human_feedback
+        BEGIN SELECT RAISE(ABORT,'synthetic forget failure'); END",
+        )
+        .unwrap();
+    assert!(matches!(forget(&f, f.grant_a, None), Err(Error::Sql(_))));
+    assert_eq!(
+        state
+            .query_row("SELECT count(*) FROM root_forgotten", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    state.execute_batch("DROP TRIGGER refuse_forget").unwrap();
+    forget(&f, f.grant_a, None).expect("transaction rollback must remove forget_ref");
+    assert_eq!(catalog_count(&f, "SELECT count(*) FROM root"), 1);
+}
+
+#[test]
+fn failed_catalogue_purge_stays_scrub_pending_after_another_forget() {
+    let f = fixture();
+    revoke(&f, f.grant_a);
+    revoke(&f, f.grant_b);
+    let main = Connection::open(f.temp.path().join("catalog.db")).unwrap();
+    main.execute_batch(&format!(
+        "CREATE TRIGGER refuse_purge BEFORE DELETE ON root WHEN old.id={}
+        BEGIN SELECT RAISE(ABORT,'synthetic purge failure'); END",
+        f.root_a
+    ))
+    .unwrap();
+    assert!(matches!(forget(&f, f.grant_a, None), Err(Error::Sql(_))));
+    let state = Connection::open(f.temp.path().join("state.db")).unwrap();
+    let pending = || {
+        state
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM meta WHERE key='scrub_pending')",
+                [],
+                |r| r.get::<_, bool>(0),
+            )
+            .unwrap()
+    };
+    assert!(pending());
+    assert_eq!(catalog_count(&f, "SELECT count(*) FROM root"), 2);
+    assert_eq!(
+        state
+            .query_row("SELECT count(*) FROM root_forgotten", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    forget(&f, f.grant_b, None).unwrap();
+    assert_eq!(catalog_count(&f, "SELECT count(*) FROM root"), 1);
+    assert!(
+        pending(),
+        "another forget must not hide the failed catalogue purge from health"
+    );
+    main.execute_batch("DROP TRIGGER refuse_purge").unwrap();
+    forget(&f, f.grant_a, None).unwrap();
+    assert_eq!(catalog_count(&f, "SELECT count(*) FROM root"), 0);
+    assert!(!pending());
+}
+
+#[test]
 fn forgetting_purges_every_named_row_and_leaves_the_other_root_untouched() {
     let f = fixture();
     fold_wal(&f);

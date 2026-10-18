@@ -38,6 +38,10 @@ pub struct Plan {
     /// The destination grant's verified root: (volume serial, file ID). The pinned destination's
     /// ancestry must contain it at preview and again at run (lab roots only, invariant 2).
     pub destination_root: (u64, [u8; 16]),
+    /// The destination grant's volume GUID; the pinned root must report it (#669). Legacy plans
+    /// without it are refused at run.
+    #[serde(default)]
+    pub destination_root_guid: Option<u128>,
     /// The service's grant numbers for the source and destination roots: revoking either fences the
     /// run (docs/47 section 5). Empty for plans journaled before #526 and in the lab suite.
     #[serde(default)]
@@ -75,15 +79,21 @@ pub struct Request<'a> {
     pub date: &'a str,
     /// The destination grant's verified root identity: (volume serial, file ID).
     pub destination_root: (u64, [u8; 16]),
+    /// The destination grant's volume GUID, as at scan admission (#657, #669).
+    pub destination_root_guid: Option<u128>,
 }
 
-/// The pinned destination lies under the given root object (by identity, never by path).
-fn within(dest: &Destination, root: (u64, [u8; 16])) -> io::Result<bool> {
+/// The pinned destination lies under the given root object (by identity, never by path), and the
+/// pinned handle of that root reports the grant's volume GUID (#669; GUID-less never matches).
+fn within(dest: &Destination, root: (u64, [u8; 16]), guid: Option<u128>) -> io::Result<bool> {
     let serial = root.0.to_string();
-    Ok(dest
-        .ancestry()?
-        .iter()
-        .any(|k| k.file_id == root.1 && k.volume_serial == serial))
+    for (pin, k) in dest.pins.iter().zip(dest.ancestry()?) {
+        if k.file_id == root.1 && k.volume_serial == serial {
+            let opened = enumerate::volume_guid(pin).map_err(source_error)?;
+            return Ok(guid == Some(opened));
+        }
+    }
+    Ok(false)
 }
 
 fn invalid(message: &str) -> io::Error {
@@ -226,7 +236,11 @@ fn prepare_with_limit(
 
     let dest_observed = identity::observe(request.destination)?;
     let dest = Destination::open(request.destination, &dest_observed.object)?;
-    if !within(&dest, request.destination_root)? {
+    if !within(
+        &dest,
+        request.destination_root,
+        request.destination_root_guid,
+    )? {
         return Err(invalid("destination_outside_grant"));
     }
     let mut ancestors = dest
@@ -287,6 +301,7 @@ fn prepare_with_limit(
         destination: request.destination.to_path_buf(),
         destination_key: dest_observed.object,
         destination_root: request.destination_root,
+        destination_root_guid: request.destination_root_guid,
         grants: Vec::new(),
         manifest: preview.manifest.clone(),
         sources,
@@ -931,11 +946,19 @@ pub fn run(store: &Mutex<Store>, op: u64, control: &Control) -> Result<Outcome, 
             })
         }
         // The pinned parent must still sit under its grant's root (a swapped ancestor is refused).
-        Ok(destination) if !within(&destination, plan.destination_root).unwrap_or(false) => journal
-            .log(Record::Transition {
+        Ok(destination)
+            if !within(
+                &destination,
+                plan.destination_root,
+                plan.destination_root_guid,
+            )
+            .unwrap_or(false) =>
+        {
+            journal.log(Record::Transition {
                 to: OpState::Refused,
                 code: Some(Refusal::DestinationChanged),
-            }),
+            })
+        }
         Ok(destination) => copy(&journal, &plan, control, &destination),
     };
     finish(store, op, &plan, control, stopped)
