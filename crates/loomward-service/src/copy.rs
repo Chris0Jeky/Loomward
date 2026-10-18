@@ -338,6 +338,7 @@ struct Resolved {
     root_path: PathBuf,
     /// The grant's verified root identity: (volume serial, file ID).
     root_id: (u64, [u8; 16]),
+    root_guid: Option<u128>,
     relative: PathBuf,
     is_dir: bool,
 }
@@ -411,6 +412,7 @@ impl Inner {
             root,
             root_path,
             root_id,
+            root_guid: granted.expected().and_then(|e| e.volume_guid),
             relative: path.ancestors.iter().skip(1).map(|p| &p.name).collect(),
             is_dir,
         })
@@ -482,7 +484,9 @@ impl Inner {
             )
         })?;
         // The root opened for observation is the granted object, never a substitute at that path.
-        if (plan.source_root_volume, plan.source_root_id) != first.root_id {
+        if (plan.source_root_volume, plan.source_root_id) != first.root_id
+            || plan.source_root_guid != first.root_guid
+        {
             return Err(with_reason(
                 fail(ErrorCode::PermissionDenied, "the granted root changed"),
                 "root_identity_changed",

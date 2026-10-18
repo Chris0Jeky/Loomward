@@ -1986,3 +1986,28 @@ fn a_stream_planted_on_a_staged_folder_is_never_committed() {
         );
     }
 }
+
+#[test]
+fn copy_plan_preserves_source_volume_guid_binding() {
+    let id = [1u8; 16];
+    let json = serde_json::json!({
+        "source_root": "synthetic-root", "source_root_id": id,
+        "source_root_volume": 7, "source_root_guid": 11,
+        "source_root_attributes": 16, "destination": "synthetic-destination",
+        "destination_key": { "volume_serial": "7", "file_id": id,
+            "quality": {"kind": "file_id128"}, "creation_time": "0", "reparse_tag": 0 },
+        "destination_root": [7, id],
+        "manifest": { "destination": { "grant": 2,
+            "parent": { "volume": 7, "file_id": id }, "folder_name": "copy" },
+            "root": null, "items": [] }, "sources": []
+    });
+    let mut plan: Plan = serde_json::from_value(json.clone()).unwrap();
+    assert_eq!(plan.root_identity().volume_guid, Some(11));
+    plan.source_root_guid = Some(u128::MAX);
+    let restored: Plan = serde_json::from_str(&serde_json::to_string(&plan).unwrap()).unwrap();
+    assert_eq!(restored.root_identity().volume_guid, Some(u128::MAX));
+    let mut legacy = json;
+    legacy.as_object_mut().unwrap().remove("source_root_guid");
+    let legacy: Plan = serde_json::from_value(legacy).unwrap();
+    assert_eq!(legacy.root_identity().volume_guid, None);
+}

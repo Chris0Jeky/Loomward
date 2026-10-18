@@ -29,6 +29,9 @@ pub struct Plan {
     pub source_root: PathBuf,
     pub source_root_id: [u8; 16],
     pub source_root_volume: u64,
+    /// Handle-derived source binding; legacy plans without it cannot reopen native content.
+    #[serde(default)]
+    pub source_root_guid: Option<u128>,
     pub source_root_attributes: u32,
     pub destination: PathBuf,
     pub destination_key: ObjectKey,
@@ -50,7 +53,7 @@ impl Plan {
         enumerate::OpenedIdentity {
             id: Some(enumerate::FileIdObs::Id128(self.source_root_id)),
             basis: enumerate::IdBasis::PostOpen,
-            volume_guid: None,
+            volume_guid: self.source_root_guid,
             volume_serial: Some(self.source_root_volume),
             attributes: self.source_root_attributes,
             reparse_tag: Some(0),
@@ -279,6 +282,7 @@ fn prepare_with_limit(
         source_root_volume: root
             .volume_serial
             .ok_or_else(|| invalid("no volume serial"))?,
+        source_root_guid: root.volume_guid,
         source_root_attributes: root.attributes,
         destination: request.destination.to_path_buf(),
         destination_key: dest_observed.object,

@@ -202,11 +202,16 @@ pub fn refused_attributes(attributes: u32) -> bool {
 
 /// A supplied identity must match the handle opened now. Every open path reports a mismatch as
 /// `IdentityChanged` (journal and watch alike), never `Refused` (#553).
+/// GUIDs match exactly, as at scan admission (#657). A legacy GUID-less identity only matches
+/// a GUID-less source; re-establish its binding before accepting a native handle with a GUID.
 pub fn expected_identity_matches(
     opened: OpenedIdentity,
     expected: OpenedIdentity,
 ) -> Result<(), SourceError> {
-    if opened.id != expected.id || opened.volume_serial != expected.volume_serial {
+    if opened.id != expected.id
+        || opened.volume_serial != expected.volume_serial
+        || opened.volume_guid != expected.volume_guid
+    {
         return Err(SourceError::IdentityChanged);
     }
     Ok(())
@@ -330,6 +335,8 @@ pub use native::read_capped_regular_file;
 pub(crate) use native::record_open_accesses;
 #[cfg(all(windows, feature = "copy-primitives"))]
 pub(crate) use native::volume_device;
+#[cfg(all(windows, any(feature = "content-read", test)))]
+pub(crate) use native::volume_guid;
 #[cfg(windows)]
 pub(crate) use native::{non_elevated, open_watch_root};
 #[cfg(windows)]
