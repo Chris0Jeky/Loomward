@@ -517,6 +517,187 @@ fn unknown_allocation_hardlinks_and_failed_run_rollup_are_distinct() {
 }
 
 #[test]
+fn restart_isolates_an_overdeep_root_and_keeps_healthy_reads_available() {
+    let (temp, c, _, bad_dir, _) = setup();
+    let WriteReply::Root {
+        grant_id,
+        dir_id: good_dir,
+        ..
+    } = c
+        .writer()
+        .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_guid: None,
+            volume_key: "healthy-volume".into(),
+            display_name: "Healthy fixture".into(),
+            display_path: "Healthy root".into(),
+            root_file_id: Some(vec![2; 16]),
+            filesystem: Some("NTFS".into()),
+            origin: "fixture".into(),
+            granted_via: "fixture".into(),
+            observed_at_ns: 1,
+        }))
+        .unwrap()
+    else {
+        panic!()
+    };
+    let WriteReply::Run(run) = c
+        .writer()
+        .call(WriteCommand::BeginRun {
+            grant_id,
+            mode: "full".into(),
+            strategy: "fixture".into(),
+            started_at_ns: 2,
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+    c.writer()
+        .call(listing(
+            run,
+            good_dir,
+            vec![identified("healthy", 3, 7)],
+            vec![],
+        ))
+        .unwrap();
+    c.writer()
+        .call(WriteCommand::StageChunk {
+            run_id: run,
+            dir_id: good_dir,
+            seq: 0,
+            files: vec![identified("unpublished", 4, 9)],
+            dirs: vec![],
+        })
+        .unwrap();
+    drop(c);
+    let db = Connection::open(temp.path().join("catalog.db")).unwrap();
+    // An overdeep chain left by the legacy reparent bug, including stale valid aggregates.
+    db.execute(
+        "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<600)
+         INSERT INTO dir(id,root_id,parent_id,name,id_quality,id_basis,depth,attrs,listing_state,born_run,seen_run)
+         SELECT i+1000,(SELECT root_id FROM dir WHERE id=?1),CASE i WHEN 1 THEN ?1 ELSE i+999 END,
+                'deep'||i,'path_observation','none',i,0,'complete',1,1 FROM n",
+        [bad_dir],
+    ).unwrap();
+    db.execute("UPDATE dir SET sub_complete=1 WHERE id=?1", [bad_dir])
+        .unwrap();
+    for _ in 0..2 {
+        let c =
+            Catalog::open(temp.path(), "synthetic").expect("one bad root must not brick the store");
+        let mut reader = c.reader().unwrap();
+        assert_eq!(
+            reader
+                .inspect(NodeKey::Dir(good_dir))
+                .unwrap()
+                .row
+                .logical_bytes
+                .as_deref(),
+            Some("7")
+        );
+        assert!(matches!(
+            reader.inspect(NodeKey::Dir(bad_dir)),
+            Err(Error::RepairRequired)
+        ));
+        for (dir, repair_pending) in [(good_dir, false), (bad_dir, true)] {
+            let result = reader.slice(&SliceRequest {
+                anchor: NodeKey::Dir(dir),
+                depth: 1,
+                max_nodes: 16,
+                min_share: 0.0,
+                basis: Basis::Logical,
+                include_files: true,
+            });
+            if repair_pending {
+                assert!(matches!(result, Err(Error::RepairRequired)));
+            } else {
+                result.unwrap();
+            }
+        }
+        assert_eq!(
+            db.query_row(
+                "SELECT state FROM root WHERE id=(SELECT root_id FROM dir WHERE id=?1)",
+                [bad_dir],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            "repairing"
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT count(*) FROM scan_run WHERE state='running'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT count(*) FROM root WHERE active_run IS NOT NULL",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM stage_entry", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        c.writer().call(WriteCommand::Barrier).unwrap();
+    }
+    // A rescan that fails leaves the still-overdeep root `partial` with invalid aggregates. The next
+    // read's repair must re-quarantine it instead of failing reads of the healthy root (#695 review).
+    {
+        let c = Catalog::open(temp.path(), "synthetic").unwrap();
+        db.execute(
+            "UPDATE root SET state='partial' WHERE id=(SELECT root_id FROM dir WHERE id=?1)",
+            [bad_dir],
+        )
+        .unwrap();
+        let mut reader = c.reader().unwrap();
+        assert_eq!(
+            reader
+                .inspect(NodeKey::Dir(good_dir))
+                .unwrap()
+                .row
+                .logical_bytes
+                .as_deref(),
+            Some("7")
+        );
+        assert!(matches!(
+            reader.inspect(NodeKey::Dir(bad_dir)),
+            Err(Error::RepairRequired)
+        ));
+        assert_eq!(
+            db.query_row(
+                "SELECT state FROM root WHERE id=(SELECT root_id FROM dir WHERE id=?1)",
+                [bad_dir],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            "repairing"
+        );
+    }
+    // Once the tree can be repaired, the existing explicit repair clears the pending state.
+    db.execute("UPDATE dir SET parent_id=?1 WHERE id>1000", [bad_dir])
+        .unwrap();
+    let c = Catalog::open(temp.path(), "synthetic").unwrap();
+    c.writer()
+        .call(WriteCommand::Repair { root_id: 1 })
+        .unwrap();
+    assert_eq!(
+        db.query_row("SELECT state FROM root WHERE id=1", [], |r| r
+            .get::<_, String>(0))
+            .unwrap(),
+        "partial"
+    );
+    assert!(c.reader().unwrap().inspect(NodeKey::Dir(bad_dir)).is_ok());
+}
+
+#[test]
 fn invalid_listing_rolls_back_and_restart_marks_only_interrupted_roots_stale() {
     let (temp, c, _, root, run) = setup();
     c.writer()
@@ -2752,10 +2933,8 @@ fn refresh_root_adopts_legacy_null_guid_once_without_replacing_grant() {
         };
         let before = revision();
         observation.volume_guid = Some("0123456789abcdef0123456789abcdef".into());
+        // #669: a verified root at another path is fresh consent, never a refresh.
         for field in ["volume", "id", "guid", "path"] {
-            if field == "path" && filesystem == "NTFS" {
-                continue;
-            }
             let mut wrong = observation.clone();
             match field {
                 "volume" => wrong.volume_key = "different-volume".into(),

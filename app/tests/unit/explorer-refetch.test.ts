@@ -88,4 +88,42 @@ describe('resolveTrail after node IDs change', () => {
   it('does not pass off an unavailable catalogue as a missing folder', async () => {
     await expect(resolveTrail(saved, [root], async () => { throw boom('internal_error'); })).rejects.toMatchObject({ code: 'internal_error' });
   });
+
+  describe('bound to the granted root path, not its name or an ID (#198)', () => {
+    const bound = [{ id: 'old-root', name: 'Root', root: 'synthetic/root-1' }, ...saved.slice(1)];
+    const twin = { id: 'twin-root', name: 'Root' };
+    const rootOf = async (id: string) => (id === root.id ? 'synthetic/root-1' : id === twin.id ? 'synthetic/root-2' : null);
+
+    it('picks the root with the saved granted path among same-named roots', async () => {
+      const children = async (id: string) => page(id === root.id ? [docs] : []);
+      expect(await resolveTrail(bound, [twin, root], children, rootOf)).toEqual([{ ...root, root: 'synthetic/root-1' }, docs]);
+    });
+
+    it('does not restore a different root of the same name and sub-path when the original root is gone', async () => {
+      const children = async (id: string) => page(id === twin.id ? [docs] : id === docs.id ? [leaf] : []);
+      expect(await resolveTrail(bound, [twin], children, rootOf)).toEqual([]);
+    });
+
+    it('never picks between two starting points that report the same granted path', async () => {
+      expect(await resolveTrail(bound, [twin, root], async () => page([]), async () => 'synthetic/root-1')).toEqual([]);
+    });
+
+    it('recovers the whole trail after an engine restart re-mints every ID but not the granted path', async () => {
+      const restarted = { id: 'rt_after_restart', name: 'Root' }, docs2 = { id: 'nd_docs_after', name: 'Docs' }, leaf2 = { id: 'nd_leaf_after', name: 'Old' };
+      const children = async (id: string) => page(id === restarted.id ? [docs2] : id === docs2.id ? [leaf2] : []);
+      expect(await resolveTrail(bound, [twin, restarted], children, async (id) => (id === restarted.id ? 'synthetic/root-1' : 'synthetic/root-2'))).toEqual([{ ...restarted, root: 'synthetic/root-1' }, docs2, leaf2]);
+    });
+
+    it('keeps a root that was renamed, and falls back to the name when the saved root was never bound', async () => {
+      const renamed = { id: root.id, name: 'Renamed' };
+      expect(await resolveTrail(bound, [renamed], async () => page([]), rootOf)).toEqual([{ ...renamed, root: 'synthetic/root-1' }]);
+      expect(await resolveTrail(saved, [root], async () => page([]), rootOf)).toEqual([root]);
+    });
+
+    it('skips a starting point the engine no longer knows, but surfaces any other failure', async () => {
+      const lookup = async (id: string) => { if (id === twin.id) throw boom('not_found'); return 'synthetic/root-1'; };
+      expect(await resolveTrail(bound, [twin, root], async () => page([]), lookup)).toEqual([{ ...root, root: 'synthetic/root-1' }]);
+      await expect(resolveTrail(bound, [root], async () => page([]), async () => { throw boom('internal_error'); })).rejects.toMatchObject({ code: 'internal_error' });
+    });
+  });
 });
