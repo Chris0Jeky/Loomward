@@ -848,7 +848,7 @@ impl DirSource for NativeSource {
             return Err(SourceError::IdentityUnverified);
         }
         let _thread = self.cancel.register()?;
-        let (_, observed) = opened(self, root.file.clone(), None, Some(root))?;
+        let (_, observed) = opened(self, root.file.clone(), None, None)?;
         if observed.id != root_identity.id
             || observed.volume_serial != root_identity.volume_serial
             || observed.volume_guid != root_identity.volume_guid
@@ -884,7 +884,8 @@ impl DirSource for NativeSource {
             }
             other => other?,
         };
-        let result = opened(self, Arc::new(file), identity.id, Some(root))?;
+        let mut result = opened(self, Arc::new(file), identity.id, None)?;
+        result.0.root = root.root.clone();
         if result.1.volume_serial != identity.volume_serial
             || result.1.volume_guid != root_identity.volume_guid
         {
@@ -1088,6 +1089,23 @@ mod containment_tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn reopen_checks_handle_guid_instead_of_cached_root_guid() {
+        if running_elevated() {
+            eprintln!("skipped: elevated token; native identity reads refuse elevation");
+            return;
+        }
+        let temp = super::super::tests::canonical_tempdir();
+        let source = NativeSource::default();
+        let (mut root, mut identity) = source.open_root(temp.path()).unwrap();
+        root.volume_guid ^= 1;
+        identity.volume_guid = Some(root.volume_guid);
+        assert!(matches!(
+            source.reopen(&root, identity, identity),
+            Err(SourceError::IdentityChanged)
+        ));
     }
 
     #[test]

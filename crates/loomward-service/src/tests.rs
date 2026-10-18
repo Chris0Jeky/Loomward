@@ -6166,7 +6166,7 @@ fn regrant_backfills_a_legacy_null_filesystem_without_replacing_the_grant() {
     svc.inner
         .db()
         .execute_batch(
-            "UPDATE main.volume SET filesystem=NULL; UPDATE st.root_grant SET filesystem=NULL",
+            "UPDATE main.volume SET filesystem=NULL; UPDATE st.root_grant SET filesystem=NULL,volume_guid=NULL",
         )
         .unwrap();
     assert_eq!(
@@ -6205,9 +6205,17 @@ fn stored_unverified_grant_needs_no_second_cli_confirmation_after_restart() {
     let svc = open(&state, DatasetClass::Personal);
     *svc.inner.hooks.filesystem.lock().unwrap() = Some("exFAT");
     let (root, _) = svc.inner.grant(&folder, "cli_flag", true).unwrap();
+    svc.inner
+        .db()
+        .execute("UPDATE st.root_grant SET volume_guid=NULL", [])
+        .unwrap();
     drop(svc);
     let svc = open(&state, DatasetClass::Personal);
     *svc.inner.hooks.filesystem.lock().unwrap() = Some("exFAT");
+    svc.inner
+        .db()
+        .execute("UPDATE st.root_grant SET volume_guid=NULL", [])
+        .unwrap();
     assert_eq!(
         svc.inner.grant(&folder, "cli_flag", false).unwrap(),
         (root, false)

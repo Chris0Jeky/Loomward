@@ -2871,3 +2871,154 @@ fn pre_epoch_clock_fails_closed_to_epoch_zero() {
     assert!(now.as_str().contains('T'));
     assert!(now.as_str().ends_with('Z'));
 }
+
+#[cfg(windows)]
+thread_local! {
+    pub(super) static GRANT_OPEN_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(windows)]
+#[test]
+fn slow_grant_open_allows_state_writes_and_rechecks_the_grant() {
+    use loomward_catalog::{Catalog, RootObservation, WriteCommand, WriteReply};
+    if skip_elevated() {
+        return;
+    }
+    for legacy in [false, true] {
+        for mutation in ["revoke", "same_guid", "other_guid", "other_id"] {
+            let state = canonical_tempdir();
+            let directory = canonical_tempdir();
+            let (_, identity) = loomward_windows::enumerate::NativeSource::default()
+                .open_root(directory.path())
+                .unwrap();
+            let catalog = Catalog::open(state.path(), "synthetic").unwrap();
+            let WriteReply::Root {
+                grant_id, dir_id, ..
+            } = catalog
+                .writer()
+                .call(WriteCommand::RegisterRoot(RootObservation {
+                    volume_guid: if legacy {
+                        None
+                    } else {
+                        identity.volume_guid.map(|g| format!("{g:032x}"))
+                    },
+                    volume_key: format!("vsn_{}", identity.volume_serial.unwrap()),
+                    display_name: "Synthetic volume".into(),
+                    display_path: directory.path().to_str().unwrap().into(),
+                    root_file_id: Some(match identity.id.unwrap() {
+                        FileIdObs::Id128(id) => id.to_vec(),
+                        FileIdObs::Id64(id) => id.to_le_bytes().to_vec(),
+                    }),
+                    filesystem: Some("NTFS".into()),
+                    origin: "fixture".into(),
+                    granted_via: "fixture".into(),
+                    observed_at_ns: 0,
+                }))
+                .unwrap()
+            else {
+                panic!("root expected")
+            };
+            let catalog_root = CatalogRootIdentity {
+                row: dir_id,
+                instance: rusqlite::Connection::open(state.path().join("catalog.db"))
+                    .unwrap()
+                    .query_row("SELECT value FROM meta WHERE key='instance_id'", [], |r| {
+                        r.get(0)
+                    })
+                    .unwrap(),
+            };
+            let engine = Engine::open(EngineConfig::new(
+                state.path().into(),
+                DatasetClass::Synthetic,
+            ))
+            .unwrap();
+            let (entered, wait_entered) = std::sync::mpsc::channel();
+            let (release, wait_release) = std::sync::mpsc::channel();
+            let admission = std::thread::spawn(move || {
+                GRANT_OPEN_HOOK.with_borrow_mut(|hook| {
+                    *hook = Some(Box::new(move || {
+                        entered.send(()).unwrap();
+                        wait_release.recv().unwrap();
+                    }))
+                });
+                engine.granted_root(
+                    RootId::new("rt_slow_open").unwrap(),
+                    grant_id,
+                    &catalog_root,
+                )
+            });
+            wait_entered
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap();
+            // A short SQLite timeout makes lock ownership, rather than disk speed, the assertion.
+            let state_conn = rusqlite::Connection::open(state.path().join("state.db")).unwrap();
+            state_conn
+                .busy_timeout(std::time::Duration::from_millis(100))
+                .unwrap();
+            let before: i64 = state_conn
+                .query_row("SELECT state_rev FROM revision", [], |r| r.get(0))
+                .unwrap();
+            let write = match mutation {
+                "revoke" => state_conn.execute(
+                    "UPDATE root_grant SET state='revoked' WHERE id=?1",
+                    [grant_id],
+                ),
+                "same_guid" | "other_guid" => state_conn.execute(
+                    "UPDATE root_grant SET volume_guid=?1 WHERE id=?2",
+                    rusqlite::params![
+                        format!(
+                            "{:032x}",
+                            identity.volume_guid.unwrap() ^ u128::from(mutation == "other_guid")
+                        ),
+                        grant_id
+                    ],
+                ),
+                "other_id" => state_conn.execute(
+                    "UPDATE root_grant SET root_file_id=?1 WHERE id=?2",
+                    rusqlite::params![vec![9u8; 16], grant_id],
+                ),
+                _ => unreachable!(),
+            };
+            release.send(()).unwrap();
+            let result = admission.join().unwrap();
+            assert_eq!(
+                write.unwrap(),
+                1,
+                "native admission must not own the state writer lock (legacy={legacy})"
+            );
+            match mutation {
+                "same_guid" => assert!(
+                    result.is_ok(),
+                    "concurrent adoption of the same identity is valid"
+                ),
+                "revoke" => assert_eq!(
+                    result.unwrap_err().to_body().message.as_str(),
+                    "grant_not_active"
+                ),
+                _ => assert_eq!(
+                    result.unwrap_err().to_body().message.as_str(),
+                    "root_identity_changed"
+                ),
+            }
+            assert_eq!(
+                state_conn
+                    .query_row("SELECT state_rev FROM revision", [], |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                before,
+                "no admission write on a changed or already-adopted grant"
+            );
+            if legacy && matches!(mutation, "revoke" | "other_id") {
+                assert_eq!(
+                    state_conn
+                        .query_row(
+                            "SELECT volume_guid FROM root_grant WHERE id=?1",
+                            [grant_id],
+                            |r| r.get::<_, Option<String>>(0)
+                        )
+                        .unwrap(),
+                    None
+                );
+            }
+        }
+    }
+}
