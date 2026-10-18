@@ -341,27 +341,43 @@ fn the_reader_never_returns_more_than_the_budget() {
 }
 
 #[test]
-fn a_receipt_under_a_symlinked_parent_resolving_off_local_is_refused_pre_open() {
+fn a_receipt_under_a_reparse_parent_is_refused_before_resolution() {
     let tmp = temp_root();
     let control = write(tmp.path(), "control.json", snapshots());
-    // The parent is a link to a network share: canonicalising it resolves off-local, so the
-    // receipt is refused before anything is opened, whatever the final component names.
-    let link = tmp.path().join("off-local-parent");
+    let target = tmp.path().join("target");
+    std::fs::create_dir_all(target.join("nested")).unwrap();
+    write(&target, "receipt.json", snapshots());
+    write(&target.join("nested"), "receipt.json", snapshots());
+    let link = tmp.path().join("linked-parent");
     #[cfg(windows)]
-    let linked =
-        std::os::windows::fs::symlink_dir(r"\\synthetic-host.invalid\share", &link).is_ok();
+    {
+        // Local junctions need no symlink privilege and never contact a remote host.
+        let made = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J", "linked-parent", "target"])
+            .current_dir(tmp.path())
+            .output()
+            .unwrap();
+        assert!(made.status.success(), "{made:?}");
+    }
     #[cfg(not(windows))]
-    let linked =
-        std::os::unix::fs::symlink(r"\\synthetic-host.invalid\share", &link).is_ok();
-    if !linked {
-        eprintln!("skipped: cannot create a directory symlink");
-        return;
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let results = [
+        "receipt.json",
+        "nested/receipt.json",
+        "missing/receipt.json",
+    ]
+    .map(|relative| read_receipt(&link.join(relative)));
+    #[cfg(windows)]
+    std::fs::remove_dir(&link).unwrap();
+    #[cfg(not(windows))]
+    std::fs::remove_file(&link).unwrap();
+    for result in results {
+        assert_eq!(
+            result.unwrap_err(),
+            BackupImportRefusal::NotARegularFile,
+            "reparse ancestor must be refused even when the descendant is missing"
+        );
     }
-    match read_receipt(&link.join("receipt.json")) {
-        Err(BackupImportRefusal::NotARegularFile) | Err(BackupImportRefusal::Unreadable) => {}
-        other => panic!("symlinked-parent receipt was not refused pre-open: {other:?}"),
-    }
-    // Nothing was opened or stored: the control receipt still reads byte-identical.
     assert_eq!(read_receipt(&control).unwrap().0, snapshots().as_bytes());
 }
 

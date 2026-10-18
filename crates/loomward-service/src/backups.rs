@@ -36,9 +36,9 @@ fn out(result: Value, revs: Option<(i64, i64)>) -> Out {
 /// At most [`lb::MAX_INPUT_BYTES`] of an owner-picked regular local file, read-only. Refuses
 /// network, device and verbatim namespaces, reserved device names, stream-colon names, links,
 /// reparse points and cloud placeholders before opening anything (opening a placeholder would
-/// download it). The picked parent is canonicalised first, so a symlink or junction among the
-/// ancestors that resolves to a share is refused unread without ever opening the file; a parent
-/// that does not resolve is unreadable. The handle is dropped before this returns, so nothing
+/// download it). The picked parent's ancestors are inspected root-first without following
+/// reparse points before canonicalising; a parent that does not resolve is unreadable.
+/// The handle is dropped before this returns, so nothing
 /// holds the file while parsing. Returns the bytes and the file's modification time in Unix
 /// seconds (when the provider wrote it, not when Loomward read it).
 /// shortcut: path checks can race a swap and do not pin the file; use anchored no-follow opens
@@ -52,9 +52,14 @@ pub(crate) fn read_receipt(path: &Path) -> Result<(Vec<u8>, u64), Why> {
         return Err(Why::NotARegularFile);
     }
     let dir = path.parent().ok_or(Why::NotARegularFile)?;
-    let folder = std::fs::canonicalize(dir).map_err(|_| Why::Unreadable)?;
-    // Mirrors diagnostics::folder_allowed: a resolved share is refused without touching it.
-    if paths::network_path(&folder) || !folder.is_dir() {
+    let folder = paths::prospective_dir(dir).map_err(|reason| match reason.as_str() {
+        "reparse_or_placeholder" | "not_a_directory" | "network_or_removable_unsupported" => {
+            Why::NotARegularFile
+        }
+        _ => Why::Unreadable,
+    })?;
+    let parent_meta = std::fs::symlink_metadata(&folder).map_err(|_| Why::Unreadable)?;
+    if paths::network_path(&folder) || !parent_meta.is_dir() {
         return Err(Why::NotARegularFile);
     }
     let resolved = folder.join(path.file_name().ok_or(Why::NotARegularFile)?);
