@@ -496,7 +496,7 @@ mod lab_copy {
             &loomward_catalog::sqlite_dir(&lab.path.parent().unwrap().join("state"))
                 .join("state.db"),
         );
-        svc.inner.copies_fence(-1);
+        svc.inner.copies_fence(-1).unwrap();
         assert_eq!(
             reads.load(std::sync::atomic::Ordering::SeqCst),
             0,
