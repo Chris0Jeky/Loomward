@@ -5,6 +5,8 @@ and optionally --synthetic for the identical marked G:/E: million-file compariso
 No snapshots or per-entry diagnostics are persisted. No cache eviction is attempted.
 """
 import argparse
+import ctypes
+from ctypes import wintypes
 import hashlib
 import json
 import os
@@ -31,6 +33,44 @@ def native(*args):
     if run.returncode and not (result.get("agreement") is False):
         raise RuntimeError(f"native command failed (exit {run.returncode})")
     return result
+
+
+def open_root_log(path):
+    """Validate the no-follow append handle before giving that same handle to Python."""
+    import msvcrt
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                  ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    kernel.CreateFileW.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.GetFileType.argtypes = [wintypes.HANDLE]
+
+    class FileInfo(ctypes.Structure):
+        _fields_ = [("attributes", wintypes.DWORD), ("created", wintypes.FILETIME),
+                    ("accessed", wintypes.FILETIME), ("written", wintypes.FILETIME),
+                    ("volume", wintypes.DWORD), ("size_high", wintypes.DWORD),
+                    ("size_low", wintypes.DWORD), ("links", wintypes.DWORD),
+                    ("id_high", wintypes.DWORD), ("id_low", wintypes.DWORD)]
+
+    kernel.GetFileInformationByHandle.argtypes = [wintypes.HANDLE, ctypes.POINTER(FileInfo)]
+    # APPEND_DATA | READ_ATTRIBUTES; share read only; OPEN_ALWAYS; no follow or recall.
+    handle = kernel.CreateFileW(str(path), 0x4 | 0x80, 0x1, None, 4,
+                                0x200000 | 0x100000 | 0x2000000, None)
+    if handle == wintypes.HANDLE(-1).value:
+        raise ValueError("root-log cannot be opened safely")
+    try:
+        info = FileInfo()
+        if not kernel.GetFileInformationByHandle(handle, ctypes.byref(info)):
+            raise ValueError("root-log handle metadata unavailable")
+        if (kernel.GetFileType(handle) != 1 or info.links != 1
+                or info.attributes & (0x10 | 0x400 | 0x1000 | 0x40000 | 0x400000)):
+            raise ValueError("root-log must be an ordinary single-link file")
+        fd = msvcrt.open_osfhandle(handle, os.O_APPEND | os.O_WRONLY | os.O_BINARY)
+        handle = None  # The descriptor owns it now.
+        return os.fdopen(fd, "a", encoding="utf-8")
+    finally:
+        if handle is not None:
+            kernel.CloseHandle(handle)
 
 
 def python_child(root, label, root_log):
@@ -60,7 +100,7 @@ def python_child(root, label, root_log):
     if not resolved_root.is_dir() or not parent.is_dir() or parent_key.is_relative_to(root_key):
         raise ValueError("root-log must be absolute and outside the scan root")
     root_log = parent / root_log.name
-    with root_log.open("a", encoding="utf-8") as log:
+    with open_root_log(root_log) as log:
         log.write(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}\t{root}\towner-authorised Python metadata comparison; {label}\n")
         log.flush()
         os.fsync(log.fileno())

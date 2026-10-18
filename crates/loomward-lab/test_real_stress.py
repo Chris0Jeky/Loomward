@@ -1,6 +1,7 @@
 """Child entry-point guards; only disposable synthetic roots may be scanned."""
 import contextlib
 import io
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -13,6 +14,25 @@ sys.path.insert(0, str(real_stress.REPO / "python"))
 
 
 class PythonChildGuards(unittest.TestCase):
+    def fixture(self):
+        base = real_stress.REPO / "target" / "test-roots"
+        base.mkdir(parents=True, exist_ok=True)
+        return tempfile.TemporaryDirectory(dir=base)
+
+    def test_child_refuses_hard_link_log_without_writing_or_scanning(self):
+        with self.fixture() as temp:
+            root = Path(temp) / "scanroot"
+            root.mkdir()
+            data = root / "data.bin"
+            data.write_bytes(b"synthetic fixture")
+            log = root.parent / "scope.log"
+            os.link(data, log)
+            with patch("loomward.inventory.scan", side_effect=AssertionError("scan reached")) as scan:
+                with self.assertRaises(ValueError):
+                    self.invoke(root, log)
+                scan.assert_not_called()
+            self.assertEqual(data.read_bytes(), b"synthetic fixture")
+
     def invoke(self, root, log):
         with patch.object(sys, "argv", ["real_stress.py", "--python-child", str(root),
                                       "--label", "synthetic", "--root-log", str(log)]), \
@@ -36,7 +56,7 @@ class PythonChildGuards(unittest.TestCase):
                     self.assert_refused(root, log)
 
     def test_child_refuses_internal_log_before_write_or_scan(self):
-        with tempfile.TemporaryDirectory(dir=r"G:\loomward-lab\scale") as temp:
+        with self.fixture() as temp:
             root = Path(temp) / "scanroot"
             root.mkdir()
             for log in [root / "scope.log", Path(str(root).upper()) / "scope.log",
@@ -46,14 +66,14 @@ class PythonChildGuards(unittest.TestCase):
                     self.assert_refused(root, log)
 
     def test_child_refuses_relative_log_and_unresolved_parent(self):
-        with tempfile.TemporaryDirectory(dir=r"G:\loomward-lab\scale") as temp:
+        with self.fixture() as temp:
             root = Path(temp) / "scanroot"
             root.mkdir()
             self.assert_refused(root, Path("relative-scope.log"))
             self.assert_refused(root, root.parent / "missing" / "scope.log")
 
     def test_child_accepts_external_log_and_scans_synthetic_root(self):
-        with tempfile.TemporaryDirectory(dir=r"G:\loomward-lab\scale") as temp:
+        with self.fixture() as temp:
             root = Path(temp) / "scanroot"
             root.mkdir()
             (root / "synthetic.txt").write_text("fixture", encoding="utf-8")

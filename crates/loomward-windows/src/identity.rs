@@ -121,7 +121,62 @@ fn one(path: &Path) -> io::Result<ObservedIdentity> {
     from_handle(&handle)
 }
 
-#[cfg(all(windows, any(feature = "content-read", test)))]
+/// Pin every directory component against rename/delete and observe the final pinned handle.
+/// Retain the returned files for the entire operation that relies on this identity.
+pub fn pin_directory(path: &Path) -> io::Result<(Vec<std::fs::File>, ObservedIdentity)> {
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Windows directory pins unavailable",
+        ))
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::*;
+        crate::win::non_elevated()?;
+        if !path.is_absolute()
+            || path
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "absolute directory without traversal required",
+            ));
+        }
+        let mut paths: Vec<_> = path.ancestors().collect();
+        paths.reverse();
+        let mut pins = Vec::new();
+        for path in paths {
+            let file = std::fs::OpenOptions::new()
+                .access_mode(FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES)
+                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+                .custom_flags(crate::win::metadata_open_flags())
+                .open(path)?;
+            let observed = from_file(&file)?;
+            if observed.attributes & FILE_ATTRIBUTE_DIRECTORY == 0
+                || crate::enumerate::refused_attributes(observed.attributes)
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "plain directory required",
+                ));
+            }
+            pins.push(file);
+        }
+        let mut observed = from_file(pins.last().unwrap())?;
+        observed.ancestors = pins[..pins.len() - 1]
+            .iter()
+            .map(|file| from_file(file).map(|o| o.object))
+            .collect::<io::Result<_>>()?;
+        Ok((pins, observed))
+    }
+}
+
+#[cfg(windows)]
 pub(crate) fn from_file(file: &std::fs::File) -> io::Result<ObservedIdentity> {
     use std::{mem::ManuallyDrop, os::windows::io::AsRawHandle};
     from_handle(&ManuallyDrop::new(crate::win::Handle(file.as_raw_handle())))
