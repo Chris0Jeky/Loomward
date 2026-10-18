@@ -759,6 +759,48 @@ fn h5_null_descriptor_inherits_all_aces() {
 }
 
 #[test]
+fn protected_empty_destination_dacl_is_not_inherited() {
+    if skip_elevated() {
+        return;
+    }
+    use std::os::windows::fs::OpenOptionsExt;
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("payload.bin");
+    fs::write(&path, b"payload").unwrap();
+    let file = fs::OpenOptions::new()
+        .access_mode(READ_CONTROL | WRITE_DAC)
+        .open(&path)
+        .unwrap();
+    inherited_acl(&file).unwrap();
+    assert!(std::process::Command::new("icacls")
+        .arg(&path)
+        .arg("/inheritance:r")
+        .output()
+        .unwrap()
+        .status
+        .success());
+    let (explicit, _, protected) = duplicate_reader::security_metadata(&file).unwrap();
+    assert!(
+        explicit.is_empty() && protected,
+        "fixture must have an empty protected DACL"
+    );
+    // Restore inherited access before asserting, so even the red run leaves a removable fixture.
+    let result = inherited_acl(&file);
+    assert!(std::process::Command::new("icacls")
+        .arg(&path)
+        .arg("/inheritance:e")
+        .output()
+        .unwrap()
+        .status
+        .success());
+    assert!(
+        result.is_err(),
+        "a protected empty DACL grants no inherited permissions"
+    );
+    inherited_acl(&file).unwrap();
+}
+
+#[test]
 fn nested_parents_are_identity_bound() {
     if skip_elevated() {
         return;

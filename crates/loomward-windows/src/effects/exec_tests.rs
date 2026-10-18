@@ -1042,6 +1042,137 @@ fn recovery_records_unjournaled_batch_damage() {
 }
 
 #[test]
+fn recovery_observation_failure_does_not_record_damage() {
+    recovery_observation_failure(false);
+}
+
+#[test]
+fn published_recovery_observation_failure_does_not_record_damage() {
+    recovery_observation_failure(true);
+}
+
+fn recovery_observation_failure(published: bool) {
+    let Some(mut lab) = Lab::new() else { return };
+    fs::create_dir(lab.src().join("top")).unwrap();
+    fs::write(lab.src().join("top/f"), b"payload").unwrap();
+    let op = lab.start(&["top"]);
+    let crash = Control::new(false).with_hook(move |p, _| {
+        if p == if published {
+            Point::AfterPublish
+        } else {
+            Point::Verified(0)
+        } {
+            Flow::Crash
+        } else {
+            Flow::Continue
+        }
+    });
+    assert!(matches!(run(&lab.store, op, &crash), Err(Fault::Crashed)));
+    lab.reopen();
+    let before = replay(&lab.store, op).unwrap().state;
+    let blocked = if published {
+        lab.dest().join("top")
+    } else {
+        let r = replay(&lab.store, op).unwrap();
+        lab.dest().join(r.staging_tokens.last().unwrap()).join("f")
+    };
+    let hold = DenyCreate::with(&blocked, "(R)");
+    assert!(
+        identity::observe(&blocked).is_err(),
+        "observation really failed"
+    );
+    recover(&lab.store, op, &Control::new(false)).unwrap();
+    assert_eq!(
+        replay(&lab.store, op).unwrap().state,
+        before,
+        "unreadable is not damage"
+    );
+    drop(hold);
+    lab.reopen();
+    let outcome = recover(&lab.store, op, &Control::new(false)).unwrap();
+    assert_eq!(
+        outcome.state,
+        if published {
+            OpState::Committed
+        } else {
+            before
+        }
+    );
+    assert_eq!(
+        fs::read(if published {
+            blocked.join("f")
+        } else {
+            blocked
+        })
+        .unwrap(),
+        b"payload"
+    );
+}
+
+#[test]
+fn detached_worker_checks_durable_stop_before_creation() {
+    detached_worker_checks_durable_stop(Point::Creating(0));
+}
+
+#[test]
+fn detached_worker_checks_durable_stop_before_stream_creation() {
+    detached_worker_checks_durable_stop(Point::CreatingStream(0));
+}
+
+#[test]
+fn detached_worker_checks_durable_stop_before_write() {
+    detached_worker_checks_durable_stop(Point::Writing(0));
+}
+
+fn detached_worker_checks_durable_stop(point: Point) {
+    let Some(lab) = Lab::new() else { return };
+    fs::write(lab.src().join("f.bin"), b"payload").unwrap();
+    fs::write(lab.src().join("f.bin:note"), b"stream").unwrap();
+    let op = lab.start(&["f.bin"]);
+    let db = lab.tmp.path().join("state/state.db");
+    let control = Control::new(false).with_hook(move |p, _| {
+        if p == point {
+            let mut reopened = Store::open(&db).unwrap();
+            let r = reopened.replay(op).unwrap().unwrap();
+            reopened
+                .append(
+                    op,
+                    r.epoch + 1,
+                    Record::Fenced {
+                        cause: loomward_operations::FenceCause::GrantRevoked,
+                    },
+                )
+                .unwrap();
+        }
+        Flow::Continue
+    });
+    let _ = run(&lab.store, op, &control);
+    assert!(
+        !control.fenced(),
+        "detached control never received the in-memory fence"
+    );
+    let r = replay(&lab.store, op).unwrap();
+    assert!(r.fenced);
+    let file = lab
+        .dest()
+        .join(r.staging_tokens.last().unwrap())
+        .join("f.bin");
+    match point {
+        Point::Creating(_) => assert!(!file.exists(), "created after durable stop"),
+        Point::CreatingStream(_) => assert!(
+            !file.with_file_name("f.bin:note").exists(),
+            "stream created after durable stop"
+        ),
+        Point::Writing(_) => assert_eq!(
+            fs::metadata(&file).unwrap().len(),
+            0,
+            "written after durable stop"
+        ),
+        _ => unreachable!(),
+    }
+}
+
+#[test]
 fn explicit_destination_aces_prevent_normal_commit() {
     destination_aces_prevent_commit(false);
 }

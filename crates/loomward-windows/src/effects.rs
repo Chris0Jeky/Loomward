@@ -67,8 +67,9 @@ fn supported_attributes(attributes: u32) -> io::Result<()> {
 }
 
 fn inherited_acl(file: &File) -> io::Result<()> {
-    let (explicit, _) = duplicate_reader::security_metadata(file).map_err(io::Error::other)?;
-    if !explicit.is_empty() {
+    let (explicit, _, protected) =
+        duplicate_reader::security_metadata(file).map_err(io::Error::other)?;
+    if protected || !explicit.is_empty() {
         return Err(refused("destination ACL is not inherited"));
     }
     Ok(())

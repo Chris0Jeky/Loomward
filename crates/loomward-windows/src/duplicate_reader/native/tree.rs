@@ -393,7 +393,7 @@ fn object_id(file: &File) -> Observation<Vec<u8>> {
     }
 }
 
-pub(crate) fn security_metadata(file: &File) -> Observation<(Vec<u8>, Vec<u8>)> {
+pub(crate) fn security_metadata(file: &File) -> Observation<(Vec<u8>, Vec<u8>, bool)> {
     let mut needed = 0;
     let flags = OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
     unsafe {
@@ -414,10 +414,13 @@ pub(crate) fn security_metadata(file: &File) -> Observation<(Vec<u8>, Vec<u8>)> 
     let mut defaulted = 0;
     let mut dacl = ptr::null_mut();
     let mut present = 0;
+    let mut control = 0;
+    let mut revision = 0;
     if unsafe { GetSecurityDescriptorOwner(descriptor, &mut owner, &mut defaulted) } == 0
         || owner.is_null()
         || unsafe { GetSecurityDescriptorDacl(descriptor, &mut present, &mut dacl, &mut defaulted) }
             == 0
+        || unsafe { GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) } == 0
     {
         return Err("security_descriptor_unreadable");
     }
@@ -442,7 +445,7 @@ pub(crate) fn security_metadata(file: &File) -> Observation<(Vec<u8>, Vec<u8>)> 
             }
         }
     }
-    Ok((explicit, owner))
+    Ok((explicit, owner, control & SE_DACL_PROTECTED != 0))
 }
 
 fn streams(file: &File) -> Observation<BTreeMap<Vec<u16>, u64>> {
