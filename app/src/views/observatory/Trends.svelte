@@ -2,7 +2,7 @@
   import type { TelemetrySample, TrendMetric, ProcessRow } from '../../lib/contracts.gen';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
   import { formatDuration } from '../../lib/format/time';
-  import { segments, trendLabel } from './trends';
+  import { segments, trendCarried, trendLabel } from './trends';
 
   let { sample, paused, rows = [] }: { sample: TelemetrySample | null; paused: boolean; rows?: ProcessRow[] } = $props();
   let metric = $state<TrendMetric>('cpu_busy_fraction');
@@ -14,6 +14,7 @@
   const series = $derived(matching.find(s => s.key === key) ?? matching[0]);
   const paths = $derived(series ? segments(series) : []);
   const windowMs = $derived(series && series.points.length ? series.points.at(-1)!.offset_ms - series.points[0]!.offset_ms : null);
+  const carried = $derived(series && sample ? trendCarried(series, sample.observed_at) : null);
   const words = (s: string) => s.replaceAll('_', ' ');
   const name = (key: string) => rows.find(r => r.process_ref === key)?.name ?? key;
 </script>
@@ -34,6 +35,7 @@
         </svg>
         {#if !paths.length}<p class="unknown">No known values in this window</p>{/if}
         <p class="fine">{series.points[0]?.observed_at ?? 'unknown'} → {series.points.at(-1)?.observed_at ?? 'unknown'}</p>
+        {#if carried}<p class="unknown">{carried}</p>{/if}
       </figure>
       {#each series.unknowns as unknown}<p class="unknown">{unknown}</p>{/each}
       <details><summary>Sample facts</summary><ul class="samples">{#each series.points as p}<li><time datetime={p.observed_at}>{p.observed_at}</time> · {trendLabel(p.value, series.unit)}</li>{/each}</ul></details>
@@ -44,10 +46,12 @@
     <ul class="explanations">
       {#each report.candidates as c}
         {@const source = report.series[c.series_index]}
+        {@const stale = source && sample ? trendCarried(source, sample.observed_at) : null}
         <li>
           <strong>{words(c.kind)} candidate</strong> · <VisibleName name={source ? name(source.key) : 'unknown series'} /> · {source?.key ?? 'unknown series'} · {source ? words(source.metric) : 'unknown metric'}
           <p class="num">{trendLabel(c.start_value, c.unit)} → {trendLabel(c.end_value, c.unit)} · {formatDuration(c.window_ms)} · {c.sample_count} samples · slope {c.slope_per_s} {words(c.unit)}/s</p>
           <p class="fine"><time datetime={c.start_at}>{c.start_at}</time> → <time datetime={c.end_at}>{c.end_at}</time></p>
+          {#if stale}<p class="unknown">{stale}</p>{/if}
           <ul>{#each c.facts as fact}<li>{fact}</li>{/each}</ul>
           {#each c.unknowns as unknown}<p class="unknown">Unknown: {unknown}</p>{/each}
         </li>

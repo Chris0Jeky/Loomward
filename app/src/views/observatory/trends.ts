@@ -41,3 +41,18 @@ export function trendLabel(v: TrendValue | null, unit: TrendUnit): string {
   if (unit === 'queue') return `${n} queued`;
   return `${formatBytes(String(Math.round(Number(n))))}/s`;
 }
+
+/**
+ * Says so when a series ends well before the sample it is shown beside: the feed carries the process series between its
+ * 15 s polls, and a carried line must not pass for a live one. Within one sampler interval (plus slack) is current.
+ */
+export function trendCarried(series: TrendSeries, sampleAt: string): string | null {
+  const last = series.points.at(-1);
+  const sample = Date.parse(sampleAt);
+  if (!last || !Number.isFinite(sample)) return null;
+  const lag = sample - Date.parse(last.observed_at);
+  if (!Number.isFinite(lag)) return 'Carried forward or stale: the age of the last point is unknown';
+  if (lag < 2000) return null;
+  const s = Math.floor(lag / 1000);
+  return `Carried forward: last point observed ${s < 60 ? `${s} s` : s < 3600 ? `${Math.floor(s / 60)} min` : `${Math.floor(s / 3600)} h`} before this sample`;
+}
