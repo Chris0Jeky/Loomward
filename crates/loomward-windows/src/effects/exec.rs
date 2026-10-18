@@ -324,6 +324,8 @@ pub enum Point {
     /// Between a metadata step's durable stop check and its set call: a file, a folder or the staging
     /// folder (#672).
     CheckedMetadata,
+    /// Between a cleanup removal's journal check and the removal (#672).
+    CheckedRemoval,
     /// After the item cancellation check, before the potentially blocking source open.
     OpeningSource(u32),
     /// Inside a stream's chunk loop, between effect steps: the bytes handed to the writer so far.
@@ -1754,17 +1756,26 @@ fn clean(store: &Mutex<Store>, op: u64, plan: &Plan, control: &Control) -> Resul
             }
         }
     }
+    let remove = |effect: &mut dyn FnMut() -> bool| removal(&journal, r.state, control, effect);
     for (h, key, is_dir) in resolved.into_iter().rev() {
-        let removed = path_of(&h.name, &keys).ok().is_some_and(|(path, name)| {
+        let Ok((path, name)) = path_of(&h.name, &keys) else {
+            attention(&log)?;
+            return status(store, op);
+        };
+        let removed = remove(&mut || {
             if is_dir {
                 staging.cleanup_directory(&path, name, &key).is_ok()
             } else {
                 staging.cleanup_file(&path, name, &key).is_ok()
             }
-        });
-        if !removed {
-            attention(&log)?;
-            return status(store, op);
+        })?;
+        match removed {
+            None => return status(store, op),
+            Some(false) => {
+                attention(&log)?;
+                return status(store, op);
+            }
+            Some(true) => {}
         }
         log(Record::ItemRemoved {
             item: h.item,
@@ -1777,13 +1788,37 @@ fn clean(store: &Mutex<Store>, op: u64, plan: &Plan, control: &Control) -> Resul
             id: h.id,
         })?;
     }
-    if staging.cleanup().is_err() {
-        attention(&log)?;
-        return status(store, op);
+    let mut staging = Some(staging);
+    match remove(&mut || staging.take().is_some_and(|s| s.cleanup().is_ok()))? {
+        None => return status(store, op),
+        Some(false) => {
+            attention(&log)?;
+            return status(store, op);
+        }
+        Some(true) => {}
     }
     log(Record::StagingRemoved { id: staging_id })?;
     log(cancelled)?;
     status(store, op)
+}
+
+/// One cleanup removal under the journal's write lock, checked against the state and epoch this cleanup
+/// read: a fence or decision another control journals since stops it before the removal (#672).
+/// `None` when superseded, else whether the removal succeeded.
+fn removal(
+    journal: &Journal,
+    state: OpState,
+    control: &Control,
+    effect: &mut dyn FnMut() -> bool,
+) -> Result<Option<bool>, Fault> {
+    match journal.while_in(state, || {
+        control.at(Point::CheckedRemoval)?;
+        Ok(effect())
+    }) {
+        Ok(removed) => Ok(Some(removed)),
+        Err(Stop::Superseded) => Ok(None),
+        Err(stop) => Err(fault(stop)),
+    }
 }
 
 /// The destination as recovery's `Disk` sees it: point-in-time observations by name, which only ever

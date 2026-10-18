@@ -1678,6 +1678,43 @@ fn detached_worker_check_and_metadata_exclude_a_reopened_fence() {
     );
 }
 
+/// #672: a cleanup removal by a detached control is serialized with the journal like any effect:
+/// once a reopened service's fence is acknowledged, the removal either already ran or never will.
+#[test]
+fn detached_cleanup_check_and_removal_exclude_a_reopened_fence() {
+    let Some(lab) = Lab::new() else { return };
+    fs::write(lab.src().join("f"), b"payload").unwrap();
+    let op = lab.start(&["f"]);
+    let crash = Control::new(false).with_hook(|p, _| {
+        if p == Point::Identities(0) {
+            Flow::Crash
+        } else {
+            Flow::Continue
+        }
+    });
+    assert!(matches!(run(&lab.store, op, &crash), Err(Fault::Crashed)));
+    let (plan, dest) = (lab.plan(op), lab.dest());
+    let (ack, at_ack, after) = fence_inside(
+        &lab,
+        op,
+        Point::CheckedRemoval,
+        true,
+        |control| {
+            let _ = cancel(&lab.store, op, &plan, control);
+        },
+        move |token| dest.join(token).join("f").exists(),
+    );
+    // Serialized, the cleanup may finish first: then the fence finds it settled.
+    assert!(
+        matches!(ack, Ack::StoppedBeforePublish | Ack::Settled),
+        "{ack:?}"
+    );
+    assert_eq!(
+        at_ack, after,
+        "removed after the reopened service's fence was acknowledged"
+    );
+}
+
 /// Whether another connection can take the journal's write lock right now, without waiting.
 fn write_lock_free(db: &Path) -> bool {
     let probe = rusqlite::Connection::open(db).unwrap();
@@ -1726,13 +1763,19 @@ fn fence_inside<T: std::fmt::Debug + Send + 'static>(
                 let _ = go.send(());
             }
             let reopened = Mutex::new(Store::open(&db).unwrap());
-            let ack = fence(
-                &reopened,
-                op,
-                &Control::new(false),
-                loomward_operations::FenceCause::GrantRevoked,
-            )
-            .unwrap();
+            // `fence` reads, then appends: another store's record can land between (the journal then
+            // rejects the fence), so retry as the service would.
+            let ack = (0..10)
+                .find_map(|_| {
+                    fence(
+                        &reopened,
+                        op,
+                        &Control::new(false),
+                        loomward_operations::FenceCause::GrantRevoked,
+                    )
+                    .ok()
+                })
+                .expect("fence acknowledged");
             let token = replay(&reopened, op).unwrap().staging_tokens.pop().unwrap();
             let seen = look(&token);
             let _ = go.send(());
