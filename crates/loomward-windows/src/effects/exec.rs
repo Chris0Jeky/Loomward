@@ -1639,6 +1639,16 @@ pub fn fence(
     control: &Control,
     cause: loomward_operations::FenceCause,
 ) -> Result<Ack, Fault> {
+    fence_waiting(store, op, control, cause, FENCE_WAIT)
+}
+
+fn fence_waiting(
+    store: &Mutex<Store>,
+    op: u64,
+    control: &Control,
+    cause: loomward_operations::FenceCause,
+    wait: Duration,
+) -> Result<Ack, Fault> {
     let r = {
         // One store lock across the read and the append: no record slips between them.
         let mut s = store.lock().unwrap_or_else(|e| e.into_inner());
@@ -1654,7 +1664,7 @@ pub fn fence(
             .map_err(|e| Fault::Journal(format!("{e:?}")))?;
         r
     };
-    Ok(match control.fence(FENCE_WAIT) {
+    Ok(match control.fence(wait) {
         None => Ack::PendingInFlightStep,
         Some(true) => Ack::Published,
         Some(false) if r.publish.is_none() => Ack::StoppedBeforePublish,

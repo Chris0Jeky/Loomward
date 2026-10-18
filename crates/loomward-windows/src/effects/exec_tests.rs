@@ -2086,6 +2086,60 @@ fn fenced_at(lab: &Lab, op: u64, at: fn(Point) -> bool) -> (Outcome, Ack) {
     })
 }
 
+/// #672 item 3: a create stuck in the OS (the hook parks inside the step, after its durable stop
+/// check) must not hold the store. A same-service fence answers `PendingInFlightStep` within its
+/// wait and status still answers; once the step returns, the run journals the fence and cancels.
+#[test]
+fn a_stuck_create_does_not_block_the_fence_or_status() {
+    use std::sync::mpsc::channel;
+    let Some(lab) = Lab::new() else { return };
+    tree_fixture(&lab.src());
+    let op = lab.start(&["top"]);
+    let (reached, parked) = channel::<()>();
+    let (go, resume) = channel::<()>();
+    let resume = Mutex::new(resume);
+    let fired = AtomicBool::new(false);
+    let control = Control::new(false).with_hook(move |p, _| {
+        if matches!(p, Point::Checked(_)) && !fired.swap(true, Ordering::SeqCst) {
+            reached.send(()).unwrap();
+            resume.lock().unwrap().recv().unwrap();
+        }
+        Flow::Continue
+    });
+    std::thread::scope(|s| {
+        let worker = s.spawn(|| run(&lab.store, op, &control));
+        parked.recv().unwrap();
+        let (answer, answered) = channel();
+        let (store, revoked) = (&lab.store, &control);
+        s.spawn(move || {
+            let cause = loomward_operations::FenceCause::GrantRevoked;
+            let ack = fence_waiting(store, op, revoked, cause, Duration::from_millis(200));
+            let state = status(store, op).map(|o| o.state);
+            answer.send((ack, state)).unwrap();
+        });
+        let answered = answered.recv_timeout(Duration::from_secs(20));
+        go.send(()).unwrap();
+        let (ack, state) = answered.expect("a stuck create blocked the fence or status");
+        assert_eq!(ack.unwrap(), Ack::PendingInFlightStep);
+        assert!(!state.unwrap().is_terminal());
+        let outcome = worker.join().unwrap().unwrap();
+        assert_eq!(outcome.state, OpState::Cancelled, "{outcome:?}");
+        assert_eq!(outcome.refusal, Some((Refusal::GrantRevoked, None)));
+    });
+    let kinds = journal_kinds(&lab, op);
+    let fenced = kinds
+        .iter()
+        .position(|k| k == "fenced")
+        .expect("fence journaled");
+    assert!(
+        kinds[fenced + 1..]
+            .iter()
+            .all(|k| matches!(k.as_str(), "transition" | "staging_left")),
+        "{kinds:?}"
+    );
+    assert!(!lab.dest().join("top").exists(), "never published");
+}
+
 fn journal_kinds(lab: &Lab, op: u64) -> Vec<String> {
     lab.store
         .lock()
