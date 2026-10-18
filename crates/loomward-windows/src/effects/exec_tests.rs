@@ -142,10 +142,17 @@ fn copy_old_worker_checks_durable_stop_before_preallocation() {
 
 #[test]
 fn copy_cancelled_worker_cannot_begin_preallocation() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Mutex::new(Store::open(&tmp.path().join("state.db")).unwrap());
+    let journal = Journal {
+        store: &store,
+        op: 1,
+        epoch: 0,
+    };
     let control = Control::new(false);
     control.cancel();
     assert!(matches!(
-        Cancellable::new(&mut std::io::empty(), &control),
+        Cancellable::new(&mut std::io::empty(), &control, &journal),
         Err(Stop::Cancel)
     ));
 }
@@ -1412,6 +1419,72 @@ fn missing_destination_parent_is_retryable_not_staging_damage() {
     }
 }
 
+/// #670 P2 in cleanup: `NotFound` under the staging name is a confirmed removal only while the staging
+/// folder and its destination parent still resolve to the journaled objects. A path that now resolves
+/// elsewhere (a mounted-folder destination temporarily unmounted, a swapped folder) is unknown.
+#[test]
+fn a_staging_entry_is_gone_only_while_its_staging_and_parent_resolve() {
+    let Some(lab) = Lab::new() else { return };
+    fs::write(lab.src().join("f"), b"payload").unwrap();
+    let op = lab.start(&["f"]);
+    let crash = Control::new(false).with_hook(|p, _| {
+        if p == Point::Identities(0) {
+            Flow::Crash
+        } else {
+            Flow::Continue
+        }
+    });
+    assert!(matches!(run(&lab.store, op, &crash), Err(Fault::Crashed)));
+    let (plan, r) = (lab.plan(op), replay(&lab.store, op).unwrap());
+    let staging = r.staging.unwrap();
+    let dest = lab.dest();
+    let path = dest.join(r.staging_tokens.last().unwrap());
+    let gone = || PathDisk::new(&plan, &r).gone(staging, "f");
+    assert!(!gone(), "present");
+    let (moved, away) = (lab.tmp.path().join("moved"), lab.tmp.path().join("away"));
+    fs::rename(&path, &moved).unwrap();
+    fs::create_dir(&path).unwrap();
+    assert!(!gone(), "another folder under the staging name");
+    fs::remove_dir(&path).unwrap();
+    fs::rename(&dest, &away).unwrap();
+    fs::create_dir_all(&path).unwrap();
+    assert!(!gone(), "another destination parent");
+    fs::remove_dir_all(&dest).unwrap();
+    fs::rename(&away, &dest).unwrap();
+    fs::rename(&moved, &path).unwrap();
+    fs::remove_file(path.join("f")).unwrap();
+    assert!(gone(), "removed from the journaled staging");
+}
+
+/// #672 review: a missing final name does not prove the rename never happened. Published, crashed
+/// before `committed`, then the owner renamed the output away: a fresh Control cannot see either side.
+#[test]
+fn a_fresh_fence_after_a_published_copy_was_renamed_away_is_unobserved() {
+    let Some(lab) = Lab::new() else { return };
+    fs::write(lab.src().join("f"), b"payload").unwrap();
+    let op = lab.start(&["f"]);
+    let crash = Control::new(false).with_hook(|p, _| {
+        if p == Point::AfterPublish {
+            Flow::Crash
+        } else {
+            Flow::Continue
+        }
+    });
+    assert!(matches!(run(&lab.store, op, &crash), Err(Fault::Crashed)));
+    let published = lab
+        .dest()
+        .join(lab.plan(op).manifest.destination.folder_name);
+    fs::rename(&published, lab.dest().join("renamed by the owner")).unwrap();
+    let ack = fence(
+        &lab.store,
+        op,
+        &Control::new(false),
+        loomward_operations::FenceCause::GrantRevoked,
+    )
+    .unwrap();
+    assert_eq!(ack, Ack::PublishUnobserved);
+}
+
 #[test]
 fn admitted_step_rechecks_epoch_even_when_control_is_fenced() {
     let Some(lab) = Lab::new() else { return };
@@ -1606,6 +1679,48 @@ fn detached_worker_checks_durable_stop(point: Point) {
     }
 }
 
+/// #672: a reopened service fences between two chunks of a detached worker's write. The next chunk
+/// re-reads the durable stop, so at most the chunk already checked lands: here, none after the first.
+#[test]
+fn detached_worker_stops_writing_at_the_next_chunk_after_a_reopened_fence() {
+    const MIB: u64 = 1 << 20;
+    let Some(lab) = Lab::new() else { return };
+    fs::write(lab.src().join("f.bin"), vec![7u8; 3 * MIB as usize + 1]).unwrap();
+    let op = lab.start(&["f.bin"]);
+    let db = lab.tmp.path().join("state/state.db");
+    let fenced = AtomicBool::new(false);
+    let control = Control::new(false).with_hook(move |p, _| {
+        if matches!(p, Point::Chunk(n) if n >= MIB) && !fenced.swap(true, Ordering::SeqCst) {
+            let reopened = Mutex::new(Store::open(&db).unwrap());
+            fence(
+                &reopened,
+                op,
+                &Control::new(false),
+                loomward_operations::FenceCause::GrantRevoked,
+            )
+            .unwrap();
+        }
+        Flow::Continue
+    });
+    let _ = run(&lab.store, op, &control);
+    let r = replay(&lab.store, op).unwrap();
+    assert!(r.fenced);
+    let file = lab
+        .dest()
+        .join(r.staging_tokens.last().unwrap())
+        .join("f.bin");
+    assert_eq!(
+        fs::metadata(file).unwrap().len(),
+        MIB,
+        "chunks written after the reopened service's fence was acknowledged"
+    );
+    assert_eq!(
+        r.state,
+        OpState::Copying,
+        "the detached worker settled the run"
+    );
+}
+
 #[test]
 fn detached_worker_check_and_create_exclude_a_reopened_fence() {
     detached_worker_check_and_create_exclude_fence(Point::Checked(0));
@@ -1629,13 +1744,12 @@ fn detached_worker_check_and_publish_exclude_a_reopened_fence() {
 /// #670: a reopened service fences on its own store and `Control` while the detached worker sits
 /// between its durable stop check and the create call. The fence must not be acknowledged while
 /// the create can still follow: once acknowledged, that create (or the staging folder's creation, or
-/// the publish rename, #672) either already happened or never will. Writes are not covered here.
+/// the publish rename, #672) either already happened or never will.
 fn detached_worker_check_and_create_exclude_fence(point: Point) {
     let Some(lab) = Lab::new() else { return };
     fs::write(lab.src().join("f.bin"), b"payload").unwrap();
     fs::write(lab.src().join("f.bin:note"), b"stream").unwrap();
     let op = lab.start(&["f.bin"]);
-    let db = lab.tmp.path().join("state/state.db");
     let dest = lab.dest();
     let final_name = lab.plan(op).manifest.destination.folder_name;
     let target = move |token: &str| match point {
@@ -1644,53 +1758,183 @@ fn detached_worker_check_and_create_exclude_fence(point: Point) {
         Point::CheckedStaging => dest.join(token),
         _ => dest.join(&final_name),
     };
-    let fencer = std::sync::Arc::new(Mutex::new(None));
-    let slot = fencer.clone();
-    let landed = Mutex::new(None::<std::sync::mpsc::Receiver<()>>);
-    let control = Control::new(false).with_hook(move |p, _| {
-        if p != point {
-            // Past the window: park until the fence has landed, so the run cannot finish first.
-            if let Some(rx) = landed.lock().unwrap().take() {
-                let _ = rx.recv_timeout(Duration::from_secs(30));
-            }
-        } else {
-            let (db, target) = (db.clone(), target.clone());
-            let (tx, rx) = std::sync::mpsc::channel();
-            *slot.lock().unwrap() = Some(std::thread::spawn(move || {
-                let reopened = Mutex::new(Store::open(&db).unwrap());
-                let ack = fence(
-                    &reopened,
-                    op,
-                    &Control::new(false),
-                    loomward_operations::FenceCause::GrantRevoked,
-                )
-                .unwrap();
-                let token = replay(&reopened, op).unwrap().staging_tokens.pop().unwrap();
-                // Sample before releasing the parked worker, so its create cannot win the race.
-                let existed = target(&token).exists();
-                let _ = tx.send(());
-                (ack, existed, target(&token))
-            }));
-            // Give an unserialized fence ample time to land inside the window.
-            if rx.recv_timeout(Duration::from_millis(500)).is_err() {
-                *landed.lock().unwrap() = Some(rx);
-            }
-        }
-        Flow::Continue
-    });
-    let _ = run(&lab.store, op, &control);
-    let fencer = fencer.lock().unwrap().take().expect("seam reached");
-    let (ack, existed_at_ack, path) = fencer.join().unwrap();
-    // A fresh Control cannot see a rename that finished before its fence (#672 residual).
-    assert!(
-        matches!(ack, Ack::StoppedBeforePublish | Ack::Published),
-        "{ack:?}"
+    let (ack, at_ack, after) = fence_inside(
+        &lab,
+        op,
+        point,
+        false,
+        |control| {
+            let _ = run(&lab.store, op, control);
+        },
+        move |token| target(token).exists(),
     );
     assert!(replay(&lab.store, op).unwrap().fenced);
-    assert!(
-        existed_at_ack || !path.exists(),
+    assert_eq!(
+        at_ack, after,
         "{point:?}: created after the reopened service's fence was acknowledged"
     );
+    if point != Point::CheckedPublish {
+        assert_eq!(ack, Ack::StoppedBeforePublish);
+        return;
+    }
+    // The rename finished before the fence: a fresh Control never saw it, the destination says so.
+    assert!(at_ack, "the serialized rename precedes the fence");
+    assert_eq!(ack, Ack::Published);
+    let plan = lab.plan(op);
+    let outcome = cancel(&lab.store, op, &plan, &Control::new(true)).unwrap();
+    assert_eq!(outcome.state, OpState::Committed);
+    assert_eq!(
+        fs::read(
+            lab.dest()
+                .join(&plan.manifest.destination.folder_name)
+                .join("f.bin")
+        )
+        .unwrap(),
+        b"payload"
+    );
+}
+
+/// #672: preserving a staged file's times is an effect too. Once a reopened service's fence is
+/// acknowledged, the detached worker's metadata step either already ran or never will.
+#[test]
+fn detached_worker_check_and_metadata_exclude_a_reopened_fence() {
+    let Some(lab) = Lab::new() else { return };
+    fs::write(lab.src().join("f.bin"), b"payload").unwrap();
+    let op = lab.start(&["f.bin"]);
+    let dest = lab.dest();
+    let (ack, at_ack, after) = fence_inside(
+        &lab,
+        op,
+        Point::CheckedMetadata,
+        false,
+        |control| {
+            let _ = run(&lab.store, op, control);
+        },
+        move |token| {
+            let m = fs::metadata(dest.join(token).join("f.bin")).unwrap();
+            (m.created().unwrap(), m.modified().unwrap())
+        },
+    );
+    assert_eq!(ack, Ack::StoppedBeforePublish);
+    assert_eq!(
+        at_ack, after,
+        "metadata set after the reopened service's fence was acknowledged"
+    );
+}
+
+/// #672: a cleanup removal by a detached control is serialized with the journal like any effect:
+/// once a reopened service's fence is acknowledged, the removal either already ran or never will.
+#[test]
+fn detached_cleanup_check_and_removal_exclude_a_reopened_fence() {
+    let Some(lab) = Lab::new() else { return };
+    fs::write(lab.src().join("f"), b"payload").unwrap();
+    let op = lab.start(&["f"]);
+    let crash = Control::new(false).with_hook(|p, _| {
+        if p == Point::Identities(0) {
+            Flow::Crash
+        } else {
+            Flow::Continue
+        }
+    });
+    assert!(matches!(run(&lab.store, op, &crash), Err(Fault::Crashed)));
+    let (plan, dest) = (lab.plan(op), lab.dest());
+    let (ack, at_ack, after) = fence_inside(
+        &lab,
+        op,
+        Point::CheckedRemoval,
+        true,
+        |control| {
+            let _ = cancel(&lab.store, op, &plan, control);
+        },
+        move |token| dest.join(token).join("f").exists(),
+    );
+    // Serialized, the cleanup may finish first: then the fence finds it settled.
+    assert!(
+        matches!(ack, Ack::StoppedBeforePublish | Ack::Settled),
+        "{ack:?}"
+    );
+    assert_eq!(
+        at_ack, after,
+        "removed after the reopened service's fence was acknowledged"
+    );
+}
+
+/// Whether another connection can take the journal's write lock right now, without waiting.
+fn write_lock_free(db: &Path) -> bool {
+    let probe = rusqlite::Connection::open(db).unwrap();
+    probe.busy_timeout(Duration::ZERO).unwrap();
+    let free = probe.execute_batch("BEGIN IMMEDIATE").is_ok();
+    if free {
+        probe.execute_batch("ROLLBACK").unwrap();
+    }
+    free
+}
+
+/// A reopened service (its own store and `Control`) fences `op` while `drive`'s hook sits at `point`,
+/// inside a step's window between its durable stop check and its effect. No timing window decides
+/// the order: the fencer first probes the journal's write lock without waiting. Held (the step is
+/// serialized), it releases the worker at once, and its fence lands only after the step returns.
+/// Free (a regression), it fences and samples before releasing the worker, so the effect follows the
+/// acknowledgement. Later hook points park until the fence has landed, so the run cannot finish
+/// first. Returns the acknowledgement and `observe(token)` at the acknowledgement and after `drive`.
+fn fence_inside<T: std::fmt::Debug + Send + 'static>(
+    lab: &Lab,
+    op: u64,
+    point: Point,
+    removal: bool,
+    drive: impl FnOnce(&Control),
+    observe: impl Fn(&str) -> T + Clone + Send + Sync + 'static,
+) -> (Ack, T, T) {
+    use std::sync::mpsc::{channel, Receiver};
+    let db = lab.tmp.path().join("state/state.db");
+    let fencer = std::sync::Arc::new(Mutex::new(None));
+    let slot = fencer.clone();
+    let landed = Mutex::new(None::<Receiver<()>>);
+    let look = observe.clone();
+    let control = Control::new(removal).with_hook(move |p, _| {
+        if p != point {
+            if let Some(rx) = landed.lock().unwrap().take() {
+                rx.recv_timeout(Duration::from_secs(120))
+                    .expect("fence landed");
+            }
+            return Flow::Continue;
+        }
+        let (db, look) = (db.clone(), look.clone());
+        let (go, wait) = channel();
+        let (land, landing) = channel();
+        *slot.lock().unwrap() = Some(std::thread::spawn(move || {
+            if !write_lock_free(&db) {
+                let _ = go.send(());
+            }
+            let reopened = Mutex::new(Store::open(&db).unwrap());
+            // `fence` reads, then appends: another store's record can land between (the journal then
+            // rejects the fence), so retry as the service would.
+            let ack = (0..10)
+                .find_map(|_| {
+                    fence(
+                        &reopened,
+                        op,
+                        &Control::new(false),
+                        loomward_operations::FenceCause::GrantRevoked,
+                    )
+                    .ok()
+                })
+                .expect("fence acknowledged");
+            let token = replay(&reopened, op).unwrap().staging_tokens.pop().unwrap();
+            let seen = look(&token);
+            let _ = go.send(());
+            let _ = land.send(());
+            (ack, seen, token)
+        }));
+        wait.recv_timeout(Duration::from_secs(120))
+            .expect("fencer probed the lock");
+        *landed.lock().unwrap() = Some(landing);
+        Flow::Continue
+    });
+    drive(&control);
+    let fencer = fencer.lock().unwrap().take().expect("seam reached");
+    let (ack, at_ack, token) = fencer.join().unwrap();
+    (ack, at_ack, observe(&token))
 }
 
 #[test]
@@ -1780,13 +2024,22 @@ fn cancel_ends_the_publish_retry_wait_at_once() {
     fs::write(lab.src().join("top/f.txt:note"), b"kept").unwrap();
     let op = lab.start(&["top"]);
     let dest = lab.dest();
-    // A held named-stream handle under staging refuses the rename (H2 negative for streams).
+    // A handle on the staging folder itself without delete sharing refuses its rename on any volume
+    // (sharing violation). A held named stream does not block everywhere: H2 is host and
+    // location-dependent, and the executor releases stream holds before publish regardless.
     let blocker: std::sync::Arc<Mutex<Option<fs::File>>> = Default::default();
     let held = blocker.clone();
     let control = Control::new(false).with_hook(move |p, c| {
         if p == Point::BeforePublish {
+            use std::os::windows::fs::OpenOptionsExt;
             let staging = fs::read_dir(&dest).unwrap().next().unwrap().unwrap().path();
-            *held.lock().unwrap() = Some(fs::File::open(staging.join("f.txt:note")).unwrap());
+            let folder = fs::OpenOptions::new()
+                .read(true)
+                .share_mode(1 | 2) // FILE_SHARE_READ | FILE_SHARE_WRITE, no FILE_SHARE_DELETE
+                .custom_flags(0x0200_0000) // FILE_FLAG_BACKUP_SEMANTICS: open a directory
+                .open(staging)
+                .unwrap();
+            *held.lock().unwrap() = Some(folder);
             c.cancel();
         }
         Flow::Continue
