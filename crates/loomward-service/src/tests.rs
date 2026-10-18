@@ -70,6 +70,8 @@ pub(crate) struct Hooks {
     pub fail_watch_start: std::sync::atomic::AtomicBool,
     #[cfg(windows)]
     pub fail_freshness_checkpoint: std::sync::atomic::AtomicBool,
+    #[cfg(windows)]
+    pub before_freshness_finish: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 /// What a personal space read answers in tests: wait on an explicit gate, or report fixed space.
@@ -3511,6 +3513,37 @@ fn roots_list_keeps_active_roots_past_64_revoked_rows() {
     }
 }
 
+#[test]
+fn grants_list_caps_retained_and_forgotten_rows_without_negative_limit() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    // More historical roots than either listing cap, plus a forgotten audit record.
+    svc.inner.db().execute_batch(
+        "WITH RECURSIVE n(id) AS (VALUES(1) UNION ALL SELECT id+1 FROM n WHERE id<301)
+         INSERT INTO st.root_grant(id,volume_key,root_file_id,display_path,origin,granted_via,state,granted_at_ns,revoked_at_ns)
+         SELECT id,'fixture',zeroblob(16),'Synthetic history','fixture','fixture','revoked',0,1 FROM n;
+         INSERT INTO main.root(id,grant_id,state) SELECT id,id,'never_scanned' FROM st.root_grant;
+         INSERT INTO st.root_forgotten(grant_id,root_number,forgotten_at_ns) VALUES(1,1,2);"
+    ).unwrap();
+    assert_eq!(crate::db::grant_rows(&svc.inner.db()).unwrap().len(), 256);
+    assert!(crate::db::forgotten_grants(&svc.inner.db(), -1)
+        .unwrap()
+        .is_empty());
+    let (list, _) = ok("grants.list", call(&svc, "grants.list", json!({})));
+    assert_eq!(list["grants"].as_array().unwrap().len(), 256);
+    // Once fewer retained rows remain, only the remaining slots go to forgotten records.
+    svc.inner
+        .db()
+        .execute("DELETE FROM main.root WHERE id>255", [])
+        .unwrap();
+    let (list, _) = ok("grants.list", call(&svc, "grants.list", json!({})));
+    assert_eq!(list["grants"].as_array().unwrap().len(), 255);
+    assert_eq!(
+        list["grants"][254]["forgotten_at"],
+        crate::ts_ns(2).as_str()
+    );
+}
+
 /// #185 item 3: the contract lists at most 64 roots, so a 65th active grant is refused by name;
 /// re-granting an active root and granting after a revocation still work.
 #[test]
@@ -3749,6 +3782,61 @@ fn service_minted_root_id_round_trips_through_the_engine() {
     assert_eq!(root.root_id(), &id);
     assert_eq!(root.path().canonicalize().unwrap(), lab.path);
     assert_eq!(root.dataset_class(), DatasetClass::Synthetic);
+}
+
+#[cfg(windows)]
+#[test]
+fn scan_start_refuses_a_grant_revoked_after_root_mint() {
+    for cancel_fence in [false, true] {
+        let Some(lab) = lab() else { return };
+        let inner = &lab.svc.inner;
+        inner.freshness.pause_pump();
+        let row = inner.root_row(&lab.root).unwrap();
+        let stored = crate::db::roots(&inner.db(), Some(row)).unwrap().remove(0);
+        let id = RootId::new(&lab.root).unwrap();
+        inner.scan.bind(&id, stored.grant, stored.dir.unwrap());
+        let root = inner
+            .engine
+            .granted_root(
+                id,
+                stored.grant,
+                &loomward_engine::scan::CatalogRootIdentity {
+                    row,
+                    instance: inner.instance.clone(),
+                },
+            )
+            .unwrap();
+        if cancel_fence {
+            inner.revoke(stored.grant).unwrap();
+        } else {
+            // Pause revocation after its durable commit, before the engine cancellation fence.
+            inner
+                .catalog
+                .writer()
+                .call(WriteCommand::RevokeGrant {
+                    grant_id: stored.grant,
+                    revoked_at_ns: crate::now_ns(),
+                })
+                .unwrap();
+        }
+        for refresh in [false, true] {
+            let answer = if refresh {
+                inner.engine.scan_refresh(&root, None)
+            } else {
+                inner.engine.scan_start(&root, None)
+            };
+            if let Ok(job) = &answer {
+                settle(&lab.svc, job.job_id.as_str());
+            }
+            assert!(
+                matches!(
+                    answer,
+                    Err(loomward_engine::EngineError::PermissionDenied { .. })
+                ),
+                "revoked mint admitted native work (cancel fence={cancel_fence}, refresh={refresh}): {answer:?}"
+            );
+        }
+    }
 }
 
 /// Independent walk: (files, dirs below the root, logical bytes); reparse points are neither
@@ -4719,6 +4807,59 @@ fn f3_search_and_scan_completion_serialize_watch_checkpoints() {
 }
 
 #[cfg(windows)]
+fn search_checkpoint_failure_during_full_scan(new_hint: bool) {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    settle(svc, &start(svc, &lab.root, "full"));
+    f3_wait_live(svc);
+    svc.inner.freshness.pause_pump();
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    let (arrived, waiting) = std::sync::mpsc::sync_channel(1);
+    let worker = barrier.clone();
+    *svc.inner.hooks.before_freshness_finish.lock().unwrap() = Some(Box::new(move || {
+        arrived.send(()).unwrap();
+        worker.wait();
+    }));
+    let job = start(svc, &lab.root, "full");
+    waiting.recv_timeout(Duration::from_secs(30)).unwrap();
+    let mut pages = Vec::new();
+    for _ in 0..3 {
+        svc.inner
+            .hooks
+            .fail_freshness_checkpoint
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        pages.push(f3_hits(svc));
+    }
+    if new_hint {
+        svc.inner
+            .freshness
+            .record(1, vec![loomward_windows::watch::Change::RootDirty]);
+    }
+    barrier.wait();
+    assert_eq!(settle(svc, &job)["coverage"], "complete");
+    for page in pages {
+        assert_eq!(page["hits"][0]["freshness"]["state"], "stale");
+    }
+    assert_eq!(
+        svc.inner.freshness.stale(1),
+        new_hint,
+        "only a real change may invalidate the completed scan"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn f3_search_checkpoint_failure_does_not_burn_completed_scan_epoch() {
+    search_checkpoint_failure_during_full_scan(false);
+}
+
+#[cfg(windows)]
+#[test]
+fn f3_search_checkpoint_failure_preserves_real_generation_change() {
+    search_checkpoint_failure_during_full_scan(true);
+}
+
+#[cfg(windows)]
 #[test]
 fn f3_dead_watcher_searches_never_reopen_refresh_budget() {
     let Some(lab) = lab() else { return };
@@ -5162,32 +5303,56 @@ fn a_duplicates_job_started_past_its_deadline_reports_the_started_job() {
     let svc = &lab.svc;
     settle(svc, &start(svc, &lab.root, "full"));
     f3_wait_live(svc);
-    let after = (Command::DuplicatesInspect, "after");
-    svc.inner.hooks.closed.lock().unwrap().push(after);
     let mut req = request(
         "duplicates.inspect",
         json!({"root_id":lab.root,
         "budget":{"max_candidates":200,"max_bytes":"1024","max_ms":5000}}),
     );
-    req.deadline_ms = Some(Int::new(200).unwrap());
-    let sent = Instant::now();
-    let first = std::thread::scope(|s| {
-        let asking = s.spawn(|| svc.call(req.clone(), &CallContext::http()));
-        svc.inner
-            .hooks
-            .until("duplicates started, past deadline", |h| {
-                h.arrived.lock().unwrap().contains(&after)
-                    && sent.elapsed() > Duration::from_millis(250)
-            });
-        svc.inner.hooks.open(after.0, after.1);
-        asking.join().unwrap()
-    });
+    let first = past_deadline_once(svc, &mut req, Command::DuplicatesInspect);
     assert_eq!(err(first).code, ErrorCode::DeadlineExceeded);
     let (job, _) = ok("duplicates.inspect", svc.call(req, &CallContext::http()));
     assert_eq!(
         settle(svc, job["job"]["job_id"].as_str().unwrap())["state"],
         "completed"
     );
+}
+
+/// #698: sends `req` once, holds its worker after the handler started the job and its caller
+/// before the wait, then runs the service clock (`Hooks::skew`) past the deadline. The caller
+/// therefore answers at its deadline and the worker finishes past it, on any host load; the
+/// generous real deadline leaves the handler's own work out of the race. The clock is reset
+/// before returning, so a retry with the same request_id waits on the real clock.
+#[cfg(windows)]
+fn past_deadline_once(
+    svc: &Service,
+    req: &mut RequestEnvelope,
+    command: Command,
+) -> ResponseEnvelope {
+    let hooks = &svc.inner.hooks;
+    let (after, waiting) = ((command, "after"), (command, "mutate_wait"));
+    hooks.arrived.lock().unwrap().clear();
+    hooks.closed.lock().unwrap().extend([after, waiting]);
+    req.deadline_ms = Some(Int::new(60_000).unwrap());
+    let first = std::thread::scope(|s| {
+        let asking = s.spawn(|| svc.call(req.clone(), &CallContext::http()));
+        hooks.until("job started, caller waiting", |h| {
+            let arrived = h.arrived.lock().unwrap();
+            arrived.contains(&after) && arrived.contains(&waiting)
+        });
+        *hooks.skew.lock().unwrap() = Duration::from_secs(61);
+        hooks.open(waiting.0, waiting.1);
+        let first = asking.join().unwrap();
+        hooks.open(after.0, after.1);
+        first
+    });
+    hooks.until("worker settled", |h| {
+        h.arrived
+            .lock()
+            .unwrap()
+            .contains(&(command, "worker_exit"))
+    });
+    *hooks.skew.lock().unwrap() = Duration::ZERO;
+    first
 }
 
 /// #565 review: a scan that started just past its request deadline reports the real job, and a
@@ -5199,20 +5364,8 @@ fn a_scan_started_past_its_deadline_reports_the_started_job() {
     let svc = &lab.svc;
     settle(svc, &start(svc, &lab.root, "full"));
     f3_wait_live(svc);
-    let after = (Command::ScanStart, "after");
-    svc.inner.hooks.closed.lock().unwrap().push(after);
     let mut req = request("scan.start", json!({"root_id": lab.root, "mode": "full"}));
-    req.deadline_ms = Some(Int::new(200).unwrap());
-    let sent = Instant::now();
-    let first = std::thread::scope(|s| {
-        let asking = s.spawn(|| svc.call(req.clone(), &CallContext::http()));
-        svc.inner.hooks.until("started, past the deadline", |h| {
-            h.arrived.lock().unwrap().contains(&after)
-                && sent.elapsed() > Duration::from_millis(250)
-        });
-        svc.inner.hooks.open(after.0, after.1);
-        asking.join().unwrap()
-    });
+    let first = past_deadline_once(svc, &mut req, Command::ScanStart);
     assert_eq!(err(first).code, ErrorCode::DeadlineExceeded);
     let (job, _) = ok("scan.start", svc.call(req, &CallContext::http()));
     let job = job["job"]["job_id"].as_str().unwrap().to_owned();

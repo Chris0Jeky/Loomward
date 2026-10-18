@@ -60,7 +60,7 @@ fn collection(conn: &Connection, id: i64) -> Result<Value, ErrorBody> {
 impl Inner {
     /// Whether `deadline` has passed. Tests may run the clock ahead (`Hooks::skew`) to expire a
     /// page deterministically at a gate instead of racing a wall-clock budget.
-    fn past(&self, deadline: std::time::Instant) -> bool {
+    pub(crate) fn past(&self, deadline: std::time::Instant) -> bool {
         #[cfg(test)]
         let ahead = *self.hooks.skew.lock().unwrap();
         #[cfg(not(test))]

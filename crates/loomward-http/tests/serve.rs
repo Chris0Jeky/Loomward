@@ -1361,13 +1361,38 @@ fn followup_refused_start(
     if personal {
         command.args(["--dataset", "personal", "--allow-personal"]);
     }
+    // #604: a freshly linked binary's first launch waits on the host's scan of the new file
+    // (measured ~3.4 s idle, far more under load), which is not the refusal. Pay it here with a
+    // usage error, under the old hang guard, so the deadline below times only the refusal.
+    let (warmed, warm) = exits_within(
+        std::process::Command::new(env!("CARGO_BIN_EXE_loomward-serve")).arg("--no-such-flag"),
+        Duration::from_secs(30),
+    );
+    assert!(
+        warmed && warm.status.code() == Some(2),
+        "usage error must exit 2"
+    );
+    let before = tree(state);
+    // The refusal runs before any store is opened for writing (#604: ~15-700 ms in-process).
+    let (exited, output) = exits_within(&mut command, Duration::from_secs(10));
+    assert!(exited, "overlapping static server started");
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("overlaps"));
+    assert_eq!(tree(state), before, "a refused start must not touch state");
+}
+
+/// Runs `command` to exit, killing it after `limit`; returns whether it exited by itself.
+#[cfg(windows)]
+fn exits_within(
+    command: &mut std::process::Command,
+    limit: Duration,
+) -> (bool, std::process::Output) {
     let mut child = command
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
-    // A hang guard, not a latency budget: the refusal must come, however loaded the host (#320).
-    let end = Instant::now() + Duration::from_secs(30);
+    let end = Instant::now() + limit;
     let exited = loop {
         if child.try_wait().unwrap().is_some() {
             break true;
@@ -1378,10 +1403,45 @@ fn followup_refused_start(
         }
         std::thread::sleep(Duration::from_millis(20));
     };
-    let output = child.wait_with_output().unwrap();
-    assert!(exited, "overlapping static server started");
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("overlaps"));
+    (exited, child.wait_with_output().unwrap())
+}
+
+/// Every entry under `dir` (absent: empty) with its length and modification time, plus the total
+/// WAL bytes. The preflight's read-only SQLite readers may leave empty `-wal`/`-shm` sidecars
+/// (WAL reader behaviour; `immutable=1` would hide a live writer's grants), so sidecars count
+/// only through the WAL bytes: any write would show there or in a database file.
+#[cfg(windows)]
+fn tree(
+    dir: &std::path::Path,
+) -> (
+    std::collections::BTreeMap<PathBuf, (u64, std::time::SystemTime)>,
+    u64,
+) {
+    let mut out = std::collections::BTreeMap::new();
+    let mut wal = 0;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for entry in entries {
+            let entry = entry.unwrap();
+            let meta = entry.metadata().unwrap();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.ends_with("-wal") {
+                wal += meta.len();
+                continue;
+            }
+            if name.ends_with("-shm") {
+                continue;
+            }
+            if meta.is_dir() {
+                stack.push(entry.path());
+            }
+            out.insert(entry.path(), (meta.len(), meta.modified().unwrap()));
+        }
+    }
+    (out, wal)
 }
 
 #[cfg(windows)]
@@ -1491,6 +1551,26 @@ fn followup_proposed_static_overlap_leaves_no_active_grant() {
     assert_eq!(
         serde_json::to_value(response).unwrap()["result"]["roots"],
         json!([])
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn refused_start_creates_no_state_directory() {
+    if loomward_windows::enumerate::running_elevated() {
+        // Native identity refuses elevation (invariant 2, #217) before the overlap check runs.
+        return;
+    }
+    let tmp = tempfile::tempdir_in(loomward_service::paths::test_roots_base()).unwrap();
+    let state = tmp.path().join("state");
+    let dist = tmp.path().join("dist");
+    let grant = dist.join("fixture");
+    std::fs::create_dir_all(&grant).unwrap();
+    // Personal policy is exercised using only disposable synthetic files.
+    followup_refused_start(&state, &dist, Some(&grant), true);
+    assert!(
+        !state.exists(),
+        "a refused start created its state directory"
     );
 }
 
