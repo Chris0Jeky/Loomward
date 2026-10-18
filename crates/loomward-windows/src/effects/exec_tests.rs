@@ -824,6 +824,27 @@ fn throughput_lab() {
     }
 }
 
+/// Review #664: the durable-stop hot path over a 20,000-item synthetic copy.
+#[test]
+#[ignore]
+fn durable_stop_20k_lab() {
+    let Some(lab) = Lab::new() else { return };
+    let top = lab.src().join("top");
+    fs::create_dir(&top).unwrap();
+    for n in 0..20_000 {
+        fs::write(top.join(format!("f{n:05}")), b"").unwrap();
+    }
+    let op = lab.start(&["top"]);
+    let started = std::time::Instant::now();
+    let outcome = run(&lab.store, op, &Control::new(false)).unwrap();
+    let seconds = started.elapsed().as_secs_f64();
+    assert_eq!(outcome.state, OpState::Committed);
+    println!("DURABLE_STOP_20K: 20000 empty files, {seconds:.3} s");
+    let Lab { store, tmp } = lab;
+    drop(store);
+    tmp.close().unwrap();
+}
+
 /// H2 for named streams (measured here, C5): a held named-stream handle blocks renaming its ancestor
 /// folder even with delete sharing, while a held default stream does not. Hence the executor releases
 /// stream holds just before publish and re-hashes the streams after (docs/47 section 4, step 2).
@@ -1191,6 +1212,186 @@ fn recovery_observation_failure_does_not_record_damage() {
 #[test]
 fn published_recovery_observation_failure_does_not_record_damage() {
     recovery_observation_failure(true);
+}
+
+#[test]
+fn idle_status_keeps_unjournaled_names_during_observation_failure() {
+    let Some(mut lab) = Lab::new() else { return };
+    for name in ["a", "b", "c"] {
+        fs::write(lab.src().join(name), b"payload").unwrap();
+    }
+    let op = lab.start(&["a", "b", "c"]);
+    let crash = Control::new(false).with_hook(|p, _| {
+        if p == Point::Creating(2) {
+            Flow::Crash
+        } else {
+            Flow::Continue
+        }
+    });
+    assert!(matches!(run(&lab.store, op, &crash), Err(Fault::Crashed)));
+    let r = replay(&lab.store, op).unwrap();
+    let staging = lab.dest().join(r.staging_tokens.last().unwrap());
+    let deny = DenyCreate::with(&staging.join("a"), "(R)");
+    let before = lab.store.lock().unwrap().rows(op).unwrap();
+    for _ in 0..2 {
+        lab.reopen();
+        let recovered = recover(&lab.store, op, &Control::new(false)).unwrap();
+        assert_eq!(recovered.state, OpState::NeedsAttention);
+        assert_eq!(recovered.unjournaled_items, ["b"]);
+        let status = status_idle(&lab.store, op).unwrap();
+        assert_eq!(status.state, OpState::NeedsAttention);
+        assert_eq!(status.unjournaled_items, ["b"]);
+        assert_eq!(lab.store.lock().unwrap().rows(op).unwrap(), before);
+    }
+    drop(deny);
+    lab.reopen();
+    assert_eq!(
+        recover(&lab.store, op, &Control::new(false))
+            .unwrap()
+            .unjournaled_items,
+        ["a", "b"]
+    );
+}
+
+#[test]
+fn cancel_unreadable_published_copy_does_not_withdraw_or_journal() {
+    cancel_unreadable_published_copy(false);
+}
+
+#[test]
+fn revocation_cancel_unreadable_published_copy_does_not_withdraw_or_journal() {
+    cancel_unreadable_published_copy(true);
+}
+
+fn cancel_unreadable_published_copy(revoked: bool) {
+    let Some(mut lab) = Lab::new() else { return };
+    fs::write(lab.src().join("f"), b"payload").unwrap();
+    let op = lab.start(&["f"]);
+    let crash = Control::new(false).with_hook(|p, _| {
+        if p == Point::AfterPublish {
+            Flow::Crash
+        } else {
+            Flow::Continue
+        }
+    });
+    assert!(matches!(run(&lab.store, op, &crash), Err(Fault::Crashed)));
+    lab.reopen();
+    let control = Control::new(true);
+    if revoked {
+        fence(
+            &lab.store,
+            op,
+            &control,
+            loomward_operations::FenceCause::GrantRevoked,
+        )
+        .unwrap();
+    }
+    let before = lab.store.lock().unwrap().rows(op).unwrap();
+    let plan = lab.plan(op);
+    let published = lab.dest().join(&plan.manifest.destination.folder_name);
+    let deny = DenyCreate::with(&published, "(R)");
+    assert!(identity::observe(&published).is_err());
+    let outcome = cancel(&lab.store, op, &plan, &control).unwrap();
+    assert_eq!(lab.store.lock().unwrap().rows(op).unwrap(), before);
+    assert_eq!(outcome.state, OpState::NeedsAttention);
+    drop(deny);
+    lab.reopen();
+    assert_eq!(
+        recover(&lab.store, op, &Control::new(true)).unwrap().state,
+        OpState::Committed
+    );
+    assert_eq!(fs::read(published.join("f")).unwrap(), b"payload");
+}
+
+#[test]
+fn missing_destination_parent_is_retryable_not_staging_damage() {
+    for (point, replaced) in [
+        (Point::Verified(0), false),
+        (Point::AfterPublish, false),
+        (Point::Verified(0), true),
+        (Point::AfterPublish, true),
+    ] {
+        let Some(mut lab) = Lab::new() else { return };
+        fs::write(lab.src().join("f"), b"payload").unwrap();
+        let op = lab.start(&["f"]);
+        let crash = Control::new(false).with_hook(move |p, _| {
+            if p == point {
+                Flow::Crash
+            } else {
+                Flow::Continue
+            }
+        });
+        assert!(matches!(run(&lab.store, op, &crash), Err(Fault::Crashed)));
+        lab.reopen();
+        let before = lab.store.lock().unwrap().rows(op).unwrap();
+        let absent = lab.tmp.path().join("detached");
+        fs::rename(lab.dest(), &absent).unwrap();
+        if replaced {
+            fs::create_dir(lab.dest()).unwrap();
+        }
+        assert_eq!(
+            recover(&lab.store, op, &Control::new(false)).unwrap().state,
+            OpState::NeedsAttention
+        );
+        assert_eq!(
+            lab.store.lock().unwrap().rows(op).unwrap(),
+            before,
+            "{point:?}"
+        );
+        if replaced {
+            fs::remove_dir(lab.dest()).unwrap();
+        }
+        fs::rename(absent, lab.dest()).unwrap();
+        lab.reopen();
+        let outcome = recover(&lab.store, op, &Control::new(false)).unwrap();
+        assert_eq!(
+            outcome.state,
+            if point == Point::AfterPublish {
+                OpState::Committed
+            } else {
+                OpState::Copying
+            }
+        );
+    }
+}
+
+#[test]
+fn admitted_step_rechecks_epoch_even_when_control_is_fenced() {
+    let Some(lab) = Lab::new() else { return };
+    fs::write(lab.src().join("f"), b"payload").unwrap();
+    let op = lab.start(&["f"]);
+    let crash = Control::new(false).with_hook(|p, _| {
+        if p == Point::Identities(0) {
+            Flow::Crash
+        } else {
+            Flow::Continue
+        }
+    });
+    assert!(matches!(run(&lab.store, op, &crash), Err(Fault::Crashed)));
+    let epoch = replay(&lab.store, op).unwrap().epoch;
+    let journal = Journal {
+        store: &lab.store,
+        op,
+        epoch,
+    };
+    let control = Control::new(false);
+    let step = control
+        .admit()
+        .unwrap_or_else(|_| panic!("step was refused"));
+    lab.store
+        .lock()
+        .unwrap()
+        .append(
+            op,
+            epoch + 1,
+            Record::Fenced {
+                cause: loomward_operations::FenceCause::GrantRevoked,
+            },
+        )
+        .unwrap();
+    control.fenced.store(true, Ordering::SeqCst);
+    assert!(matches!(journal.check_copying(), Err(Stop::Superseded)));
+    drop(step);
 }
 
 fn recovery_observation_failure(published: bool) {

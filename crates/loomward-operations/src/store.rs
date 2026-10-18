@@ -353,6 +353,33 @@ impl Store {
     }
 
     /// The current fence epoch and state as the journal replays them (`Err` when it does not replay).
+    /// Reuse the validated replay when its head still matches the database, including across stores.
+    pub fn state_epoch(
+        &mut self,
+        op: u64,
+    ) -> rusqlite::Result<Result<(crate::state::OpState, u64), Invalid>> {
+        let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Deferred)?;
+        let (seq, chain) = match checked_tail(&tx, op)? {
+            Ok(tail) => tail,
+            Err(e) => return Ok(Err(e)),
+        };
+        if !self
+            .cache
+            .get(&op)
+            .is_some_and(|r| r.seq == seq && r.chain.as_slice() == chain)
+        {
+            let replay = match Replay::from_rows(op, &load(&tx, op)?) {
+                Ok(replay) => replay,
+                Err(e) => return Ok(Err(e)),
+            };
+            self.cache.insert(op, replay);
+        }
+        tx.commit()?;
+        let replay = &self.cache[&op];
+        Ok(Ok((replay.state, replay.epoch)))
+    }
+
+    /// Fully re-read and validate the operation, independent of the cached replay.
     pub fn replay(&self, op: u64) -> rusqlite::Result<Result<Replay, Invalid>> {
         let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Deferred)?;
         let replay = match checked_tail(&tx, op)? {
@@ -533,6 +560,66 @@ mod tests {
         Record::StagingIntent {
             token: "lw-staging-1".into(),
         }
+    }
+
+    #[test]
+    fn state_epoch_cache_avoids_journal_body_reads() {
+        use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = started(&dir.path().join("state.db"));
+        store.append(1, 1, intent()).unwrap();
+        store.conn.flush_prepared_statement_cache();
+        store
+            .conn
+            .authorizer(Some(|ctx: AuthContext<'_>| {
+                if matches!(
+                    ctx.action,
+                    AuthAction::Read {
+                        table_name: "op_journal",
+                        column_name: "body"
+                    }
+                ) {
+                    Authorization::Deny
+                } else {
+                    Authorization::Allow
+                }
+            }))
+            .unwrap();
+        for _ in 0..3 {
+            let head = store
+                .state_epoch(1)
+                .expect("cached state must not read journal bodies")
+                .unwrap();
+            assert_eq!(head, (crate::state::OpState::Preparing, 1));
+        }
+    }
+
+    #[test]
+    fn state_epoch_refreshes_external_fence_and_rejects_head_damage() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        let mut store = started(&path);
+        assert_eq!(store.state_epoch(1).unwrap().unwrap().1, 1);
+        let mut other = Store::open(&path).unwrap();
+        other
+            .append(
+                1,
+                2,
+                Record::Fenced {
+                    cause: crate::journal::FenceCause::GrantRevoked,
+                },
+            )
+            .unwrap();
+        assert_eq!(store.state_epoch(1).unwrap().unwrap().1, 2);
+        assert_eq!(store.state_epoch(1).unwrap().unwrap().1, 2);
+        other
+            .conn
+            .execute("DELETE FROM op_journal_head WHERE op_id=1", [])
+            .unwrap();
+        assert_eq!(
+            store.state_epoch(1).unwrap().unwrap_err().why,
+            "journal head does not match tail"
+        );
     }
 
     #[test]

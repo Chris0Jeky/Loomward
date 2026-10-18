@@ -690,10 +690,16 @@ impl Journal<'_> {
         replay(self.store, self.op).map_err(|e| Stop::Journal(format!("{e:?}")))
     }
 
-    fn check_copying(&self, control: &Control) -> Result<(), Stop> {
+    fn check_copying(&self) -> Result<(), Stop> {
         // A detached worker's Control is not the reopened service's Control: read the durable stop.
-        let head = self.replay()?;
-        if head.state != OpState::Copying || (head.epoch != self.epoch && !control.fenced()) {
+        let (state, epoch) = self
+            .store
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .state_epoch(self.op)
+            .map_err(|e| Stop::Journal(e.to_string()))?
+            .map_err(|e| Stop::Journal(format!("{e:?}")))?;
+        if state != OpState::Copying || epoch != self.epoch {
             return Err(Stop::Superseded);
         }
         Ok(())
@@ -711,6 +717,15 @@ fn replay(store: &Mutex<Store>, op: u64) -> Result<Replay, Fault> {
 
 /// The operation's status as its journal replays (the receipt fields the service reports).
 pub fn status(store: &Mutex<Store>, op: u64) -> Result<Outcome, Fault> {
+    status_observing(store, op, false)
+}
+
+/// Status with no resident worker: re-observe interrupted runs without changing their journal.
+pub fn status_idle(store: &Mutex<Store>, op: u64) -> Result<Outcome, Fault> {
+    status_observing(store, op, true)
+}
+
+fn status_observing(store: &Mutex<Store>, op: u64, idle: bool) -> Result<Outcome, Fault> {
     let r = replay(store, op)?;
     let rows = store
         .lock()
@@ -722,7 +737,9 @@ pub fn status(store: &Mutex<Store>, op: u64) -> Result<Outcome, Fault> {
     // Recovery cannot journal needs_attention from every state (e.g. preparing).
     // Re-observe those waiting states, and recorded attention, so later status reads keep the damage visible.
     if !state.is_terminal()
-        && (state == OpState::NeedsAttention || !state.can_transition(OpState::NeedsAttention))
+        && (idle
+            || state == OpState::NeedsAttention
+            || !state.can_transition(OpState::NeedsAttention))
     {
         let plan = store
             .lock()
@@ -732,10 +749,12 @@ pub fn status(store: &Mutex<Store>, op: u64) -> Result<Outcome, Fault> {
             .and_then(|p| serde_json::from_str::<Plan>(&p).ok());
         if let Some(plan) = plan {
             let disk = PathDisk::new(&plan, &r);
-            if matches!(
-                loomward_operations::recover(op, &rows, &disk).decision,
-                Decision::NeedsAttention(_)
-            ) {
+            let decision = loomward_operations::recover(op, &rows, &disk).decision;
+            if matches!(decision, Decision::NeedsAttention(_))
+                || (idle
+                    && (disk.observation_failed.get()
+                        || matches!(decision, Decision::Confirm { .. })))
+            {
                 state = OpState::NeedsAttention;
             }
             if state == OpState::NeedsAttention {
@@ -933,7 +952,7 @@ impl Runner<'_, '_> {
                 }
             };
             let made = path_of(&item.name, &self.keys).and_then(|(path, name)| {
-                self.journal.check_copying(self.control)?;
+                self.journal.check_copying()?;
                 match item.kind {
                     Kind::Directory => self
                         .staging
@@ -1132,7 +1151,7 @@ impl Runner<'_, '_> {
             return Err(Stop::Refused(Refusal::SourceChanged, None));
         }
         self.control.at(Point::Writing(i as u32))?;
-        self.journal.check_copying(self.control)?;
+        self.journal.check_copying()?;
         let digest = file
             .write_and_flush(&mut Cancellable::new(&mut source, self.control)?, item.size)
             .map_err(|e| self.write_error(&e))?;
@@ -1141,7 +1160,7 @@ impl Runner<'_, '_> {
             self.control.at(Point::CreatingStream(i as u32))?;
             let stream = {
                 let _step = self.control.admit()?;
-                self.journal.check_copying(self.control)?;
+                self.journal.check_copying()?;
                 file.create_stream(name).map_err(|e| io_refusal(&e))?
             };
             let mut reader = source
@@ -1533,10 +1552,14 @@ pub fn cancel(
     if let Some(final_name) = &r.publish {
         // A rename may already have happened: never withdraw, never clean a published copy.
         let disk = PathDisk::new(plan, &r);
-        if let Some(s) = r.staging.filter(|s| {
+        let published = r.staging.filter(|s| {
             disk.in_parent(final_name)
                 .is_some_and(|o| s.matches(&o, r.staging_planned))
-        }) {
+        });
+        if disk.observation_failed.get() {
+            return status_idle(store, op);
+        }
+        if let Some(s) = published {
             // Published but not yet committed: abandon settles it by confirming now (a read). It is
             // committed, or recorded needs_attention with its cause; the copy is never touched.
             return if r.state == OpState::Publishing {
@@ -1690,26 +1713,37 @@ fn clean(store: &Mutex<Store>, op: u64, plan: &Plan, control: &Control) -> Resul
 /// propose. Every removal re-checks by journaled ID before acting.
 struct PathDisk {
     parent: PathBuf,
+    parent_key: ObjectKey,
     staging: Option<(String, ObjectId, Option<i64>)>,
     observation_failed: std::cell::Cell<bool>,
 }
 impl PathDisk {
     fn new(plan: &Plan, r: &Replay) -> Self {
-        PathDisk {
+        let disk = PathDisk {
             parent: plan.destination.clone(),
+            parent_key: plan.destination_key.clone(),
             observation_failed: std::cell::Cell::new(false),
             staging: r
                 .staging
                 .zip(r.staging_tokens.last().cloned())
                 .map(|(id, t)| (t, id, r.staging_planned)),
+        };
+        // A missing/replaced parent (e.g. a detached volume) says nothing about its children.
+        if !disk.parent_available() {
+            disk.observation_failed.set(true);
         }
+        disk
+    }
+
+    fn parent_available(&self) -> bool {
+        identity::observe(&self.parent).is_ok_and(|o| o.object == self.parent_key)
     }
 
     fn observe(&self, path: &Path) -> Option<identity::ObservedIdentity> {
         match identity::observe(path) {
             Ok(observed) => Some(observed),
             Err(error) => {
-                if error.kind() != io::ErrorKind::NotFound {
+                if error.kind() != io::ErrorKind::NotFound || !self.parent_available() {
                     self.observation_failed.set(true);
                 }
                 None
@@ -1784,6 +1818,11 @@ pub fn recover(store: &Mutex<Store>, op: u64, control: &Control) -> Result<Outco
         .unwrap_or_else(|e| e.into_inner())
         .recover(op, &disk)
         .map_err(|e| Fault::Journal(e.to_string()))?;
+    if disk.observation_failed.get() {
+        let mut outcome = status_idle(store, op)?;
+        outcome.state = OpState::NeedsAttention;
+        return Ok(outcome);
+    }
     match recovery.decision {
         Decision::Reconfirm => {
             log(Record::Transition {

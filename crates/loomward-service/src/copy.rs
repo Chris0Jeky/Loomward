@@ -948,7 +948,13 @@ impl Inner {
         {
             self.copies.reap();
             let store = self.copies_store()?;
-            let outcome = loomward_windows::effects::exec::status(store, op)
+            let live = self.copies.running.lock().unwrap().contains_key(&op);
+            let status = if live {
+                loomward_windows::effects::exec::status
+            } else {
+                loomward_windows::effects::exec::status_idle
+            };
+            let outcome = status(store, op)
                 .map_err(|_| fail(ErrorCode::InternalError, "the journal does not replay"))?;
             let digest = store
                 .lock()
