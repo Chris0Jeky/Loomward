@@ -276,7 +276,15 @@ impl Inner {
                         error,
                         tools: Vec::new(),
                     })
-                    .and_then(|p| turn::ask(&view, &*p, &profile, &question, &mut log));
+                    .and_then(|p| {
+                        turn::ask(
+                            Arc::new(Peer(weak.clone())),
+                            &*p,
+                            &profile,
+                            &question,
+                            &mut log,
+                        )
+                    });
                 if let Some(inner) = weak.upgrade() {
                     let done = settle(&view, base, result, &log);
                     let mut slot = inner.ask.slot.lock().unwrap_or_else(|e| e.into_inner());
