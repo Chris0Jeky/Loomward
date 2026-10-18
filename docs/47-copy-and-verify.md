@@ -130,7 +130,7 @@ protocol closes that window in two parts: hold, then confirm.
    final content hash is taken through that held handle (non-cached), so the bytes verified are the bytes held. The
    holds stay open until the `committed` record (up to 200,000 handles; assumption, measured in C2).
 2. **Publish with default-stream holds.** The executor retains default-stream holds, releases all named-stream
-   holds just before the rename, and reacquires the named streams through the held file identities straight after
+   holds just before the rename, and reopens the named streams relative to the retained default-stream handles straight after
    it. This conservative path applies on every host, whether a held named stream blocks rename or not (H2).
    Named-stream content can change in that gap, so step 3 always re-hashes every named stream.
 3. **Confirm after publish.** Under the holds, still held or reacquired, a post-publish confirmation checks four
