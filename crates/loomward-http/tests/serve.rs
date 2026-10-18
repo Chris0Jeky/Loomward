@@ -1116,7 +1116,7 @@ fn static_gate_refuses_existing_grant_roots_in_every_spelling() {
         .into_owned();
     let full = full.strip_prefix(r"\\?\").unwrap_or(&full).to_owned();
     let mut spellings = vec![
-        PathBuf::from(format!("{full}\\")),
+        PathBuf::from(format!("{full}{}", std::path::MAIN_SEPARATOR)),
         PathBuf::from(full.replace('\\', "/")),
         relative_to_cwd(&grants),
     ];
