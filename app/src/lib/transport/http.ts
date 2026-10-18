@@ -74,6 +74,7 @@ export function createHttpTransport(opts: HttpOptions): Transport {
       try {
         return JSON.parse(await readCapped(res, MAX_RESPONSE_BYTES)) as ResponseEnvelope;
       } catch (e) {
+        if (signal?.aborted) throw e;
         throw e instanceof TransportError ? e : new TransportError('response is not JSON');
       }
     },
