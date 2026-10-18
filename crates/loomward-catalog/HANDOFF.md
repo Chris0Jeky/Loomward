@@ -2030,3 +2030,14 @@ overflow rollback and restart recovery are covered. The initial implementation i
 committed as `bbf5bfb`; this documentation/measurement follow-up remains uncommitted
 for the driver. No production code, test, safety gate, owner decision or global
 checkpoint changed in the follow-up.
+
+## EndRun singleton filtering (#646, 2026-10-18)
+
+Hard-link rebuilding now filters possible repeated identities through the existing
+`file_identity` index before grouping visible names by volume. Singleton identities
+cannot contribute; visibility, exclusions, allocation and flag semantics remain.
+FILE scratch and both cache budgets above are unchanged. The test-first SQLite
+work-budget regression, three interleaved baseline/candidate runs of the throughput
+and 1M memory examples, exact source identity and limits are in
+[the scoped lane evidence](evidence/endrun-646.md). Shared-host timings do not
+establish quiet-host throughput parity or the 250k through-EndRun P4 target.

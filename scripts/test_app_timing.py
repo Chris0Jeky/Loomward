@@ -2,7 +2,10 @@
 import contextlib
 import importlib.util
 import io
+import json
+import time
 import unittest
+from http.client import HTTPConnection
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -16,6 +19,42 @@ spec.loader.exec_module(atlas)
 
 
 class AppE2ETimingTests(unittest.TestCase):
+    def test_fake_engine_broadcasts_changes_to_each_event_stream(self):
+        engine = test_app_views.FakeEngine()
+        engine.start()
+        self.addCleanup(engine.server.server_close)
+        self.addCleanup(engine.stop)
+
+        def frame(response):
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                line = response.readline()
+                if line.startswith(b'data: '):
+                    return json.loads(line[6:])
+                self.assertTrue(line, 'event stream ended before the event')
+            self.fail('event was not broadcast to each stream')
+
+        streams = []
+        for _ in range(2):
+            connection = HTTPConnection('127.0.0.1', engine.server.server_port, timeout=2)
+            self.addCleanup(connection.close)
+            connection.request('GET', '/api/v3/events', headers={'X-Loomward-Token': test_app_views.TOKEN})
+            response = connection.getresponse()
+            self.addCleanup(response.close)
+            self.assertEqual(response.status, 200)
+            self.assertEqual(frame(response)['event'], 'stream.hello')
+            streams.append(response)
+
+        # A previous page's connection can overlap its replacement during navigation.
+        engine.land('E:\\Picked After The Deadline')
+        for response in streams:
+            event = frame(response)
+            self.assertEqual(event['event'], 'roots.changed')
+            self.assertEqual(event['data']['roots'][0]['display_path']['text'], 'E:\\Picked After The Deadline')
+        engine.invalidate()
+        for response in streams:
+            self.assertEqual(frame(response)['event'], 'tree.invalidated')
+
     def test_resume_waits_for_expected_id_and_rejects_bare_ids(self):
         page = Mock()
         with patch.object(test_app, 'engine', test_app.Engine()), contextlib.redirect_stdout(io.StringIO()):
