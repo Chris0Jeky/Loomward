@@ -649,6 +649,11 @@ same native file ID; it is null for an operation-wide refusal and for an entry t
 that identity, never a guessed node. v1 always creates one new folder inside the destination parent
 (" (2)", " (3)" when the name is taken) and never writes into an existing folder (docs/47 Q3 open).
 
+Recovery records detected journal/disk damage as `needs_attention` wherever the journal permits that
+transition; otherwise status reports the observed attention state without inventing a journal edge.
+`unjournaled_items` reports the first 64 staging-relative manifest names observed without journaled
+identities, with the full total in `unjournaled_item_count`. These entries are never adopted or removed.
+
 ## Lazy meaning threads
 
 | Command | Revisions | Retry | Effects |
