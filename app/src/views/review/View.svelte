@@ -29,18 +29,15 @@
     const client = session.client;
     if (!client) return;
     const mine = ++generation;
-    try {
-      const [s, q] = await Promise.all([client.call('learning.status', {}), client.call('learning.queue', { root_id: null, limit: 20, cursor })]);
-      if (!alive || mine !== generation) return;
-      status = s.result; queue = q.result; error = '';
-      if (!pending) selected = '';
-    } catch (e) {
-      if (!alive || mine !== generation) return;
-      status = null; queue = null;
-      // A concurrent label or root change invalidates the queue's revision-bound snapshot.
-      if (e instanceof LoomwardError && e.code === 'stale_generation' && !restarted) return await load(null, true);
-      error = session.handle(e);
-    }
+    const [s, q] = await Promise.allSettled([client.call('learning.status', {}), client.call('learning.queue', { root_id: null, limit: 20, cursor })]);
+    if (!alive || mine !== generation) return;
+    status = s.status === 'fulfilled' ? s.value.result : null;
+    queue = q.status === 'fulfilled' ? q.value.result : null;
+    if (!pending) selected = '';
+    const failures = [s, q].filter(r => r.status === 'rejected');
+    // A concurrent label or root change invalidates the queue's revision-bound snapshot.
+    if (!restarted && failures.some(r => r.reason instanceof LoomwardError && r.reason.code === 'stale_generation')) return await load(null, true);
+    error = failures.map(r => session.handle(r.reason)).join(' ');
   }
   async function record(retract = false): Promise<void> {
     const client = session.client;
@@ -116,7 +113,7 @@
       <button class="btn" onclick={() => void load()}>Retry learning status</button>
     </div>
   {/if}
-  {#if queue && !gated}
+  {#if status && queue && !gated}
     <div class="panel">
       <div class="tbl-wrap">
         <table class="tbl">
