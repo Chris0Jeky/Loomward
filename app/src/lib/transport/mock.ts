@@ -63,7 +63,7 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
   const rootId = (n: SynthNode) => `rt_mock_${n.index}`;
 
   const sizeOf = (n: SynthNode, basis: Basis) => (basis === 'logical' ? n.logical : n.allocatedKnown);
-  const nodeFor = (id: unknown) => byId.get(str(id, 'node_id')) ?? fail('not_found', 'no such node in this session');
+  const rawNodeFor = (id: unknown) => byId.get(str(id, 'node_id')) ?? fail('not_found', 'no such node in this session');
   const pathOf = (n: SynthNode): string => (n.parent <= 0 ? n.name : `${pathOf(tree.nodes[n.parent]!)}/${n.name}`);
 
   // Synthetic threads: invented labels, tiers and grants so the atlas has something to weave.
@@ -75,6 +75,21 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
   };
   const DIR_LABELS = ['Projects', 'Media', 'Documents', 'Archives', 'Models'];
   const topOf = (n: SynthNode): SynthNode[] => { const chain: SynthNode[] = []; for (let p = n; p.parent >= 0; p = tree.nodes[p.parent]!) chain.unshift(p); return chain; };
+  const active = (n: SynthNode) => !topOf(n).some(r => r.kind === 'root' && (views.revokedRoots.has(rootId(r)) || views.forgottenRoots.has(rootId(r))));
+  const nodeFor = (id: unknown): SynthNode => {
+    const n = rawNodeFor(id);
+    if (!active(n)) return fail('not_found', 'no such node in this session');
+    if (n.kind !== 'atlas') return n;
+    const roots = n.children.map(i => tree.nodes[i]!).filter(active);
+    const atlas: SynthNode = { ...n, children: roots.map(r => r.index), logical: 0n, allocatedKnown: 0n, unknownFiles: 0, files: 0, dirs: 0, coverage: 'complete' };
+    for (const r of roots) {
+      atlas.logical += r.logical; atlas.allocatedKnown += r.allocatedKnown;
+      atlas.unknownFiles += r.unknownFiles; atlas.files += r.files; atlas.dirs += 1 + r.dirs;
+      if (r.coverage !== 'complete') atlas.coverage = 'partial';
+    }
+    atlas.allocated = atlas.unknownFiles > 0 ? null : atlas.allocatedKnown;
+    return atlas;
+  };
   const threadsOf = (n: SynthNode): Threads => {
     const chain = topOf(n);
     const root = chain[0], sub = chain[1];
@@ -132,13 +147,13 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
   };
 
   /** Roots whose subtree the anchor covers: the atlas covers all, anything below covers its own root. */
-  const rootsUnder = (n: SynthNode): SynthNode[] => (n.kind === 'atlas' ? tree.rootIndexes.map((i) => tree.nodes[i]!) : topOf(n).slice(0, 1));
+  const rootsUnder = (n: SynthNode): SynthNode[] => (n.kind === 'atlas' ? tree.rootIndexes.map((i) => tree.nodes[i]!).filter(active) : topOf(n).slice(0, 1));
   const slice = (p: TreeSliceRequest): TreeSlice => {
     const a = isObj(p.anchor) ? p.anchor : fail('invalid_request', 'anchor required');
     const anchor =
-      a.kind === 'atlas' ? tree.nodes[0]!
+      a.kind === 'atlas' ? nodeFor(tree.nodes[0]!.id)
       : a.kind === 'node' ? nodeFor(a.node_id)
-      : a.kind === 'root' ? (tree.nodes.find((n) => n.kind === 'root' && rootId(n) === a.root_id) ?? fail('not_found', 'no such root'))
+      : a.kind === 'root' ? nodeFor((tree.nodes.find((n) => n.kind === 'root' && rootId(n) === a.root_id) ?? fail('not_found', 'no such root')).id)
       : fail('invalid_request', 'unknown anchor kind');
     const depth = int(p.depth, 'depth', 1, 8);
     const max = int(p.max_nodes, 'max_nodes', 16, 6000);
@@ -379,7 +394,7 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
   // LW-118: a scripted fake model over this transport's own roots and search; no endpoint, no network.
   Object.assign(handlers, createAskMock(now, failWith, { roots: () => handlers['roots.list']!({}) as RootList, search }));
 
-  const collections = createCollectionMock(now, failWith, nodeFor, entryRow,
+  const collections = createCollectionMock(now, failWith, rawNodeFor, entryRow,
     (n) => topOf(n).some((a) => views.revokedRoots.has(rootId(a))), views.stateRev);
   const retained = new Map<string, { binding: string; at: number; response: Promise<ResponseEnvelope> }>();
   const respond = async (req: RequestEnvelope): Promise<ResponseEnvelope> => {

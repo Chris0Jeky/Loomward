@@ -15,7 +15,8 @@ export class Duplicates {
   apply(job: Job): void {
     if (job.kind !== 'duplicates' || !job.root_id) return;
     const old = this.book[job.root_id];
-    if (old && (job.seq < old.seq || (job.job_id === old.job_id && job.rev <= old.rev))) return;
+    // An equal revision can restore evidence withheld while resynchronising.
+    if (old && (job.seq < old.seq || (job.job_id === old.job_id && job.rev < old.rev))) return;
     this.book = { ...this.book, [job.root_id]: job };
   }
   onEvent(event: EventEnvelope): void {
@@ -27,12 +28,13 @@ export class Duplicates {
     const c = session.client;
     if (!c) return;
     const generation = this.generation;
+    this.book = Object.fromEntries(Object.entries(this.book).map(([root, job]) => [root, { ...job, duplicates: undefined }]));
     const { result } = await c.call('jobs.list', { kinds: ['duplicates'], limit: 50 });
     if (generation !== this.generation) return;
     for (const job of result.jobs) this.apply(job);
     for (const job of Object.values(this.book)) {
       if (generation !== this.generation) return;
-      if (isActive(job.state)) await this.refresh(job);
+      if (isActive(job.state) || !result.jobs.some(listed => listed.job_id === job.job_id)) await this.refresh(job);
     }
   }
   async refresh(job: Job): Promise<void> {

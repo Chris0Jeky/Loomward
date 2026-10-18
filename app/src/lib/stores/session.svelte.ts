@@ -34,6 +34,9 @@ class Session {
   /** Epoch of the event stream (`stream.hello`), not to be confused with `epoch` above; a change means the engine restarted. */
   private streamEpoch: string | null = null;
 
+  /** Confirmed engine restarts, excluding the first subscription and same-epoch heartbeats. */
+  engineRestarts = 0;
+
   /** Other stores (jobs) see every event after the resync rules below have run. Returns the unsubscribe. */
   listen(fn: (ev: EventEnvelope) => void): () => void {
     this.listeners.add(fn);
@@ -115,7 +118,8 @@ class Session {
     if (ev.event === 'stream.hello') {
       const next = (ev.data as unknown as StreamHello).epoch;
       if (typeof next !== 'string') return;
-      if (this.streamEpoch !== null && this.streamEpoch !== next) this.epoch++; // restarted engine
+      if (this.streamEpoch !== null && this.streamEpoch !== next) this.engineRestarts++;
+      if (this.streamEpoch !== next) this.epoch++; // initial subscription or restarted engine
       this.streamEpoch = next;
     } else if (ev.event === 'stream.lagged' || ev.event === 'tree.invalidated' || ev.event === 'roots.changed') {
       this.epoch++; // lagged: epoch_changed, replay_gap and subscriber_overflow all mean refetch
