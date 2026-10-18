@@ -4,7 +4,9 @@
 use super::*;
 #[cfg(windows)]
 use crate::diagnostics::write_export;
-use crate::diagnostics::{canonical, check_target, digest, write_to, SAVE_TITLE};
+use crate::diagnostics::{
+    canonical, check_target, check_target_for_session, digest, write_to, SAVE_TITLE,
+};
 use std::path::PathBuf;
 
 /// Answers each save dialog with the next queued path (`None` = the owner cancelled).
@@ -522,6 +524,26 @@ fn unsupported_targets_are_refused_before_anything_is_written() {
     assert_eq!(names(&out), before);
 }
 
+#[test]
+fn an_elevated_session_refuses_new_and_existing_exports_without_touching_them() {
+    let tmp = temp_root();
+    let target = tmp.path().join("existing.json");
+    std::fs::write(&target, b"keep").unwrap();
+    for path in [tmp.path().join("new.json"), target.clone()] {
+        let why = check_target_for_session(&path, true).unwrap_err();
+        assert_eq!(
+            serde_json::to_value(why).unwrap(),
+            json!("elevated_session")
+        );
+    }
+    assert_eq!(std::fs::read(target).unwrap(), b"keep");
+    assert_eq!(
+        names(tmp.path()),
+        ["existing.json"],
+        "no new or partial file"
+    );
+}
+
 /// Hosted runners are elevated and the pinned export folder refuses an elevated token before any
 /// write (fails closed, invariant 2): prove the refusal, then skip a test that needs a real write.
 #[cfg(windows)]
@@ -532,7 +554,7 @@ fn export_refuses_elevation() -> bool {
     let tmp = temp_root();
     assert_eq!(
         write_export(&tmp.path().join("elevated.json"), b"{}"),
-        Err(DiagnosticsSaveRefusal::UnsupportedTarget)
+        Err(DiagnosticsSaveRefusal::ElevatedSession)
     );
     eprintln!("skipped: elevated token; the export folder refuses elevation (invariant 2)");
     true
@@ -552,7 +574,7 @@ fn a_failed_write_leaves_the_target_and_no_partial_file() {
         let tmp = temp_root();
         assert_eq!(
             write_export(&tmp.path().join("elevated.json"), b"{}"),
-            Err(DiagnosticsSaveRefusal::UnsupportedTarget)
+            Err(DiagnosticsSaveRefusal::ElevatedSession)
         );
         eprintln!("skipped: elevated token; the export folder refuses elevation (invariant 2)");
         return;
