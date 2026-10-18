@@ -824,6 +824,27 @@ fn throughput_lab() {
     }
 }
 
+/// Review #664: the durable-stop hot path over a 20,000-item synthetic copy.
+#[test]
+#[ignore]
+fn durable_stop_20k_lab() {
+    let Some(lab) = Lab::new() else { return };
+    let top = lab.src().join("top");
+    fs::create_dir(&top).unwrap();
+    for n in 0..20_000 {
+        fs::write(top.join(format!("f{n:05}")), b"").unwrap();
+    }
+    let op = lab.start(&["top"]);
+    let started = std::time::Instant::now();
+    let outcome = run(&lab.store, op, &Control::new(false)).unwrap();
+    let seconds = started.elapsed().as_secs_f64();
+    assert_eq!(outcome.state, OpState::Committed);
+    println!("DURABLE_STOP_20K: 20000 empty files, {seconds:.3} s");
+    let Lab { store, tmp } = lab;
+    drop(store);
+    tmp.close().unwrap();
+}
+
 /// H2 for named streams (measured here, C5): a held named-stream handle blocks renaming its ancestor
 /// folder even with delete sharing, while a held default stream does not. Hence the executor releases
 /// stream holds just before publish and re-hashes the streams after (docs/47 section 4, step 2).
@@ -1181,6 +1202,424 @@ fn recovery_records_unjournaled_batch_damage() {
             "unjournaled entries must never be removed"
         );
     }
+}
+
+#[test]
+fn recovery_observation_failure_does_not_record_damage() {
+    recovery_observation_failure(false);
+}
+
+#[test]
+fn published_recovery_observation_failure_does_not_record_damage() {
+    recovery_observation_failure(true);
+}
+
+#[test]
+fn idle_status_keeps_unjournaled_names_during_observation_failure() {
+    let Some(mut lab) = Lab::new() else { return };
+    for name in ["a", "b", "c"] {
+        fs::write(lab.src().join(name), b"payload").unwrap();
+    }
+    let op = lab.start(&["a", "b", "c"]);
+    let crash = Control::new(false).with_hook(|p, _| {
+        if p == Point::Creating(2) {
+            Flow::Crash
+        } else {
+            Flow::Continue
+        }
+    });
+    assert!(matches!(run(&lab.store, op, &crash), Err(Fault::Crashed)));
+    let r = replay(&lab.store, op).unwrap();
+    let staging = lab.dest().join(r.staging_tokens.last().unwrap());
+    let deny = DenyCreate::with(&staging.join("a"), "(R)");
+    let before = lab.store.lock().unwrap().rows(op).unwrap();
+    for _ in 0..2 {
+        lab.reopen();
+        let recovered = recover(&lab.store, op, &Control::new(false)).unwrap();
+        assert_eq!(recovered.state, OpState::NeedsAttention);
+        assert_eq!(recovered.unjournaled_items, ["b"]);
+        let status = status_idle(&lab.store, op).unwrap();
+        assert_eq!(status.state, OpState::NeedsAttention);
+        assert_eq!(status.unjournaled_items, ["b"]);
+        assert_eq!(lab.store.lock().unwrap().rows(op).unwrap(), before);
+    }
+    drop(deny);
+    lab.reopen();
+    assert_eq!(
+        recover(&lab.store, op, &Control::new(false))
+            .unwrap()
+            .unjournaled_items,
+        ["a", "b"]
+    );
+}
+
+#[test]
+fn cancel_unreadable_published_copy_does_not_withdraw_or_journal() {
+    cancel_unreadable_published_copy(false);
+}
+
+#[test]
+fn revocation_cancel_unreadable_published_copy_does_not_withdraw_or_journal() {
+    cancel_unreadable_published_copy(true);
+}
+
+fn cancel_unreadable_published_copy(revoked: bool) {
+    let Some(mut lab) = Lab::new() else { return };
+    fs::write(lab.src().join("f"), b"payload").unwrap();
+    let op = lab.start(&["f"]);
+    let crash = Control::new(false).with_hook(|p, _| {
+        if p == Point::AfterPublish {
+            Flow::Crash
+        } else {
+            Flow::Continue
+        }
+    });
+    assert!(matches!(run(&lab.store, op, &crash), Err(Fault::Crashed)));
+    lab.reopen();
+    let control = Control::new(true);
+    if revoked {
+        fence(
+            &lab.store,
+            op,
+            &control,
+            loomward_operations::FenceCause::GrantRevoked,
+        )
+        .unwrap();
+    }
+    let before = lab.store.lock().unwrap().rows(op).unwrap();
+    let plan = lab.plan(op);
+    let published = lab.dest().join(&plan.manifest.destination.folder_name);
+    let deny = DenyCreate::with(&published, "(R)");
+    assert!(identity::observe(&published).is_err());
+    let outcome = cancel(&lab.store, op, &plan, &control).unwrap();
+    assert_eq!(lab.store.lock().unwrap().rows(op).unwrap(), before);
+    assert_eq!(outcome.state, OpState::NeedsAttention);
+    drop(deny);
+    lab.reopen();
+    assert_eq!(
+        recover(&lab.store, op, &Control::new(true)).unwrap().state,
+        OpState::Committed
+    );
+    assert_eq!(fs::read(published.join("f")).unwrap(), b"payload");
+}
+
+#[test]
+fn missing_destination_parent_is_retryable_not_staging_damage() {
+    for (point, replaced) in [
+        (Point::Verified(0), false),
+        (Point::AfterPublish, false),
+        (Point::Verified(0), true),
+        (Point::AfterPublish, true),
+    ] {
+        let Some(mut lab) = Lab::new() else { return };
+        fs::write(lab.src().join("f"), b"payload").unwrap();
+        let op = lab.start(&["f"]);
+        let crash = Control::new(false).with_hook(move |p, _| {
+            if p == point {
+                Flow::Crash
+            } else {
+                Flow::Continue
+            }
+        });
+        assert!(matches!(run(&lab.store, op, &crash), Err(Fault::Crashed)));
+        lab.reopen();
+        let before = lab.store.lock().unwrap().rows(op).unwrap();
+        let absent = lab.tmp.path().join("detached");
+        fs::rename(lab.dest(), &absent).unwrap();
+        if replaced {
+            fs::create_dir(lab.dest()).unwrap();
+        }
+        assert_eq!(
+            recover(&lab.store, op, &Control::new(false)).unwrap().state,
+            OpState::NeedsAttention
+        );
+        assert_eq!(
+            lab.store.lock().unwrap().rows(op).unwrap(),
+            before,
+            "{point:?}"
+        );
+        if replaced {
+            fs::remove_dir(lab.dest()).unwrap();
+        }
+        fs::rename(absent, lab.dest()).unwrap();
+        lab.reopen();
+        let outcome = recover(&lab.store, op, &Control::new(false)).unwrap();
+        assert_eq!(
+            outcome.state,
+            if point == Point::AfterPublish {
+                OpState::Committed
+            } else {
+                OpState::Copying
+            }
+        );
+    }
+}
+
+#[test]
+fn admitted_step_rechecks_epoch_even_when_control_is_fenced() {
+    let Some(lab) = Lab::new() else { return };
+    fs::write(lab.src().join("f"), b"payload").unwrap();
+    let op = lab.start(&["f"]);
+    let crash = Control::new(false).with_hook(|p, _| {
+        if p == Point::Identities(0) {
+            Flow::Crash
+        } else {
+            Flow::Continue
+        }
+    });
+    assert!(matches!(run(&lab.store, op, &crash), Err(Fault::Crashed)));
+    let epoch = replay(&lab.store, op).unwrap().epoch;
+    let journal = Journal {
+        store: &lab.store,
+        op,
+        epoch,
+    };
+    let control = Control::new(false);
+    let step = control
+        .admit()
+        .unwrap_or_else(|_| panic!("step was refused"));
+    lab.store
+        .lock()
+        .unwrap()
+        .append(
+            op,
+            epoch + 1,
+            Record::Fenced {
+                cause: loomward_operations::FenceCause::GrantRevoked,
+            },
+        )
+        .unwrap();
+    control.fenced.store(true, Ordering::SeqCst);
+    assert!(matches!(journal.check_copying(), Err(Stop::Superseded)));
+    drop(step);
+}
+
+fn recovery_observation_failure(published: bool) {
+    let Some(mut lab) = Lab::new() else { return };
+    fs::create_dir(lab.src().join("top")).unwrap();
+    fs::write(lab.src().join("top/f"), b"payload").unwrap();
+    let op = lab.start(&["top"]);
+    let crash = Control::new(false).with_hook(move |p, _| {
+        if p == if published {
+            Point::AfterPublish
+        } else {
+            Point::Verified(0)
+        } {
+            Flow::Crash
+        } else {
+            Flow::Continue
+        }
+    });
+    assert!(matches!(run(&lab.store, op, &crash), Err(Fault::Crashed)));
+    lab.reopen();
+    let before = replay(&lab.store, op).unwrap().state;
+    let blocked = if published {
+        lab.dest().join("top")
+    } else {
+        let r = replay(&lab.store, op).unwrap();
+        lab.dest().join(r.staging_tokens.last().unwrap()).join("f")
+    };
+    let hold = DenyCreate::with(&blocked, "(R)");
+    assert!(
+        identity::observe(&blocked).is_err(),
+        "observation really failed"
+    );
+    let unavailable = recover(&lab.store, op, &Control::new(false)).unwrap();
+    assert_eq!(unavailable.state, OpState::NeedsAttention);
+    assert_eq!(
+        replay(&lab.store, op).unwrap().state,
+        before,
+        "unreadable is not damage"
+    );
+    drop(hold);
+    lab.reopen();
+    let outcome = recover(&lab.store, op, &Control::new(false)).unwrap();
+    assert_eq!(
+        outcome.state,
+        if published {
+            OpState::Committed
+        } else {
+            before
+        }
+    );
+    assert_eq!(
+        fs::read(if published {
+            blocked.join("f")
+        } else {
+            blocked
+        })
+        .unwrap(),
+        b"payload"
+    );
+}
+
+#[test]
+fn recovery_persists_confirmed_staging_damage() {
+    for replaced in [false, true] {
+        let Some(mut lab) = Lab::new() else { return };
+        fs::write(lab.src().join("f"), b"payload").unwrap();
+        let op = lab.start(&["f"]);
+        let control = Control::new(false).with_hook(|p, _| {
+            if p == Point::Identities(0) {
+                Flow::Crash
+            } else {
+                Flow::Continue
+            }
+        });
+        assert!(matches!(run(&lab.store, op, &control), Err(Fault::Crashed)));
+        let staging = lab.dest().join(&staging_dirs(&lab)[0]);
+        fs::rename(&staging, lab.dest().join("displaced")).unwrap();
+        if replaced {
+            fs::create_dir(&staging).unwrap();
+        }
+        lab.reopen();
+        assert_eq!(
+            recover(&lab.store, op, &Control::new(false)).unwrap().state,
+            OpState::NeedsAttention
+        );
+        lab.reopen();
+        assert_eq!(
+            replay(&lab.store, op).unwrap().state,
+            OpState::NeedsAttention
+        );
+        assert_eq!(fs::read(lab.dest().join("displaced/f")).unwrap(), b"");
+    }
+}
+
+#[test]
+fn detached_worker_checks_durable_stop_before_creation() {
+    detached_worker_checks_durable_stop(Point::Creating(0));
+}
+
+#[test]
+fn detached_worker_checks_durable_stop_before_stream_creation() {
+    detached_worker_checks_durable_stop(Point::CreatingStream(0));
+}
+
+#[test]
+fn detached_worker_checks_durable_stop_before_write() {
+    detached_worker_checks_durable_stop(Point::Writing(0));
+}
+
+fn detached_worker_checks_durable_stop(point: Point) {
+    let Some(lab) = Lab::new() else { return };
+    fs::write(lab.src().join("f.bin"), b"payload").unwrap();
+    fs::write(lab.src().join("f.bin:note"), b"stream").unwrap();
+    let op = lab.start(&["f.bin"]);
+    let db = lab.tmp.path().join("state/state.db");
+    let control = Control::new(false).with_hook(move |p, _| {
+        if p == point {
+            let mut reopened = Store::open(&db).unwrap();
+            let r = reopened.replay(op).unwrap().unwrap();
+            reopened
+                .append(
+                    op,
+                    r.epoch + 1,
+                    Record::Fenced {
+                        cause: loomward_operations::FenceCause::GrantRevoked,
+                    },
+                )
+                .unwrap();
+        }
+        Flow::Continue
+    });
+    let _ = run(&lab.store, op, &control);
+    assert!(
+        !control.fenced(),
+        "detached control never received the in-memory fence"
+    );
+    let r = replay(&lab.store, op).unwrap();
+    assert!(r.fenced);
+    let file = lab
+        .dest()
+        .join(r.staging_tokens.last().unwrap())
+        .join("f.bin");
+    match point {
+        Point::Creating(_) => assert!(!file.exists(), "created after durable stop"),
+        Point::CreatingStream(_) => assert!(
+            !file.with_file_name("f.bin:note").exists(),
+            "stream created after durable stop"
+        ),
+        Point::Writing(_) => assert_eq!(
+            fs::metadata(&file).unwrap().len(),
+            0,
+            "written after durable stop"
+        ),
+        _ => unreachable!(),
+    }
+}
+
+#[test]
+fn detached_worker_check_and_create_exclude_a_reopened_fence() {
+    detached_worker_check_and_create_exclude_fence(Point::Checked(0));
+}
+
+#[test]
+fn detached_worker_check_and_stream_create_exclude_a_reopened_fence() {
+    detached_worker_check_and_create_exclude_fence(Point::CheckedStream(0));
+}
+
+/// #670: a reopened service fences on its own store and `Control` while the detached worker sits
+/// between its durable stop check and the create call. The fence must not be acknowledged while
+/// the create can still follow: once acknowledged, that create either already happened or never
+/// will (creates only; writes and renames are not covered here, #672).
+fn detached_worker_check_and_create_exclude_fence(point: Point) {
+    let Some(lab) = Lab::new() else { return };
+    fs::write(lab.src().join("f.bin"), b"payload").unwrap();
+    fs::write(lab.src().join("f.bin:note"), b"stream").unwrap();
+    let op = lab.start(&["f.bin"]);
+    let db = lab.tmp.path().join("state/state.db");
+    let dest = lab.dest();
+    let target = move |token: &str| {
+        let file = dest.join(token).join("f.bin");
+        match point {
+            Point::Checked(_) => file,
+            _ => file.with_file_name("f.bin:note"),
+        }
+    };
+    let fencer = std::sync::Arc::new(Mutex::new(None));
+    let slot = fencer.clone();
+    let landed = Mutex::new(None::<std::sync::mpsc::Receiver<()>>);
+    let control = Control::new(false).with_hook(move |p, _| {
+        if p != point {
+            // Past the window: park until the fence has landed, so the run cannot finish first.
+            if let Some(rx) = landed.lock().unwrap().take() {
+                let _ = rx.recv_timeout(Duration::from_secs(30));
+            }
+        } else {
+            let (db, target) = (db.clone(), target.clone());
+            let (tx, rx) = std::sync::mpsc::channel();
+            *slot.lock().unwrap() = Some(std::thread::spawn(move || {
+                let reopened = Mutex::new(Store::open(&db).unwrap());
+                let ack = fence(
+                    &reopened,
+                    op,
+                    &Control::new(false),
+                    loomward_operations::FenceCause::GrantRevoked,
+                )
+                .unwrap();
+                let token = replay(&reopened, op).unwrap().staging_tokens.pop().unwrap();
+                // Sample before releasing the parked worker, so its create cannot win the race.
+                let existed = target(&token).exists();
+                let _ = tx.send(());
+                (ack, existed, target(&token))
+            }));
+            // Give an unserialized fence ample time to land inside the window.
+            if rx.recv_timeout(Duration::from_millis(500)).is_err() {
+                *landed.lock().unwrap() = Some(rx);
+            }
+        }
+        Flow::Continue
+    });
+    let _ = run(&lab.store, op, &control);
+    let fencer = fencer.lock().unwrap().take().expect("seam reached");
+    let (ack, existed_at_ack, path) = fencer.join().unwrap();
+    assert_eq!(ack, Ack::StoppedBeforePublish);
+    assert!(replay(&lab.store, op).unwrap().fenced);
+    assert!(
+        existed_at_ack || !path.exists(),
+        "{point:?}: created after the reopened service's fence was acknowledged"
+    );
 }
 
 #[test]

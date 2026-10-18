@@ -256,18 +256,7 @@ impl Store {
     }
 
     pub fn append(&mut self, op: u64, epoch: u64, record: Record) -> Result<u64, AppendError> {
-        let mut retries = 0;
-        // Retry lock acquisition only; retrying a write or lost acknowledgement could duplicate it.
-        let tx = loop {
-            match Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate) {
-                Ok(tx) => break tx,
-                Err(e) if e.sqlite_error_code() == Some(ErrorCode::DatabaseBusy) && retries < 2 => {
-                    std::thread::sleep(Duration::from_millis(25 << retries));
-                    retries += 1;
-                }
-                Err(e) => return Err(e.into()),
-            }
-        };
+        let tx = immediate(&self.conn)?;
         let (seq, chain) = checked_tail(&tx, op)??;
         let mut replay = match self.cache.remove(&op) {
             Some(r) if r.seq == seq && r.chain.as_slice() == chain => r,
@@ -353,6 +342,34 @@ impl Store {
     }
 
     /// The current fence epoch and state as the journal replays them (`Err` when it does not replay).
+    /// Reuse the validated replay when its head still matches the database, including across stores.
+    pub fn state_epoch(
+        &mut self,
+        op: u64,
+    ) -> rusqlite::Result<Result<(crate::state::OpState, u64), Invalid>> {
+        let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Deferred)?;
+        let head = current(&tx, &mut self.cache, op)?;
+        tx.commit()?;
+        Ok(head)
+    }
+
+    /// Run `effect` only while `op` is still at `(state, epoch)`, holding the database write lock from
+    /// that check until `effect` returns: an append from any connection (a reopened service's fence)
+    /// lands before the check or after the effect, never between them (#670). `Ok(Ok(None))` when the
+    /// journal moved and `effect` did not run. Writes nothing; uses the cached replay like `state_epoch`.
+    pub fn while_current<T>(
+        &mut self,
+        op: u64,
+        state: crate::state::OpState,
+        epoch: u64,
+        effect: impl FnOnce() -> T,
+    ) -> rusqlite::Result<Result<Option<T>, Invalid>> {
+        let tx = immediate(&self.conn)?;
+        Ok(current(&tx, &mut self.cache, op)?.map(|head| (head == (state, epoch)).then(effect)))
+        // `tx` rolls back here, releasing the lock: nothing was written.
+    }
+
+    /// Fully re-read and validate the operation, independent of the cached replay.
     pub fn replay(&self, op: u64) -> rusqlite::Result<Result<Replay, Invalid>> {
         let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Deferred)?;
         let replay = match checked_tail(&tx, op)? {
@@ -366,6 +383,46 @@ impl Store {
     pub fn recover(&self, op: u64, disk: &impl Disk) -> rusqlite::Result<Recovery> {
         Ok(from_replay(op, self.replay(op)?, disk))
     }
+}
+
+/// A write transaction, retrying lock acquisition only (retrying a write or a lost acknowledgement
+/// could duplicate it).
+fn immediate(conn: &Connection) -> rusqlite::Result<Transaction<'_>> {
+    let mut retries = 0;
+    loop {
+        match Transaction::new_unchecked(conn, TransactionBehavior::Immediate) {
+            Ok(tx) => return Ok(tx),
+            Err(e) if e.sqlite_error_code() == Some(ErrorCode::DatabaseBusy) && retries < 2 => {
+                std::thread::sleep(Duration::from_millis(25 << retries));
+                retries += 1;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// The operation's state and epoch inside a transaction, replaying only when the cached replay no longer
+/// matches the stored head (journal bodies are read only then).
+fn current(
+    conn: &Connection,
+    cache: &mut HashMap<u64, Replay>,
+    op: u64,
+) -> rusqlite::Result<Result<(crate::state::OpState, u64), Invalid>> {
+    let (seq, chain) = match checked_tail(conn, op)? {
+        Ok(tail) => tail,
+        Err(e) => return Ok(Err(e)),
+    };
+    if !cache
+        .get(&op)
+        .is_some_and(|r| r.seq == seq && r.chain.as_slice() == chain)
+    {
+        match Replay::from_rows(op, &load(conn, op)?) {
+            Ok(replay) => cache.insert(op, replay),
+            Err(e) => return Ok(Err(e)),
+        };
+    }
+    let replay = &cache[&op];
+    Ok(Ok((replay.state, replay.epoch)))
 }
 
 fn insert_row(conn: &Connection, op: u64, row: &Row) -> rusqlite::Result<()> {
@@ -533,6 +590,71 @@ mod tests {
         Record::StagingIntent {
             token: "lw-staging-1".into(),
         }
+    }
+
+    #[test]
+    fn state_epoch_cache_avoids_journal_body_reads() {
+        use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = started(&dir.path().join("state.db"));
+        store.append(1, 1, intent()).unwrap();
+        store.conn.flush_prepared_statement_cache();
+        store
+            .conn
+            .authorizer(Some(|ctx: AuthContext<'_>| {
+                if matches!(
+                    ctx.action,
+                    AuthAction::Read {
+                        table_name: "op_journal",
+                        column_name: "body"
+                    }
+                ) {
+                    Authorization::Deny
+                } else {
+                    Authorization::Allow
+                }
+            }))
+            .unwrap();
+        for _ in 0..3 {
+            let head = store
+                .state_epoch(1)
+                .expect("cached state must not read journal bodies")
+                .unwrap();
+            assert_eq!(head, (crate::state::OpState::Preparing, 1));
+            let ran = store
+                .while_current(1, crate::state::OpState::Preparing, 1, || ())
+                .expect("the check-and-effect step must not read journal bodies")
+                .unwrap();
+            assert_eq!(ran, Some(()));
+        }
+    }
+
+    #[test]
+    fn state_epoch_refreshes_external_fence_and_rejects_head_damage() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        let mut store = started(&path);
+        assert_eq!(store.state_epoch(1).unwrap().unwrap().1, 1);
+        let mut other = Store::open(&path).unwrap();
+        other
+            .append(
+                1,
+                2,
+                Record::Fenced {
+                    cause: crate::journal::FenceCause::GrantRevoked,
+                },
+            )
+            .unwrap();
+        assert_eq!(store.state_epoch(1).unwrap().unwrap().1, 2);
+        assert_eq!(store.state_epoch(1).unwrap().unwrap().1, 2);
+        other
+            .conn
+            .execute("DELETE FROM op_journal_head WHERE op_id=1", [])
+            .unwrap();
+        assert_eq!(
+            store.state_epoch(1).unwrap().unwrap_err().why,
+            "journal head does not match tail"
+        );
     }
 
     #[test]
