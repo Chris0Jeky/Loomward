@@ -557,6 +557,13 @@ pub(crate) fn catalog_error(e: loomward_catalog::Error) -> ErrorBody {
             ErrorCode::StaleGeneration,
             "the catalogue moved; restart from the first page",
         ),
+        E::GenerationMismatch => with_reason(
+            fail(
+                ErrorCode::StaleGeneration,
+                "the root has a different generation",
+            ),
+            "generation_changed",
+        ),
         E::RepairRequired => fail(ErrorCode::PartialCoverage, "aggregates are being repaired"),
         E::ResourceBudget => fail(ErrorCode::ResourceBudget, "catalogue budget exceeded"),
         E::Cancelled => fail(ErrorCode::Cancelled, "cancelled"),

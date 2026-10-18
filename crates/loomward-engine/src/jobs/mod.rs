@@ -560,6 +560,27 @@ impl Engine {
                 message: "job not found".into(),
             })
     }
+    /// All active jobs, independently of the bounded recent-history listing.
+    pub fn active_job_count(&self) -> EngineResult<usize> {
+        let records = self
+            .jobs
+            .records
+            .lock()
+            .map_err(|_| EngineError::Internal {
+                message: "job registry unavailable".into(),
+                detail: None,
+            })?;
+        Ok(records
+            .values()
+            .filter(|r| {
+                matches!(
+                    r.job.state,
+                    JobState::Queued | JobState::Running | JobState::CancelRequested
+                )
+            })
+            .count())
+    }
+
     /// Recent retained jobs, newest first, optionally filtered by kind.
     pub fn job_list(&self, request: &JobListRequest) -> EngineResult<JobList> {
         let mut records = self.jobs.records.lock().unwrap();
