@@ -304,7 +304,18 @@ impl Lab {
             protected: false,
             date: DATE,
             destination_root: self.grant(),
+            destination_root_guid: self.grant_guid(),
         }
+    }
+    /// The volume GUID of that grant root, from its pinned handle (as scan admission records it).
+    fn grant_guid(&self) -> Option<u128> {
+        let (_, opened) = <enumerate::NativeSource as enumerate::DirSource>::open_root(
+            &enumerate::NativeSource::default(),
+            &fs::canonicalize(self.tmp.path()).unwrap(),
+        )
+        .unwrap();
+        assert!(opened.volume_guid.is_some());
+        opened.volume_guid
     }
     /// The lab's own folder stands for the destination's lab-root grant: (volume serial, file ID).
     fn grant(&self) -> (u64, [u8; 16]) {
@@ -974,6 +985,35 @@ fn a_destination_outside_its_grant_identity_is_refused_before_any_write() {
     assert_eq!(outcome.state, OpState::Refused, "{outcome:?}");
     assert_eq!(outcome.refusal, Some((Refusal::DestinationChanged, None)));
     assert!(lab.dest_names().is_empty());
+}
+
+/// #669: the destination grant root is bound to its volume GUID, not only serial and file ID. A clone
+/// with matching IDs on another volume (a different GUID), or a legacy GUID-less binding, is refused
+/// at preview and again at run, before any write.
+#[test]
+fn a_destination_grant_on_another_volume_guid_is_refused_before_any_write() {
+    let Some(lab) = Lab::new() else { return };
+    fs::write(lab.src().join("f"), b"x").unwrap();
+    let sel = [PathBuf::from("f")];
+    let (src, dest) = (lab.src(), lab.dest());
+    let guid = lab.grant_guid();
+    prepare(&lab.request(&src, &dest, &sel)).unwrap();
+    for wrong in [guid.map(|g| g ^ 1), None] {
+        let mut request = lab.request(&src, &dest, &sel);
+        request.destination_root_guid = wrong;
+        assert_eq!(
+            prepare(&request).unwrap_err().to_string(),
+            "destination_outside_grant",
+            "{wrong:?}"
+        );
+    }
+    for wrong in [guid.map(|g| g ^ 1), None] {
+        let op = lab.start_with(&["f"], |plan| plan.destination_root_guid = wrong);
+        let outcome = run(&lab.store, op, &Control::new(false)).unwrap();
+        assert_eq!(outcome.state, OpState::Refused, "{outcome:?}");
+        assert_eq!(outcome.refusal, Some((Refusal::DestinationChanged, None)));
+        assert!(lab.dest_names().is_empty());
+    }
 }
 
 /// #526: the destination parent replaced between approval and the run (renamed away, a new folder under

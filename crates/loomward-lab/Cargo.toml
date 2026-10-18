@@ -18,6 +18,7 @@ serde_json.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+loomward-service = { path = "../loomward-service", features = ["test-support"] }
 tempfile.workspace = true
 
 [target.'cfg(windows)'.dependencies]
