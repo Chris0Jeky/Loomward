@@ -441,20 +441,33 @@ fn scan_source_allows_identity_unverified_only_when_the_root_does() {
     }
 }
 
-/// #219: an identity-unverified root is scanned unwatched (the watch reopens by file ID); a
-/// verified root on the same watch-capable sink is watched.
+/// #219: an identity-unverified root is never watched (the watch reopens by file ID); a
+/// verified root on the same watch-capable sink is watched. On this NTFS host the unverified
+/// grant is forged, so its scan also ends `root_identity_changed` (h2-scan finding 2): the
+/// opened root's basis is not the grant's. It is still refused before any watch starts.
 #[cfg(windows)]
 #[test]
 fn identity_unverified_roots_are_never_watched() {
+    use loomward_protocol::JobState;
     use loomward_windows::enumerate::NativeSource;
     let temp = canonical_tempdir();
     if skip_elevated() {
         return;
     }
     let (_, id) = NativeSource::default().open_root(temp.path()).unwrap();
-    for (name, basis, watched) in [
-        ("rt_watch_verified", IdBasis::PostOpen, true),
-        ("rt_watch_unverified", IdBasis::Unverified, false),
+    for (name, basis, watched, end) in [
+        (
+            "rt_watch_verified",
+            IdBasis::PostOpen,
+            true,
+            JobState::Completed,
+        ),
+        (
+            "rt_watch_unverified",
+            IdBasis::Unverified,
+            false,
+            JobState::Failed,
+        ),
     ] {
         let root = GrantedRoot::new(
             RootId::new(name).unwrap(),
@@ -462,11 +475,15 @@ fn identity_unverified_roots_are_never_watched() {
             DatasetClass::Synthetic,
             OpenedIdentity { basis, ..id },
         );
-        let e = Engine::open(EngineConfig::new("unused".into(), DatasetClass::Synthetic)).unwrap();
+        let e = Engine::open(EngineConfig::new(
+            std::env::temp_dir(),
+            DatasetClass::Synthetic,
+        ))
+        .unwrap();
         e.set_scan_sink(Arc::new(MemorySink::default())).unwrap();
         let job = e.scan_start(&root, None).unwrap();
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        while e.job_status(&job.job_id).unwrap().state != loomward_protocol::JobState::Completed {
+        while e.job_status(&job.job_id).unwrap().state != end {
             assert!(std::time::Instant::now() < deadline, "{name}");
             std::thread::sleep(Duration::from_millis(2));
         }
@@ -1343,6 +1360,74 @@ fn directory_limit_does_not_hide_child_io_errors() {
     assert_eq!(report.failed, 1);
     assert!(!sink.sweep_allowed(root.root_id()));
 }
+/// The directory-slot cap names itself (`directory_limit`), so a client never reads a capped scan
+/// as a generic stop with no cause.
+#[test]
+fn directory_cap_names_its_limit() {
+    let root = root();
+    let sink = Arc::new(MemorySink::default());
+    let report = run_scan(
+        &Tree,
+        &root,
+        1,
+        sink.clone(),
+        Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES)),
+        Arc::new(AtomicBool::new(false)),
+        ScanOptions {
+            max_dirs: 1,
+            ..ScanOptions::default()
+        },
+    )
+    .unwrap();
+    assert!(report.limit_hit);
+    assert!(!report.complete);
+    assert_eq!(
+        report.limit_reason,
+        Some(loomward_protocol::ScanLimitReason::DirectoryLimit)
+    );
+}
+
+/// A directory whose open is refused is catalogued by name but never indexed, so it is not counted
+/// in the scan's indexed directories (`ScanProgress.indexed_dirs`).
+#[test]
+fn denied_directory_is_not_an_indexed_directory() {
+    struct DeniedChildren;
+    impl DirSource for DeniedChildren {
+        type Dir = u64;
+        fn strategy(&self) -> Strategy {
+            Strategy::Portable
+        }
+        fn open_root(&self, path: &std::path::Path) -> Result<(u64, OpenedIdentity), SourceError> {
+            Tree.open_root(path)
+        }
+        fn open_child(
+            &self,
+            _: &u64,
+            _: &RawEntry<'_>,
+        ) -> Result<(u64, OpenedIdentity), SourceError> {
+            Err(SourceError::AccessDenied)
+        }
+        fn list(&self, dir: &u64, sink: &mut dyn FnMut(RawEntry<'_>) -> Flow) -> ListOutcome {
+            Tree.list(dir, sink)
+        }
+    }
+    let root = root();
+    let sink = Arc::new(MemorySink::default());
+    let report = run_scan(
+        &DeniedChildren,
+        &root,
+        1,
+        sink.clone(),
+        Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES)),
+        Arc::new(AtomicBool::new(false)),
+        ScanOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(report.failed, 1);
+    assert!(!report.complete);
+    assert_eq!(report.totals.dirs, 0);
+}
+
 #[test]
 fn fence_rejects_late_staging_and_final() {
     let sink = MemorySink::default();
@@ -1637,7 +1722,11 @@ fn native_scan_job_reports_exact_final_progress() {
         DatasetClass::Synthetic,
         identity,
     );
-    let e = Engine::open(EngineConfig::new("unused".into(), DatasetClass::Synthetic)).unwrap();
+    let e = Engine::open(EngineConfig::new(
+        std::env::temp_dir(),
+        DatasetClass::Synthetic,
+    ))
+    .unwrap();
     e.set_scan_sink(Arc::new(MemorySink::default())).unwrap();
     let job = e.scan_start(&root, None).unwrap();
     // A liveness bound only: the claim is the exact final counts, not how fast a loaded host scans.
@@ -2634,7 +2723,11 @@ fn a_sink_without_watch_support_scans_unwatched() {
         DatasetClass::Synthetic,
         identity,
     );
-    let e = Engine::open(EngineConfig::new("unused".into(), DatasetClass::Synthetic)).unwrap();
+    let e = Engine::open(EngineConfig::new(
+        std::env::temp_dir(),
+        DatasetClass::Synthetic,
+    ))
+    .unwrap();
     let sink = Arc::new(Unwatched(MemorySink::default()));
     e.set_scan_sink(sink.clone()).unwrap();
     let job = e.scan_start(&root, None).unwrap();
@@ -3083,4 +3176,202 @@ fn slow_grant_open_allows_state_writes_and_rechecks_the_grant() {
             }
         }
     }
+}
+/// h2-scan finding 1, as far as it reaches the engine: a revocation that lands after coverage
+/// was computed but before it was published still ends the job `Cancelled`, never `Complete`.
+/// The durable writer separately refuses that late finish (`EndRun` requires an active grant,
+/// and revocation commits durably before it cancels); the memory sink here has no grant.
+pub(super) fn revoke_at_publication(
+    at: &'static str,
+    scan: impl Fn(&GrantedRoot, Arc<dyn ScanSink>, Arc<AtomicBool>) -> EngineResult<ScanReport>
+        + Send
+        + Sync
+        + 'static,
+) {
+    use loomward_protocol::{CoverageState, JobKind, JobState};
+    use std::sync::{mpsc, Mutex};
+    let e = Engine::open(EngineConfig::new("unused".into(), DatasetClass::Synthetic)).unwrap();
+    let root = root();
+    let root_id = root.root_id().clone();
+    let (reached, at_publication) = mpsc::channel();
+    let (go, wait) = mpsc::channel::<()>();
+    let wait = Arc::new(Mutex::new(wait));
+    e.register_job_runner(
+        JobKind::Scan,
+        Arc::new(move |ctx, _| {
+            let (reached, wait) = (reached.clone(), wait.clone());
+            super::pipeline::BEFORE_PUBLISH.with_borrow_mut(|hook| {
+                *hook = Some(Box::new(move |point: &str| {
+                    if point == at {
+                        reached.send(()).unwrap();
+                        wait.lock()
+                            .unwrap()
+                            .recv_timeout(Duration::from_secs(5))
+                            .unwrap();
+                    }
+                }))
+            });
+            // As the production runners do.
+            let report = scan(&root, Arc::new(MemorySink::default()), ctx.cancel.clone())?;
+            ctx.set_scan_report(&report)?;
+            Ok(if report.coverage_complete() {
+                CoverageState::Complete
+            } else {
+                CoverageState::Partial
+            })
+        }),
+    );
+    let job = e
+        .job_submit(crate::jobs::JobSpec::new(
+            JobKind::Scan,
+            Some(root_id.clone()),
+        ))
+        .unwrap();
+    at_publication.recv_timeout(Duration::from_secs(5)).unwrap();
+    e.scan_cancel_root(&RootKey::Fixture(root_id.clone()), &root_id)
+        .unwrap();
+    go.send(()).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let job = loop {
+        let job = e.job_status(&job.job_id).unwrap();
+        if matches!(
+            job.state,
+            JobState::Cancelled | JobState::Completed | JobState::Failed
+        ) {
+            break job;
+        }
+        assert!(std::time::Instant::now() < deadline, "{at}: {job:?}");
+        std::thread::sleep(Duration::from_millis(2));
+    };
+    assert_eq!(
+        (job.state, job.coverage),
+        (JobState::Cancelled, Some(CoverageState::Cancelled)),
+        "{at}"
+    );
+}
+#[test]
+fn revocation_before_publication_ends_the_job_cancelled() {
+    revoke_at_publication("run_scan", |root, sink, cancel| {
+        run_scan(
+            &Tree,
+            root,
+            1,
+            sink,
+            Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES)),
+            cancel,
+            ScanOptions {
+                workers: 1,
+                ..Default::default()
+            },
+        )
+    });
+}
+/// Delegates to [`Tree`] but opens its root as `root`, and any other path as `state`.
+struct OpenedAs {
+    root: OpenedIdentity,
+    state: Option<OpenedIdentity>,
+}
+impl DirSource for OpenedAs {
+    type Dir = u64;
+    fn strategy(&self) -> Strategy {
+        Tree.strategy()
+    }
+    fn open_root(&self, path: &std::path::Path) -> Result<(u64, OpenedIdentity), SourceError> {
+        if path == root().path() {
+            return Ok((1, self.root));
+        }
+        self.state.map(|id| (9, id)).ok_or(SourceError::Io(2))
+    }
+    fn open_child(
+        &self,
+        parent: &u64,
+        e: &RawEntry<'_>,
+    ) -> Result<(u64, OpenedIdentity), SourceError> {
+        Tree.open_child(parent, e)
+    }
+    fn list(&self, dir: &u64, sink: &mut dyn FnMut(RawEntry<'_>) -> Flow) -> ListOutcome {
+        Tree.list(dir, sink)
+    }
+}
+fn scan_opened_as(
+    source: OpenedAs,
+    options: ScanOptions,
+) -> (EngineResult<ScanReport>, Arc<MemorySink>) {
+    let sink = Arc::new(MemorySink::default());
+    let report = run_scan(
+        &source,
+        &root(),
+        1,
+        sink.clone(),
+        Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES)),
+        Arc::new(AtomicBool::new(false)),
+        ScanOptions {
+            workers: 1,
+            ..options
+        },
+    );
+    (report, sink)
+}
+/// h2-scan finding 2: the opened root keeps the grant's IDs but its identity basis changed, so
+/// the IDs no longer bind what the grant bound (a verified root now unverified, or the reverse).
+#[test]
+fn identity_basis_change_is_root_identity_changed() {
+    for basis in [IdBasis::Unverified, IdBasis::PostOpen, IdBasis::None] {
+        let (report, sink) = scan_opened_as(
+            OpenedAs {
+                root: OpenedIdentity {
+                    basis,
+                    ..identity(1)
+                },
+                state: None,
+            },
+            ScanOptions::default(),
+        );
+        assert_eq!(
+            report.unwrap_err().to_body().message.as_str(),
+            "root_identity_changed",
+            "{basis:?}"
+        );
+        assert!(!sink.sweep_allowed(root().root_id()));
+    }
+}
+/// h2-scan finding 3: a state exclusion that cannot be identified fails closed instead of
+/// counting Loomward's own state as data.
+#[test]
+fn unidentifiable_state_exclusion_refuses_the_scan() {
+    let without_id = OpenedIdentity {
+        id: None,
+        basis: IdBasis::None,
+        ..identity(7)
+    };
+    for state in [None, Some(without_id)] {
+        let (report, sink) = scan_opened_as(
+            OpenedAs {
+                root: identity(1),
+                state,
+            },
+            ScanOptions {
+                excluded_path: Some("missing-state".into()),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            report.unwrap_err().to_body().message.as_str(),
+            "state exclusion identity unavailable",
+            "{state:?}"
+        );
+        assert!(!sink.sweep_allowed(root().root_id()));
+    }
+    // A state directory elsewhere, with its own identity, still scans complete.
+    let (report, _) = scan_opened_as(
+        OpenedAs {
+            root: identity(1),
+            state: Some(identity(7)),
+        },
+        ScanOptions {
+            excluded_path: Some("elsewhere-state".into()),
+            ..Default::default()
+        },
+    );
+    assert!(report.unwrap().complete);
 }
