@@ -1,5 +1,8 @@
 use super::{sink::*, source::*, GrantedRoot};
 #[cfg(test)]
+#[path = "targeted_tests.rs"]
+mod targeted_tests;
+#[cfg(test)]
 #[path = "w2_tests.rs"]
 mod w2_tests;
 use crate::{
@@ -1088,9 +1091,13 @@ pub fn run_scan<S: DirSource>(
     let mut named = HashSet::new();
     if let RunScope::Targeted(dirs) = &options.scope {
         named.extend(dirs.iter().copied());
-        let mut bounded = identity.volume_serial.is_some() && named.len() < max_dirs;
+        let mut bounded = identity.volume_serial.is_some();
         for &target in named.iter().filter(|&&d| d != ticket.dir) {
-            if !bounded {
+            // The root plus every retained target is a slot and a held handle: the same
+            // node-plus-handle reservation normal traversal checks before holding a child.
+            let slots = targets.len() + 2;
+            if !bounded || slots > max_dirs || slots * (node_bytes + handle_bytes) > arena_bytes {
+                bounded = false;
                 break;
             }
             let reserved = match sink.prepare_target(root.root_id(), run, target) {
