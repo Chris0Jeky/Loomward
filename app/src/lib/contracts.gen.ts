@@ -284,8 +284,8 @@ export interface SubtreeTotals {
   unique_objects: NullableCount;
   /** Allocation counted once per unique object within this subtree; null when unique_objects is null or allocation is unknown. */
   unique_allocated_bytes: NullableBytes;
-  /** Entries whose object has another observed name anywhere in the dataset or an observed link count above 1. */
-  multi_link_entries: Count;
+  /** Entries whose object has another observed name anywhere in the dataset or an observed link count above 1; null when the subtree was too large to count within the query budget (unique_objects and unique_allocated_bytes are then null too). */
+  multi_link_entries: NullableCount;
 }
 
 export interface Root {
