@@ -23,7 +23,7 @@ Rules for this file:
 | 5 | Injected I/O faults and a full disk | PARTIAL |
 | 6 | Fuzzing every parser and contract | PARTIAL |
 | 7 | 72-hour soak | PARTIAL |
-| 8 | Power-cut simulation, per effect | UNVERIFIED |
+| 8 | Power-cut simulation, per effect | PARTIAL |
 | 9 | Proven restore, per effect | UNVERIFIED |
 
 ## 1. Crash injection at every write: PARTIAL
@@ -287,13 +287,48 @@ a synthetic full-duration receipt tests the evaluator only, never qualifies as a
 **Gap.** No measured 72-hour run. Native watch plus explicit refresh does not establish automatic
 service watch reconciliation; graceful teardown/reopen does not establish process crash recovery.
 
-## 8. Power-cut simulation, per effect: UNVERIFIED
+## 8. Power-cut simulation, per effect: PARTIAL
 
 Row 1 kills the process; the operating system's cache survives it, so un-synced writes are never lost. The
 catalogue runs `synchronous=NORMAL` (state and publication-with-references use FULL), so a power cut can lose
-recent catalogue commits by design. Needs a fault-injecting SQLite VFS or a VM with a dropped write cache,
-dropping every write after the Nth fsync, then the row 1 invariants. File effects do not exist yet (invariant
-1); each effect's gate ships its own power-cut case.
+recent catalogue commits by design.
+
+**Exists (catalogue only, 2026-10-19).** A power-cut mode on row 5's test-only VFS
+(`crates/loomward-catalog/tests/fault_vfs/mod.rs`, `LOOMWARD_POWER_CUT=<mode>:<N>[:<seed>]`): every write and
+truncate of a store file (both databases, both WALs, rollback journals) is held per file until a successful
+xSync of that file makes it durable. The power fails at the entry of the process's sync N+1: `drop` loses every
+unsynced write of every file; `tear` keeps a deterministically seeded prefix of them, split at 512-byte sectors,
+drawn per file; `-shm` is volatile (removed, SQLite rebuilds it). The parent writes each file's surviving
+image over the store and asserts row 1's `verify` (integrity and foreign keys on both files, no running run or
+half-built bulk table, no staged or pending-reference residue, rollups agree with rows, forget all-or-nothing
+in rows and bytes, a second recovery changes nothing, the store takes a write) plus the durability contract:
+every step acknowledged under FULL survives (grants, references, labels, revoke, forget record); catalogue
+publications may be lost, but each listing is whole (never torn) and a later one never survives an earlier lost
+one (`normal_suffix`). `every_power_cut_keeps_full_commits_and_recovers` sweeps N over every sync of the crash
+sweep's lifecycle (scan through staged chunks, reference and labels, bulk first scan, rescan, revoke, forget),
+twice: as is (47 syncs) and with a reader holding a catalogue snapshot across the three scans (39 syncs).
+Without a reader each run end's checkpoint syncs the catalogue before its receipt, so no acknowledged
+publication is lost; with one the checkpoint (best effort, it never waits for a reader) cannot, and 17 of 200
+cuts lost an acknowledged run end, always within the contract. No durability defect was found. The checker can
+fail: a disk whose flush does nothing (`lie`) fails 27 of the 48 cuts of a full sweep (7 of 12 sampled)
+(`a_disk_that_ignores_flushes_fails_the_power_cut_sweep`), and a torn listing or an out-of-order survivor
+planted in a store is caught (`the_power_cut_contract_catches_planted_damage`).
+
+**Gap.** File effects do not exist yet (invariant 1); each effect's gate ships its own power-cut case, and
+copying's G5 needs a real power cut. This is a model, not hardware: deletes are durable at once, file creation is
+durable (its content is not), renames are not modelled (the corrupt-catalogue and v1 archive paths), torn
+writes keep a prefix per file rather than reordering sectors, and cuts fall only at sync entries (tearing stands
+in for cuts between them). The service's own connections (collections, labels, learning, job state, backup
+import) and a migration from an old store are not swept, as in row 1. Durability is checked per acknowledged
+step, not per SQLite commit.
+
+**Prove.**
+
+```powershell
+cargo test -p loomward-catalog --features test-hooks --test crash_sweep -- power_cut ignores_flushes   # 12 cuts per mode and variant, about 10 s
+$env:LOOMWARD_CRASH_SWEEP='full'; cargo test -p loomward-catalog --features test-hooks --test crash_sweep -- every_power_cut ignores_flushes   # every sync, 4 tear seeds, about 70 s
+cargo test -p loomward-catalog --features test-hooks --test crash_sweep -- --nocapture power_cut_at reader+tear:20:1   # one cut; the plan must be the last argument
+```
 
 ## 9. Proven restore, per effect: UNVERIFIED
 
@@ -404,3 +439,6 @@ The depth-483 commands use `--manifest-path C:/lw/wt/depth-483/Cargo.toml`,
 | 2026-10-17 | 912a491 | same | `LOOMWARD_FUZZ_CASES=100000 cargo test -p loomward-shell --test fuzz_shortcut` (`shortcuts::parse`) | 4 x 100,000 passed in 68 s |
 | 2026-10-17 | 912a491, each with one parser check weakened (mutants, reverted) | same | `cargo test -p <crate> --test <target>` after: windows `name_len > record_len - header` to `name_len > record_len`; windows `next < header ||` removed; lab `next < end` removed; protocol `same_json(&canonical, &value)` to `true`; backup `part != "."` removed from `provider_path` | all five failed their target (panic at `enumerate/mod.rs`, overlap property, reference disagreement, `positional_arrays_are_refused`, `hostile_provider_paths_are_refused_on_the_bound_snapshot_only`). Earlier drafts of the lab, protocol and backup targets passed the same three mutants; the directed properties above were added in response |
 | 2026-10-17 | this PR merged with main fe3176c (the merge brought #292, r5, r7 and documentation) | same | `cargo fmt --all --check`; `cargo clippy --workspace --all-targets -- -D warnings`; `cargo test --workspace --no-fail-fast`; `git diff --check` | fmt and clippy clean; 1,068 passed, 1 ignored, 0 failed; diff check clean. Before the merge, the same test run showed the 5 host failures of #292 plus 2 `loomward-service` tests that depend on host load (a 20 ms deadline in `wrong_dataset_and_timed_out_providers_never_publish_fallback`); neither pair touches this PR's code |
+| 2026-10-19 | 44f0144 (stacked on #748's branch, test code) | KRASPYON, Windows 11 Home, debug build | `cargo test -p loomward-catalog --features test-hooks --test crash_sweep -- power_cut ignores_flushes planted_damage` | passed: plain lifecycle 47 syncs, 24 cuts (12 drop, 12 tear), 22 with unsynced writes, 8 torn; reader variant 39 syncs, 24 cuts, 2 losing an acknowledged NORMAL run end; `lie` caught 7 of 12; planted torn and out-of-order listings caught; about 10 s |
+| 2026-10-19 | same | same | `LOOMWARD_CRASH_SWEEP=full cargo test -p loomward-catalog --features test-hooks --test crash_sweep -- every_power_cut ignores_flushes` | 2 passed in 70 s: plain 240 cuts (48 drop, 4 seeds x 48 tear), 230 with unsynced writes, 123 torn, none losing an acknowledged publication (each run end's checkpoint syncs first); reader 200 cuts, 190 unsynced, 103 torn, 17 losing an acknowledged run end, all within the contract; `lie` caught 27 of 48. No durability defect |
+| 2026-10-19 | same | same | `cargo fmt --all --check`; `cargo test -p loomward-catalog --all-features`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --no-fail-fast`; `git diff --check` | fmt clean; catalogue 321 passed, 1 ignored, 0 failed (3 min 53 s); clippy clean; workspace 1,714 passed, 4 ignored, 0 failed (10 min 38 s); diff check clean |
