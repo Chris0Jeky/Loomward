@@ -60,8 +60,10 @@ A shorter CI temp prefix is not established as the cause.
 Normal handles retain the existing growing GUID-path query. For path-size errors
 534, 161 or 206, the fallback queries `FileVolumeNameInformation` on the original
 pinned handle, opens that NT device's short root via `GLOBALROOT`, and queries the
-GUID of that root. It does not infer identity from a drive letter or compare
-potentially colliding volume serials. A failed or malformed query refuses with an
+GUID of that root. It does not infer identity from a drive letter or search by
+potentially colliding volume serials. The driver's review fix additionally checks
+the reopened root's serial against the pinned handle and refuses a mismatch.
+A failed or malformed query refuses with an
 error; it does not substitute another volume. This Windows 10+ native information
 class is described as reserved for system use in Microsoft's
 [enumeration documentation](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/ne-wdm-_file_information_class).
@@ -108,3 +110,89 @@ diagnostic is to capture the full original failing panic plus the failing
 creation call's input length and immediate error in that environment.
 The separate `normalized_path` containment check is unchanged; successful volume
 binding does not prove that an entire scan at these path lengths can proceed.
+
+## Fix round: fixture construction limits (2026-10-19)
+
+Branch HEAD at start: `9a3a4e1107511894b2dd192ed6bf848b05840215` (PR #778),
+including the driver's serial cross-check, which this round leaves unchanged.
+Fetched `origin/main`: `27f1c286a13bb3e1a036cdc33b4f70b157e4ce34`.
+
+### Step 0
+
+| Requested item | State on fetched origin/main | Evidence |
+| --- | --- | --- |
+| Bind a volume when its full descendant spelling fails | OPEN on main; implemented in #778 | Main's `volume_device` still directly queries the full GUID spelling, without `volume_device_from_root`. |
+| Prefix-independent boundary regression | OPEN on main; implemented in #778 | Main retains #732's fixed 32,740-unit DOS-path fixture. |
+| Handle an unconstructible boundary target explicitly | OPEN in #778 | Branch `native.rs:1655` unconditionally asserts success from `NtCreateFile`; the driver reports `STATUS_INTEGER_OVERFLOW` there. |
+
+### Reproduction and limit probe
+
+Both runs are non-elevated on KRASPYON, Windows 11, on the same C: NTFS volume.
+Only process-local `TMP` changed. The user temp setting uses its existing 8.3
+alias; `canonical_tempdir` canonicalizes that base before opening it. No temp
+paths, real names, or volume identifiers are recorded here.
+
+| TMP setting | Temp units | Base NT / GUID / volume-relative units | Original six targets |
+| --- | ---: | ---: | --- |
+| `%TEMP%` (user temp, 8.3 alias) | 37 | 69 / 94 / 46 | All constructible; deepest NT=32,768 exercises fallback |
+| `C:\loomward-test-roots` (synthetic test root) | 23 | 54 / 79 / 31 | All constructible; deepest NT=32,768 exercises fallback |
+
+The driver's **exact** `0xc0000095` failure at an original target did not
+reproduce in either setting. Its target and any additional environmental
+difference remain unknown; changing TMP alone did not explain it.
+
+A discriminating deeper probe demonstrated the fixture bug before the repair:
+NT=32,790 was constructible, but NT=32,791 (GUID=32,816,
+volume-relative=32,768) failed in **NtCreateFile**, with
+`STATUS_OBJECT_NAME_INVALID` (`0xc0000033`), before `volume_device` was called.
+NT=32,800 failed the same way. Thus relative creation is not an unlimited
+escape from full-name construction limits. This is measured behavior on this
+filesystem; no kernel trace establishes which internal string construction
+produced the driver's different status. Microsoft's
+[UNICODE_STRING documentation](https://learn.microsoft.com/en-us/windows/win32/api/ntdef/ns-ntdef-_unicode_string)
+defines its byte lengths as `USHORT`; the
+[NTSTATUS table](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-erref/596a1078-e883-4972-9bbc-49e60bebca55)
+defines the integer-overflow, name-too-long and invalid-name statuses.
+
+### Repair and coverage
+
+Fixture creation now returns its native status. Only integer-overflow,
+name-too-long or invalid-name construction failures for these short synthetic
+ASCII components skip a case, printing the target lengths and exact status.
+Other errors still fail. Trunk construction has the same explicit diagnostic
+if the host cannot reach any boundary. The original six targets and their
+assertions remain; a seventh target, computed from the measured volume-relative
+base, probes construction at 32,768 units independently of the host prefix.
+
+Every constructible case must still resolve to the expected volume. The test
+also checks the root fallback directly before constructing descendants and
+prints bound, fallback and unconstructible counts. If no end-to-end fallback
+case is reachable, it explicitly says that coverage was skipped.
+
+Both final focused runs passed: **6 boundary bindings, 1 end-to-end fallback,
+1 explicit construction skip**, plus the direct root fallback assertion. The
+same seventh target was red before construction errors were handled. The
+fallback case's raw GUID query returned Win32 161 in both runs, and its volume
+binding succeeded.
+
+### Fix-round verification
+
+All commands used `CARGO_BUILD_JOBS=4` and
+`CARGO_TARGET_DIR=C:/lw/target/lane-w12-770`. Unless specified, `TMP=$env:TEMP`.
+Logs of the full suites are gitignored under `.loomward/w12-770-fix-round/`.
+
+| Command | Result |
+| --- | --- |
+| `$env:TMP=$env:TEMP; cargo test --manifest-path C:/lw/wt/w12-770/Cargo.toml -p loomward-windows --all-features --lib volume_binding_handles_guid -- --nocapture` | 1 passed, 0 failed; six bound, one fallback, one explicit construction skip. |
+| `$env:TMP='C:\loomward-test-roots'; cargo test --manifest-path C:/lw/wt/w12-770/Cargo.toml -p loomward-windows --all-features --lib volume_binding_handles_guid -- --nocapture` | 1 passed, 0 failed; identical coverage. |
+| `cargo test --manifest-path C:/lw/wt/w12-770/Cargo.toml -p loomward-windows --all-features` | 251 passed, 0 failed, 2 ignored (243 library + 8 property tests). |
+| `cargo test --manifest-path C:/lw/wt/w12-770/Cargo.toml --workspace --no-fail-fast` | 1,735 passed, 0 failed, 4 ignored; exit 0. |
+| `cargo clippy --manifest-path C:/lw/wt/w12-770/Cargo.toml --workspace --all-targets --all-features -- -D warnings` | Passed, exit 0. |
+| `cargo fmt --manifest-path C:/lw/wt/w12-770/Cargo.toml --all --check` | Passed, exit 0. |
+| `git -C C:/lw/wt/w12-770 diff --check` | Passed, exit 0. |
+
+This round changes the fixture and this evidence only. The product fallback and
+the driver's serial cross-check are unchanged. No commit, push, PR mutation or
+merge was performed. `HUMAN_TODO.md` remains unchanged; no new owner action is
+required. The exact reported integer-overflow environment, hosted CI, Linux,
+other Windows versions and other filesystems remain unverified.

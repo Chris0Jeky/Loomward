@@ -1589,6 +1589,7 @@ mod cancellation_tests {
         };
         let file = open(tree.path());
         let expected = volume_device(&file).unwrap();
+        assert_eq!(volume_device_from_root(&file).unwrap(), expected);
         // Measure both spellings at the actual temp base; no host prefix assumption.
         let query = |file: &File, flags| {
             let mut buffer = vec![0u16; 65536];
@@ -1609,6 +1610,11 @@ mod cancellation_tests {
         };
         let guid_units = query(&file, VOLUME_NAME_GUID).unwrap().len();
         let nt_units = query(&file, VOLUME_NAME_NT).unwrap().len();
+        let relative_units = query(&file, VOLUME_NAME_NONE).unwrap().len();
+        eprintln!(
+            "base: NT={nt_units}, GUID={guid_units}, volume-relative={relative_units}, temp_units={}",
+            std::env::temp_dir().as_os_str().encode_wide().count()
+        );
         let targets = [
             32766 - guid_units,
             32767 - guid_units,
@@ -1616,12 +1622,15 @@ mod cancellation_tests {
             32766 - nt_units,
             32767 - nt_units,
             32768 - nt_units,
+            // Probe construction's own limit as well as the query limit.
+            32768 - relative_units,
         ];
         // Create synthetic children relative to handles, so fixture construction
         // does not hit CreateDirectoryW's separate full-path limit (#770).
         let create = |parent: &File, name: &str| {
             use windows_sys::Wdk::Storage::FileSystem::{FILE_CREATE, FILE_DIRECTORY_FILE};
             let mut name: Vec<_> = name.encode_utf16().collect();
+            assert!(!name.is_empty() && name.len() <= 255);
             let unicode = UNICODE_STRING {
                 Length: (name.len() * 2) as u16,
                 MaximumLength: (name.len() * 2) as u16,
@@ -1652,39 +1661,98 @@ mod cancellation_tests {
                     0,
                 )
             };
-            assert!(
-                code >= 0,
-                "synthetic relative directory creation: NTSTATUS {code:#x}"
-            );
-            unsafe { File::from_raw_handle(handle) }
+            if code < 0 {
+                Err(code)
+            } else {
+                Ok(unsafe { File::from_raw_handle(handle) })
+            }
+        };
+        // All child names are short synthetic ASCII. At these full-path sizes,
+        // filesystems can reject name construction before the query is possible.
+        let construction_limit = |code| {
+            matches!(
+                code,
+                STATUS_INTEGER_OVERFLOW
+                    | STATUS_NAME_TOO_LONG
+                    | STATUS_OBJECT_NAME_INVALID
+                    | STATUS_BUFFER_TOO_SMALL
+            )
         };
         let trunk_limit = *targets.iter().min().unwrap() - 2;
         let mut appended = 0;
         let mut parent = file;
         while appended + 128 <= trunk_limit {
-            parent = create(&parent, &"x".repeat(127));
+            parent = match create(&parent, &"x".repeat(127)) {
+                Ok(file) => file,
+                Err(code) if construction_limit(code) => {
+                    eprintln!(
+                        "SKIP: boundary trunk not constructible at NT={}, GUID={}: \
+                         NtCreateFile NTSTATUS {code:#x}; direct root fallback verified, \
+                         no end-to-end boundary cases exercised",
+                        nt_units + appended + 128,
+                        guid_units + appended + 128
+                    );
+                    return;
+                }
+                Err(code) => panic!("synthetic trunk creation: NtCreateFile NTSTATUS {code:#x}"),
+            };
             appended += 128;
         }
+        let mut checked = 0;
+        let mut fallback_checked = 0;
+        let mut skipped = 0;
         for target in targets {
-            let file = create(&parent, &"z".repeat(target - appended - 1));
+            let file = match create(&parent, &"z".repeat(target - appended - 1)) {
+                Ok(file) => file,
+                Err(code) if construction_limit(code) => {
+                    eprintln!(
+                        "SKIP: target not constructible: NT={}, GUID={}, volume-relative={}: \
+                         NtCreateFile NTSTATUS {code:#x}",
+                        nt_units + target,
+                        guid_units + target,
+                        relative_units + target
+                    );
+                    skipped += 1;
+                    continue;
+                }
+                Err(code) => panic!(
+                    "synthetic target creation: NT={}, GUID={}: NtCreateFile NTSTATUS {code:#x}",
+                    nt_units + target,
+                    guid_units + target
+                ),
+            };
             let raw_guid = query(&file, VOLUME_NAME_GUID);
+            let uses_fallback = raw_guid.is_err();
             eprintln!(
                 "NT={}, GUID={}, raw={:?}",
                 nt_units + target,
                 guid_units + target,
                 raw_guid.as_ref().map(Vec::len)
             );
-            if nt_units + target <= 32767 {
-                assert_eq!(raw_guid.unwrap().len(), guid_units + target);
-            } else {
-                assert!(matches!(
-                    raw_guid,
-                    Err(ERROR_BAD_PATHNAME
-                        | ERROR_ARITHMETIC_OVERFLOW
-                        | ERROR_FILENAME_EXCED_RANGE)
-                ));
+            // Where the raw spelling stops working differs by host, so pin only its shape:
+            // a full spelling, or one of the errors the fallback handles.
+            match &raw_guid {
+                Ok(raw) => assert_eq!(raw.len(), guid_units + target),
+                Err(code) => assert!(
+                    matches!(
+                        *code,
+                        ERROR_BAD_PATHNAME | ERROR_ARITHMETIC_OVERFLOW | ERROR_FILENAME_EXCED_RANGE
+                    ),
+                    "raw GUID query failed outside the fallback's errors: {code}"
+                ),
             }
             assert_eq!(volume_device(&file).unwrap(), expected);
+            checked += 1;
+            if uses_fallback {
+                fallback_checked += 1;
+            }
+        }
+        eprintln!(
+            "boundary coverage: {checked} bound, {fallback_checked} end-to-end fallbacks, \
+             {skipped} not constructible; direct root fallback verified"
+        );
+        if fallback_checked == 0 {
+            eprintln!("SKIP: no constructible target exercised the end-to-end path-error fallback");
         }
     }
     #[test]
