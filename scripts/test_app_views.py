@@ -1405,6 +1405,47 @@ def check_companion(page: Page, base: str, shoot) -> None:
 
 # --- Grants & health --------------------------------------------------------------------------------
 
+def check_health_forget_unused(browser) -> None:
+    """Unused confirmations belong to the current view and service identity."""
+    for signal in ('navigation', 'stream.hello', 'stream.lagged'):
+        engine = FakeEngine()
+        root = engine.fake_root('Synthetic unused confirmation')
+        root['grant_state'] = 'revoked'
+        engine.roots = [root]
+        engine.start()
+        page = browser.new_page(viewport={'width': 1360, 'height': 900})
+        try:
+            page.goto(f'{engine.base}/?transport=http#token={TOKEN}')
+            page.evaluate("location.hash = '#/health'")
+            heading = page.get_by_role('heading', name='Grants & health', level=1)
+            expect(heading).to_be_visible()
+            heading.evaluate("el => el.dataset.unusedFixture = 'mounted'")
+            wait_until(page, lambda: bool(engine.subscribers))
+            page.locator('main section[aria-labelledby="h-roots"]').get_by_role('button', name=re.compile('^Forget…')).click()
+            dialog = page.get_by_role('group', name=re.compile('^Forget '))
+            expect(dialog.get_by_role('button', name='Forget', exact=True)).to_be_enabled()
+            if signal == 'navigation':
+                page.evaluate("location.hash = '#/explorer'")
+                expect(heading).to_have_count(0)
+                page.evaluate("location.hash = '#/health'")
+                expect(heading).to_be_visible()
+            else:
+                engine.seq += 1
+                epoch = 'e_unused_after' if signal == 'stream.hello' else EPOCH
+                data = {'epoch': epoch, 'session_started_at': '2026-10-01T00:00:00Z', 'last_seq': engine.seq,
+                        'oldest_replayable_seq': 1, 'dataset_class': 'synthetic'} if signal == 'stream.hello' else {
+                            'reason': 'epoch_changed', 'dropped': None, 'resync': ['roots']}
+                engine.publish({'protocol': 'loomward/3', 'epoch': epoch, 'seq': engine.seq, 'event': signal,
+                                'at': '2026-10-19T00:00:00Z', 'catalog_rev': None, 'state_rev': None, 'data': data})
+                expect(heading).to_have_attribute('data-unused-fixture', 'mounted')
+            expect(dialog).to_have_count(0)
+            ok(engine.served.get('roots.forget', 0) == 0, f'{signal} discards the unused prompt without submitting a forget')
+        finally:
+            page.close()
+            engine.stop()
+    print('PASS Grants & health: unused forget prompts leave with their view or service identity')
+
+
 def check_health_forget_identity(browser) -> None:
     """A live SSE generation change must unlock status actions before the old HTTP call returns."""
     for signal in ('stream.hello', 'stream.lagged'):
@@ -1823,6 +1864,7 @@ def run_views(page: Page, base: str, shots: Path | None) -> None:
     check_process_strip(page.context.browser, base, shots)
     check_process_strip_failures(page.context.browser)
     check_resource_trends(page.context.browser)
+    check_health_forget_unused(page.context.browser)
     check_health_forget_identity(page.context.browser)
     check_explorer_mock(page, base, shoot)
     engine = FakeEngine()

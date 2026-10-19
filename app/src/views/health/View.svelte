@@ -65,7 +65,7 @@
     loadError = [r, g, h, s].filter(result => result.status === 'rejected').map(result => session.handle(result.reason)).join(' ');
   }
 
-  onMount(() => () => { alive = false; ticket++; picker.dismiss(); forget.dismissNotices(); }); // requests in stores can finish offscreen
+  onMount(() => () => { alive = false; ticket++; picker.dismiss(); forget.dismiss(); }); // requests in stores can finish offscreen
   $effect(() => { const r = roots?.roots; if (r) untrack(() => picker.sync(r)); }); // only a new roots read speaks, never a change of the picker's own state
 
   // `scans.settled` moves when a scan ends: the roots are read again for their totals and coverage.

@@ -65,6 +65,69 @@ const reply = (r: { request_id: string }, result: unknown) => ({ protocol: 'loom
 beforeEach(() => { Object.assign(forget, { pending: null, working: false, unknown: false, done: '', problem: '', stopped: false }); });
 afterEach(() => { session.client = null; session.info = null; vi.restoreAllMocks(); });
 
+it.each(['navigation', 'reconnect'])('leaving Health discards an unsubmitted forget before %s', async reason => {
+  const call = client().mockImplementation(async r => reply(r, completed));
+  const first = mount();
+  await first.ask(request);
+  expect(forget.pending?.id).toBe(request.id);
+  first.unmount();
+  if (reason === 'reconnect') client().mockImplementation(async r => reply(r, completed));
+  const next = mount();
+  expect(next.evaluate('pending')).toBeNull();
+  expect(forget.unknown).toBe(false);
+  expect(call).not.toHaveBeenCalled();
+  next.unmount();
+});
+
+it.each(['connection epoch', 'session info', 'client'])('a mounted unsubmitted forget is discarded after its %s changes', async change => {
+  const call = client().mockImplementation(async r => reply(r, { roots: [], grants: [], jobs: [] }));
+  const view = mount();
+  await view.ask(request);
+  if (change === 'connection epoch') session.connectionEpoch++;
+  if (change === 'session info') session.info = { session_started_at: '2026-10-19T01:00:00Z' } as SessionInfo;
+  if (change === 'client') session.client = new Client({ call } as unknown as Transport);
+  session.epoch++;
+  view.flushEffects();
+  expect(forget.pending).toBeNull();
+  expect(forget.unknown).toBe(false);
+  expect(call.mock.calls.filter(([r]) => r.command === 'roots.forget')).toHaveLength(0);
+  view.unmount();
+});
+
+it('confirmation itself refuses an unsubmitted prompt from an older identity', async () => {
+  const call = client().mockImplementation(async r => reply(r, completed));
+  forget.ask(request);
+  session.connectionEpoch++;
+  await forget.confirm();
+  expect(call).not.toHaveBeenCalled();
+  expect(forget.pending).toBeNull();
+  expect(forget.done).toBe('');
+});
+
+it('an ordinary same-engine roots refresh retains an unsubmitted prompt', async () => {
+  const call = client().mockImplementation(async r => reply(r, { roots: [], grants: [], jobs: [] }));
+  const view = mount();
+  await view.ask(request);
+  session.epoch++;
+  view.flushEffects();
+  expect(forget.pending?.id).toBe(request.id);
+  expect(forget.pending?.requestId).toBeUndefined();
+  expect(call.mock.calls.filter(([r]) => r.command === 'roots.forget')).toHaveLength(0);
+  view.unmount();
+});
+
+it('a definite retry prompt is discarded when its service identity is replaced', async () => {
+  const call = client().mockRejectedValueOnce(new LoomwardError({ code: 'internal_error', message: 'store error', retryable: true, detail: null }));
+  forget.ask(request);
+  await forget.confirm();
+  expect(forget.pending?.id).toBe(request.id);
+  session.info = { session_started_at: '2026-10-19T02:00:00Z' } as SessionInfo;
+  forget.resume();
+  expect(forget.pending).toBeNull();
+  expect(forget.unknown).toBe(false);
+  expect(call).toHaveBeenCalledTimes(1);
+});
+
 it.each([unknown, deadline])('remount mid-pending keeps the forget id and the Check status prompt after $name (#739)', async fault => {
   const call = client();
   vi.spyOn(session, 'handle').mockReturnValue('connection lost');

@@ -4,6 +4,7 @@ import { session } from './session.svelte';
 
 export type PendingForget = { kind: 'forget'; id: string; label: string; requestId?: string };
 type Flight = { client: NonNullable<typeof session.client>; epoch: number; info: typeof session.info };
+const sameIdentity = (f: Flight) => f.client === session.client && f.epoch === session.connectionEpoch && f.info === session.info;
 
 /** The action key and its uncertain outcome belong to the shell lifetime, not the Health view. */
 class Forget {
@@ -15,27 +16,43 @@ class Forget {
   stopped = $state(false);
   problem = $state('');
   private flight: Flight | null = null;
+  private promptIdentity: Flight | null = null;
+  private attempted = false;
 
   /** Reconnects invalidate replies, but cannot establish whether a dispatched forget completed. */
   resume(): void {
     const f = this.flight;
-    if (f && (f.client !== session.client || f.epoch !== session.connectionEpoch || f.info !== session.info)) {
+    if (f && !sameIdentity(f)) {
       this.flight = null;
       this.working = false;
       this.unknown = true;
     }
+    // An unused or definitely failed prompt is still tied to the root IDs it was shown for.
+    // A dispatched request with an uncertain outcome retains its action key across identities.
+    if (!this.working && !this.unknown && this.promptIdentity && !sameIdentity(this.promptIdentity)) this.cancel();
   }
 
   ask(pending: PendingForget): void {
     this.resume();
-    if (this.working || this.unknown) return;
+    const c = session.client;
+    if (!c || this.working || this.unknown) return;
     this.pending = { ...pending };
+    this.promptIdentity = { client: c, epoch: session.connectionEpoch, info: session.info };
+    this.attempted = false;
     this.done = ''; this.problem = ''; this.stopped = false;
   }
 
   cancel(): void {
     if (this.working || this.unknown) return;
     this.pending = null;
+    this.promptIdentity = null;
+    this.attempted = false;
+    this.dismissNotices();
+  }
+
+  /** Unused confirmations leave with the view; dispatched attempts keep their retry context. */
+  dismiss(): void {
+    if (!this.attempted) this.cancel();
     this.dismissNotices();
   }
 
@@ -47,6 +64,8 @@ class Forget {
   stopWaiting(): void {
     if (this.working || !this.unknown) return;
     this.pending = null;
+    this.promptIdentity = null;
+    this.attempted = false;
     this.unknown = false;
     this.problem = '';
     this.stopped = true;
@@ -61,6 +80,7 @@ class Forget {
     this.flight = f;
     const current = () => { this.resume(); return this.flight === f; };
     this.working = true;
+    this.attempted = true;
     this.problem = ''; this.done = ''; this.stopped = false;
     p.requestId ??= c.nextRequestId();
     let checkingRecord = false;
@@ -81,6 +101,8 @@ class Forget {
       if (!current()) return;
       this.done = `Forgotten at ${formatTime(result.forgotten_at)}. ${checkingRecord ? "Its name and catalogue were removed from Loomward's database. Backup cleanup is unverified after the service receipt was lost." : "Its name and catalogue were removed from Loomward's database and its own backup copies; traces may remain in unused disk space until it is overwritten."} No scanned file was touched.`;
       this.pending = null;
+      this.promptIdentity = null;
+      this.attempted = false;
       this.unknown = false;
     } catch (e) {
       if (!current()) return;
