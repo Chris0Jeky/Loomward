@@ -334,3 +334,28 @@ describe('copy UI lifecycle (scripted transport only; no file effects)', () => {
     expect(f.canCancel).toBe(false);
   });
 });
+
+
+describe('a start whose reply is dropped as stale stays recoverable', () => {
+  async function staleStart(settle: (reply: (r: unknown) => void, fail: (e: unknown) => void) => void) {
+    const f = selected(), { client, call } = scripted();
+    f.observe(1);
+    await f.review(client); await f.approve(client);
+    let reply!: (r: unknown) => void, fail!: (e: unknown) => void;
+    call.mockImplementationOnce(() => new Promise((resolve, reject) => { reply = resolve; fail = reject; }) as never);
+    const pending = f.start(client);
+    f.observe(2);
+    settle(reply, fail);
+    await pending;
+    return { f, client };
+  }
+  it.each([
+    ['replies', (reply: (r: unknown) => void) => reply({ result: status('copying') })],
+    ['fails', (_: unknown, fail: (e: unknown) => void) => fail(new Error('connection lost'))],
+  ])('Refresh status resolves the unknown outcome after the start %s', async (_, settle) => {
+    const { f, client } = await staleStart(settle);
+    expect(f.uncertain).toBe(true); // the outcome really is unknown until the engine is asked
+    await f.refresh(client);
+    expect(f.uncertain).toBe(false); expect(f.locked).toBe(false); expect(f.status?.state).toBe('committed');
+  });
+});

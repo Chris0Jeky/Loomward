@@ -141,6 +141,20 @@
     }
   }
 
+  /** The granted path of a root node (display text, never sent back); null when the engine truncated it, so it cannot identify a root. */
+  async function rootPath(node_id: string, signal?: AbortSignal): Promise<string | null> {
+    const p = (await session.client!.call('node.inspect', { node_id }, { signal })).result?.display_path;
+    return p && !p.truncated && typeof p.text === 'string' ? p.text : null;
+  }
+
+  /** Remember which granted root this trail starts in while its node ID is live: IDs change on an engine restart, the granted path does not (#198). Best effort. */
+  async function bindRoot(crumb: Crumb): Promise<void> {
+    try {
+      const path = await rootPath(crumb.id);
+      if (path) crumb.root = path;
+    } catch { /* unbound: recovery falls back to the unique name */ }
+  }
+
   async function show(append = false, restarted = false, recovery?: Recovery): Promise<void> {
     if (!session.client || (!searching && !here)) return;
     if (!append) {
@@ -187,6 +201,7 @@
       next = page.next_cursor;
       budgetHit = page.budget_hit;
       if (!searching && here) seenIds.add(here.id);
+      if (!searching && trail[0] && !trail[0].root) void bindRoot(trail[0]);
       if (recovery) await restoreLocationFocus(recovery.focus, mine);
       if (hadFocus) {
         await tick();
@@ -277,7 +292,7 @@
       const resolved = recovery ? await resolveTrail(recovery.saved, fresh, async (node_id, cursor) => {
         ctl.signal.throwIfAborted();
         return (await c.call('tree.children', { node_id, cursor, sort: 'name_asc', basis, limit: PAGE }, { signal: ctl.signal })).result;
-      }) : [];
+      }, (node_id) => rootPath(node_id, ctl.signal)) : [];
       if (mine !== gen) return false;
       for (const crumb of resolved) seenIds.add(crumb.id);
       trail = resolved.length ? resolved : starts[0] ? [starts[0]] : [];

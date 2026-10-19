@@ -265,7 +265,13 @@ and start-once checks use the unique wire-ID index; revocation selects only oper
 that grant, including recovered runs without a resident worker. These lookups never decode unrelated
 manifests. On first open of a pre-index journal, Store backfills the lookup tables one plan at a time
 in the schema migration transaction, without changing plans, journal rows or head anchors. Unreadable
-legacy plans remain unreadable and gain no lookup identity. Later opens do not rebuild the indexes.
+legacy plans remain unreadable and gain no lookup identity. An `AFTER INSERT ON op_plan` trigger
+maintains both indexes even when a rollback build writes plans without routing rows. Installing the
+trigger also backfills gaps in previously indexed databases once; later opens do not rebuild indexes.
+An exact duplicate lookup insert is a no-op so the previous indexed build can still write its rows;
+a different operation using the same wire ID still aborts the whole plan insert. `copy.start` repeats
+its wire-ID lookup under the mutation lock before journaling, refusing a competing start without
+leaving an orphan operation.
 Lookup rows locate a journal operation; only the executor's existing grant and native identity checks
 authorise effects. Copy remains synthetic-only; C8 stays closed.
 
@@ -319,7 +325,9 @@ then fences later messages. The copy run follows the same pattern, with one addi
    - if a publish intent was already journaled, withdraw it (`publish_withdrawn`) in the same transaction, so no
      rename is issued;
    - the only effect still allowed is removing Loomward's own journaled staging (section 4). Cleanup steps also take
-     the lock but are not fenced.
+     the lock. The fence itself does not forbid them, but each removal re-reads the journal's state and epoch
+     under its write lock, so a cleanup that a newer fence or decision supersedes stops before its next
+     removal, and the newer control finishes it (#672).
 5. **After the rename.** Once the rename step has read an unchanged epoch, the rename completes inside that step.
    A revocation can only be acknowledged after it, and the fence no longer cancels: the post-publish confirmation
    (section 4) still runs, because it is a read of the destination and not an effect. The receipt is annotated
@@ -444,7 +452,7 @@ Checked at preview (P), at start or resume (S) and per item at open (I). "Resuma
 | `special_file` | handle is not a disk file (`duplicate_reader/native.rs:196-198`) | I | no; the run goes to `needs_attention`, staging kept |
 | `source_changed` | signature differs from the manifest, or the name no longer reaches the object | S, I | no; at I the run goes to `needs_attention`, staging kept; only exit Abandon, then a new preview |
 | `staging_name_taken` | `FILE_CREATE` of an item fails on create or resume because the name is taken in staging (an unjournaled leftover or someone else's entry) [W1] | I | after the owner removes the entry: the run goes to `needs_attention`, then `copying` on confirmation |
-| `staging_in_use` | a staged file is open for write elsewhere when the final check takes its deny-write hold (section 4) | I | yes |
+| `staging_in_use` | a staged file is open for write elsewhere when the final check takes its deny-write hold (section 4), or the pre-publish tree check still meets a sharing or lock error after the publish retries | I | yes |
 | `changed_after_verification` | the post-publish confirmation finds a change (section 4) | publish | no; the run goes to `needs_attention`, outcome `published_unverified`, copy kept |
 | `source_in_use` | sharing violation on the deny-write open | I | yes |
 | `access_denied` | source unreadable, or destination write blocked (for example by Controlled Folder Access) | I | yes |
@@ -455,7 +463,7 @@ Checked at preview (P), at start or resume (S) and per item at open (I). "Resuma
 | `case_collision` | two names fold equal under the destination's rules (CompareStringOrdinal, ignore case) | P | no |
 | `name_unrepresentable` | reserved device name, trailing dot or space, component over 255 units [W13] | P | no |
 | `path_too_long` | final path over 32,767 units [W13] (over 259 is a warning: many apps and the shell cannot open it [W13]) | P | no |
-| `publish_in_use` | rename actually refused by an incompatible handle under staging (H2; not every stream hold blocks it) | publish | yes, after 10 tries over 30 s |
+| `publish_in_use` | rename actually refused (access, sharing or lock violation) by an incompatible handle under staging (H2; not every stream hold blocks it) | publish | yes, after 10 tries over 30 s |
 | `verification_mismatch` | hash or metadata differs twice | I | no: `needs_attention` |
 | `grant_revoked` | a source grant revoked, or emergency stop (section 5) | P, S, then every cooperative boundary | no: cancels the run |
 | `elevated`, `approval_expired`, `digest_mismatch`, `manifest_limit` | authority checks; limit 200,000 entries per operation (assumption) | P, S | no |

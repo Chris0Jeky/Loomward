@@ -532,6 +532,14 @@ impl Staging<'_> {
     }
     /// Immediate entry names under identity-pinned staging or published parents; never follows links.
     pub fn entries(&self, path: &[(&str, ObjectKey)]) -> io::Result<Vec<String>> {
+        self.entries_with_limit(path, loomward_operations::MAX_ITEMS as usize)
+    }
+
+    fn entries_with_limit(
+        &self,
+        path: &[(&str, ObjectKey)],
+        limit: usize,
+    ) -> io::Result<Vec<String>> {
         let pins = self.pins(path, false)?;
         let folder = pins.last().unwrap();
         let mut buffer = vec![0u64; 8192];
@@ -566,9 +574,7 @@ impl Staging<'_> {
                 let name = String::from_utf16(entry.name)
                     .ok()
                     .filter(|n| component(n).is_ok());
-                if let Some(name) =
-                    name.filter(|_| names.len() < loomward_operations::MAX_ITEMS as usize)
-                {
+                if let Some(name) = name.filter(|_| names.len() < limit) {
                     names.push(name);
                     enumerate::Flow::Continue
                 } else {
@@ -1192,23 +1198,36 @@ fn noncached_hash(file: &File, sector: usize) -> io::Result<([u8; 32], u64)> {
     let mut storage = vec![0u8; BLOCK + sector];
     let offset = storage.as_ptr().align_offset(sector);
     let buffer = &mut storage[offset..offset + BLOCK];
-    let mut file = file;
+    Ok((sector_hash(file, size, sector, buffer)?, size))
+}
+
+/// Hash `size` bytes read in sector-multiple requests. A read may legally return less than asked: it
+/// is continued at the next (sector-aligned) offset. Only an early end, a short read off a sector
+/// boundary (the end moved) or more bytes than `size` mean the file changed.
+fn sector_hash(
+    mut file: impl Read,
+    size: u64,
+    sector: usize,
+    buffer: &mut [u8],
+) -> io::Result<[u8; 32]> {
+    let changed = || io::Error::new(io::ErrorKind::UnexpectedEof, "noncached read size changed");
     let mut remaining = size;
     let mut digest = Sha256::new();
     while remaining != 0 {
-        let logical = remaining.min(BLOCK as u64) as usize;
+        let logical = remaining.min(buffer.len() as u64) as usize;
         let request = logical.div_ceil(sector) * sector;
-        let count = file.read(&mut buffer[..request])?;
-        if count != logical {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "noncached read size changed",
-            ));
+        let mut got = 0;
+        while got < logical {
+            let count = file.read(&mut buffer[got..request])?;
+            got += count;
+            if count == 0 || got > logical || (got < logical && got % sector != 0) {
+                return Err(changed());
+            }
         }
-        digest.update(&buffer[..count]);
-        remaining -= count as u64;
+        digest.update(&buffer[..got]);
+        remaining -= got as u64;
     }
-    Ok((digest.finalize().into(), size))
+    Ok(digest.finalize().into())
 }
 
 /// Deny-write, no-recall source reader reusing the duplicate reader's signatures,

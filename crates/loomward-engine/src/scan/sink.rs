@@ -188,6 +188,19 @@ pub trait ScanSink: Send + Sync {
         scope: &RunScope,
         complete: bool,
     ) -> EngineResult<()>;
+    /// Finish a traversal whose observations may have coverage gaps. `settled` requires drained,
+    /// published work without cancellation, limits or unresolved reconciliation; it never permits
+    /// absence reconciliation, which still requires `complete`.
+    fn finish_traversal(
+        &self,
+        root: &RootId,
+        run: u64,
+        scope: &RunScope,
+        complete: bool,
+        _settled: bool,
+    ) -> EngineResult<()> {
+        self.finish_run(root, run, scope, complete)
+    }
     /// After durable revocation commits, reject all subsequently arriving writer messages.
     fn fence_root(&self, root: &RootId) -> EngineResult<()>;
 }

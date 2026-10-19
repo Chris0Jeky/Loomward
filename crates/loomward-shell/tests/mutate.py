@@ -19,6 +19,7 @@ CASES = [
     ("environment_known_folder_tracker_and_unknown_blocks_stay_data", "shortcuts.rs", "birth_droid: b[64..96].try_into().unwrap(),", "birth_droid: [0; 32],"),
     ("relative_opaque_and_device_targets_are_not_probed", "shortcuts.rs", "s.relative_path.is_some() || s.known_folder.is_some()", "false"),
     ("known_folders_preserve_redirection_ownership_unicode_and_failures", "known_folders.rs", "Ownership::Public", "Ownership::PerUser"),
+    ("known_folder_scan_uses_the_api_terminator_contract", "known_folders.rs", "let len = unsafe { lstrlenW(out) } as usize;", "let len = (0..32768).find(|i| unsafe { *out.add(*i) == 0 }).unwrap_or(32768);"),
     ("source_has_no_execution_com_initialisation_or_library_loading", "lib.rs", "pub mod known_folders;", "// std::process\npub mod known_folders;"),
     ("windows_known_folder_shape_and_disposable_shortcut_read", "shortcuts.rs", "parse(&bytes).map_err", "parse(&[]).map_err"),
     ("unicode_link_info_paths_volume_and_network_offsets", "shortcuts.rs", "Some(at) if u32_at(b, at)? != 0", "Some(at) if false && u32_at(b, at)? != 0"),

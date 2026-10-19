@@ -54,6 +54,69 @@ pub fn decode(bytes: &[u8]) -> Result<Vec<Change>, SourceError> {
     }
 }
 
+/// 100 ns ticks of slack below `since`: a real change just after it can carry a timestamp that is one
+/// system-clock tick (about 16 ms) older.
+#[cfg(windows)]
+const SINCE_SLACK: i64 = 1_000_000;
+
+/// Drop FILE_ACTION_MODIFIED hints that only report an access-time update (#717).
+///
+/// NTFS delivers a last-access change under the last-write filter bit, so reading or listing a directory
+/// raises MODIFIED for it, and a scan then dirtied its own root. An access-time update never changes
+/// ChangeTime, so a MODIFIED target whose ChangeTime precedes `since` (FILETIME, the start of a scan that
+/// listed everything before it) was only read. Only directory targets are dropped. Every other hint, and any target that cannot be pinned
+/// below `root` without following a reparse point, is kept; at most 64 distinct names are checked.
+#[cfg(windows)]
+pub fn without_access_only(
+    root: &std::path::Path,
+    changes: Vec<Change>,
+    since: i64,
+) -> Vec<Change> {
+    use std::collections::BTreeMap;
+    let Ok(root) = crate::enumerate::open_readonly_directory(root) else {
+        return changes;
+    };
+    // A clock stepped back past the scan start makes every later ChangeTime look old: keep everything.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(i64::MIN, |d| {
+            (d.as_nanos() / 100) as i64 + 116_444_736_000_000_000
+        });
+    if now < since {
+        return changes;
+    }
+    let since = since.saturating_sub(SINCE_SLACK);
+    let mut seen: BTreeMap<Vec<u16>, bool> = BTreeMap::new();
+    let mut quiet = |name: &[u16]| -> bool {
+        if let Some(known) = seen.get(name) {
+            return *known;
+        }
+        let known = seen.len() < 64
+            && (|| -> std::io::Result<bool> {
+                let mut walk: Option<std::fs::File> = None;
+                for part in name.split(|c| *c == 92) {
+                    let parent = walk.as_ref().unwrap_or(&root);
+                    walk = Some(crate::enumerate::open_metadata_child(parent, part)?);
+                }
+                let target = walk.as_ref().unwrap();
+                // Only directories: listing is what raises access-only noise, while a file written before
+                // the scan and flushed later can report MODIFIED with an old ChangeTime (#729 review).
+                if !target.metadata()?.is_dir() {
+                    return Ok(false);
+                }
+                let observed = crate::identity::from_file(target)?;
+                Ok(observed.change_time.parse::<i64>().is_ok_and(|t| t < since))
+            })()
+            .unwrap_or(false);
+        seen.insert(name.to_vec(), known);
+        known
+    };
+    changes
+        .into_iter()
+        .filter(|c| !matches!(c, Change::Name { action: 3, name } if quiet(name)))
+        .collect()
+}
+
 #[cfg(windows)]
 mod native {
     use super::*;
@@ -176,12 +239,23 @@ mod native {
             Ok(read)
         }
         fn finish(&mut self) -> (Option<u32>, usize) {
+            self.result(0)
+        }
+        fn cancel_and_finish(&mut self) -> (Option<u32>, usize) {
+            if self.pending {
+                // Cancellation can lose to a successful completion; preserve its bytes.
+                unsafe { CancelIoEx(self.dir.as_raw_handle(), self.ov) };
+            }
+            self.result(1)
+        }
+        fn result(&mut self, wait: i32) -> (Option<u32>, usize) {
             if self.error == Some(ERROR_NOTIFY_ENUM_DIR) {
                 return (self.error, 0);
             }
             let mut returned = 0;
-            let ok =
-                unsafe { GetOverlappedResult(self.dir.as_raw_handle(), self.ov, &mut returned, 0) };
+            let ok = unsafe {
+                GetOverlappedResult(self.dir.as_raw_handle(), self.ov, &mut returned, wait)
+            };
             let error = (ok == 0).then(|| unsafe { GetLastError() });
             if error != Some(ERROR_IO_INCOMPLETE) {
                 self.pending = false;
@@ -192,12 +266,8 @@ mod native {
     impl Drop for PendingRead<'_> {
         fn drop(&mut self) {
             if self.pending {
-                let mut returned = 0;
                 // CancelIoEx is only a request; keep the buffer, OVERLAPPED and handle alive until completion.
-                unsafe {
-                    CancelIoEx(self.dir.as_raw_handle(), self.ov);
-                    GetOverlappedResult(self.dir.as_raw_handle(), self.ov, &mut returned, 1);
-                }
+                self.cancel_and_finish();
             }
         }
     }
@@ -244,6 +314,9 @@ mod native {
                     let mut first = true;
                     loop {
                         if stopped.load(Ordering::Acquire) {
+                            if let Some(hints) = previous.take() {
+                                checkpoint.deliver(hints, &callback);
+                            }
                             return Ok(());
                         }
                         let mut ov: OVERLAPPED = unsafe { zeroed() };
@@ -259,7 +332,7 @@ mod native {
                         }
                         let (error, returned) = loop {
                             if stopped.load(Ordering::Acquire) {
-                                return Ok(());
+                                break pending.cancel_and_finish();
                             }
                             // A handle can survive a root/ancestor rename without a notification.
                             if checked.elapsed() >= Duration::from_millis(250) {
@@ -288,6 +361,10 @@ mod native {
                                 _ => return Err(SourceError::Io(unsafe { GetLastError() } as i32)),
                             }
                         };
+                        if error == Some(ERROR_OPERATION_ABORTED) && stopped.load(Ordering::Acquire)
+                        {
+                            return Ok(());
+                        }
                         previous = Some(if overflow(error, returned) {
                             vec![Change::RootDirty]
                         } else if let Some(code) = error {
@@ -340,7 +417,7 @@ mod native {
         pub fn failed(&self) -> bool {
             self.failed.load(Ordering::Acquire)
         }
-        /// Stop and join, cancelling and draining pending I/O before releasing root pins.
+        /// Stop and join, delivering completed hints and draining cancelled I/O before releasing pins.
         pub fn stop(&self) {
             self.done.store(true, Ordering::Release);
             if let Some(thread) = self.thread.lock().unwrap().take() {
@@ -448,6 +525,83 @@ mod native {
         fn filter_covers_attributes_and_security() {
             assert_ne!(FILTER & FILE_NOTIFY_CHANGE_ATTRIBUTES, 0);
             assert_ne!(FILTER & FILE_NOTIFY_CHANGE_SECURITY, 0);
+        }
+        #[test]
+        fn rename_is_detected_during_continuous_completions() {
+            let tree = fixture();
+            let root = tree.path().join("root");
+            let moved = tree.path().join("moved");
+            std::fs::create_dir(&root).unwrap();
+            if elevated_refusal(&root) {
+                eprintln!("SKIP: native watcher requires a non-elevated token");
+                return;
+            }
+            let watched = root.clone();
+            let renamed = AtomicBool::new(false);
+            let sequence = std::sync::atomic::AtomicUsize::new(0);
+            let (tx, rx) = mpsc::channel();
+            let watcher = Watcher::start(&root, None, move |batch| {
+                if batch.contains(&Change::RootDirty) {
+                    tx.send(sequence.load(Ordering::Acquire)).unwrap();
+                    return;
+                }
+                if !renamed.swap(true, Ordering::AcqRel) {
+                    std::fs::rename(&watched, &moved).unwrap();
+                }
+                // Each callback completes the rearmed read, so the loop never waits idle.
+                let next = sequence.fetch_add(1, Ordering::AcqRel);
+                File::create(moved.join(format!("flood-{next}"))).unwrap();
+                thread::sleep(Duration::from_millis(2));
+            })
+            .unwrap();
+            File::create(root.join("prime")).unwrap();
+            let outcome = rx.recv_timeout(Duration::from_secs(3));
+            watcher.stop();
+            assert!(outcome.unwrap() > 0);
+            assert!(watcher.failed());
+        }
+
+        #[test]
+        fn stop_delivers_completion_received_during_callback() {
+            let tree = fixture();
+            if elevated_refusal(tree.path()) {
+                eprintln!("SKIP: native watcher requires a non-elevated token");
+                return;
+            }
+            let root = tree.path().to_owned();
+            let (stop_tx, stop_rx) = mpsc::sync_channel::<Arc<AtomicBool>>(1);
+            let stop_rx = Mutex::new(stop_rx);
+            let first = AtomicBool::new(true);
+            let (tx, rx) = mpsc::channel();
+            let watcher = Watcher::start(tree.path(), None, move |batch| {
+                if first.swap(false, Ordering::AcqRel) {
+                    // The next read is already armed while this callback is running.
+                    for i in 0..128 {
+                        File::create(root.join(format!("tail-{i}"))).unwrap();
+                    }
+                    stop_rx
+                        .lock()
+                        .unwrap()
+                        .recv()
+                        .unwrap()
+                        .store(true, Ordering::Release);
+                }
+                tx.send(batch).unwrap();
+            })
+            .unwrap();
+            stop_tx.send(watcher.done.clone()).unwrap();
+            File::create(tree.path().join("prime")).unwrap();
+            rx.recv_timeout(Duration::from_secs(3)).unwrap();
+            watcher.stop();
+            let tail: Vec<u16> = "tail-0".encode_utf16().collect();
+            assert!(
+                rx.try_iter().flatten().any(|hint| {
+                    hint == Change::RootDirty
+                        || matches!(hint, Change::Name { name, .. } if name == tail)
+                }),
+                "stop discarded the read completed during the callback"
+            );
+            assert!(!watcher.failed());
         }
         fn fixture() -> tempfile::TempDir {
             tempfile::tempdir_in(std::fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap()
@@ -613,5 +767,109 @@ mod tests {
         }
         bytes[12..14].copy_from_slice(&92u16.to_le_bytes());
         assert!(decode(&bytes).is_err());
+    }
+}
+
+#[cfg(all(test, windows))]
+mod access_only_tests {
+    use super::*;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    fn filetime_now() -> i64 {
+        (SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+            / 100) as i64
+            + 116_444_736_000_000_000
+    }
+    fn modified(name: &str) -> Change {
+        Change::Name {
+            action: 3,
+            name: name.encode_utf16().collect(),
+        }
+    }
+    fn fixture() -> tempfile::TempDir {
+        tempfile::tempdir_in(std::fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn modified_hints_not_changed_since_the_scan_began_are_access_updates() {
+        if crate::enumerate::running_elevated() {
+            return;
+        }
+        let tree = fixture();
+        std::fs::create_dir(tree.path().join("sub")).unwrap();
+        let file = tree.path().join("sub").join("a.bin");
+        std::fs::write(&file, b"x").unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        let since = filetime_now();
+        let kept = Change::Name {
+            action: 1,
+            name: "sub".encode_utf16().collect(),
+        };
+        let hints = vec![
+            modified("sub"),
+            modified(r"sub\a.bin"),
+            kept.clone(),
+            modified("missing"),
+            Change::RootDirty,
+        ];
+        // Nothing changed after `since`: the directory was only read and is dropped. A file target, a
+        // created, vanished or overflow hint is never treated as an access update.
+        assert_eq!(
+            without_access_only(tree.path(), hints.clone(), since),
+            vec![
+                modified(r"sub\a.bin"),
+                kept.clone(),
+                modified("missing"),
+                Change::RootDirty
+            ]
+        );
+        // A clock stepped back below `since` keeps every hint.
+        assert_eq!(
+            without_access_only(tree.path(), hints.clone(), filetime_now() + 100_000_000),
+            hints
+        );
+        // A real attribute change after `since` moves ChangeTime but not LastWriteTime.
+        let mut permissions = std::fs::metadata(&file).unwrap().permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&file, permissions).unwrap();
+        let kept_after = without_access_only(tree.path(), hints.clone(), since);
+        assert!(kept_after.contains(&modified(r"sub\a.bin")));
+        assert!(!kept_after.contains(&modified("sub")));
+        // A scan that began before the fixture existed makes every hint real.
+        assert_eq!(
+            without_access_only(tree.path(), hints.clone(), since - 600_000_000),
+            hints
+        );
+    }
+
+    #[test]
+    fn listing_a_directory_raises_only_hints_the_filter_drops() {
+        if crate::enumerate::running_elevated() {
+            return;
+        }
+        let tree = fixture();
+        let sub = tree.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join("a.bin"), b"x").unwrap();
+        std::thread::sleep(Duration::from_millis(1500)); // creation hints and their lazy flush
+        let (tx, rx) = std::sync::mpsc::channel();
+        let watcher = Watcher::start(tree.path(), None, move |batch| {
+            let _ = tx.send(batch);
+        })
+        .unwrap();
+        let since = filetime_now();
+        std::thread::sleep(Duration::from_millis(100));
+        let _ = std::fs::read_dir(&sub).unwrap().count();
+        std::thread::sleep(Duration::from_millis(1500));
+        watcher.checkpoint().unwrap();
+        watcher.stop();
+        let hints: Vec<Change> = rx.try_iter().flatten().collect();
+        // Hosts with last-access updates disabled raise nothing; where enabled, NTFS reports
+        // the directory as MODIFIED (#717) and the filter must drop it.
+        eprintln!("hints raised by reads: {hints:?}");
+        assert!(without_access_only(tree.path(), hints, since).is_empty());
     }
 }

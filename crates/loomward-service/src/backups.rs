@@ -33,6 +33,20 @@ fn out(result: Value, revs: Option<(i64, i64)>) -> Out {
     }
 }
 
+/// Opens an owner-picked receipt for reading without following a link or hydrating a placeholder.
+/// On Windows the handle is to the link itself, so the caller's handle check refuses it. This is
+/// the same open `handlers::pin_backup` uses (OPEN_REPARSE_POINT | OPEN_NO_RECALL).
+pub(crate) fn open_receipt(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(0x0030_0000);
+    }
+    options.open(path)
+}
+
 /// At most [`lb::MAX_INPUT_BYTES`] of an owner-picked regular local file, read-only. Refuses
 /// network, device and verbatim namespaces, reserved device names, stream-colon names, links,
 /// reparse points and cloud placeholders before opening anything (opening a placeholder would
@@ -41,8 +55,10 @@ fn out(result: Value, revs: Option<(i64, i64)>) -> Out {
 /// The handle is dropped before this returns, so nothing
 /// holds the file while parsing. Returns the bytes and the file's modification time in Unix
 /// seconds (when the provider wrote it, not when Loomward read it).
-/// shortcut: path checks can race a swap and do not pin the file; use anchored no-follow opens
-/// before expanding beyond owner-picked receipts. The handle metadata check follows links.
+/// The file itself is opened without following a link (OPEN_REPARSE_POINT), so the handle check
+/// describes the link, not its target.
+/// shortcut: the pre-open path checks can race a swap of the parent directories; anchored
+/// no-follow opens of each ancestor are the next step before widening beyond owner-picked receipts.
 pub(crate) fn read_receipt(path: &Path) -> Result<(Vec<u8>, u64), Why> {
     if paths::network_path(path) || paths::reserved_device(path) {
         return Err(Why::NotARegularFile);
@@ -70,9 +86,9 @@ pub(crate) fn read_receipt(path: &Path) -> Result<(Vec<u8>, u64), Why> {
     if !meta.is_file() || paths::unsafe_attributes(&meta) {
         return Err(Why::NotARegularFile);
     }
-    let file = std::fs::File::open(&resolved).map_err(|_| Why::Unreadable)?;
+    let file = open_receipt(&resolved).map_err(|_| Why::Unreadable)?;
     let meta = file.metadata().map_err(|_| Why::Unreadable)?;
-    if !meta.is_file() || paths::unsafe_attributes(&meta) {
+    if !meta.is_file() || meta.file_type().is_symlink() || paths::unsafe_attributes(&meta) {
         return Err(Why::NotARegularFile);
     }
     if meta.len() > lb::MAX_INPUT_BYTES as u64 {
@@ -360,12 +376,14 @@ impl Inner {
         let evidence = match lb::normalise_backup_receipt(&snapshots, &source) {
             Ok(e) => e,
             Err(e) => {
+                // Utf16Bom maps to the wire's `invalid_json` until its refusal name is decided: a
+                // new BackupImportRefusal value is a shared-contract change (#349, open).
                 return refused(match e {
                     lb::ReceiptError::InputTooLarge => Why::TooLarge,
-                    lb::ReceiptError::InvalidJson => Why::InvalidJson,
+                    lb::ReceiptError::InvalidJson | lb::ReceiptError::Utf16Bom => Why::InvalidJson,
                     lb::ReceiptError::InvalidReceipt => Why::InvalidReceipt,
                     lb::ReceiptError::InvalidSource => Why::InvalidSource,
-                })
+                });
             }
         };
         drop(snapshots);

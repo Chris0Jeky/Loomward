@@ -175,6 +175,24 @@ fn copy_staged_writes_and_metadata_keep_file_and_ancestry_pinned() {
 }
 
 #[test]
+fn staging_entry_limit_is_inclusive() {
+    assert_eq!(loomward_operations::MAX_ITEMS, 200_000);
+    if skip_elevated() {
+        return;
+    }
+    let (_temp, destination) = lab();
+    let stage = destination.stage("staging").unwrap();
+    for n in 0..9 {
+        drop(stage.create_file(&[], &format!("file-{n}")).unwrap());
+    }
+    assert_eq!(stage.entries_with_limit(&[], 9).unwrap().len(), 9);
+    assert_eq!(
+        stage.entries_with_limit(&[], 8).unwrap_err().to_string(),
+        "incomplete staging listing"
+    );
+}
+
+#[test]
 fn journaled_staging_lists_entries_before_and_after_publish() {
     if skip_elevated() {
         return;
@@ -1413,4 +1431,38 @@ fn destination_volume_hint_follows_the_observed_volume_not_the_drive_letter() {
         .expect("the alias opens its pinned parent through the observed volume");
     let _stage = destination.stage("staging").unwrap();
     assert!(temp.path().join("staging").is_dir());
+}
+
+/// Muse bug hunt (copy-exec): a verification read may legally return fewer bytes than asked. A short
+/// read on a sector boundary is continued, not reported as the file changing; an early end, a short
+/// read off a boundary (the end moved) or extra bytes (the file grew) still are.
+#[test]
+fn sector_hash_continues_short_reads_and_still_catches_a_changed_size() {
+    struct Trickle<'a>(&'a [u8], usize);
+    impl Read for Trickle<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            let n = buf.len().min(self.1).min(self.0.len());
+            buf[..n].copy_from_slice(&self.0[..n]);
+            self.0 = &self.0[n..];
+            Ok(n)
+        }
+    }
+    let data: Vec<u8> = (0..10_000u32).map(|i| (i * 7) as u8).collect();
+    let mut buffer = vec![0u8; 4096];
+    let want = <[u8; 32]>::from(Sha256::digest(&data));
+    let size = data.len() as u64;
+    for step in [512, 1024, 4096, usize::MAX] {
+        assert_eq!(
+            sector_hash(Trickle(&data, step), size, 512, &mut buffer).unwrap(),
+            want,
+            "step {step}"
+        );
+    }
+    let changed = |reader: Trickle<'_>, size: u64, buffer: &mut [u8]| {
+        let e = sector_hash(reader, size, 512, buffer).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof, "{e}");
+    };
+    changed(Trickle(&data[..9_000], usize::MAX), size, &mut buffer);
+    changed(Trickle(&data, 100), size, &mut buffer);
+    changed(Trickle(&data, usize::MAX), size - 1, &mut buffer);
 }

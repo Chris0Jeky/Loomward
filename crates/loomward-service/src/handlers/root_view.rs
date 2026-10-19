@@ -1,7 +1,7 @@
 //! Root response assembly, shared by listing and grant/change notices.
 use super::{catalog_error, db, encode, scan_view, ts_ns, Inner};
 use loomward_catalog::{NodeKey, Reader};
-use loomward_protocol::ErrorBody;
+use loomward_protocol::{ErrorBody, RootId};
 use serde_json::{json, Value};
 
 impl Inner {
@@ -25,6 +25,10 @@ impl Inner {
             coverage = "partial";
         }
         let totals = totals.map(|s| encode(&s)).transpose()?;
+        // The engine names the newest scan it submitted for this root (not persisted across restarts).
+        let last_job_id = RootId::new(self.root_id(r.root))
+            .ok()
+            .and_then(|root| self.engine.last_scan_job(&root));
         let display: String = r.display_path.chars().take(1024).collect();
         Ok(json!({
             "root_id": self.root_id(r.root),
@@ -37,7 +41,7 @@ impl Inner {
             "grant_state": r.grant_state,
             "scan": {
                 "state": state,
-                "last_job_id": null,
+                "last_job_id": last_job_id,
                 "generation": r.generation.map(|g| g.to_string()),
                 "finished_at": r.finished_at_ns.map(ts_ns),
                 "coverage": coverage,
@@ -160,6 +164,27 @@ mod tests {
         let result = service.inner.root_json(&row, Some(&mut reader)).unwrap();
         assert_eq!(result["scan"]["coverage"], "complete");
         assert_eq!(result["totals"]["complete"], true);
+    }
+
+    /// #715: one root over the unique-totals work budget must not fail the listing; its unique
+    /// totals are null (unknown) and the stored aggregates stay exact.
+    #[test]
+    fn over_budget_unique_totals_stay_unknown_without_failing_the_root() {
+        let (_tmp, service, _connection, row) = fixture();
+        let mut reader = service.inner.catalog.reader().unwrap();
+        reader.unique_totals_steps = 1;
+        let result = service.inner.root_json(&row, Some(&mut reader)).unwrap();
+        let totals = &result["totals"];
+        assert_eq!(totals["files"], 0);
+        assert_eq!(totals["complete"], true);
+        for field in [
+            "unique_objects",
+            "unique_allocated_bytes",
+            "multi_link_entries",
+        ] {
+            assert!(totals[field].is_null(), "{field}: {totals}");
+        }
+        assert_eq!(result["scan"]["coverage"], "complete");
     }
 
     #[test]

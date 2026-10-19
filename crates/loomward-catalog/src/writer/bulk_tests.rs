@@ -1103,3 +1103,70 @@ fn a_failed_backfill_round_rolls_back_and_the_writer_retries_it() {
     assert_eq!(token_entries(&observer), expected);
     drop(writer);
 }
+
+/// #774: a finished traversal with coverage gaps ends as `partial`. It is stored as a completed run
+/// with a partial sample and advances the generation, but never reconciles absence, even when the
+/// catalogue's own listings would make the traversal look full.
+#[test]
+fn partial_end_run_records_a_finished_run_without_reconciling_absence() {
+    let _hang = watchdog();
+    let temp = tempfile::tempdir().unwrap();
+    let catalog = open(temp.path(), false);
+    let w = catalog.writer();
+    let (grant, root_dir) = register(w, 1);
+    let listing = |run, dir_id, files, dirs| {
+        w.call(WriteCommand::DirListing(DirListing {
+            run_id: run,
+            dir_id,
+            files,
+            dirs,
+            state: "complete".into(),
+            skipped: 0,
+            errors: 0,
+        }))
+        .unwrap();
+    };
+    let run = begin(w, grant);
+    listing(
+        run,
+        root_dir,
+        vec![],
+        vec![obs("keep", 0, Some(0x11)), obs("gone", 0, Some(0x12))],
+    );
+    let (keep, gone) = (
+        child(temp.path(), root_dir, "keep"),
+        child(temp.path(), root_dir, "gone"),
+    );
+    listing(run, keep, vec![obs("k.txt", 5, Some(1))], vec![]);
+    listing(run, gone, vec![obs("g.txt", 7, Some(2))], vec![]);
+    end(w, run, "completed").unwrap();
+    let db = Connection::open(temp.path().join("catalog.db")).unwrap();
+    let rows = |run: i64| {
+        db.query_row(
+            "SELECT (SELECT count(*) FROM dir WHERE id=?2),(SELECT count(*) FROM file WHERE dir_id=?2),
+                    s.state,json_extract(s.counters_json,'$.complete'),r.state,r.generation
+             FROM scan_run s JOIN root r ON r.id=s.root_id WHERE s.id=?1",
+            params![run, gone],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?, r.get::<_, bool>(3)?, r.get::<_, String>(4)?, r.get::<_, i64>(5)?)),
+        )
+        .unwrap()
+    };
+    let rescan = |state: &str| {
+        let run = begin(w, grant);
+        listing(run, root_dir, vec![], vec![obs("keep", 0, Some(0x11))]);
+        listing(run, keep, vec![obs("k.txt", 5, Some(1))], vec![]);
+        end(w, run, state).unwrap();
+        run
+    };
+    let partial = rescan("partial");
+    assert_eq!(
+        rows(partial),
+        (1, 1, "completed".into(), false, "partial".into(), partial)
+    );
+    // Control: the same traversal ended as complete does reconcile the absent directory.
+    let full = rescan("completed");
+    assert_eq!(
+        rows(full),
+        (0, 0, "completed".into(), true, "complete".into(), full)
+    );
+}
