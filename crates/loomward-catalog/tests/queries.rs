@@ -1203,7 +1203,7 @@ fn unique_objects_are_separate_from_entry_bytes_and_not_relief() {
     assert_eq!(sums.logical_bytes, "200");
     assert_eq!(sums.unique_objects, Some(1));
     assert_eq!(sums.unique_allocated_bytes.as_deref(), Some("100"));
-    assert_eq!(sums.multi_link_entries, 2);
+    assert_eq!(sums.multi_link_entries, Some(2));
     assert_eq!(sums.stream_coverage, "default_stream_only");
     validate("NodeDetail", serde_json::to_value(detail).unwrap());
 }

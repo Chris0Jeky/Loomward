@@ -944,6 +944,14 @@ impl Service {
             }
         }
         drop(queue);
+        // Tests hold the caller here and run its clock ahead (`Hooks::skew`, the clock
+        // `Inner::past` reads), so a mutation parked at a gate expires exactly there (#698).
+        #[cfg(test)]
+        let deadline = {
+            self.inner.hooks.gate(command, "mutate_wait");
+            let ahead = *self.inner.hooks.skew.lock().unwrap();
+            deadline.checked_sub(ahead).unwrap_or_else(Instant::now)
+        };
         self.inner.idem.wait(&id, deadline).unwrap_or_else(|| {
             ResponseEnvelope::error(
                 Some(id),
@@ -1033,7 +1041,7 @@ impl Inner {
         });
         // A saved simulation or a started owner job happened: retain its receipt even past the
         // deadline (#565/#568; the handlers bound their own pre-emption waits).
-        let out = if work.is_some_and(|work| Instant::now() >= work.deadline)
+        let out = if work.is_some_and(|work| self.past(work.deadline))
             && !matches!(command, Command::ScanStart | Command::DuplicatesInspect)
             && !(command == Command::PlacementSimulate
                 && request.payload.get("save").and_then(Value::as_bool) == Some(true))
@@ -1197,7 +1205,11 @@ impl Inner {
         let display_path = text.strip_prefix(r"\\?\").unwrap_or(&text).to_string();
         let _m = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
         let conn = self.db();
+        // A grant is consent for one path (docs/41 section 16): a moved root is granted afresh,
+        // and the grant still naming its old path ends identity_changed.
         let existing = db::active_grant(&conn, &volume_key, &file_id, &display_path, &volume_guid)
+            .map_err(|_| Refusal::IdentityUnavailable)?;
+        let renamed = db::renamed_grants(&conn, &volume_key, &file_id, &display_path, &volume_guid)
             .map_err(|_| Refusal::IdentityUnavailable)?;
         if unverified
             && self.dataset == DatasetClass::Personal
@@ -1222,7 +1234,9 @@ impl Inner {
             DatasetClass::Personal => "owner_granted",
         };
         if existing.is_none()
+            // A moved root's old grant retires below, so it does not count against the limit.
             && db::active_grants(&conn).map_err(|_| Refusal::IdentityUnavailable)?
+                - renamed.len() as i64
                 >= db::MAX_ACTIVE_ROOTS
         {
             return Err(Refused::RootLimit);
@@ -1263,10 +1277,21 @@ impl Inner {
             .writer()
             .call(command)
             .map_err(|_| Refusal::IdentityUnavailable)?;
-        match reply {
-            WriteReply::Root { root_id, .. } => Ok((root_id, fresh)),
-            _ => Err(Refusal::IdentityUnavailable.into()),
+        let WriteReply::Root { root_id, .. } = reply else {
+            return Err(Refusal::IdentityUnavailable.into());
+        };
+        // identity_changed takes the mutation lock itself.
+        drop(_m);
+        for grant in renamed {
+            // Release the connection guard first: identity_changed reads it again.
+            let row = db::root_for_grant(&self.db(), grant);
+            if let Ok(Some(row)) = row {
+                if let Ok(id) = loomward_protocol::RootId::new(self.root_id(row)) {
+                    self.identity_changed(grant, &id, true);
+                }
+            }
         }
+        Ok((root_id, fresh))
     }
 
     /// The row a node ID names, after its tag, catalogue instance and incarnation check out.

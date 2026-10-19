@@ -18,6 +18,8 @@ pub struct Reader {
     pub live_clamp_count: u64,
     /// Detail reads served, so a caller that owes one per node can prove it.
     pub inspect_count: u64,
+    /// Work budget for one subtree's unique totals; a test seam, defaulting to `UNIQUE_TOTALS_STEPS`.
+    pub unique_totals_steps: u64,
     breakdowns: HashMap<(i64, String, Basis, usize, String), Breakdown>,
     pub(crate) deadline: Option<std::time::Instant>,
     expected_generation: Option<(NodeKey, u64)>,
@@ -413,6 +415,7 @@ impl Reader {
             writer: None,
             live_clamp_count: 0,
             inspect_count: 0,
+            unique_totals_steps: UNIQUE_TOTALS_STEPS,
             breakdowns: HashMap::new(),
             deadline: None,
             expected_generation: None,
@@ -501,6 +504,7 @@ impl Reader {
     }
     pub fn inspect(&mut self, key: NodeKey) -> Result<NodeDetail> {
         self.inspect_count += 1;
+        let steps = self.unique_totals_steps;
         self.read(|conn|{
             let r=get(conn,key)?;if !r.valid{return Err(Error::RepairRequired);}let path=node_path(conn,key)?;
             let (display,volume,volume_key):(String,Option<i64>,Option<String>)=conn.query_row("SELECT g.display_path,g.volume_id,v.volume_key FROM root_grant g LEFT JOIN volume v ON v.id=g.volume_id WHERE g.id=?1",[r.grant],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
@@ -514,7 +518,7 @@ impl Reader {
                 let mut s=conn.prepare("SELECT c.id,c.name FROM st.collection c JOIN st.collection_member m ON m.collection_id=c.id JOIN st.object_ref o ON o.id=m.object_ref_id LEFT JOIN st.pending_reference p ON p.object_ref_id=o.id AND p.catalog_instance=?3 AND p.publication_token=(SELECT value FROM meta WHERE key='reference_publication') WHERE o.volume_key=?1 AND o.file_id=?2 AND o.state='resolved' AND o.retired=0 AND o.catalog_instance=?3 AND ((o.row_id=?4 AND o.born_run=?5) OR (p.row_id=?4 AND p.born_run=?5)) AND o.kind=?6 LIMIT 32")?;
                 memberships=s.query_map(params![v,id,instance(conn)?,match r.key{NodeKey::Dir(id)|NodeKey::File(id)=>id,_=>0},r.born_run,if matches!(r.key,NodeKey::Dir(_)){"dir"}else{"file"}],|r|Ok(CollectionRef{collection_id:format!("cl_{}",r.get::<_,i64>(0)?),name:r.get(1)?}))?.collect::<rusqlite::Result<Vec<_>>>()?;
             }
-            let subtree=if matches!(key,NodeKey::Dir(_)) {let (skipped_raw,failed_raw):(i64,i64)=conn.query_row("SELECT sub_skipped,sub_errors FROM dir WHERE id=?1",[match key{NodeKey::Dir(id)=>id,_=>unreachable!()}],|r|Ok((r.get(0)?,r.get(1)?)))?;let skipped=u64::try_from(skipped_raw).map_err(|e|rusqlite::Error::FromSqlConversionFailure(0,rusqlite::types::Type::Integer,Box::new(e)))?;let failed=u64::try_from(failed_raw).map_err(|e|rusqlite::Error::FromSqlConversionFailure(1,rusqlite::types::Type::Integer,Box::new(e)))?;let(unique_objects,unique_allocated_bytes,multi_link_entries)=unique_totals(conn,&r)?;Some(SubtreeTotals{files:r.totals.files,dirs:r.totals.dirs,logical_bytes:r.totals.logical.to_string(),allocated_bytes:r.entry().allocated_bytes,allocation_unknown_files:r.totals.allocation_unknown,skipped,failed,complete:r.totals.complete,stream_coverage:"default_stream_only".into(),unique_objects,unique_allocated_bytes,multi_link_entries})}else{None};
+            let subtree=if matches!(key,NodeKey::Dir(_)) {let (skipped_raw,failed_raw):(i64,i64)=conn.query_row("SELECT sub_skipped,sub_errors FROM dir WHERE id=?1",[match key{NodeKey::Dir(id)=>id,_=>unreachable!()}],|r|Ok((r.get(0)?,r.get(1)?)))?;let skipped=u64::try_from(skipped_raw).map_err(|e|rusqlite::Error::FromSqlConversionFailure(0,rusqlite::types::Type::Integer,Box::new(e)))?;let failed=u64::try_from(failed_raw).map_err(|e|rusqlite::Error::FromSqlConversionFailure(1,rusqlite::types::Type::Integer,Box::new(e)))?;let(unique_objects,unique_allocated_bytes,multi_link_entries)=unique_totals(conn,&r,steps)?;Some(SubtreeTotals{files:r.totals.files,dirs:r.totals.dirs,logical_bytes:r.totals.logical.to_string(),allocated_bytes:r.entry().allocated_bytes,allocation_unknown_files:r.totals.allocation_unknown,skipped,failed,complete:r.totals.complete,stream_coverage:"default_stream_only".into(),unique_objects,unique_allocated_bytes,multi_link_entries})}else{None};
             let exclusions=flags(r.flags).into_iter().filter(|s|s!="hardlink_suspected").map(|code|Exclusion{explanation:code.replace('_'," "),code}).collect();
             let denied_capabilities=["file_move","file_delete","file_rename","content_read","teacher_disclosure","training"].into_iter().map(|capability|DeniedCapability{capability:capability.into(),reason:if r.flags&1!=0 && matches!(capability,"teacher_disclosure"|"training"){"sensitive_name"}else{"not_implemented_in_v03"}.into()}).collect();
             Ok(NodeDetail{row:r.entry(),root_id:format!("rt_{}",r.grant),volume_id:volume.map(|v|format!("vo_{v}")),display_path:DisplayPath::bounded(display_path,path.truncated),identity,timestamps:Timestamps{created_at:timestamp(r.created),modified_at:timestamp(r.modified),changed_at:timestamp(r.changed),accessed_at:timestamp(r.accessed),accessed_note:"Last access may be disabled or delayed; it is not usage evidence.".into()},subtree,threads:threads(conn,r.grant,&r.coverage(),r.flags)?,exclusions,denied_capabilities,memberships,suggestion:None})
@@ -793,28 +797,39 @@ fn durable_quality(conn: &Connection, r: &Raw) -> Result<String> {
     }
     .into())
 }
-fn unique_totals(conn: &Connection, r: &Raw) -> Result<(Option<u64>, Option<String>, u64)> {
+/// Work budget for one subtree's unique totals: about 77 SQLite steps per file, so roughly
+/// 400k files stay exact. A root past it reports the unique totals as unknown (#715).
+const UNIQUE_TOTALS_STEPS: u64 = 32_000_000;
+fn unique_totals(
+    conn: &Connection,
+    r: &Raw,
+    steps: u64,
+) -> Result<(Option<u64>, Option<String>, Option<u64>)> {
     let id = match r.key {
         // An excluded directory's contents are unknown, never zero.
         NodeKey::Dir(id) if r.flags & EXCLUDED_FLAGS == 0 => id,
-        _ => return Ok((None, None, 0)),
+        _ => return Ok((None, None, Some(0))),
     };
-    let guard = WorkGuard::new(conn, 2_000_000, None)?;
+    let guard = WorkGuard::new(conn, steps, None)?;
     let result=conn.query_row("WITH RECURSIVE tree(id) AS (SELECT id FROM dir WHERE id=?1 AND listing_state!='excluded' UNION ALL SELECT d.id FROM dir d JOIN tree t ON d.parent_id=t.id WHERE d.listing_state NOT IN ('absent_pending','excluded')), objects AS (SELECT file_id,max(allocated) allocated,sum(allocated IS NULL) unknown,sum((flags & ?2)!=0 OR coalesce(link_count,0)>1) links,count(*) names FROM file WHERE dir_id IN (SELECT id FROM tree) AND flags & ?3 = 0 GROUP BY file_id) SELECT count(file_id),coalesce(sum(allocated),0),coalesce(sum(unknown),0),coalesce(sum(file_id IS NULL),0),coalesce(sum(links),0) FROM objects",params![id,HARDLINK_SUSPECTED,EXCLUDED_FLAGS],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?)));
     match result {
         Ok((count, bytes, unknown, noid, links)) => Ok((
             (noid == 0).then_some(count as u64),
             (noid == 0 && unknown == 0).then(|| bytes.to_string()),
-            links as u64,
+            Some(links as u64),
         )),
-        Err(_) if guard.hit() => Err(Error::ResourceBudget),
+        // Over budget: unique totals and the link count are unknown, never zero or an error
+        // that fails a whole listing (invariant 4). Every other aggregate is stored and exact.
+        Err(_) if guard.hit() => Ok((None, None, None)),
         Err(e) => Err(Error::Sql(e)),
     }
 }
 impl Reader {
     fn repair_committed(&mut self) -> Result<()> {
         let roots = {
-            let mut s=self.conn.prepare("SELECT DISTINCT d.root_id FROM dir d JOIN root r ON r.id=d.root_id WHERE d.agg_valid_rev<d.dirty_rev AND r.active_run IS NULL AND d.parent_id IS NULL")?;
+            // A restart repair that hit the tree-depth limit needs a rescan or explicit repair;
+            // retrying it before every read would deny reads of unrelated, healthy roots too.
+            let mut s=self.conn.prepare("SELECT DISTINCT d.root_id FROM dir d JOIN root r ON r.id=d.root_id WHERE d.agg_valid_rev<d.dirty_rev AND r.active_run IS NULL AND r.state!='repairing' AND d.parent_id IS NULL")?;
             let rows = s
                 .query_map([], |r| r.get::<_, i64>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;

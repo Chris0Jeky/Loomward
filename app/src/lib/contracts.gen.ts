@@ -284,8 +284,8 @@ export interface SubtreeTotals {
   unique_objects: NullableCount;
   /** Allocation counted once per unique object within this subtree; null when unique_objects is null or allocation is unknown. */
   unique_allocated_bytes: NullableBytes;
-  /** Entries whose object has another observed name anywhere in the dataset or an observed link count above 1. */
-  multi_link_entries: Count;
+  /** Entries whose object has another observed name anywhere in the dataset or an observed link count above 1; null when the subtree was too large to count within the query budget (unique_objects and unique_allocated_bytes are then null too). */
+  multi_link_entries: NullableCount;
 }
 
 export interface Root {
@@ -667,7 +667,7 @@ export interface IdentityObservation {
 /** Scores are uncalibrated relative scores, not probabilities (invariant 4). */
 export interface Suggestion {
   node_id: NodeId;
-  model_id: ModelId;
+  model_id: ModelId | null;
   ranked: {
     label: Label;
     score: Fraction;
@@ -1360,7 +1360,7 @@ export interface SystemSample {
     load_fraction: NullableFraction;
   };
   cpu: {
-    logical_cpus: Count;
+    logical_cpus: NullableCount;
     busy_fraction: NullableFraction;
   };
 }

@@ -325,7 +325,9 @@ then fences later messages. The copy run follows the same pattern, with one addi
    - if a publish intent was already journaled, withdraw it (`publish_withdrawn`) in the same transaction, so no
      rename is issued;
    - the only effect still allowed is removing Loomward's own journaled staging (section 4). Cleanup steps also take
-     the lock but are not fenced.
+     the lock. The fence itself does not forbid them, but each removal re-reads the journal's state and epoch
+     under its write lock, so a cleanup that a newer fence or decision supersedes stops before its next
+     removal, and the newer control finishes it (#672).
 5. **After the rename.** Once the rename step has read an unchanged epoch, the rename completes inside that step.
    A revocation can only be acknowledged after it, and the fence no longer cancels: the post-publish confirmation
    (section 4) still runs, because it is a read of the destination and not an effect. The receipt is annotated

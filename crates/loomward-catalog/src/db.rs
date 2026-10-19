@@ -357,7 +357,7 @@ pub(crate) fn open_pair_with(dir: &Path, dataset: &str, ranked: bool) -> Result<
         if tx.execute("UPDATE st.object_ref SET state='unresolved',retired=1 WHERE state='resolved' AND catalog_instance IS NOT ?1",[instance])?>0{tx.execute("UPDATE st.revision SET state_rev=state_rev+1",[])?;}
         tx.commit()?;
     }
-    let tx = conn.transaction()?;
+    let mut tx = conn.transaction()?;
     let grants = {
         let mut s = tx
             .prepare("SELECT id FROM st.root_grant WHERE state IN ('active','identity_changed')")?;
@@ -378,11 +378,26 @@ pub(crate) fn open_pair_with(dir: &Path, dataset: &str, ranked: bool) -> Result<
     };
     for root in interrupted {
         tx.execute("UPDATE root SET state='repairing' WHERE id=?1", [root])?;
-        crate::writer::rollup(&tx, root, false)?;
-        tx.execute(
-            "UPDATE root SET state='partial',active_run=NULL WHERE id=?1",
-            [root],
-        )?;
+        let repair = tx.savepoint()?;
+        match crate::writer::rollup(&repair, root, false) {
+            Ok(()) => {
+                repair.execute(
+                    "UPDATE root SET state='partial',active_run=NULL WHERE id=?1",
+                    [root],
+                )?;
+                repair.commit()?;
+            }
+            Err(Error::Invalid("tree depth limit")) => {
+                drop(repair);
+                // Quarantine legacy overdeep trees without certifying their old sums or blocking other roots.
+                tx.execute(
+                    "UPDATE dir SET agg_valid_rev=dirty_rev-1,sub_complete=0 WHERE root_id=?1",
+                    [root],
+                )?;
+                tx.execute("UPDATE root SET active_run=NULL WHERE id=?1", [root])?;
+            }
+            Err(e) => return Err(e),
+        }
     }
     tx.execute("UPDATE scan_run SET state='failed',error_json='{\"code\":\"restart_interrupted\"}' WHERE state='running'",[])?;
     tx.execute("DELETE FROM stage_entry", [])?;
