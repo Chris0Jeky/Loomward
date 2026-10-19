@@ -1577,7 +1577,10 @@ mod native_tests {
             std::fs::rename(&parent, &renamed).unwrap();
             std::fs::rename(&renamed, &parent).unwrap();
             assert!(watch.dirty.lock().unwrap().stopped);
-            assert!(watch.native.checkpoint().is_err());
+            assert!(!matches!(
+                watch.native.checkpoint(),
+                Ok(()) | Err(loomward_windows::enumerate::SourceError::Busy)
+            ));
             if !refresh {
                 std::fs::remove_dir(parent.join("sibling")).unwrap();
                 let epoch = watch.dirty.lock().unwrap().epoch;
@@ -1646,7 +1649,13 @@ mod native_tests {
                 assert_eq!(result.unwrap().complete, outcome == "complete");
             }
             assert!(watch.dirty.lock().unwrap().stopped, "{outcome}");
-            assert!(watch.native.checkpoint().is_err(), "{outcome}");
+            assert!(
+                !matches!(
+                    watch.native.checkpoint(),
+                    Ok(()) | Err(loomward_windows::enumerate::SourceError::Busy)
+                ),
+                "{outcome}"
+            );
             std::fs::rename(parent, tree.path().join("renamed")).unwrap();
         }
     }
@@ -1670,7 +1679,10 @@ mod native_tests {
             .insert(root.root_id().clone(), watch.clone());
         drop(engine);
         assert!(watch.dirty.lock().unwrap().stopped);
-        assert!(watch.native.checkpoint().is_err());
+        assert!(!matches!(
+            watch.native.checkpoint(),
+            Ok(()) | Err(loomward_windows::enumerate::SourceError::Busy)
+        ));
         let moved = tree.path().with_extension("moved-fixture");
         std::fs::rename(tree.path(), &moved).unwrap();
         std::fs::rename(&moved, tree.path()).unwrap();
@@ -1860,7 +1872,10 @@ mod native_tests {
         assert_eq!(cancelled[0].state, JobState::CancelRequested);
         assert!(engine.scan_watches.lock().unwrap().is_empty());
         assert!(watch.dirty.lock().unwrap().stopped);
-        assert!(watch.native.checkpoint().is_err());
+        assert!(!matches!(
+            watch.native.checkpoint(),
+            Ok(()) | Err(loomward_windows::enumerate::SourceError::Busy)
+        ));
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
             let status = engine.job_status(&job.job_id).unwrap();
@@ -1941,7 +1956,10 @@ mod native_tests {
             assert_eq!(cancelled[0].job_id, winner.job_id);
             assert!(engine.scan_watches.lock().unwrap().is_empty());
             assert!(watch.dirty.lock().unwrap().stopped);
-            assert!(watch.native.checkpoint().is_err());
+            assert!(!matches!(
+                watch.native.checkpoint(),
+                Ok(()) | Err(loomward_windows::enumerate::SourceError::Busy)
+            ));
         });
     }
 
@@ -2262,7 +2280,10 @@ mod native_tests {
             let epoch = watch.dirty.lock().unwrap().epoch;
             std::fs::write(tree.path().join("a/idle-change"), b"idle").unwrap();
             assert!(watch.dirty.lock().unwrap().stopped);
-            assert!(watch.native.checkpoint().is_err());
+            assert!(!matches!(
+                watch.native.checkpoint(),
+                Ok(()) | Err(loomward_windows::enumerate::SourceError::Busy)
+            ));
             assert_eq!(watch.dirty.lock().unwrap().epoch, epoch);
             assert!(!sink.memory.is_repairing(root.root_id()));
             assert!(sink.memory.sweep_allowed(root.root_id()));
@@ -2301,7 +2322,10 @@ mod native_tests {
         std::thread::sleep(Duration::from_millis(30));
         assert_eq!(watch.dirty.lock().unwrap().epoch, epoch);
         assert!(watch.dirty.lock().unwrap().stopped);
-        assert!(watch.native.checkpoint().is_err());
+        assert!(!matches!(
+            watch.native.checkpoint(),
+            Ok(()) | Err(loomward_windows::enumerate::SourceError::Busy)
+        ));
         assert!(engine.scan_watches.lock().unwrap().is_empty());
         // The watcher released its root/ancestor pins before the revoke acknowledgement.
         let moved = tree.path().with_extension("moved-fixture");
