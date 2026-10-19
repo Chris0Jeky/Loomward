@@ -1,8 +1,8 @@
 # Browser reconnect and refused connections (#696)
 
 Windows 11, KRASPYON, 2026-10-19. Starting HEAD:
-`aa92edc96a0b032257f30fe5cd37326300e4f360`. Changes are deliberately
-uncommitted on `fix/696-e2e-reconnect`.
+`aa92edc96a0b032257f30fe5cd37326300e4f360`. Changes are on
+`fix/696-e2e-reconnect` (PR #767).
 
 ## Reconnect: a response from the previous document
 
@@ -126,4 +126,4 @@ issue is left outside this repair. No production transport code changed.
 
 `HUMAN_TODO.md` is unchanged. This lane needs no owner decision and changes no
 product capability or safety gate. Native-shell and hosted-CI proof are outside
-this uncommitted browser-test lane.
+this browser-test lane.
