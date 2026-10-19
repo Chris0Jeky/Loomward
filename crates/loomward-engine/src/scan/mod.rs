@@ -23,6 +23,7 @@ use std::{
 #[derive(Default)]
 pub(crate) struct RootGate {
     revoked: bool,
+    starting: Arc<AtomicBool>,
     duplicate_cancel: Arc<AtomicBool>,
     aliases: std::collections::HashSet<RootId>,
 }
@@ -636,27 +637,44 @@ impl Engine {
             });
         }
         // A durable revoke can precede its in-memory cancellation fence after root minting.
-        if let RootKey::Grant(grant) = root.key() {
-            let denied = |message: &str| EngineError::PermissionDenied {
-                message: message.into(),
-            };
-            let conn = rusqlite::Connection::open_with_flags(
-                loomward_catalog::sqlite_dir(&self.config.state_dir).join("state.db"),
-                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
-                    | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-            )
-            .map_err(|_| denied("grant store unavailable"))?;
-            let active: bool = conn
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM root_grant WHERE id=?1 AND state='active')",
-                    [grant],
-                    |r| r.get(0),
+        let grant_active = || -> EngineResult<()> {
+            if let RootKey::Grant(grant) = root.key() {
+                let denied = |message: &str| EngineError::PermissionDenied {
+                    message: message.into(),
+                };
+                let conn = rusqlite::Connection::open_with_flags(
+                    loomward_catalog::sqlite_dir(&self.config.state_dir).join("state.db"),
+                    rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+                        | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
                 )
                 .map_err(|_| denied("grant store unavailable"))?;
-            if !active {
-                return Err(denied("grant_not_active"));
+                let active: bool = conn
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM root_grant WHERE id=?1 AND state='active')",
+                        [grant],
+                        |r| r.get(0),
+                    )
+                    .map_err(|_| denied("grant store unavailable"))?;
+                if !active {
+                    return Err(denied("grant_not_active"));
+                }
+            }
+            Ok(())
+        };
+        grant_active()?;
+        struct Starting(Arc<AtomicBool>);
+        impl Drop for Starting {
+            fn drop(&mut self) {
+                self.0.store(false, Ordering::Release);
             }
         }
+        if revoked.starting.swap(true, Ordering::AcqRel) {
+            return Err(EngineError::Busy {
+                message: "root already starting".into(),
+                detail: None,
+            });
+        }
+        let _starting = Starting(revoked.starting.clone());
         revoked.aliases.insert(root.root_id().clone());
         if let Some(job_id) = revoked
             .aliases
@@ -699,6 +717,14 @@ impl Engine {
         let bytes = self.budgets.bytes.clone();
         static NEXT_RUN: AtomicU64 = AtomicU64::new(1);
         let run = NEXT_RUN.fetch_add(1, Ordering::Relaxed);
+        #[cfg(windows)]
+        let existing = self.scan_watches.lock().unwrap().remove(root.root_id());
+        // The reservation excludes other starts; cancellation can now acquire the gate.
+        drop(revoked);
+        #[cfg(windows)]
+        if let Some(watch) = existing {
+            watch.stop();
+        }
         // A sink that refuses watch hints (the trait default) is never watched: its scans are
         // plain full passes, and no watch pins outlive them (#184 MEDIUM-2).
         // An identity-unverified root (#219) is never watched: the watch reopens by file ID.
@@ -712,12 +738,25 @@ impl Engine {
                 Err(e) => return Err(e),
             };
         #[cfg(windows)]
-        {
-            let existing = self.scan_watches.lock().unwrap().remove(root.root_id());
-            if let Some(watch) = existing {
+        let armed = if watched {
+            Some(watch::RootWatch::start(&root, sink.clone())?)
+        } else {
+            None
+        };
+        let revoked = gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if revoked.revoked {
+            drop(revoked);
+            #[cfg(windows)]
+            if let Some(watch) = armed {
                 watch.stop();
             }
+            return Err(EngineError::PermissionDenied {
+                message: "root revoked".into(),
+            });
         }
+        grant_active()?;
         #[cfg(windows)]
         if !watched {
             let io = source::native_cancel();
@@ -763,7 +802,7 @@ impl Engine {
         #[cfg(windows)]
         {
             let watch = {
-                let watch = watch::RootWatch::start(&root, sink.clone())?;
+                let watch = armed.expect("watched roots arm before publication");
                 let replaced = self
                     .scan_watches
                     .lock()

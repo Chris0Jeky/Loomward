@@ -559,7 +559,7 @@ mod tests {
                 &Tree,
                 &root,
                 1,
-                sink,
+                sink.clone(),
                 Arc::new(ByteBudget::new(crate::budgets::SCAN_BYTES)),
                 Arc::new(AtomicBool::new(false)),
                 ScanOptions::default(),
@@ -577,6 +577,9 @@ mod tests {
             let state = dirty.lock().unwrap();
             assert!(!state.failed && state.root.is_none() && state.dirs.is_empty());
             assert_eq!(calls.get(), busy_at + 1, "must defer, not relist");
+            if busy_at == 2 {
+                assert!(sink.is_repairing(root.root_id()));
+            }
         }
     }
 
@@ -1979,11 +1982,11 @@ mod native_tests {
         let sink = Arc::new(RecordingSink::default());
         let (entered, entry) = mpsc::sync_channel(1);
         let (release, released) = mpsc::sync_channel(1);
-        let first = AtomicBool::new(true);
+        let calls = std::sync::atomic::AtomicUsize::new(0);
         *sink.watch_probe.lock().unwrap() = Some(Box::new(move || {
-            if first.swap(false, Ordering::AcqRel) {
+            if calls.fetch_add(1, Ordering::AcqRel) == 1 {
                 entered.send(()).unwrap();
-                released.recv_timeout(Duration::from_secs(2)).unwrap();
+                released.recv_timeout(Duration::from_secs(30)).unwrap();
             }
         }));
         engine.set_scan_sink(sink).unwrap();
@@ -1997,35 +2000,25 @@ mod native_tests {
             )
             .unwrap();
         let (results, result) = mpsc::channel();
-        let gate_released = AtomicBool::new(false);
-        let (cancelling, cancel_started) = mpsc::sync_channel(1);
         std::thread::scope(|threads| {
             let start = threads.spawn(|| engine.scan_start(&root, None));
-            entry.recv_timeout(Duration::from_secs(2)).unwrap();
-            threads.spawn(|| {
-                cancelling.send(()).unwrap();
-                let cancelled = engine.scan_cancel_root(root.key(), root.root_id());
-                let returned_after_release = gate_released.load(Ordering::Acquire);
-                results.send((cancelled, returned_after_release)).unwrap()
-            });
-            cancel_started.recv_timeout(Duration::from_secs(2)).unwrap();
-            gate_released.store(true, Ordering::Release);
-            release.send(()).unwrap();
-            let winner = start.join().unwrap().unwrap();
-            let (cancelled, returned_after_release) =
-                result.recv_timeout(Duration::from_secs(2)).unwrap();
-            let cancelled = cancelled.unwrap();
-            assert!(
-                returned_after_release,
-                "revocation must block on the start gate and return only after release"
-            );
-            assert_eq!(
-                cancelled.len(),
-                1,
-                "revocation must observe the reserved submission"
-            );
-            assert_eq!(cancelled[0].job_id, winner.job_id);
+            entry.recv_timeout(Duration::from_secs(30)).unwrap();
             assert!(engine.scan_watches.lock().unwrap().is_empty());
+            threads.spawn(|| {
+                results
+                    .send(engine.scan_cancel_root(root.key(), root.root_id()))
+                    .unwrap();
+            });
+            let early = result.recv_timeout(Duration::from_secs(1));
+            release.send(()).unwrap();
+            let started = start.join().unwrap();
+            assert!(early
+                .expect("cancel waited for the slow watch start")
+                .unwrap()
+                .is_empty());
+            assert!(matches!(started, Err(EngineError::PermissionDenied { .. })));
+            assert!(engine.scan_watches.lock().unwrap().is_empty());
+            assert!(engine.jobs.root_jobs(root.root_id()).is_empty());
             assert!(matches!(
                 engine.scan_refresh(&root, None),
                 Err(EngineError::PermissionDenied { .. })

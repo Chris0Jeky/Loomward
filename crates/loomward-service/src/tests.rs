@@ -4285,18 +4285,17 @@ fn f3_revoke_fences_a_watch_still_being_armed() {
             .unwrap()
     });
     // Release the test gate before asserting, so a red regression cannot strand a native thread.
-    let early = ack.try_recv().ok();
+    let early = ack.recv_timeout(Duration::from_secs(1)).ok();
     svc.inner.hooks.open(phase.0, phase.1);
     if early.is_none() {
         ack.recv_timeout(Duration::from_secs(10)).unwrap().unwrap();
     }
     let opened = opening.join();
     revoking.join().unwrap();
-    assert!(
-        early.is_none(),
-        "revoke acknowledged before the in-flight watch was stopped"
-    );
+    assert!(early.is_some(), "revoke waited for the slow watch arm");
+    early.unwrap().unwrap();
     opened.unwrap();
+    assert!(svc.inner.freshness.debug(1).is_empty());
     svc.inner
         .freshness
         .record(1, vec![loomward_windows::watch::Change::RootDirty]);

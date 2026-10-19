@@ -73,6 +73,7 @@ impl Drop for Explicit<'_> {
 #[cfg(windows)]
 struct Tracked {
     restart: Restart,
+    opening: bool,
     #[cfg(windows)]
     watch: Option<Arc<loomward_windows::watch::Watcher>>,
     checkpoint: Arc<Mutex<()>>,
@@ -214,9 +215,21 @@ impl Tracker {
         let roots = self.roots.lock().unwrap();
         roots.get(&row).map(|r|format!("epoch={} full={} auto={} attempts={} paths={} targets={} started={:?} failed={}",r.epoch,r.full,r.auto,r.attempts,r.paths.len(),r.targets.len(),r.started.map(|s|s.0),r.watch.as_ref().is_none_or(|w|w.failed()))).unwrap_or_default()
     }
-    #[cfg(windows)]
+    #[cfg(all(test, windows))]
     pub(crate) fn record(&self, row: i64, changes: Vec<loomward_windows::watch::Change>) {
+        self.record_watch(row, None, changes);
+    }
+    #[cfg(windows)]
+    fn record_watch(
+        &self,
+        row: i64,
+        token: Option<&Arc<Mutex<()>>>,
+        changes: Vec<loomward_windows::watch::Change>,
+    ) {
         if let Some(root) = self.roots.lock().unwrap().get_mut(&row) {
+            if token.is_some_and(|token| !Arc::ptr_eq(&root.checkpoint, token)) {
+                return;
+            }
             for change in changes {
                 // Only a new filesystem hint after cooldown grants one retry.
                 if root.attempts >= 3 && root.retry_after.is_some_and(|at| Instant::now() >= at) {
@@ -394,7 +407,9 @@ impl Inner {
             "freshness_checkpoint_claimed",
         );
         let result = watch.checkpoint();
-        Some(if watch.failed() {
+        Some(if result == Err(SourceError::Busy) {
+            result
+        } else if watch.failed() {
             Err(SourceError::Refused)
         } else {
             result
@@ -624,7 +639,7 @@ fn ensure_roots_with_clock(inner: &Arc<Inner>, now: impl Fn() -> Instant) {
         let restarting = {
             let mut roots = inner.freshness.roots.lock().unwrap();
             if let Some(root) = roots.get_mut(&row.root) {
-                if root.watch.as_ref().is_some_and(|w| !w.failed()) {
+                if root.opening || root.watch.as_ref().is_some_and(|w| !w.failed()) {
                     continue;
                 }
                 if root.restart.after.is_none() {
@@ -654,17 +669,13 @@ fn ensure_roots_with_clock(inner: &Arc<Inner>, now: impl Fn() -> Instant) {
         if expected.basis == loomward_windows::enumerate::IdBasis::Unverified {
             continue;
         }
-        #[cfg(test)]
-        inner.hooks.gate(
-            loomward_protocol::Command::ScanStart,
-            "persistent_watch_resolved",
-        );
         // Every event after insertion must invalidate restart continuity, including watch setup.
         if !restarting {
             inner.freshness.roots.lock().unwrap().insert(
                 row.root,
                 Tracked {
                     restart: Restart::default(),
+                    opening: false,
                     watch: None,
                     checkpoint: Arc::default(),
                     epoch: 0,
@@ -684,11 +695,20 @@ fn ensure_roots_with_clock(inner: &Arc<Inner>, now: impl Fn() -> Instant) {
                 },
             );
         }
-        let (epoch, old) = {
+        let (epoch, old, token) = {
             let mut roots = inner.freshness.roots.lock().unwrap();
             let root = roots.get_mut(&row.root).unwrap();
-            (root.epoch, root.watch.take())
+            root.opening = true;
+            root.checkpoint = Arc::default();
+            (root.epoch, root.watch.take(), root.checkpoint.clone())
         };
+        // Reserve under setup, but never wait for native arming while revoke needs that lock.
+        drop(_setup);
+        #[cfg(test)]
+        inner.hooks.gate(
+            loomward_protocol::Command::ScanStart,
+            "persistent_watch_resolved",
+        );
         // Never join while holding roots: the exiting callback records its final dirty hint.
         if let Some(watch) = old {
             watch.stop();
@@ -699,6 +719,7 @@ fn ensure_roots_with_clock(inner: &Arc<Inner>, now: impl Fn() -> Instant) {
             "watch_restart_opening",
         );
         let weak: Weak<Inner> = Arc::downgrade(inner);
+        let callback_token = token.clone();
         let root_row = row.root;
         #[cfg(test)]
         let fail = inner.hooks.fail_watch_start.load(Ordering::SeqCst);
@@ -709,10 +730,42 @@ fn ensure_roots_with_clock(inner: &Arc<Inner>, now: impl Fn() -> Instant) {
         } else {
             loomward_windows::watch::Watcher::start(grant.path(), Some(expected), move |changes| {
                 if let Some(inner) = weak.upgrade() {
-                    inner.freshness.record(root_row, changes);
+                    inner
+                        .freshness
+                        .record_watch(root_row, Some(&callback_token), changes);
                 }
             })
         };
+        let setup = inner.freshness.setup.lock().unwrap();
+        let wanted = !inner.freshness.stopped.load(Ordering::Acquire)
+            && inner
+                .db()
+                .query_row(
+                    "SELECT state='active' FROM st.root_grant WHERE id=?1",
+                    [row.grant],
+                    |r| r.get::<_, bool>(0),
+                )
+                .unwrap_or(false);
+        {
+            let mut roots = inner.freshness.roots.lock().unwrap();
+            let current = roots
+                .get_mut(&row.root)
+                .filter(|root| Arc::ptr_eq(&root.checkpoint, &token));
+            let Some(root) = current else {
+                drop(roots);
+                drop(setup);
+                drop(watch);
+                continue;
+            };
+            root.opening = false;
+            if !wanted {
+                roots.remove(&row.root);
+                drop(roots);
+                drop(setup);
+                drop(watch);
+                continue;
+            }
+        }
         if let Ok(watch) = watch {
             let epoch = {
                 let mut roots = inner.freshness.roots.lock().unwrap();
@@ -726,8 +779,8 @@ fn ensure_roots_with_clock(inner: &Arc<Inner>, now: impl Fn() -> Instant) {
                     epoch
                 }
             };
-            // Setup fences native handle creation only. Revoke must not wait for journal IO.
-            drop(_setup);
+            // Publication is fenced; journal IO also runs outside setup.
+            drop(setup);
             if row.finished_at_ns.is_some() {
                 #[cfg(test)]
                 inner.hooks.gate(
@@ -1118,6 +1171,7 @@ mod tests {
                 root_id,
                 Tracked {
                     restart: Restart::default(),
+                    opening: false,
                     watch: None,
                     checkpoint: Arc::default(),
                     epoch: 0,
@@ -1431,6 +1485,64 @@ mod restart_tests {
         assert!(root.completed.is_none() && root.stale_since.is_none() && root.job.is_none());
     }
 
+    #[test]
+    fn f3_wedged_live_watch_is_busy_until_backoff_replaces_it() {
+        let Some(lab) = lab() else { return };
+        let inner = &lab.svc.inner;
+        inner.freshness.pause_pump();
+        let (entered, entry) = std::sync::mpsc::channel();
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        let stalled = Arc::new(
+            loomward_windows::watch::Watcher::start(&lab.path, None, move |_| {
+                let _ = entered.send(());
+                let _ = held.recv();
+            })
+            .unwrap(),
+        );
+        // Drop the sender before the watcher on assertion failure as well.
+        let release = release;
+        let old = inner
+            .freshness
+            .roots
+            .lock()
+            .unwrap()
+            .get_mut(&1)
+            .unwrap()
+            .watch
+            .replace(stalled.clone())
+            .unwrap();
+        old.stop();
+        std::fs::write(lab.path.join("wedged-watch.bin"), b"synthetic").unwrap();
+        entry.recv_timeout(Duration::from_secs(30)).unwrap();
+        for _ in 0..8 {
+            let freshness = inner.hit_freshness(1);
+            assert_eq!(freshness.state, SearchFreshnessState::Stale);
+            assert_eq!(
+                serde_json::to_value(freshness).unwrap()["reason"],
+                "watch_busy"
+            );
+        }
+        assert!(stalled.failed());
+        let now = Instant::now();
+        tick(inner, now);
+        assert!(Arc::ptr_eq(
+            inner.freshness.roots.lock().unwrap()[&1]
+                .watch
+                .as_ref()
+                .unwrap(),
+            &stalled
+        ));
+        tick(inner, now + Duration::from_secs(5));
+        let replacement = inner.freshness.roots.lock().unwrap()[&1]
+            .watch
+            .clone()
+            .unwrap();
+        assert!(!Arc::ptr_eq(&replacement, &stalled));
+        assert!(!replacement.failed());
+        assert_eq!(inner.hit_freshness(1).state, SearchFreshnessState::Stale);
+        drop(release);
+    }
+
     // Force the same lost-coverage state as an exited native thread, without OS timing.
     fn fail_watch(inner: &Inner) {
         let watch = inner
@@ -1735,7 +1847,7 @@ mod restart_tests {
                 .count()
                 >= 2
         });
-        // Another pump entry cannot spend a second attempt while native open owns setup.
+        // Another pump entry cannot spend a second attempt while this root is opening.
         ensure_roots_at(&svc.inner, now + Duration::from_secs(600));
         assert_eq!(
             svc.inner.freshness.roots.lock().unwrap()[&1]
@@ -1745,13 +1857,18 @@ mod restart_tests {
             1
         );
         let grant = db::roots(&svc.inner.db(), Some(1)).unwrap()[0].grant;
+        let (sent, ack) = std::sync::mpsc::channel();
         let revoking = {
             let inner = svc.inner.clone();
-            std::thread::spawn(move || inner.revoke(grant))
+            std::thread::spawn(move || sent.send(inner.revoke(grant)).unwrap())
         };
+        let early = ack.recv_timeout(Duration::from_secs(1));
         svc.inner.hooks.open(phase.0, phase.1);
         opening.join().unwrap();
-        revoking.join().unwrap().unwrap();
+        revoking.join().unwrap();
+        early
+            .expect("revoke waited for replacement arming")
+            .unwrap();
         assert!(svc.inner.freshness.roots.lock().unwrap().is_empty());
     }
 

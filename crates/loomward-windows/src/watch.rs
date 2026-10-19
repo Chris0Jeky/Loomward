@@ -65,7 +65,7 @@ mod native {
         path::Path,
         ptr::{null, null_mut},
         sync::{
-            atomic::{AtomicBool, Ordering},
+            atomic::{AtomicBool, AtomicU8, Ordering},
             mpsc, Arc, Mutex,
         },
         thread::{self, JoinHandle},
@@ -80,6 +80,7 @@ mod native {
         },
     };
 
+    const BUSY_LIMIT: u8 = 8;
     const BUFFER_WORDS: usize = 64 * 1024 / 4;
     const FILTER: u32 = FILE_NOTIFY_CHANGE_FILE_NAME
         | FILE_NOTIFY_CHANGE_DIR_NAME
@@ -207,6 +208,7 @@ mod native {
     pub struct Watcher {
         done: Arc<AtomicBool>,
         failed: Arc<AtomicBool>,
+        busy: AtomicU8,
         thread: Mutex<Option<JoinHandle<()>>>,
         checkpoints: mpsc::SyncSender<mpsc::SyncSender<()>>,
     }
@@ -308,12 +310,15 @@ mod native {
                 if let Err(error) = outcome {
                     failure.store(true, Ordering::Release);
                     let _ = ready_tx.try_send(Err(error));
-                    callback(vec![Change::RootDirty]);
+                    if !stopped.load(Ordering::Acquire) {
+                        callback(vec![Change::RootDirty]);
+                    }
                 }
             });
             let watcher = Self {
                 done,
                 failed,
+                busy: AtomicU8::new(0),
                 thread: Mutex::new(Some(thread)),
                 checkpoints,
             };
@@ -328,14 +333,19 @@ mod native {
         /// Drain already-completed hints before taking a reconciliation epoch.
         /// Each attempt waits at most two seconds; Busy means retry, not loss of coverage.
         pub fn checkpoint(&self) -> Result<(), SourceError> {
-            if self.failed() || self.done.load(Ordering::Acquire) {
+            self.failed(); // Observe an actual exit even after the Busy budget was exhausted.
+            if self.failed.load(Ordering::Acquire) || self.done.load(Ordering::Acquire) {
                 return Err(SourceError::Refused);
+            }
+            // Preserve the honest Busy reason until the owner replaces this watch.
+            if self.wedged() {
+                return Err(SourceError::Busy);
             }
             let (tx, rx) = mpsc::sync_channel(1);
             match self.checkpoints.try_send(tx) {
                 Ok(()) => (),
                 Err(mpsc::TrySendError::Full(_)) if !self.failed() => {
-                    return Err(SourceError::Busy)
+                    return self.checkpoint_busy()
                 }
                 Err(_) => {
                     self.failed.store(true, Ordering::Release);
@@ -345,7 +355,7 @@ mod native {
             match rx.recv_timeout(Duration::from_secs(2)) {
                 Ok(()) => (),
                 Err(mpsc::RecvTimeoutError::Timeout) if !self.failed() => {
-                    return Err(SourceError::Busy)
+                    return self.checkpoint_busy()
                 }
                 Err(_) => {
                     self.failed.store(true, Ordering::Release);
@@ -355,7 +365,19 @@ mod native {
             if self.failed() {
                 return Err(SourceError::Refused);
             }
+            self.busy.store(0, Ordering::Release);
             Ok(())
+        }
+        fn checkpoint_busy(&self) -> Result<(), SourceError> {
+            let _ = self
+                .busy
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                    Some(n.saturating_add(1))
+                });
+            Err(SourceError::Busy)
+        }
+        fn wedged(&self) -> bool {
+            self.busy.load(Ordering::Acquire) >= BUSY_LIMIT
         }
         /// Native I/O or the granted path lost coverage; the next scan must rebuild this watch.
         pub fn failed(&self) -> bool {
@@ -368,14 +390,15 @@ mod native {
             {
                 self.failed.store(true, Ordering::Release);
             }
-            self.failed.load(Ordering::Acquire)
+            self.failed.load(Ordering::Acquire) || self.wedged()
         }
-        /// Stop and join, cancelling and draining pending I/O before releasing root pins.
+        /// Stop and join. A worker wedged across eight checkpoints is retired without waiting;
+        /// it owns its I/O buffers and pins until it returns and drains cancellation itself.
         pub fn stop(&self) {
             self.failed(); // Retain an unexpected exit after taking the join handle.
             self.done.store(true, Ordering::Release);
             if let Some(thread) = self.thread.lock().unwrap().take() {
-                if thread.join().is_err() {
+                if !self.wedged() && thread.join().is_err() {
                     self.failed.store(true, Ordering::Release);
                 }
             }
@@ -407,6 +430,7 @@ mod native {
             let watcher = Watcher {
                 done: Arc::default(),
                 failed: Arc::default(),
+                busy: AtomicU8::new(0),
                 thread: Mutex::new(Some(worker)),
                 checkpoints,
             };
@@ -422,6 +446,89 @@ mod native {
         }
 
         #[test]
+        fn wedged_live_worker_becomes_failed_and_can_be_retired_without_joining() {
+            let (checkpoints, requests) = mpsc::sync_channel(1);
+            let (release, held) = mpsc::channel::<()>();
+            let worker = thread::spawn(move || {
+                let _ = held.recv();
+                drop(requests);
+            });
+            let watcher = Arc::new(Watcher {
+                done: Arc::default(),
+                failed: Arc::default(),
+                busy: AtomicU8::new(0),
+                thread: Mutex::new(Some(worker)),
+                checkpoints,
+            });
+            let release = release;
+            watcher
+                .checkpoints
+                .try_send(mpsc::sync_channel(1).0)
+                .unwrap();
+            for _ in 0..8 {
+                assert_eq!(watcher.checkpoint(), Err(SourceError::Busy));
+            }
+            let failed = watcher.failed();
+            let (stopped, ack) = mpsc::channel();
+            let retiring = watcher.clone();
+            let stop = thread::spawn(move || {
+                retiring.stop();
+                stopped.send(()).unwrap();
+            });
+            let early = ack.recv_timeout(Duration::from_secs(1));
+            drop(release);
+            stop.join().unwrap();
+            assert!(failed, "a live worker cannot remain Busy forever");
+            assert!(early.is_ok(), "self-heal waited for the wedged worker");
+        }
+
+        #[test]
+        fn checkpoint_success_resets_the_consecutive_busy_budget() {
+            let (checkpoints, requests) = mpsc::sync_channel::<mpsc::SyncSender<()>>(1);
+            let (release, held) = mpsc::channel::<()>();
+            let (drained, drain) = mpsc::channel();
+            let worker = thread::spawn(move || {
+                if held.recv().is_err() {
+                    return;
+                }
+                let _ = requests.recv_timeout(Duration::from_secs(5)); // Discard the full-queue request.
+                drained.send(()).unwrap();
+                if let Ok(reply) = requests.recv_timeout(Duration::from_secs(5)) {
+                    let _ = reply.send(());
+                }
+                let _ = held.recv();
+            });
+            let watcher = Watcher {
+                done: Arc::default(),
+                failed: Arc::default(),
+                busy: AtomicU8::new(0),
+                thread: Mutex::new(Some(worker)),
+                checkpoints,
+            };
+            // Always release the fake worker before Watcher::drop, even if an assertion fails.
+            let release = release;
+            for phase in 0..2 {
+                watcher
+                    .checkpoints
+                    .try_send(mpsc::sync_channel(1).0)
+                    .unwrap();
+                for _ in 0..BUSY_LIMIT - 1 {
+                    assert_eq!(watcher.checkpoint(), Err(SourceError::Busy));
+                }
+                assert!(
+                    !watcher.failed(),
+                    "transient Busy accumulated across success"
+                );
+                if phase == 0 {
+                    release.send(()).unwrap();
+                    drain.recv_timeout(Duration::from_secs(2)).unwrap();
+                    assert_eq!(watcher.checkpoint(), Ok(()));
+                }
+            }
+            drop(release);
+        }
+
+        #[test]
         fn checkpoint_dead_thread_is_refused() {
             let (checkpoints, requests) = mpsc::sync_channel(1);
             let worker = thread::spawn(move || drop(requests));
@@ -431,11 +538,14 @@ mod native {
             let watcher = Watcher {
                 done: Arc::default(),
                 failed: Arc::default(),
+                busy: AtomicU8::new(0),
                 thread: Mutex::new(Some(worker)),
                 checkpoints,
             };
             assert_eq!(watcher.checkpoint(), Err(SourceError::Refused));
             assert!(watcher.failed(), "an exited thread lost coverage");
+            watcher.busy.store(BUSY_LIMIT, Ordering::Release);
+            assert_eq!(watcher.checkpoint(), Err(SourceError::Refused));
             watcher.stop();
             assert!(watcher.failed(), "joining must retain failure");
         }
@@ -451,6 +561,7 @@ mod native {
             let watcher = Watcher {
                 done: Arc::default(),
                 failed: Arc::default(),
+                busy: AtomicU8::new(0),
                 thread: Mutex::new(Some(worker)),
                 checkpoints,
             };
@@ -524,6 +635,7 @@ mod native {
             let watcher = Watcher {
                 done: Arc::default(),
                 failed: Arc::default(),
+                busy: AtomicU8::new(0),
                 thread: Mutex::new(Some(worker)),
                 checkpoints,
             };

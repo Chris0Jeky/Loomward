@@ -207,6 +207,18 @@ pending; search reports stale with reason `watch_busy` without scheduling a repa
 retries Busy for a 30-second retry budget (plus the in-flight native wait), then reports a timeout
 with coverage unknown, separately from a failed watch.
 
+Arming runs outside the freshness setup lock and engine root gate. A per-root reservation
+excludes competing starts; publication under the lock rechecks the active grant, cancellation
+and reservation identity. Revocation can acknowledge during a slow arm, and that arm's result
+is discarded. Retired freshness callbacks cannot dirty a replacement reservation.
+
+Eight consecutive Busy checkpoints make a live worker eligible for the existing bounded
+restart/backoff path; a successful checkpoint resets the count. Search stays stale with
+`watch_busy` while that worker awaits replacement. Stopping this wedged worker sets its stop
+flag and retires its join handle without waiting: the worker retains its native handles and
+I/O buffers until it returns and drains cancellation. This can retain a stalled thread and root
+pins; it does not terminate the thread or cancel another process. Normal watchers still join.
+
 For **LW-007**, treat unprivileged USN as an optional dirty-ID accelerator. Establish a valid
 bookmark before the baseline scan, persist `(native volume identity, journal ID, next USN)`
 alongside the catalogue state it covers, and replay up to a captured head before declaring
