@@ -277,7 +277,7 @@
   <h2 id="h-cand">Candidate groups {#if src}on <VisibleName name={src.display_name} />{/if}</h2>
   {#if cands}
     <p class="muted small">{cands.note}</p>
-    {#if cands.excluded_volumes.length}
+    {#if cands.excluded_volumes?.length}
       <ul class="list" aria-label="Excluded placement volumes">{#each cands.excluded_volumes as x (x.volume_id)}<li><VisibleName name={vname(x.volume_id)} /> · {EXCLUDED[x.reason]}</li>{/each}</ul>
     {/if}
     <div class="tbl-wrap">

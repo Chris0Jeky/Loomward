@@ -536,7 +536,10 @@ impl Sampler {
         if refresh_processes {
             self.process_sample_at = Some(now);
         }
-        self.own = own.map(|own| (read_at, own));
+        // Process-only cached ticks made no own-counter read; retain its original observation.
+        if refresh_processes || channels.engine || !channels.processes {
+            self.own = own.map(|own| (read_at, own));
+        }
         self.previous = Some((now, current.clone()));
         current
             .processes
@@ -1034,6 +1037,54 @@ mod tests {
             .unknowns
             .iter()
             .any(|u| u.reason == "requires_two_samples"));
+    }
+
+    #[test]
+    fn cached_process_only_ticks_retain_own_row_and_its_observation() {
+        let base = Instant::now();
+        let channels = SampleChannels {
+            engine: false,
+            ..SampleChannels::ALL
+        };
+        let fixture = Snapshot {
+            processes: vec![Process {
+                pid: std::process::id(),
+                parent_pid: 42,
+                ..process()
+            }],
+            processes_observed_at_unix_ms: Some(1000),
+            ..unsupported_snapshot()
+        };
+        let mut sampler = Sampler::default();
+        sampler.finish_sample(fixture, 0, channels, true, base, None);
+        let own = serde_json::to_value(sampler.own_process().unwrap()).unwrap();
+        for seconds in [1, 2] {
+            let cached = sampler.finish_sample(
+                unsupported_snapshot(),
+                0,
+                channels,
+                false,
+                base + std::time::Duration::from_secs(seconds),
+                None,
+            );
+            assert_eq!(
+                serde_json::to_value(sampler.own_process().expect("retained own row")).unwrap(),
+                own
+            );
+            assert_eq!(sampler.own.as_ref().unwrap().0, base);
+            assert_eq!(cached.processes_observed_at_unix_ms, Some(1000));
+            assert!(cached.processes.is_empty()); // Display truncation does not lose the own row.
+        }
+        // A fresh enumeration without our PID must clear the old observation.
+        sampler.finish_sample(
+            unsupported_snapshot(),
+            0,
+            channels,
+            true,
+            base + std::time::Duration::from_secs(15),
+            None,
+        );
+        assert!(sampler.own_process().is_none());
     }
 
     #[test]

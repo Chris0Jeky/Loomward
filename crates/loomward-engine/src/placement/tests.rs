@@ -591,6 +591,119 @@ impl ProposalStore for MemoryStore {
 }
 
 #[test]
+fn placement_save_digest_canonicalises_override_order() {
+    let engine = engine();
+    let mut input = input();
+    input.snapshot.subtrees.push(subtree("two"));
+    let mut req = request();
+    req.save = true;
+    req.overrides = from_value(json!([
+        {"group_id": "cg_one", "heat": 0.1},
+        {"group_id": "cg_two", "heat": 0.2}
+    ]))
+    .unwrap();
+    let store = MemoryStore::default();
+    engine
+        .placement_simulate(&input, &req, deadline(), Some(&store))
+        .unwrap();
+    let mut overrides = req.overrides.to_vec();
+    overrides.reverse();
+    req.overrides = BoundedVec::new(overrides).unwrap();
+    engine
+        .placement_simulate(&input, &req, deadline(), Some(&store))
+        .unwrap();
+    let records = store.0.lock().unwrap();
+    assert_eq!(records[0].plan.proposals, records[1].plan.proposals);
+    assert_eq!(records[0].inputs_digest, records[1].inputs_digest);
+    assert_eq!(
+        records[0].inputs_digest.as_str(),
+        "sha256:2096dde6e180cfc63e7781a2aebd76c0b88ae59ea10bee33d4e74bff32646747"
+    );
+    let plan = records[1].plan.clone();
+    drop(records);
+    // Persisted digest from the unsorted request before canonicalisation (red regression).
+    let legacy_digest =
+        Digest::new("sha256:50157ab10fa843f7224c0b7ecaca9f4cd3496587fb2f3c08a15723dbdb194baa")
+            .unwrap();
+    let legacy = store
+        .save(&req.source_volume_id, &legacy_digest, &plan, deadline())
+        .unwrap();
+    let detail = engine
+        .proposals_get(
+            &store,
+            &ProposalRefRequest {
+                proposal_id: legacy.proposal_id.unwrap(),
+            },
+        )
+        .unwrap();
+    assert_eq!(detail.inputs_digest, legacy_digest);
+}
+
+#[test]
+fn placement_digest_keeps_exclusions_and_legacy_saved_details_readable() {
+    let engine = engine();
+    let mut req = request();
+    req.save = true;
+    let mut input = input();
+    let store = MemoryStore::default();
+    let built = build_scenario(&input, &req, deadline()).unwrap();
+    // Before #350, the candidate projection had no excluded_volumes member.
+    let mut legacy_candidates = serde_json::to_value(&built.candidates).unwrap();
+    legacy_candidates
+        .as_object_mut()
+        .unwrap()
+        .remove("excluded_volumes");
+    let legacy_digest = Digest::new(format!(
+        "sha256:{:x}",
+        Sha256::digest(
+            serde_json::to_vec(&json!({
+                "scenario": built.scenario, "request": req, "candidates": legacy_candidates,
+                "pre_rejected": built.pre_rejected, "excluded_volumes": built.excluded_volumes,
+                "assumptions": built.assumptions
+            }))
+            .unwrap()
+        )
+    ))
+    .unwrap();
+    let plan = engine
+        .placement_simulate(&input, &req, deadline(), Some(&store))
+        .unwrap();
+    let current_digest = store.0.lock().unwrap()[0].inputs_digest.clone();
+    assert_eq!(
+        current_digest.as_str(),
+        "sha256:8a7ca0c9f9c0b87497d0c7d77862b1156a6e1087adf256cde6e9bee9c9dde0a5"
+    );
+    let legacy = store
+        .save(&req.source_volume_id, &legacy_digest, &plan, deadline())
+        .unwrap();
+    let detail = engine
+        .proposals_get(
+            &store,
+            &ProposalRefRequest {
+                proposal_id: legacy.proposal_id.clone().unwrap(),
+            },
+        )
+        .unwrap();
+    assert_eq!(detail.inputs_digest, legacy_digest);
+    assert_eq!(detail.plan, legacy);
+    assert_ne!(current_digest, legacy_digest);
+    assert_eq!(json!(detail.plan.filesystem_changed), json!(false));
+
+    let mut offline = volume("vo_offline", 1000, 500, 2);
+    offline.volume.online = false;
+    input.snapshot.volumes.push(offline);
+    engine
+        .placement_simulate(&input, &req, deadline(), Some(&store))
+        .unwrap();
+    let records = store.0.lock().unwrap();
+    assert_ne!(records[2].inputs_digest, current_digest);
+    assert_eq!(
+        records[2].plan.excluded_volumes[0].reason,
+        PlacementPlanExcludedVolumeReason::Offline
+    );
+}
+
+#[test]
 fn placement_engine_model_candidates_and_saved_proposals_roundtrip() {
     let engine = engine();
     let input = input();
