@@ -224,6 +224,68 @@ fn duplicate_grant_returns_evidence(class: DatasetClass) {
     assert_eq!(err.to_body().message.as_str(), "grant_not_active");
 }
 
+#[cfg(test)]
+thread_local! {
+    pub(super) static DUPLICATE_READ_DONE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Retro review (w12): a durable revoke that commits while duplicate content reads run, before
+/// the in-memory fence, must still refuse the finished report (the worker and caller paths).
+#[cfg(windows)]
+#[test]
+fn durable_revoke_during_a_duplicate_read_refuses_the_report() {
+    use loomward_windows::{
+        duplicate_reader::Entry,
+        enumerate::{DirSource, NativeSource},
+        identity,
+    };
+    if skip_elevated() {
+        return;
+    }
+    for worker in [false, true] {
+        let temp = canonical_tempdir();
+        for name in ["a", "b"] {
+            std::fs::write(temp.path().join(name), b"same").unwrap();
+        }
+        let expected = NativeSource::default().open_root(temp.path()).unwrap().1;
+        let mut grant = GrantedRoot::new(
+            RootId::new("rt_revoke_during_read").unwrap(),
+            temp.path().to_owned(),
+            DatasetClass::Synthetic,
+            expected,
+        );
+        grant.key = RootKey::Grant(1);
+        let entries = ["a", "b"].map(|name| Entry {
+            relative: name.into(),
+            expected: identity::observe(&temp.path().join(name)).unwrap(),
+        });
+        let state = canonical_tempdir();
+        let conn = duplicate_grant_store(state.path(), &grant);
+        let engine = Engine::open(EngineConfig::new(
+            state.path().to_owned(),
+            DatasetClass::Synthetic,
+        ))
+        .unwrap();
+        DUPLICATE_READ_DONE_HOOK.with_borrow_mut(|hook| {
+            *hook = Some(Box::new(move || {
+                conn.execute("UPDATE root_grant SET state='revoked'", [])
+                    .unwrap();
+            }))
+        });
+        let result = engine.inspect_duplicates_cancel(
+            &grant,
+            &entries,
+            duplicate_budget(),
+            worker.then(|| Arc::new(AtomicBool::new(false))),
+        );
+        assert_eq!(
+            result.unwrap_err().to_body().message.as_str(),
+            "grant_not_active",
+            "worker={worker}: a revoked grant must not return content evidence"
+        );
+    }
+}
+
 pub(super) fn duplicate_budget() -> loomward_windows::duplicate_reader::Budget {
     loomward_windows::duplicate_reader::Budget {
         bytes: 100,
