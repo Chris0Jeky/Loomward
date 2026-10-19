@@ -6,6 +6,7 @@ import type { PlacementSimulateRequest } from '../../src/lib/contracts.gen';
 const now = () => new Date('2026-10-01T00:00:00Z');
 const client = () => new Client(createMockTransport({ now }));
 const GiB = 2 ** 30;
+const observationExclusions = ['offline', 'capacity_unknown', 'no_active_grant', 'physics_unusable'].map(reason => ({ volume_id: `vo_${reason}`, reason }));
 const sim = (c: Client, o: Partial<PlacementSimulateRequest> = {}) =>
   c.call('placement.simulate', {
     source_volume_id: 'vo_c', target_free_bytes: String(Math.round(380 * GiB)), max_transfer_bytes: String(400 * GiB), heat_policy: 'unknown_is_ineligible',
@@ -28,7 +29,7 @@ describe('mock tiers and placement', () => {
     expect(detail.plan.filesystem_changed).toBe(false);
     await expect(c.call('proposals.get', { proposal_id: 'pp_missing' })).rejects.toMatchObject({ code: 'not_found' });
   });
-  it('models three real-shaped volumes plus one with an unknown tier', async () => {
+  it('models healthy volumes and keeps unknown or unusable observations visible', async () => {
     const { result } = await client().call('tiers.model', {});
     const by = Object.fromEntries(result.volumes.map((v) => [v.display_name, v]));
     expect(by['C:']!.tier.basis).toBe('device_hint');
@@ -41,11 +42,11 @@ describe('mock tiers and placement', () => {
   it('discloses the same excluded targets in candidates and simulations, until their tier is declared', async () => {
     const c = client();
     const candidates = () => c.call('placement.candidates', { source_volume_id: 'vo_c', basis: 'largest_dirs', max_groups: 50, min_bytes: '0' });
-    expect((await candidates()).result.excluded_volumes).toEqual([{ volume_id: 'vo_f', reason: 'tier_unknown' }]);
+    expect((await candidates()).result.excluded_volumes).toEqual([{ volume_id: 'vo_f', reason: 'tier_unknown' }, ...observationExclusions]);
     expect((await candidates()).result.excluded_volumes).toEqual((await sim(c)).result.excluded_volumes);
     await c.call('volumes.declare_tier', { volume_id: 'vo_f', tier: 3 });
-    expect((await candidates()).result.excluded_volumes).toEqual([]);
-    expect((await sim(c)).result.excluded_volumes).toEqual([]);
+    expect((await candidates()).result.excluded_volumes).toEqual(observationExclusions);
+    expect((await sim(c)).result.excluded_volumes).toEqual(observationExclusions);
   });
 
   it('never makes a simulation executable or a filesystem change', async () => {
@@ -69,7 +70,7 @@ describe('mock tiers and placement', () => {
     const accounted = [...p.rejected, ...p.pre_rejected].map((x) => x.group_id).sort();
     expect(accounted).toEqual(cand.groups.map((g) => g.group_id).sort());
     expect(p.pre_rejected.map((x) => x.reason).sort()).toEqual(['group_coverage_incomplete', 'relief_unknown', 'shares_objects_with_other_group']);
-    expect(p.excluded_volumes).toEqual([{ volume_id: 'vo_f', reason: 'tier_unknown' }]);
+    expect(p.excluded_volumes).toEqual([{ volume_id: 'vo_f', reason: 'tier_unknown' }, ...observationExclusions]);
   });
 
   it('plans from an owner heat assumption and records it as an assumption', async () => {
@@ -125,6 +126,60 @@ describe('mock tiers and placement', () => {
     expect(replies[0]!.result).toEqual(replies[1]!.result);
     expect(replies[0]!.meta.state_rev).toBe(replies[1]!.meta.state_rev);
     expect((await c.call('proposals.list', {})).result.proposals).toHaveLength(1);
+  });
+
+  it('deduplicates overrides by group ID regardless of their array order', async () => {
+    const c = client();
+    const overrides = [{ group_id: 'cg_models', heat: 0.1 }, { group_id: 'cg_render', heat: 0.1 }];
+    const first = await sim(c, { save: true, overrides });
+    const replay = await sim(c, { save: true, overrides: [...overrides].reverse() });
+    expect(replay.result).toEqual(first.result);
+    expect(replay.meta.state_rev).toBe(first.meta.state_rev);
+  });
+
+  it('digests effective mtime heat, with the engine age buckets and override precedence', async () => {
+    let clock = new Date('2026-10-01T00:00:00Z');
+    const c = new Client(createMockTransport({ now: () => clock }));
+    const options = { save: true, heat_policy: 'mtime_proxy_whatif', target_free_bytes: String(500 * GiB) } as const;
+    const first = await sim(c, options); // render cache is <7 days old: heat 1.0
+    clock = new Date('2026-10-07T00:00:00Z'); // >=7 days: heat 0.5
+    const warm = await sim(c, options);
+    expect(warm.result.proposal_id).not.toBe(first.result.proposal_id);
+    clock = new Date('2026-10-08T00:00:00Z'); // same effective inputs
+    expect((await sim(c, options)).result).toEqual(warm.result);
+    clock = new Date('2026-11-01T00:00:00Z'); // >=30 days: heat 0.1
+    const cold = await sim(c, options);
+    expect(cold.result.proposal_id).not.toBe(warm.result.proposal_id);
+    expect(cold.result.proposals.some(p => p.group_id === 'cg_render')).toBe(true);
+    expect(cold.result.filesystem_changed).toBe(false);
+    const override = { ...options, overrides: [{ group_id: 'cg_render', heat: 0.1 }] };
+    const assumed = await sim(c, override);
+    clock = new Date('2026-12-01T00:00:00Z');
+    expect((await sim(c, override)).result).toEqual(assumed.result);
+  });
+
+  it('discloses every excluded-volume reason and never uses those volumes as targets or sources', async () => {
+    const c = client();
+    const plan = (await sim(c, { overrides: [{ group_id: 'cg_models', heat: 0.1 }] })).result;
+    expect(plan.excluded_volumes.map(v => v.reason).sort()).toEqual([
+      'capacity_unknown', 'no_active_grant', 'offline', 'physics_unusable', 'tier_unknown',
+    ]);
+    const model = (await c.call('tiers.model', {})).result;
+    for (const excluded of plan.excluded_volumes) {
+      expect(model.volumes.find(v => v.volume_id === excluded.volume_id)?.source_eligible).toBe(false);
+      expect(plan.proposals.some(p => p.target_id === excluded.volume_id)).toBe(false);
+      await expect(sim(c, { source_volume_id: excluded.volume_id })).rejects.toMatchObject({ code: 'invalid_request' });
+    }
+  });
+
+  it('uses movement-history overrides as planner inputs and save identity', async () => {
+    const c = client();
+    const blocked = await sim(c, { save: true, overrides: [{ group_id: 'cg_staging', heat: 0.1, days_since_move: 0 }] });
+    expect(blocked.result.rejected).toContainEqual({ group_id: 'cg_staging', reason: 'cooldown_or_history_unknown' });
+    const allowed = await sim(c, { save: true, overrides: [{ group_id: 'cg_staging', heat: 0.1, days_since_move: 30 }] });
+    expect(allowed.result.proposal_id).not.toBe(blocked.result.proposal_id);
+    expect(allowed.result.proposals.map(p => p.group_id)).toContain('cg_staging');
+    expect(allowed.result.filesystem_changed).toBe(false);
   });
 
   it('refuses to save inputs changed while their digest is being computed', async () => {
