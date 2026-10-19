@@ -667,7 +667,7 @@ export interface IdentityObservation {
 /** Scores are uncalibrated relative scores, not probabilities (invariant 4). */
 export interface Suggestion {
   node_id: NodeId;
-  model_id: ModelId;
+  model_id: ModelId | null;
   ranked: {
     label: Label;
     score: Fraction;
@@ -1360,7 +1360,7 @@ export interface SystemSample {
     load_fraction: NullableFraction;
   };
   cpu: {
-    logical_cpus: Count;
+    logical_cpus: NullableCount;
     busy_fraction: NullableFraction;
   };
 }

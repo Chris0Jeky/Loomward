@@ -1,5 +1,5 @@
 import type { EventEnvelope, Job, JobResult, ScanProgressEvent } from '../contracts.gen';
-import { applyJob, applyProgress, announcement, isActive, lostJob, refusalText, viewOf, type Book, type ScanView } from '../scan/model';
+import { ALREADY_RUNNING, applyJob, applyProgress, announcement, isActive, lostJob, refusalText, viewOf, type Book, type ScanView } from '../scan/model';
 import { LoomwardError, TransportError } from '../transport/client';
 import { session } from './session.svelte';
 
@@ -155,7 +155,9 @@ class Scans {
         }
       }
       if (!current()) return;
+      if (busyJob) this.busyJobs[rootId] = busyJob;
       this.setProblem(rootId, refusalText(e.code, e.detail, e.message));
+      this.dropStaleBusy(rootId);
     } finally {
       if (generation === this.generation) this.pending = { ...this.pending, [rootId]: false };
     }
@@ -209,6 +211,15 @@ class Scans {
     if (this.problems[rootId]?.startsWith("Could not confirm this scan's state:")) this.setProblem(rootId, null);
   }
 
+  /** "Already running" is only true while that scan runs; it must not outlive the job it was about. */
+  /** Judged by the busy job itself: an older finished job in the book (adopt failed) must not hide it. */
+  private dropStaleBusy(rootId: string): void {
+    const job = this.book[rootId];
+    if (this.problems[rootId] === ALREADY_RUNNING && job && job.job_id === this.busyJobs[rootId] && !viewOf(job, 0).active)
+      this.setProblem(rootId, null);
+  }
+  private busyJobs: Record<string, string> = {};
+
   private setProblem(rootId: string, text: string | null): void {
     const next = { ...this.problems };
     if (text === null) delete next[rootId];
@@ -228,6 +239,7 @@ class Scans {
     for (const [rootId, job] of Object.entries(next)) {
       const was = before[rootId] ? viewOf(before[rootId], 0) : null;
       const now = viewOf(job, 0);
+      if (!now.active) this.dropStaleBusy(rootId);
       if (was?.activity === now.activity && before[rootId]?.job_id === job.job_id) continue;
       if (was && !now.active && (was.active || before[rootId]?.job_id !== job.job_id)) this.settled++;
       if (was || now.active) this.change = { rootId, text: announcement(now), n: ++this.n };
