@@ -96,7 +96,7 @@
     if (working || forget.unknown) return;
     opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     if (p.kind === 'forget') { revocation = null; forget.ask(p); }
-    else { forget.cancel(); revocation = p; forget.done = ''; forget.problem = ''; }
+    else { forget.cancel(); revocation = p; forget.done = ''; forget.problem = ''; forget.stopped = false; }
     purge = false;
     revoked = '';
     await tick();
@@ -206,7 +206,7 @@
 <p class="lede">What Loomward may read, and how it is doing. Grants come from the desktop folder picker or the server's command line. This page can add a folder where a picker exists, and can end a grant.</p>
 <!-- live regions stay in the page and only their text changes: one inserted already filled is often not announced -->
 <p class="bad live" class:has={!!error} role="alert">{error}</p>
-<p class="ok live" class:has={!!done} role="status" tabindex="-1" bind:this={doneEl}>{done}</p>
+<p class="live" class:ok={!forget.stopped} class:has={!!done} role="status" tabindex="-1" bind:this={doneEl}>{done}</p>
 <p class="live" class:has={pending?.kind === 'forget' && (working || forget.unknown)} role="status">{pending?.kind === 'forget' ? forget.unknown ? 'Forget outcome pending. It may already have completed. Check status to retrieve the result.' : working ? 'Forgetting. Large roots can take a while; no scanned file is touched.' : '' : ''}</p>
 
 {#if pending}

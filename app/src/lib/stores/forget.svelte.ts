@@ -11,6 +11,8 @@ class Forget {
   working = $state(false);
   unknown = $state(false);
   done = $state('');
+  /** `done` holds the stopped-waiting notice: an unknown outcome, not a success (invariant 4). */
+  stopped = $state(false);
   problem = $state('');
   private flight: Flight | null = null;
 
@@ -28,7 +30,7 @@ class Forget {
     this.resume();
     if (this.working || this.unknown) return;
     this.pending = { ...pending };
-    this.done = ''; this.problem = '';
+    this.done = ''; this.problem = ''; this.stopped = false;
   }
 
   cancel(): void {
@@ -40,6 +42,7 @@ class Forget {
     this.pending = null;
     this.unknown = false;
     this.problem = '';
+    this.stopped = true;
     this.done = 'Stopped waiting. The forget outcome is unknown; it may already have completed. This does not cancel the request. No scanned file was touched.';
   }
 
@@ -51,7 +54,7 @@ class Forget {
     this.flight = f;
     const current = () => { this.resume(); return this.flight === f; };
     this.working = true;
-    this.problem = ''; this.done = '';
+    this.problem = ''; this.done = ''; this.stopped = false;
     p.requestId ??= c.nextRequestId();
     let checkingRecord = false;
     try {

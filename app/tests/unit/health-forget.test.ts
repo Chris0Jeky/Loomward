@@ -150,10 +150,13 @@ it('offers Stop waiting when the forgotten record is outside the bounded grants 
   const stopped = render(View).body;
   expect(stopped).toContain('The forget outcome is unknown');
   expect(stopped).toContain('This does not cancel the request');
+  // an unknown outcome is not styled as a success (invariant 4)
+  expect(stopped).toMatch(/class="(?![^"]*\bok\b)[^"]*"[^>]*>Stopped waiting/);
   expect(stopped).not.toContain('Check status');
   expect(forget.pending).toBeNull();
   forget.ask({ ...request, id: 'rt_other' });
   expect(forget.pending?.id).toBe('rt_other');
+  expect(forget.stopped).toBe(false);
 });
 
 it('keeps the outcome unknown if the fallback grants read fails', async () => {
