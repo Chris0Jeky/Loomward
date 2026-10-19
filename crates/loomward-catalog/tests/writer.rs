@@ -2821,7 +2821,7 @@ fn multilink_ignores_files_below_excluded_or_absent_ancestors() {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!((flag, sums.multi_link_entries), (0, 0));
+        assert_eq!((flag, sums.multi_link_entries), (0, Some(0)));
         assert_eq!(
             (sums.unique_objects, sums.unique_allocated_bytes),
             (Some(1), Some("100".into()))
@@ -2860,7 +2860,7 @@ fn multilink_ignores_files_below_excluded_or_absent_ancestors() {
                 .subtree
                 .unwrap()
                 .multi_link_entries,
-            3
+            Some(3)
         );
     }
 }
@@ -3066,10 +3066,8 @@ fn refresh_root_adopts_legacy_null_guid_once_without_replacing_grant() {
         };
         let before = revision();
         observation.volume_guid = Some("0123456789abcdef0123456789abcdef".into());
+        // #669: a verified root at another path is fresh consent, never a refresh.
         for field in ["volume", "id", "guid", "path"] {
-            if field == "path" && filesystem == "NTFS" {
-                continue;
-            }
             let mut wrong = observation.clone();
             match field {
                 "volume" => wrong.volume_key = "different-volume".into(),

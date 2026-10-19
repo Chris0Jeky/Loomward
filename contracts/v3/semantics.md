@@ -121,7 +121,9 @@ events are excluded and counted in `learning.status.unresolved_human_events`.
 
 `learning.refit` produces a persisted **candidate**, without promotion (LW-027). Status and queue
 use the latest candidate for advice only; `calibrated` and `autonomy_allowed` remain false. Scores
-are **relative scores, not probabilities**. New fits record the highest human-feedback row ID observed at commit and use that
+are **relative scores, not probabilities**. When no current fitted candidate exists, status,
+queue and every queue suggestion return `model_id: null`; the cold student abstains with
+`no_training_examples`. New fits record the highest human-feedback row ID observed at commit and use that
 monotonic counter for freshness, independent of the wall clock. Older stored candidates retain
 their timestamp guard until explicitly refitted; no feature history is removed by this change.
 Queue order is descending review priority with a node
@@ -403,6 +405,11 @@ process enumeration time, including in newer `TelemetrySample`s; process list an
 timestamps refer to that enumeration too. Rates use the interval between process observations.
 An engine thread count not observed on the current tick is null. Requests for channels outside
 the sampled lease union return `partial_coverage` (not sampled), distinct from hardware unavailable.
+
+A requested, sampled system section remains present even when CPU capacity is unknown.
+`system.cpu.logical_cpus` is required but nullable: a failed or zero native count maps to null,
+while known memory and CPU readings remain visible. Numeric counts keep their existing encoding;
+readers built against the earlier non-nullable v3 draft must accept null before consuming these samples.
 
 `TelemetrySample.trends` (LW-051) is read-only and projects the same requested channels.
 `trends` is a required field of every v3 `TelemetrySample`: a v3 reader may rely on it, and a

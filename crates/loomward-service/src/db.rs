@@ -232,11 +232,26 @@ pub fn active_grant(
     volume_guid: &str,
 ) -> Sql<Option<(i64, String)>> {
     conn.query_row(
-        "SELECT id,identity_mode FROM st.root_grant WHERE volume_key=?1 AND root_file_id=?2 AND state='active' AND (identity_mode='verified' OR display_path=?3) AND (volume_guid=?4 OR volume_guid IS NULL) ORDER BY id DESC LIMIT 1",
+        "SELECT id,identity_mode FROM st.root_grant WHERE volume_key=?1 AND root_file_id=?2 AND state='active' AND display_path=?3 AND (volume_guid=?4 OR volume_guid IS NULL) ORDER BY id DESC LIMIT 1",
         params![volume_key, file_id, display_path, volume_guid],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )
     .optional()
+}
+
+/// Verified active grants whose folder now answers at another path: renamed or moved (#669).
+pub fn renamed_grants(
+    conn: &Connection,
+    volume_key: &str,
+    file_id: &[u8],
+    display_path: &str,
+    volume_guid: &str,
+) -> Sql<Vec<i64>> {
+    conn.prepare_cached(
+        "SELECT id FROM st.root_grant WHERE volume_key=?1 AND root_file_id=?2 AND state='active' AND identity_mode='verified' AND display_path<>?3 AND (volume_guid=?4 OR volume_guid IS NULL)",
+    )?
+    .query_map(params![volume_key, file_id, display_path, volume_guid], |r| r.get(0))?
+    .collect()
 }
 
 #[derive(Debug, Clone)]

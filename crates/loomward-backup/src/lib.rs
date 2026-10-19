@@ -101,6 +101,8 @@ pub enum Refusal {
 pub enum ReceiptError {
     InputTooLarge,
     InvalidJson,
+    /// UTF-16 with a byte-order mark, as Windows PowerShell 5.1 `>` redirection writes (#349).
+    Utf16Bom,
     InvalidReceipt,
     InvalidSource,
 }
@@ -469,6 +471,10 @@ fn validate_source(source: &BackupSource) -> Result<(), ReceiptError> {
 fn parse_strict(raw: &[u8]) -> Result<Value, ReceiptError> {
     if raw.len() > MAX_INPUT_BYTES {
         return Err(ReceiptError::InputTooLarge);
+    }
+    // Only the byte-order mark is inspected; nothing is transcoded.
+    if raw.starts_with(&[0xff, 0xfe]) || raw.starts_with(&[0xfe, 0xff]) {
+        return Err(ReceiptError::Utf16Bom);
     }
     let mut deserializer = serde_json::Deserializer::from_slice(raw);
     let Strict(value) =
