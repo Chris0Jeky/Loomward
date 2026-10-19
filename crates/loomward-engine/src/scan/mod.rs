@@ -283,7 +283,8 @@ impl Engine {
         budget: loomward_windows::duplicate_reader::Budget,
         job_cancel: Option<Arc<AtomicBool>>,
     ) -> EngineResult<loomward_windows::duplicate_reader::Report> {
-        let root_cancel = if job_cancel.is_some() {
+        let job_cancel_was_some = job_cancel.is_some();
+        let root_cancel = if job_cancel_was_some {
             self.duplicate_read_admission_worker(root)?
         } else {
             self.duplicate_read_admission(root)?
@@ -299,6 +300,16 @@ impl Engine {
         .map_err(|reason| EngineError::PermissionDenied {
             message: reason.as_str().into(),
         })?;
+        #[cfg(test)]
+        if let Some(hook) = tests::DUPLICATE_READ_DONE_HOOK.with_borrow_mut(Option::take) {
+            hook();
+        }
+        // A durable revoke can commit while the read ran, ahead of its in-memory fence.
+        if job_cancel_was_some {
+            self.duplicate_read_admission_worker(root)?;
+        } else {
+            self.duplicate_read_admission(root)?;
+        }
         // Refuse evidence if revocation is observed at this final gate.
         let gate = self.scan_root_gate(root.key());
         let revoked = gate

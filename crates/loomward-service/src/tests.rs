@@ -58,6 +58,9 @@ pub(crate) struct Hooks {
     /// #219: the filesystem name grant-time probes observe instead of the volume's.
     #[cfg_attr(not(windows), allow(dead_code))]
     pub filesystem: Mutex<Option<&'static str>>,
+    /// The error the old-path probe of a renamed unverified grant meets instead of opening it.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub probe_error: Mutex<Option<loomward_windows::enumerate::SourceError>>,
     /// #519 review: a personal space read for one volume key answers this instead of the OS.
     pub space: Mutex<Vec<(String, SpaceFake)>>,
     /// #530: the personal space read budget a test sets instead of the production 500 ms.
@@ -6088,6 +6091,138 @@ fn regranting_a_renamed_root_mints_a_grant_for_its_new_path() {
         svc.inner.grant(&moved, "cli_flag", false).unwrap(),
         (root, false)
     );
+}
+
+/// Retro review (w12): an identity-unverified grant whose folder was renamed ends
+/// `identity_changed` too, once its old path no longer answers; the weak ID alone retires nothing.
+#[cfg(windows)]
+#[test]
+fn regranting_a_renamed_unverified_root_retires_the_grant_naming_the_old_path() {
+    if loomward_windows::enumerate::running_elevated() {
+        return;
+    }
+    let tmp = temp_root();
+    let folder = tmp.path().join("fat-folder");
+    std::fs::create_dir(&folder).unwrap();
+    let folder = folder.canonicalize().unwrap();
+    let svc = open(&tmp.path().join("state"), DatasetClass::Personal);
+    *svc.inner.hooks.filesystem.lock().unwrap() = Some("exFAT");
+    let (old, _) = svc.inner.grant(&folder, "cli_flag", true).unwrap();
+    let moved = tmp.path().join("fat-folder-renamed");
+    std::fs::rename(&folder, &moved).unwrap();
+    let moved = moved.canonicalize().unwrap();
+    let (root, fresh) = svc.inner.grant(&moved, "cli_flag", true).unwrap();
+    assert!(fresh && root != old);
+    let states: Vec<(String, String)> = svc
+        .inner
+        .db()
+        .prepare("SELECT identity_mode,state FROM st.root_grant ORDER BY id")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        states,
+        [
+            ("unverified".into(), "identity_changed".into()),
+            ("unverified".into(), "active".into())
+        ],
+        "one active grant per native folder"
+    );
+}
+
+/// Renames an unverified grant's folder (optionally recreating another folder at the old path),
+/// re-grants it at the new path with the probe error injected, and returns the two grants' states.
+#[cfg(windows)]
+fn regrant_renamed_unverified(
+    probe_error: Option<loomward_windows::enumerate::SourceError>,
+    replace_old: bool,
+) -> Option<(String, String)> {
+    if loomward_windows::enumerate::running_elevated() {
+        return None;
+    }
+    let tmp = temp_root();
+    let folder = tmp.path().join("fat-folder");
+    std::fs::create_dir(&folder).unwrap();
+    let folder = folder.canonicalize().unwrap();
+    let svc = open(&tmp.path().join("state"), DatasetClass::Personal);
+    *svc.inner.hooks.filesystem.lock().unwrap() = Some("exFAT");
+    svc.inner.grant(&folder, "cli_flag", true).unwrap();
+    let moved = tmp.path().join("fat-folder-renamed");
+    std::fs::rename(&folder, &moved).unwrap();
+    if replace_old {
+        std::fs::create_dir(&folder).unwrap();
+    }
+    let moved = moved.canonicalize().unwrap();
+    *svc.inner.hooks.probe_error.lock().unwrap() = probe_error;
+    svc.inner.grant(&moved, "cli_flag", true).unwrap();
+    let states: Vec<String> = svc
+        .inner
+        .db()
+        .prepare("SELECT state FROM st.root_grant ORDER BY id")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    Some((states[0].clone(), states[1].clone()))
+}
+
+/// An old path whose probe fails for any reason but "not found" proves nothing about the folder:
+/// access denied, a not-ready volume or a cancelled open must keep the healthy grant active.
+#[cfg(windows)]
+#[test]
+fn an_inconclusive_old_path_probe_never_retires_an_unverified_grant() {
+    use loomward_windows::enumerate::SourceError;
+    for error in [
+        SourceError::AccessDenied,
+        SourceError::Io(21),
+        SourceError::Io(995),
+        SourceError::Refused,
+    ] {
+        if let Some(states) = regrant_renamed_unverified(Some(error), false) {
+            assert_eq!(states, ("active".into(), "active".into()), "{error:?}");
+        }
+    }
+}
+
+/// An old path that now answers with another folder's identity is definitely not the same folder.
+#[cfg(windows)]
+#[test]
+fn an_old_path_answering_another_identity_retires_the_unverified_grant() {
+    if let Some(states) = regrant_renamed_unverified(None, true) {
+        assert_eq!(states, ("identity_changed".into(), "active".into()));
+    }
+}
+
+/// An old path that still opens the same folder (here another spelling of it) is no rename.
+#[cfg(windows)]
+#[test]
+fn an_old_path_still_answering_the_same_identity_keeps_the_unverified_grant() {
+    if loomward_windows::enumerate::running_elevated() {
+        return;
+    }
+    let tmp = temp_root();
+    let folder = tmp.path().join("fat-folder");
+    std::fs::create_dir(&folder).unwrap();
+    let folder = folder.canonicalize().unwrap();
+    let svc = open(&tmp.path().join("state"), DatasetClass::Personal);
+    *svc.inner.hooks.filesystem.lock().unwrap() = Some("exFAT");
+    svc.inner.grant(&folder, "cli_flag", true).unwrap();
+    let other_spelling = std::path::PathBuf::from(folder.to_string_lossy().to_uppercase());
+    let (_, fresh) = svc.inner.grant(&other_spelling, "cli_flag", true).unwrap();
+    assert!(fresh, "another spelling is another path");
+    let states: Vec<String> = svc
+        .inner
+        .db()
+        .prepare("SELECT state FROM st.root_grant ORDER BY id")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(states, ["active", "active"]);
 }
 
 /// #378: duplicate inspection that finds the root replaced records `identity_changed` and emits
