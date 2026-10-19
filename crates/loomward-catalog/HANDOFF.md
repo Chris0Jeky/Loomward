@@ -2041,3 +2041,52 @@ work-budget regression, three interleaved baseline/candidate runs of the through
 and 1M memory examples, exact source identity and limits are in
 [the scoped lane evidence](evidence/endrun-646.md). Shared-host timings do not
 establish quiet-host throughput parity or the 250k through-EndRun P4 target.
+
+## First-scan ingest: pipelined service sink (#148, 2026-10-19)
+
+Measured first: on a synthetic tree shaped like the 18 October real folder (126,629 files in
+15,976 directories), the product scan spent its time in the catalogue writer, not in
+enumeration (0.1 s of OS queries). The writer ran 32,090 transactions, two per directory,
+because the service sink waited for every `StageChunk` and `ListingDone` receipt. COMMIT,
+the per-transaction statements and the ancestor dirty walk repeated per directory.
+
+- **Service sink** (`loomward-service/src/sink.rs`): listing steps are sent without
+  waiting. Receipts settle in order where something depends on them: a child lookup waits
+  only through its parent's publication, and the engine's relist barrier and `EndRun` wait
+  for all of them. A deferred obsolete step names its directory for the relist, as a waited
+  refusal did. Any other refusal still stops the scan, and the run is not reported complete.
+  COMMIT-before-receipt, fencing and the byte quota are unchanged. In-flight payload is
+  bounded by the writer queue quota (`QUEUE_BYTES`); unsettled receipts are capped at 256.
+- **Engine writer thread** (`scan/pipeline.rs`): before a child prepare blocks, the other
+  workers' queued messages are forwarded first, so they join the same transaction. Nothing
+  overtakes a barrier or the stop. `ScanSink::settle` (default no-op) is called at the barrier.
+- **Writer** (`writer.rs`): the per-listing scratch DDL and the hot per-command and
+  per-listing statements come from the statement cache. A listing with one payload skips
+  `listing_names`, since send-time validation already rejects repeated names inside a payload.
+
+Interleaved release runs on the shared host (`LOOMWARD_SCAN_PROFILE=1`, warm cache):
+
+| Workload | Metric | main `b0927794` | branch |
+|---|---|---:|---:|
+| Real-shaped lab, 3 pairs | elapsed s, median [range] | 53.7 [50.4-103.5] | 16.0 [15.8-16.2] |
+| | entries/s, median | 2,654 | 8,941 |
+| | transactions | 32,090 | 2,112-2,172 |
+| | writer COMMIT s, median | 10.8 | 3.2 |
+| | process CPU s, median | 42.4 | 18.5 |
+| | peak working set MiB | 152-162 | 158-169 |
+| 100k lab (1,000 dirs), 2 pairs | elapsed s | 8.7 / 6.3 | 4.0 / 3.3 |
+| | transactions | 2,008 | 17 / 15 |
+| P4 bench 1M, 2 pairs | process CPU s | 43.9 / 34.9 | 38.6 / 38.2 |
+| | peak working set MiB | 326.8 / 326.0 | 325.8 / 326.2 |
+| `memory_bounds listing 1000000` | peak working set MiB | 355.2 | 358.4 |
+
+The P4 bench has 1,001 listings, so this change is not expected to move it. Its CPU time is
+unchanged within noise. Its wall times (through-EndRun 9.5k/12.1k against 22.9k/20.9k
+rows/s) followed host load, so no P4 gain is claimed. P4 stays far from 250k. The real folder
+was not rescanned in this lane.
+
+Pinned by `a_listing_chunk_and_its_publication_share_one_transaction` (consume returns while
+the writer is held; one transaction commits both steps) and
+`a_deferred_refusal_settles_as_a_relist_and_never_completes`. The N1 test now settles before
+it reads committed rows. Three mutations were each killed by those tests: swallowing deferred
+refusals, a child lookup that does not wait, and skipping the name guard for multi-chunk listings.
