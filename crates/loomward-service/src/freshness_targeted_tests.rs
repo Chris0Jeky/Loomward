@@ -102,6 +102,42 @@ fn refresh_with(svc: &crate::Service, hints: &[&str], overflow: bool) -> (Payloa
     (result, mode)
 }
 
+/// The catalogue row of a root-relative directory (`/`-separated; empty for the root).
+fn dir_id(lab: &Lab, path: &str) -> u64 {
+    let parts: Vec<Vec<u16>> = path
+        .split('/')
+        .filter(|p| !p.is_empty())
+        .map(|p| p.encode_utf16().collect())
+        .collect();
+    resolve(&lab.svc.inner, 1, &parts).unwrap_or_else(|| panic!("no row for {path}"))
+}
+
+/// The engine call the tracker makes for resolved hints, without the live watcher's own hints.
+fn direct(lab: &Lab, dirs: Vec<u64>) -> Payload {
+    let inner = &lab.svc.inner;
+    let row = db::roots(&inner.db(), Some(1)).unwrap().remove(0);
+    let grant = granted(inner, &row).unwrap().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let job = loop {
+        match inner.engine.scan_refresh_scopes(&grant, dirs.clone()) {
+            Ok(job) => break job,
+            // Admission can answer Busy while the previous job releases its permits.
+            Err(loomward_engine::EngineError::Busy { .. }) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(20))
+            }
+            Err(e) => panic!("{e:?}"),
+        }
+    };
+    let job = settle(&lab.svc, job.job_id.as_str());
+    assert_eq!(job["state"], "completed", "{job:?}");
+    job
+}
+
+/// Evidence in `--nocapture` output that the fixture ran rather than skipped.
+fn ran(test: &str) {
+    eprintln!("#782 lab ran: {test}");
+}
+
 fn examined(job: &Payload) -> u64 {
     job["progress"]["examined"].as_u64().unwrap()
 }
@@ -166,6 +202,7 @@ fn f3_issue782_one_file_change_examines_only_its_directory() {
         "a targeted run never claims the root"
     );
     assert_matches_walk(&lab, "one-file change");
+    ran("one_file_change_examines_only_its_directory");
 }
 
 #[test]
@@ -218,16 +255,11 @@ fn f3_issue782_targeted_refresh_matches_an_independent_walk() {
     std::fs::create_dir_all(p.join("b/new/n1/n2")).unwrap();
     std::fs::write(p.join("b/new/n1/n2/leaf.bin"), [4u8; 6]).unwrap();
     std::fs::write(p.join("b/new/top.bin"), [4u8; 7]).unwrap();
-    let inner = &lab.svc.inner;
-    let row = db::roots(&inner.db(), Some(1)).unwrap().remove(0);
-    let b = resolve(inner, 1, &["b".encode_utf16().collect()]).unwrap();
-    let grant = granted(inner, &row).unwrap().unwrap();
-    let job = inner.engine.scan_refresh_scopes(&grant, vec![b]).unwrap();
-    let job = settle(&lab.svc, job.job_id.as_str());
-    assert_eq!(job["state"], "completed", "{job:?}");
+    let job = direct(&lab, vec![dir_id(&lab, "b")]);
     // b: sub2, new; new: n1, top.bin; n1: n2; n2: leaf.bin (sub2 was already relisted).
     assert!(examined(&job) <= 6 + 4, "new subtree: {job:?}");
     assert_matches_walk(&lab, "new subtree");
+    ran("targeted_refresh_matches_an_independent_walk");
 }
 
 #[test]
@@ -247,6 +279,137 @@ fn f3_issue782_coverage_loss_still_takes_the_full_fallback() {
     assert_eq!(mode, "full");
     assert_eq!(examined(&job), total + 2, "{job:?}");
     assert_matches_walk(&lab, "full fallback");
+    ran("coverage_loss_still_takes_the_full_fallback");
+}
+
+/// Delete a hinted directory and recreate it under the same name (a new native ID). Its old ID
+/// cannot be reopened; the named parent's complete listing finds the new directory instead.
+#[test]
+fn f3_issue782_recreated_directory_is_relisted_through_its_named_parent() {
+    let Some(lab) = ready() else {
+        return;
+    };
+    let (a, deep) = (dir_id(&lab, "a"), dir_id(&lab, "a/deep"));
+    std::fs::remove_dir_all(lab.path.join("a/deep")).unwrap();
+    std::fs::create_dir(lab.path.join("a/deep")).unwrap();
+    std::fs::write(lab.path.join("a/deep/y.bin"), [8u8; 11]).unwrap();
+    let job = direct(&lab, vec![deep, a]);
+    // a: 1.bin, 2.bin, 3.bin, deep; the new deep: y.bin. Never the root walk.
+    assert_eq!(examined(&job), 5, "{job:?}");
+    assert_eq!(job["progress"]["failed"], 0, "{job:?}");
+    assert_matches_walk(&lab, "recreated directory");
+    let old: String = lab
+        .svc
+        .inner
+        .db()
+        .query_row(
+            "SELECT listing_state FROM main.dir WHERE id=?1",
+            [deep as i64],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        old, "absent_pending",
+        "the replaced row must not stay visible"
+    );
+    ran("recreated_directory_is_relisted_through_its_named_parent");
+}
+
+/// The same unreachable directory with no named parent to settle it: the run cannot be bounded
+/// and walks the whole root.
+#[test]
+fn f3_issue782_unreachable_target_without_named_parent_walks_the_whole_root() {
+    let Some(lab) = ready() else {
+        return;
+    };
+    let deep = dir_id(&lab, "a/deep");
+    std::fs::remove_dir_all(lab.path.join("a/deep")).unwrap();
+    std::fs::create_dir(lab.path.join("a/deep")).unwrap();
+    std::fs::write(lab.path.join("a/deep/y.bin"), [8u8; 11]).unwrap();
+    let job = direct(&lab, vec![deep]);
+    assert_eq!(examined(&job), walked(&lab.path).len() as u64, "{job:?}");
+    assert_eq!(job["coverage"], "partial", "{job:?}");
+    // Listings outside the named set publish upsert-only, so every walked entry is present
+    // (the replaced row may remain until a full refresh): nothing is lost or invented.
+    let rows = catalogued(&lab.svc);
+    for (path, size) in walked(&lab.path) {
+        assert_eq!(
+            rows.get(&path),
+            Some(&size),
+            "{path} missing after the fallback"
+        );
+    }
+    ran("unreachable_target_without_named_parent_walks_the_whole_root");
+}
+
+/// A hinted directory moved out of the granted root (same volume) still reopens by ID, but its
+/// listing cannot prove containment: nothing it holds may be published as inside the root.
+#[test]
+fn f3_issue782_directory_moved_out_of_the_root_publishes_nothing_inside() {
+    let Some(lab) = ready() else {
+        return;
+    };
+    let (c, sub1) = (dir_id(&lab, "c"), dir_id(&lab, "c/sub1"));
+    let outside = lab.path.parent().unwrap().join("outside-782");
+    std::fs::create_dir(&outside).unwrap();
+    std::fs::rename(lab.path.join("c/sub1"), outside.join("sub1")).unwrap();
+    std::fs::write(outside.join("sub1/escaped.bin"), [6u8; 13]).unwrap();
+    let escaped = |svc: &crate::Service| -> i64 {
+        svc.inner
+            .db()
+            .query_row(
+                "SELECT count(*) FROM main.file WHERE name='escaped.bin'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    let job = direct(&lab, vec![sub1]);
+    assert_eq!(job["coverage"], "partial", "{job:?}");
+    assert_eq!(
+        escaped(&lab.svc),
+        0,
+        "an outside listing was published: {job:?}"
+    );
+    // Bounded: the reopened handle lists nothing (containment unproven) and counts one failure.
+    assert_eq!(
+        (examined(&job), &job["progress"]["failed"]),
+        (0, &serde_json::json!(1)),
+        "{job:?}"
+    );
+    // The parent's complete listing then settles the move.
+    direct(&lab, vec![c]);
+    assert_eq!(escaped(&lab.svc), 0);
+    assert_matches_walk(&lab, "moved out of the root");
+    ran("directory_moved_out_of_the_root_publishes_nothing_inside");
+}
+
+/// A named directory the sink cannot reopen by identity (no verified file ID on its row):
+/// `prepare_target` answers `None` and the run walks the whole root.
+#[test]
+fn f3_issue782_target_without_a_reopenable_identity_walks_the_whole_root() {
+    let Some(lab) = ready() else {
+        return;
+    };
+    let a = dir_id(&lab, "a");
+    lab.svc
+        .inner
+        .db()
+        .execute(
+            "UPDATE main.dir SET file_id=NULL,id_basis='none',id_quality='path_observation' WHERE id=?1",
+            [a as i64],
+        )
+        .unwrap();
+    std::fs::write(lab.path.join("a/2.bin"), [9u8; 23]).unwrap();
+    let job = direct(&lab, vec![a]);
+    assert_eq!(examined(&job), walked(&lab.path).len() as u64, "{job:?}");
+    assert_eq!(job["coverage"], "partial", "{job:?}");
+    assert_eq!(
+        catalogued(&lab.svc).get("/a/2.bin"),
+        Some(&Some(23)),
+        "the named directory's change must still publish"
+    );
+    ran("target_without_a_reopenable_identity_walks_the_whole_root");
 }
 
 /// STEP 0 measurement for #782 (run with `--ignored --nocapture`): a full refresh versus a
