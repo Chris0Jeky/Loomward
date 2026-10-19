@@ -207,10 +207,9 @@ pub struct Updates {
     /// Preserve the reported identity; malformed versions make the updater unavailable.
     current: String,
     prefs: Mutex<Prefs>,
-    pending: Mutex<Option<(Offer, tauri_plugin_updater::Update)>>,
+    checks: Mutex<CheckState<(Offer, tauri_plugin_updater::Update)>>,
     /// The native confirmation, `true` only on an explicit OK ([`crate::dialogs::message_box`]).
     ask: Arc<Ask>,
-    last_error: Mutex<Option<String>>,
 }
 
 impl Updates {
@@ -230,9 +229,8 @@ impl Updates {
             configured,
             current: current.into(),
             prefs: Mutex::new(prefs),
-            pending: Mutex::new(None),
+            checks: Mutex::new(CheckState::new()),
             ask: Arc::new(ask),
-            last_error: Mutex::new(None),
         }
     }
 
@@ -253,13 +251,14 @@ impl Updates {
     }
 
     pub fn status(&self) -> Value {
-        let offer = lock(&self.pending).as_ref().map(|(o, _)| o.clone());
+        let checks = lock(&self.checks);
+        let offer = checks.pending.as_ref().map(|(o, _)| o.clone());
         json!({
             "current_version": self.current,
             "unavailable": self.usable(),
             "prefs": self.prefs(),
             "offer": offer,
-            "last_error": *lock(&self.last_error),
+            "last_error": checks.last_error,
         })
     }
 
@@ -269,9 +268,12 @@ impl Updates {
             .as_deref()
             .ok_or(self.usable().unwrap_or_default())?;
         save_prefs(dir, &prefs)?;
-        let old = std::mem::replace(&mut *lock(&self.prefs), prefs);
-        if old.channel != prefs.channel {
-            *lock(&self.pending) = None; // an offer from the other channel no longer applies
+        {
+            let mut checks = lock(&self.checks);
+            let old = std::mem::replace(&mut *lock(&self.prefs), prefs);
+            if old.channel != prefs.channel {
+                checks.invalidate(); // offers and in-flight checks from the other channel no longer apply
+            }
         }
         Ok(self.status())
     }
@@ -297,7 +299,11 @@ impl Updates {
         previous: bool,
     ) -> Result<Value, String> {
         use tauri_plugin_updater::UpdaterExt;
-        let (channel, url) = self.plan(trigger, previous)?;
+        let (generation, channel, url) = {
+            let mut checks = lock(&self.checks);
+            let (channel, url) = self.plan(trigger, previous)?;
+            (checks.begin(), channel, url)
+        };
         let result = async {
             let url = url.parse().map_err(|e| format!("{e}"))?;
             let updater = app
@@ -312,25 +318,26 @@ impl Updates {
             updater.check().await.map_err(|e| e.to_string())
         }
         .await;
-        *lock(&self.last_error) = result.as_ref().err().cloned();
-        let found = result?.map(|update| {
-            let offer = Offer {
-                version: update.version.clone(),
-                channel,
-                notes: update.body.clone().unwrap_or_default(),
-                date: update.date.map(|d| d.to_string()),
-                previous,
-            };
-            (offer, update)
+        let outcome = result.map(|found| {
+            found.map(|update| {
+                let offer = Offer {
+                    version: update.version.clone(),
+                    channel,
+                    notes: update.body.clone().unwrap_or_default(),
+                    date: update.date.map(|d| d.to_string()),
+                    previous,
+                };
+                (offer, update)
+            })
         });
-        *lock(&self.pending) = found;
+        lock(&self.checks).settle(generation, outcome)?;
         Ok(self.status())
     }
 
     /// Asks natively, then downloads, verifies the signature and runs the installer, which exits
     /// the app. `version` must be the offer the view showed.
     pub async fn install(&self, version: &str, owner: isize) -> Result<Value, String> {
-        let Some((offer, update)) = lock(&self.pending).clone() else {
+        let Some((offer, update)) = lock(&self.checks).pending.clone() else {
             return Err("check for updates first".into());
         };
         if offer.version != version {
@@ -362,6 +369,116 @@ impl Updates {
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Outcomes share one lock with their request generation. A channel change or newer accepted
+/// check supersedes every older reply, regardless of the order in which network requests finish.
+struct CheckState<T> {
+    generation: u64,
+    pending: Option<T>,
+    last_error: Option<String>,
+}
+
+impl<T> CheckState<T> {
+    fn new() -> Self {
+        Self {
+            generation: 0,
+            pending: None,
+            last_error: None,
+        }
+    }
+
+    fn begin(&mut self) -> u64 {
+        self.generation = self.generation.wrapping_add(1);
+        self.generation
+    }
+
+    fn invalidate(&mut self) {
+        self.begin();
+        self.pending = None;
+        self.last_error = None;
+    }
+
+    /// A failed current check also clears the pending offer: it is no longer known to be current.
+    fn settle(
+        &mut self,
+        generation: u64,
+        outcome: Result<Option<T>, String>,
+    ) -> Result<(), String> {
+        if generation != self.generation {
+            return Ok(());
+        }
+        match outcome {
+            Ok(found) => {
+                self.last_error = None;
+                self.pending = found;
+                Ok(())
+            }
+            Err(e) => {
+                self.last_error = Some(e.clone());
+                self.pending = None;
+                Err(e)
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod check_state_tests {
+    use super::CheckState;
+
+    #[test]
+    fn a_late_failure_does_not_clear_a_newer_offer() {
+        let mut checks = CheckState::new();
+        let startup = checks.begin();
+        let user = checks.begin();
+        checks.settle(user, Ok(Some("new offer"))).unwrap();
+        assert!(checks.settle(startup, Err("old timeout".into())).is_ok());
+        assert_eq!(checks.pending, Some("new offer"));
+        assert_eq!(checks.last_error, None);
+    }
+
+    #[test]
+    fn a_late_offer_does_not_replace_a_newer_no_update_result() {
+        let mut checks = CheckState::new();
+        let old = checks.begin();
+        let latest = checks.begin();
+        checks.settle(latest, Ok(None)).unwrap();
+        checks.settle(old, Ok(Some("old offer"))).unwrap();
+        assert_eq!(checks.pending, None);
+        assert_eq!(checks.last_error, None);
+    }
+
+    #[test]
+    fn a_late_offer_does_not_hide_a_newer_error() {
+        let mut checks = CheckState::new();
+        let old = checks.begin();
+        let latest = checks.begin();
+        assert!(checks
+            .settle(latest, Err("current timeout".into()))
+            .is_err());
+        checks.settle(old, Ok(Some("old offer"))).unwrap();
+        assert_eq!(checks.pending, None);
+        assert_eq!(checks.last_error, Some("current timeout".into()));
+    }
+
+    #[test]
+    fn a_channel_change_invalidates_pending_and_in_flight_results() {
+        let mut checks = CheckState::new();
+        let previous = checks.begin();
+        checks
+            .settle(previous, Ok(Some("previous channel")))
+            .unwrap();
+        let in_flight = checks.begin();
+        checks.invalidate();
+        assert_eq!(checks.pending, None);
+        checks.settle(in_flight, Ok(Some("old channel"))).unwrap();
+        assert_eq!(checks.pending, None);
+        assert!(checks
+            .settle(in_flight, Err("old channel failed".into()))
+            .is_ok());
+        assert_eq!(checks.last_error, None);
+    }
 }
 
 /// `plugins.updater.pubkey` from the app's config: empty until the owner provides the key.
@@ -459,6 +576,50 @@ mod tests {
         // Persisted beside the state, read back by the next start.
         assert_eq!(load_prefs(dir.path()).channel, Channel::Nightly);
         assert!(load_prefs(dir.path()).check_on_start);
+    }
+
+    #[test]
+    fn a_failed_recheck_clears_the_previous_offer() {
+        let offer = Offer {
+            version: "0.4.0-nightly.20261012.7".into(),
+            channel: Channel::Nightly,
+            notes: String::new(),
+            date: None,
+            previous: false,
+        };
+        let mut checks = CheckState::new();
+        checks.pending = Some((offer.clone(), ()));
+        let failed = checks.begin();
+        // The owner checked, saw the offer, and a second check failed on the network.
+        assert!(checks.settle(failed, Err("timed out".into())).is_err());
+        assert!(
+            checks.pending.is_none(),
+            "a failed re-check left the superseded offer installable"
+        );
+        assert_eq!(checks.last_error, Some("timed out".to_string()));
+        // A later successful check that finds the build offers it afresh and clears the error.
+        let success = checks.begin();
+        checks
+            .settle(success, Ok(Some((offer.clone(), ()))))
+            .unwrap();
+        assert_eq!(checks.pending.as_ref().map(|(o, _)| o.clone()), Some(offer));
+        assert!(checks.last_error.is_none());
+    }
+
+    #[test]
+    fn switching_channel_invalidates_an_in_flight_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let u = Updates::with_prompt(Some(dir.path().into()), true, "0.1.0", |_, _, _| false);
+        let old = lock(&u.checks).begin();
+        u.set_prefs(Prefs {
+            check_on_start: false,
+            channel: Channel::Nightly,
+        })
+        .unwrap();
+        let mut checks = lock(&u.checks);
+        assert!(checks.settle(old, Err("old channel failed".into())).is_ok());
+        assert!(checks.pending.is_none());
+        assert!(checks.last_error.is_none());
     }
 
     #[test]

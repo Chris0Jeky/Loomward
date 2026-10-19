@@ -140,6 +140,27 @@ fn over_budget_unique_totals_are_unknown_and_the_rest_stays_exact() {
     assert_eq!(totals.unique_objects, Some(3_000));
 }
 
+/// #722: past its wall-clock cut the unique totals are unknown too, and a later read is exact.
+#[test]
+fn unique_totals_past_the_wall_clock_cut_are_unknown() {
+    let (_t, c, dir) = big_root(3_000);
+    let mut reader = c.reader().unwrap();
+    reader.unique_totals_cut = Some(std::time::Instant::now());
+    let totals = reader.inspect(NodeKey::Dir(dir)).unwrap().subtree.unwrap();
+    assert_eq!(totals.files, 3_000);
+    assert_eq!(
+        (
+            totals.unique_objects,
+            totals.unique_allocated_bytes,
+            totals.multi_link_entries
+        ),
+        (None, None, None)
+    );
+    reader.unique_totals_cut = None;
+    let totals = reader.inspect(NodeKey::Dir(dir)).unwrap().subtree.unwrap();
+    assert_eq!(totals.unique_objects, Some(3_000));
+}
+
 #[test]
 fn duplicate_candidates_on_a_large_root_answer() {
     let (_t, c, dir) = big_root(130_000);

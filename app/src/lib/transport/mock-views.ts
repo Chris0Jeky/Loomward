@@ -99,7 +99,11 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
   const model = (): TierModel => ({
     volumes: volumes.map((v) => {
       const observed = volumeRow(v);
-      const frac = v.exclusion ? null : Number(free(v)) / Number(v.capacity);
+      const capacity = observed.capacity_bytes === null ? null : BigInt(observed.capacity_bytes);
+      const available = observed.free_bytes === null ? null : BigInt(observed.free_bytes);
+      const frac = observed.online && capacity !== null && capacity > 0n
+        && available !== null && available >= 0n && available <= capacity
+        ? Number(available) / Number(capacity) : null;
       return {
         volume_id: v.id, display_name: v.name, tier: { ...tierInfo(v), ...(v.exclusion === 'no_active_grant' ? { note: 'No active grant; excluded from placement simulation.' } : {}) }, online: observed.online, writable: true,
         capacity_bytes: observed.capacity_bytes, free_bytes: observed.free_bytes, reserve_bytes: str(v.capacity / 50n), free_fraction: frac,

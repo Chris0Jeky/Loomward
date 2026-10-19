@@ -404,6 +404,123 @@ fn roots_list_keeps_a_root_mid_scan_with_unknown_totals() {
     assert_eq!(roots["roots"][0]["grant_state"], "active");
 }
 
+/// #722: several large roots cannot push `roots.list` past its deadline. Each root's unique
+/// totals get a share of the budget; a root past its share reports them unknown, the stored
+/// aggregates stay exact, and a small root is still measured exactly.
+#[test]
+fn roots_list_degrades_slow_roots_to_unknown_totals_inside_the_deadline() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let sizes = [200u64, 70_000, 70_000, 70_000];
+    for (i, &files) in sizes.iter().enumerate() {
+        let (root, grant) = register(&svc, i as u8 + 1);
+        let dir: i64 = svc
+            .inner
+            .db()
+            .query_row(
+                "SELECT id FROM main.dir WHERE root_id=?1 AND parent_id IS NULL",
+                [root],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let w = svc.inner.catalog.writer();
+        let WriteReply::Run(run) = w
+            .call(WriteCommand::BeginRun {
+                grant_id: grant,
+                mode: "full".into(),
+                strategy: "fixture".into(),
+                started_at_ns: 0,
+            })
+            .unwrap()
+        else {
+            panic!()
+        };
+        // Listings are capped, so each 1000 files sit in their own subdirectory.
+        let chunks = files.div_ceil(1000);
+        let subdirs = (0..chunks)
+            .map(|d| {
+                let mut o = Observation::file(format!("d{d}"), 0, Some(0));
+                o.attrs = 0x10;
+                o.file_id = Some(vec![0xD0; 15].into_iter().chain([d as u8 + 1]).collect());
+                o.created_ft = Some(1);
+                o
+            })
+            .collect();
+        w.call(WriteCommand::DirListing(DirListing {
+            run_id: run,
+            dir_id: dir,
+            files: vec![],
+            dirs: subdirs,
+            state: "complete".into(),
+            skipped: 0,
+            errors: 0,
+        }))
+        .unwrap();
+        let children: Vec<i64> = svc
+            .inner
+            .db()
+            .prepare("SELECT id FROM (SELECT id,parent_id FROM main.dir UNION ALL SELECT id,parent_id FROM main.bulk_dir) WHERE parent_id=?1 ORDER BY id")
+            .unwrap()
+            .query_map([dir], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        for (d, child) in children.into_iter().enumerate() {
+            let listed = (d as u64 * 1000..files.min((d as u64 + 1) * 1000))
+                .map(|n| {
+                    let mut o = file(&format!("report-{n}.txt"), 1000);
+                    o.file_id = Some(((n + 1) as u128).to_le_bytes().to_vec());
+                    o
+                })
+                .collect();
+            w.call(WriteCommand::DirListing(DirListing {
+                run_id: run,
+                dir_id: child,
+                files: listed,
+                dirs: vec![],
+                state: "complete".into(),
+                skipped: 0,
+                errors: 0,
+            }))
+            .unwrap();
+        }
+        w.call(WriteCommand::EndRun {
+            run_id: run,
+            state: "completed".into(),
+            finished_at_ns: 1,
+        })
+        .unwrap();
+    }
+    // A 5% share of a one-second budget (about 50 ms for all four roots) is far below what the
+    // big roots need on any host, so they are cut deterministically while the small one is not.
+    let work = crate::ReadWork {
+        deadline: Instant::now() + Duration::from_secs(1),
+        interrupt: Mutex::new(None),
+    };
+    let started = Instant::now();
+    let roots = svc.inner.root_list_sharing(Some(&work), 5).unwrap();
+    assert!(started.elapsed() < Duration::from_secs(1));
+    let roots = roots["roots"].as_array().unwrap();
+    assert_eq!(roots.len(), sizes.len());
+    let mut cut = 0;
+    for (root, files) in roots.iter().zip(sizes) {
+        let totals = &root["totals"];
+        assert_eq!(totals["files"], files, "stored aggregates stay exact");
+        match totals["unique_objects"].as_u64() {
+            Some(n) => assert_eq!(n, files),
+            None => {
+                cut += 1;
+                assert!(totals["unique_allocated_bytes"].is_null());
+            }
+        }
+    }
+    assert!(cut >= 1, "at least one large root must exceed its share");
+    assert_eq!(
+        roots[0]["totals"]["unique_objects"], 200,
+        "the small root is exact"
+    );
+}
+
 fn placement_fixture(svc: &Service) -> (i64, i64, String) {
     let (root, grant) = fixture(svc, 3);
     svc.inner.db().execute("UPDATE main.volume SET capabilities_json=?1,bytes_per_cluster=4096", [json!({"space":{"capacity_bytes":"1048576","free_bytes":"65536","read_only":false}}).to_string()]).unwrap();
@@ -7684,6 +7801,41 @@ fn a_live_scanned_ntfs_grant_can_be_labelled_and_collected() {
     let (roots, _) = ok("roots.list", call(&svc, "roots.list", json!({})));
     let root = roots["roots"][0]["root_id"].as_str().unwrap().to_owned();
     label_and_collect_live(&svc, &root, "synthetic-note.txt");
+}
+
+/// #710: a library caller may spell a root with a trailing separator. The grant must store the
+/// canonical spelling, or a later open with the canonical form cannot reuse the verified grant.
+#[cfg(windows)]
+#[test]
+fn open_stores_the_canonical_spelling_of_a_non_canonical_root() {
+    let tmp = temp_root();
+    let folder = tmp.path().join("owner-folder");
+    std::fs::create_dir_all(&folder).unwrap();
+    let canonical = folder.canonicalize().unwrap();
+    let spelled = std::path::PathBuf::from(format!("{}\\", folder.display()));
+    let opened = Service::open(Config {
+        state_dir: tmp.path().join("state"),
+        dataset: DatasetClass::Personal,
+        allow_personal: true,
+        allow_identity_unverified: false,
+        grant_roots: vec![spelled],
+    });
+    if loomward_windows::enumerate::running_elevated() {
+        // Native identity refuses elevated tokens (invariant 2), including hosted Windows CI.
+        let error = opened.err().expect("an elevated grant is refused");
+        assert!(error.contains("identity_unavailable"), "{error}");
+        return;
+    }
+    let svc = opened.unwrap();
+    // Compare text: `PathBuf` equality ignores a trailing separator, which is the very difference.
+    let stored: Vec<String> = crate::db::active_root_paths(&svc.inner.db())
+        .unwrap()
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+    let expected = canonical.to_string_lossy();
+    let expected = expected.strip_prefix(r"\\?\").unwrap_or(&expected);
+    assert_eq!(stored, vec![expected.to_owned()]);
 }
 
 #[cfg(test)]

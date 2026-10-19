@@ -183,6 +183,12 @@ describe('http transport', () => {
     return { ids, got };
   }
 
+  it('cannot resume a connection dropped before its first frame, then resumes after hello', async () => {
+    const { ids, got } = await replay([[], [hello('e1', 0)], []]);
+    expect(ids).toEqual([undefined, undefined, 'e1.0', 'e1.0']);
+    expect(got).toEqual(['stream.hello:e1.0']);
+  });
+
   it('records the epoch from stream.hello and does not let the unsequenced hello skip a replay', async () => {
     const { ids } = await replay([
       [hello('e1', 5), ev(6)], // first connection: hello carries last_seq 5, then seq 6 arrives
