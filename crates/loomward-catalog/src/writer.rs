@@ -1782,9 +1782,15 @@ fn apply(
             finished_at_ns,
         } => {
             let root = active_run(conn, LIVE, *run_id, None)?;
-            if !matches!(state.as_str(), "completed" | "cancelled" | "failed") {
+            if !matches!(
+                state.as_str(),
+                "completed" | "partial" | "cancelled" | "failed"
+            ) {
                 return Err(Error::Invalid("end state"));
             }
+            // #774: `partial` is a traversal that finished with coverage gaps. It is stored as a
+            // completed run (a partial sample) but never reconciles absence or claims coverage.
+            let partial = state == "partial";
             if ctx.bulk.contains_key(run_id) {
                 // A failed run is an abort: its build is discarded and the root shows no rows.
                 if state == "failed" {
@@ -1818,18 +1824,22 @@ fn apply(
             }
             conn.execute(
                 "UPDATE scan_run SET state=?2,finished_at_ns=?3 WHERE id=?1",
-                params![run_id, state, finished_at_ns],
+                params![
+                    run_id,
+                    if partial { "completed" } else { state.as_str() },
+                    finished_at_ns
+                ],
             )?;
-            if state == "completed" {
+            if state == "completed" || partial {
                 // LW-121: the root's size at this run's end, so growth can be read back from scan
                 // history. `complete` is the root aggregate's own coverage bit (set only by a full,
                 // clean traversal); a run without these counters (older rows) is an unknown sample.
                 conn.execute(
-                    "UPDATE scan_run SET counters_json=coalesce((SELECT json_object('logical_bytes',sub_logical,'files',sub_files,'skipped',sub_skipped,'errors',sub_errors,'complete',json(CASE WHEN sub_complete=1 THEN 'true' ELSE 'false' END)) FROM dir WHERE root_id=?2 AND parent_id IS NULL),'{}') WHERE id=?1",
-                    params![run_id, root],
+                    "UPDATE scan_run SET counters_json=coalesce((SELECT json_object('logical_bytes',sub_logical,'files',sub_files,'skipped',sub_skipped,'errors',sub_errors,'complete',json(CASE WHEN sub_complete=1 AND NOT ?3 THEN 'true' ELSE 'false' END)) FROM dir WHERE root_id=?2 AND parent_id IS NULL),'{}') WHERE id=?1",
+                    params![run_id, root, partial],
                 )?;
             }
-            let completed=state=="completed" && conn.query_row("SELECT mode='targeted' AND NOT EXISTS(SELECT 1 FROM dir WHERE root_id=?2 AND seen_run=?1 AND listing_state='incomplete') FROM scan_run WHERE id=?1",params![run_id,root],|r|r.get::<_,bool>(0))?;
+            let completed=partial || state=="completed" && conn.query_row("SELECT mode='targeted' AND NOT EXISTS(SELECT 1 FROM dir WHERE root_id=?2 AND seen_run=?1 AND listing_state='incomplete') FROM scan_run WHERE id=?1",params![run_id,root],|r|r.get::<_,bool>(0))?;
             conn.execute("UPDATE root SET active_run=NULL,generation=CASE WHEN ?2 THEN ?3 ELSE generation END,state=CASE WHEN ?4 THEN 'complete' ELSE 'partial' END WHERE id=?1",params![root,full||completed,run_id,full])?;
             ctx.fenced_listings.retain(|(run, _)| run != run_id);
             ctx.bulk.remove(run_id);

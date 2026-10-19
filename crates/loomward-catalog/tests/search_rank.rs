@@ -374,6 +374,100 @@ fn context_finds_entries_by_their_folders_and_stays_below_a_name_match() {
 }
 
 #[test]
+fn context_diacritic_folding_matches_the_token_index() {
+    let mut lab = lab();
+    let root = register(&lab, "Alpha", 1);
+    let run = begin(&lab, &root);
+    let cafe = obs(&mut lab, "Caf\u{e9}", 0);
+    list(&lab, run, root.dir, vec![], vec![cafe]);
+    let cafe = child(&lab, root.dir, "Caf\u{e9}");
+    let resume = obs(&mut lab, "r\u{e9}sum\u{e9}", 0);
+    let report = obs(&mut lab, "report.txt", 0);
+    list(&lab, run, cafe, vec![report], vec![resume]);
+    let resume = child(&lab, cafe, "r\u{e9}sum\u{e9}");
+    let pepper = obs(&mut lab, "jalape\u{f1}o.txt", 0);
+    let unrelated = obs(&mut lab, "unrelated.txt", 0);
+    list(&lab, run, resume, vec![pepper, unrelated], vec![]);
+    end(&lab, run);
+
+    // The token tier establishes SQLite's folding independently of the context tier.
+    let token = RankOptions {
+        tiers: TIER_TOKEN,
+        ..RankOptions::default()
+    };
+    let mut reader = lab.c.reader().unwrap();
+    for word in ["cafe", "resume", "jalapeno"] {
+        assert_eq!(
+            reader.search_ranked(&req(word), &token).unwrap().hits.len(),
+            1
+        );
+    }
+    for (text, path) in [
+        ("cafe report", "Caf\u{e9}\\report.txt"),
+        ("cafe resume", "Caf\u{e9}\\r\u{e9}sum\u{e9}"),
+        (
+            "cafe jalapeno",
+            "Caf\u{e9}\\r\u{e9}sum\u{e9}\\jalape\u{f1}o.txt",
+        ),
+        (
+            "resume jalapeno",
+            "Caf\u{e9}\\r\u{e9}sum\u{e9}\\jalape\u{f1}o.txt",
+        ),
+        ("caf\u{e9} report", "Caf\u{e9}\\report.txt"),
+        ("cafe r\u{e9}port", "Caf\u{e9}\\report.txt"),
+        ("alpha cafe report", "Caf\u{e9}\\report.txt"),
+    ] {
+        for tiers in [TIER_CONTEXT, ALL_TIERS] {
+            let options = RankOptions {
+                tiers,
+                ..RankOptions::default()
+            };
+            let mut request = req(text);
+            request.kind = if path.ends_with(".txt") {
+                "file"
+            } else {
+                "dir"
+            }
+            .into();
+            let page = reader.search_ranked(&request, &options).unwrap();
+            assert_eq!(order(&page), [path], "{text:?}, tiers={tiers}");
+        }
+    }
+    assert!(ranked(&lab, &req("cafe missing")).hits.is_empty());
+}
+
+#[test]
+fn an_empty_disclosure_scope_returns_an_empty_page_in_both_search_modes() {
+    let (lab, root) = corpus();
+    for text in ["", "report", "invoices"] {
+        for root_id in [None, Some(root.root)] {
+            let mut request = req(text);
+            request.root_id = root_id;
+            assert!(!plain(&lab, &request).hits.is_empty());
+            assert!(!ranked(&lab, &request).hits.is_empty());
+            request.scope = Some(vec![]);
+            // Explicitly requesting an excluded root remains unknown under the disclosure contract.
+            if root_id.is_some() {
+                let mut reader = lab.c.reader().unwrap();
+                assert!(matches!(reader.search(&request), Err(Error::NotFound)));
+                assert!(matches!(
+                    reader.search_ranked(&request, &RankOptions::default()),
+                    Err(Error::NotFound)
+                ));
+                continue;
+            }
+            for page in [plain(&lab, &request), ranked(&lab, &request)] {
+                assert!(page.hits.is_empty());
+                assert!(page.roots.is_empty());
+                assert!(page.next_cursor.is_none());
+                assert!(page.generation.is_none());
+                assert!(!page.budget_hit);
+            }
+        }
+    }
+}
+
+#[test]
 fn short_queries_rank_a_bounded_prefix_scan() {
     let (lab, _) = corpus();
     let p = ranked(&lab, &req("r"));

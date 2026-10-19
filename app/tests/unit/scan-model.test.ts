@@ -22,6 +22,13 @@ it('names a depth-limited scan and keeps its lower-bound warning', () => {
   expect(view.detail).toContain('Totals are lower bounds');
 });
 
+it('names a directory-limited scan, and an unnamed cap stays the entry budget', () => {
+  const named = { ...progress({ limit_hit: true }), limit_reason: 'directory_limit' as const };
+  expect(viewOf(done({ coverage: 'partial', progress: named }), T0).headline).toBe('Stopped at its directory limit');
+  const unnamed = progress({ limit_hit: true });
+  expect(viewOf(done({ coverage: 'partial', progress: unnamed }), T0).headline).toBe('Stopped at its entry budget');
+});
+
 it('retains the depth-limit reason when merging legacy progress', () => {
   const p = { ...progress({ limit_hit: true }), limit_reason: 'depth_limit' as const };
   const book = applyJob({}, done({ rev: LEGACY_REV, coverage: 'partial', progress: p }));
