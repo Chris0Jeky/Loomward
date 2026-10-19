@@ -279,3 +279,21 @@ fn api_errors_carry_json_content_type_and_connection_close() {
         );
     }
 }
+
+#[test]
+fn a_content_length_that_is_not_plain_digits_never_reaches_the_service() {
+    // Found by the gate fuzz (`src/gate_fuzz.rs`): `u64::from_str` accepts a leading `+`, which the
+    // HTTP grammar (`1*DIGIT`) does not. The adapter must refuse it whatever hyper does first.
+    let h = start();
+    for bad in [format!("+{}", HELLO.len()), format!(" +{}", HELLO.len())] {
+        let head = call_head(&h, HELLO.len(), "").replace(
+            &format!("Content-Length: {}", HELLO.len()),
+            &format!("Content-Length: {bad}"),
+        );
+        let reply = send(h.addr(), &head, HELLO.as_bytes());
+        assert_ne!(
+            reply.status, 200,
+            "Content-Length {bad:?} reached the service"
+        );
+    }
+}

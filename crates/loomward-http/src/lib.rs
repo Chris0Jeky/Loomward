@@ -443,7 +443,11 @@ fn content_length(headers: &HeaderMap) -> Option<u64> {
     if values.next().is_some() {
         return None;
     }
-    v.to_str().ok()?.parse().ok()
+    // `1*DIGIT` only: `u64::from_str` alone would also take a leading `+` (hyper refuses it first).
+    let v = v.to_str().ok()?;
+    v.bytes()
+        .all(|b| b.is_ascii_digit())
+        .then(|| v.parse().ok())?
 }
 
 async fn drain(body: Body, _headers: &HeaderMap, timeout: Duration) -> Drained {
@@ -1263,3 +1267,7 @@ mod tests {
         assert_eq!(content_length(&differ), None);
     }
 }
+
+#[cfg(test)]
+#[path = "gate_fuzz.rs"]
+mod gate_fuzz;
