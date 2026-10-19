@@ -1405,6 +1405,74 @@ def check_companion(page: Page, base: str, shoot) -> None:
 
 # --- Grants & health --------------------------------------------------------------------------------
 
+def check_health_forget_identity(browser) -> None:
+    """A live SSE generation change must unlock status actions before the old HTTP call returns."""
+    for signal in ('stream.hello', 'stream.lagged'):
+        class ForgetEngine(FakeEngine):
+            def __init__(self):
+                super().__init__()
+                self.release = threading.Event()
+                self.first_returned = threading.Event()
+                self.forgets: list[dict] = []
+                root = self.fake_root('Synthetic forgotten folder')
+                root['grant_state'] = 'revoked'
+                self.roots = [root]
+
+            def result(self, req):
+                if req['command'] != 'roots.forget':
+                    return super().result(req)
+                self.forgets.append(req)
+                if len(self.forgets) == 1:
+                    self.release.wait(timeout=20)
+                    self.first_returned.set()
+                self.roots = []
+                return {'root_id': req['payload']['root_id'], 'forgotten_at': '2026-10-19T00:00:00Z'}
+
+        engine = ForgetEngine()
+        engine.start()
+        page = browser.new_page(viewport={'width': 1360, 'height': 900})
+        try:
+            page.goto(f'{engine.base}/?transport=http#token={TOKEN}')
+            page.evaluate("location.hash = '#/health'")
+            heading = page.get_by_role('heading', name='Grants & health', level=1)
+            expect(heading).to_be_visible()
+            heading.evaluate("el => el.dataset.identityFixture = 'mounted'")
+            wait_until(page, lambda: bool(engine.subscribers))
+            page.locator('main section[aria-labelledby="h-roots"]').get_by_role('button', name=re.compile('^Forget…')).click()
+            dialog = page.get_by_role('group', name=re.compile('^Forget '))
+            dialog.get_by_role('button', name='Forget', exact=True).click()
+            wait_until(page, lambda: len(engine.forgets) == 1)
+            expect(dialog.get_by_role('button', name='Forgetting', exact=True)).to_be_disabled()
+
+            reads = engine.served.get('roots.list', 0)
+            engine.invalidate()
+            wait_until(page, lambda: engine.served.get('roots.list', 0) > reads)
+            expect(dialog.get_by_role('button', name='Forgetting', exact=True)).to_be_disabled()
+            ok(not engine.first_returned.is_set(), 'same-engine roots refresh keeps the original forget in flight')
+
+            engine.seq += 1
+            epoch = 'e_after_forget' if signal == 'stream.hello' else EPOCH
+            data = {'epoch': epoch, 'session_started_at': '2026-10-01T00:00:00Z', 'last_seq': engine.seq,
+                    'oldest_replayable_seq': 1, 'dataset_class': 'synthetic'} if signal == 'stream.hello' else {
+                        'reason': 'epoch_changed', 'dropped': None, 'resync': ['roots']}
+            engine.publish({'protocol': 'loomward/3', 'epoch': epoch, 'seq': engine.seq, 'event': signal,
+                            'at': '2026-10-19T00:00:00Z', 'catalog_rev': None, 'state_rev': None, 'data': data})
+            expect(dialog.get_by_role('button', name='Check status', exact=True)).to_be_enabled(timeout=3000)
+            expect(dialog.get_by_role('button', name='Stop waiting', exact=True)).to_be_enabled()
+            expect(page.get_by_role('status').filter(has_text='Forget outcome pending')).to_be_visible()
+            expect(heading).to_have_attribute('data-identity-fixture', 'mounted')
+            ok(not engine.first_returned.is_set(), f'{signal} exposes the uncertain outcome while the old reply is still held')
+            dialog.get_by_role('button', name='Check status', exact=True).click()
+            expect(page.get_by_role('status').filter(has_text='Forgotten at')).to_be_visible()
+            ok(len(engine.forgets) == 2 and engine.forgets[1]['request_id'] == engine.forgets[0]['request_id'],
+               f'{signal} checks the original forget action key')
+        finally:
+            engine.release.set()
+            page.close()
+            engine.stop()
+    print('PASS Grants & health: mounted generation changes expose unknown forgets immediately and retain the action key')
+
+
 def check_health(page: Page, base: str, shoot) -> None:
     page.goto(f'{base}/?transport=mock#/health')
     expect(page.get_by_role('heading', name='Grants & health', level=1)).to_be_visible()
@@ -1755,6 +1823,7 @@ def run_views(page: Page, base: str, shots: Path | None) -> None:
     check_process_strip(page.context.browser, base, shots)
     check_process_strip_failures(page.context.browser)
     check_resource_trends(page.context.browser)
+    check_health_forget_identity(page.context.browser)
     check_explorer_mock(page, base, shoot)
     engine = FakeEngine()
     engine.start()

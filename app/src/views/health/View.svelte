@@ -69,10 +69,13 @@
   $effect(() => { const r = roots?.roots; if (r) untrack(() => picker.sync(r)); }); // only a new roots read speaks, never a change of the picker's own state
 
   // `scans.settled` moves when a scan ends: the roots are read again for their totals and coverage.
+  // A stream generation change can leave Health mounted. Resume before loading, so a forget on
+  // the old connection exposes its unknown outcome immediately; ordinary root refreshes keep it.
   $effect(() => {
     void session.epoch;
+    void session.info;
     void scans.settled;
-    untrack(() => void load());
+    untrack(() => { forget.resume(); void load(); });
   });
   $effect(() => {
     if (!scans.anyActive) return;

@@ -10,7 +10,7 @@ import { scans } from '../../src/lib/stores/scan.svelte';
 import { Say } from '../../src/lib/ui/say.svelte';
 import { LoomwardError, TransportError, Client } from '../../src/lib/transport/client';
 import type { Transport } from '../../src/lib/transport/transport';
-import type { SessionInfo } from '../../src/lib/contracts.gen';
+import type { EventEnvelope, SessionInfo } from '../../src/lib/contracts.gen';
 
 const identity = <T>(value: T) => value;
 
@@ -33,10 +33,11 @@ function mount() {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
   }).outputText;
   let cleanup: (() => void) | undefined;
+  const effects: (() => void)[] = [];
   const state = {
     session, scans, forget, picker, Say, LoomwardError, TransportError,
     $state: identity, $derived: Object.assign(identity, { by: (fn: () => unknown) => fn() }),
-    $effect: () => undefined, onMount: (fn: () => () => void) => { cleanup = fn(); }, untrack: (fn: () => unknown) => fn(), tick: async () => undefined,
+    $effect: (fn: () => void) => { effects.push(fn); }, onMount: (fn: () => () => void) => { cleanup = fn(); }, untrack: (fn: () => unknown) => fn(), tick: async () => undefined,
     document: { activeElement: null }, HTMLElement: class {},
     formatTime: identity, escapedName: identity,
   };
@@ -47,7 +48,7 @@ function mount() {
     stopWaiting(): Promise<void>;
     evaluate(expression: string): unknown;
   };
-  return { ...view, unmount: () => cleanup?.() };
+  return { ...view, flushEffects: () => { for (const effect of effects) effect(); }, unmount: () => cleanup?.() };
 }
 
 function client() {
@@ -265,6 +266,67 @@ it.each(['client', 'connection epoch', 'engine hello'] as const)('ignores a late
   expect(forget.done).toBe('');
   rejectNew(unknown);
   await newFlight;
+});
+
+it.each(['stream hello', 'epoch changed', 'session info', 'client'] as const)('a mounted Health view exposes an unknown forget immediately after %s', async change => {
+  const call = client();
+  let release!: (value: unknown) => void;
+  call.mockImplementation(r => r.command === 'roots.forget'
+    ? new Promise(resolve => { release = resolve; })
+    : Promise.resolve(reply(r, { roots: [], grants: [], jobs: [] })));
+  const feed = (event: EventEnvelope['event'], data: Record<string, unknown>) =>
+    (session as unknown as { onEvent(e: EventEnvelope): void }).onEvent({
+      protocol: 'loomward/3', epoch: 'e_before', seq: 0, event, at: '2026-10-19T00:00:00Z',
+      catalog_rev: null, state_rev: null, data,
+    });
+  feed('stream.hello', { epoch: 'e_before' });
+  const view = mount();
+  await view.ask(request);
+  const waiting = forget.confirm();
+  const sent = call.mock.calls.find(([r]) => r.command === 'roots.forget')![0];
+  expect(forget.working).toBe(true);
+
+  if (change === 'stream hello') feed('stream.hello', { epoch: 'e_after' });
+  if (change === 'epoch changed') feed('stream.lagged', { reason: 'epoch_changed' });
+  if (change === 'session info') session.info = { session_started_at: '2026-10-19T00:00:00Z' } as SessionInfo;
+  if (change === 'client') {
+    session.client = new Client({ call } as unknown as Transport);
+    session.epoch++; // reconnect publishes the new client through the existing resync signal
+  }
+  view.flushEffects(); // the mounted instance's effects, without remounting or calling a forget action
+  try {
+    expect(forget.working).toBe(false);
+    expect(forget.unknown).toBe(true);
+    expect(forget.pending?.requestId).toBe(sent.request_id);
+  } finally {
+    release(reply(sent, completed));
+    await waiting;
+    view.unmount();
+  }
+  expect(forget.pending?.requestId).toBe(sent.request_id);
+  expect(forget.done).toBe(''); // an old success cannot replace the uncertain outcome
+});
+
+it('a mounted Health roots refresh keeps the same-engine forget in flight', async () => {
+  const call = client();
+  let release!: (value: unknown) => void;
+  call.mockImplementation(r => r.command === 'roots.forget'
+    ? new Promise(resolve => { release = resolve; })
+    : Promise.resolve(reply(r, { roots: [], grants: [], jobs: [] })));
+  const view = mount();
+  await view.ask(request);
+  const waiting = forget.confirm();
+  const sent = call.mock.calls.find(([r]) => r.command === 'roots.forget')![0];
+  session.epoch++;
+  view.flushEffects();
+  expect(forget.working).toBe(true);
+  expect(forget.unknown).toBe(false);
+  expect(forget.pending?.requestId).toBe(sent.request_id);
+  release(reply(sent, completed));
+  await waiting;
+  expect(forget.pending).toBeNull();
+  expect(forget.done).toContain('Forgotten at');
+  view.unmount();
 });
 
 it('accepts a same-engine reply after an ordinary roots refresh and while the view is away', async () => {
