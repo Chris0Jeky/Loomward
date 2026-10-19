@@ -4793,6 +4793,114 @@ fn f3_issue617_completed_catchup_retries_its_checkpoint() {
 
 #[cfg(windows)]
 #[test]
+fn issue776_default_scan_shares_workers_with_an_owner_scan_and_freshness() {
+    if loomward_windows::enumerate::running_elevated() {
+        eprintln!("skipped: elevated token; native scans refuse elevation");
+        return;
+    }
+    for threads in [1, 32] {
+        let tmp = temp_root();
+        let state = tmp.path().join("state");
+        let mut paths = Vec::new();
+        for name in ["lab-first", "lab-second", "lab-refresh"] {
+            let path = tmp.path().join(name);
+            crate::lab::register(
+                &state,
+                &path,
+                name,
+                "S",
+                "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            )
+            .unwrap();
+            std::fs::write(path.join("synthetic.bin"), b"synthetic").unwrap();
+            paths.push(path.canonicalize().unwrap());
+        }
+        let svc = Service::open(Config {
+            state_dir: state,
+            dataset: DatasetClass::Synthetic,
+            allow_personal: false,
+            allow_identity_unverified: false,
+            grant_roots: paths,
+        })
+        .unwrap();
+        svc.inner.freshness.pause_pump();
+        let rows = crate::db::roots(&svc.inner.db(), None).unwrap();
+        let roots: Vec<_> = rows.iter().map(|r| svc.inner.root_id(r.root)).collect();
+        for root in &roots {
+            assert_eq!(
+                settle(&svc, &start(&svc, root, "full"))["coverage"],
+                "complete"
+            );
+        }
+        let held = (Command::ScanStart, "full_catalogue_published");
+        svc.inner
+            .hooks
+            .arrived
+            .lock()
+            .unwrap()
+            .retain(|at| *at != held);
+        svc.inner.hooks.closed.lock().unwrap().push(held);
+        let first = start(&svc, &roots[0], "full");
+        svc.inner.hooks.until("first scan holds its workers", |h| {
+            h.arrived.lock().unwrap().contains(&held)
+        });
+        let second = call(
+            &svc,
+            "scan.start",
+            json!({"root_id":roots[1],"mode":"full","budget":{"threads":threads}}),
+        );
+        let third = if threads == 1 {
+            svc.inner.freshness.record(
+                rows[2].root,
+                vec![loomward_windows::watch::Change::RootDirty],
+            );
+            svc.inner.freshness.ready_targeted_hint(rows[2].root);
+            crate::freshness::refresh(&svc.inner);
+            None
+        } else {
+            Some(call(
+                &svc,
+                "scan.start",
+                json!({"root_id":roots[2],"mode":"full"}),
+            ))
+        };
+        let auto = svc.inner.freshness.explicit(rows[2].root).auto.clone();
+        let workers = svc.inner.engine.budgets_get().unwrap().pools[0]
+            .current_workers
+            .get();
+        let first_state = svc
+            .inner
+            .engine
+            .job_status(&JobId::new(&first).unwrap())
+            .unwrap()
+            .state;
+        // Always unblock before asserting: a red regression must not strand a worker on drop.
+        svc.inner.hooks.open(held.0, held.1);
+        assert_eq!(settle(&svc, &first)["coverage"], "complete");
+        let (second, _) = ok("scan.start", second);
+        let second = settle(&svc, second["job"]["job_id"].as_str().unwrap());
+        assert_eq!(second["coverage"], "complete", "{second:?}");
+        assert_eq!(first_state, JobState::Running);
+        assert_eq!(workers, 8, "all three jobs share the bounded pool");
+        if let Some(third) = third {
+            let refused = err(third);
+            assert_eq!((refused.code, refused.retryable), (ErrorCode::Busy, true));
+            assert!(refused.message.contains("retry"));
+            assert!(auto.is_none());
+        } else {
+            let auto = auto.expect("another root refreshes before the owner scans finish");
+            assert_eq!(settle(&svc, auto.as_str())["coverage"], "complete");
+        }
+        // With the pool released, another root can start normally.
+        assert_eq!(
+            settle(&svc, &start(&svc, &roots[2], "full"))["coverage"],
+            "complete"
+        );
+    }
+}
+
+#[cfg(windows)]
+#[test]
 fn f3_issue617_explicit_scan_preempts_another_roots_pool() {
     if loomward_windows::enumerate::running_elevated() {
         return;
@@ -4823,6 +4931,13 @@ fn f3_issue617_explicit_scan_preempts_another_roots_pool() {
     })
     .unwrap();
     svc.inner.freshness.pause_pump();
+    // Exercise actual pool exhaustion even though default scans now leave headroom.
+    svc.inner
+        .engine
+        .budgets_set(
+            &serde_json::from_value(json!({"pool":"scan_enumerate","max_workers":1})).unwrap(),
+        )
+        .unwrap();
     let rows = crate::db::roots(&svc.inner.db(), None).unwrap();
     let first = svc.inner.root_id(rows[0].root);
     let second = svc.inner.root_id(rows[1].root);
@@ -5188,13 +5303,7 @@ fn f3_duplicates_leave_refresh_running_when_a_worker_is_available() {
     crate::freshness::refresh(&svc.inner);
     svc.inner.scan.gate.wait_reached();
     let auto = svc.inner.freshness.explicit(1).auto.clone().unwrap();
-    // The running refresh keeps its eight workers; raising the cap leaves one for hashing.
-    svc.inner
-        .engine
-        .budgets_set(
-            &serde_json::from_value(json!({"pool":"scan_enumerate","max_workers":9})).unwrap(),
-        )
-        .unwrap();
+    // A default refresh already leaves headroom for hashing at the unchanged pool cap.
     let (answer, state) = std::thread::scope(|s| {
         let asking = s.spawn(|| {
             call(
@@ -5320,6 +5429,13 @@ fn f3_explicit_scan_preempts_a_running_watcher_refresh() {
 fn f3_duplicates_preempt_a_running_watcher_refresh() {
     let Some(lab) = lab() else { return };
     let svc = &lab.svc;
+    // Exercise actual pool exhaustion even though default scans now leave headroom.
+    svc.inner
+        .engine
+        .budgets_set(
+            &serde_json::from_value(json!({"pool":"scan_enumerate","max_workers":1})).unwrap(),
+        )
+        .unwrap();
     for name in ["copy.bin", "other.bin"] {
         std::fs::write(lab.path.join(name), b"same").unwrap();
     }
@@ -5441,6 +5557,13 @@ fn f3_duplicates_claim_fences_candidate_selection() {
 fn f3_duplicates_expired_request_releases_the_refresh_fence() {
     let Some(lab) = lab() else { return };
     let svc = &lab.svc;
+    // Exercise actual pool exhaustion even though default scans now leave headroom.
+    svc.inner
+        .engine
+        .budgets_set(
+            &serde_json::from_value(json!({"pool":"scan_enumerate","max_workers":1})).unwrap(),
+        )
+        .unwrap();
     settle(svc, &start(svc, &lab.root, "full"));
     f3_wait_live(svc);
     svc.inner.scan.gate.arm();

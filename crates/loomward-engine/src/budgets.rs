@@ -18,7 +18,7 @@ pub(crate) struct Budgets {
 impl Default for Budgets {
     fn default() -> Self {
         let wire = serde_json::from_value(serde_json::json!({"pools": [
-            {"pool":"scan_enumerate","max_workers":8,"default_workers":8,"current_workers":0,"queue_capacity":1024,"scope":"loomward_own_threads"},
+            {"pool":"scan_enumerate","max_workers":8,"default_workers":4,"current_workers":0,"queue_capacity":1024,"scope":"loomward_own_threads"},
             {"pool":"learning","max_workers":2,"default_workers":2,"current_workers":0,"queue_capacity":32,"scope":"loomward_own_threads"},
             {"pool":"telemetry","max_workers":1,"default_workers":1,"current_workers":0,"queue_capacity":32,"scope":"loomward_own_threads"}],
             "teacher":{"max_in_flight":1,"timeout_s":180,"memory_limit_bytes":null,"enforcement":"not_available"},
@@ -53,10 +53,13 @@ impl Budgets {
             .max_workers
             .get() as usize;
         let current = self.scan_workers.load(Ordering::Acquire);
-        let count = requested.unwrap_or(cap).min(cap.saturating_sub(current));
+        // Default scans (including freshness) leave headroom for another root's work.
+        let count = requested
+            .unwrap_or_else(|| cap.div_ceil(2))
+            .min(cap.saturating_sub(current));
         if count == 0 {
             return Err(crate::EngineError::ResourceBudget {
-                message: "scan worker pool full".into(),
+                message: "all scan workers are in use; wait for a running scan to finish or cancel it, then retry".into(),
             });
         }
         self.scan_workers.fetch_add(count, Ordering::AcqRel);
@@ -143,6 +146,10 @@ impl Engine {
                 .cloned()
                 .map(|mut p| {
                     if p.pool == loomward_protocol::PoolName::ScanEnumerate {
+                        p.default_workers = loomward_protocol::Int::new(
+                            (p.max_workers.get() as usize).div_ceil(2) as i64,
+                        )
+                        .unwrap();
                         p.current_workers = loomward_protocol::Int::new(
                             self.budgets.scan_workers.load(Ordering::Acquire) as i64,
                         )
@@ -184,6 +191,56 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn issue776_default_scan_leaves_headroom_and_explicit_threads_are_a_ceiling() {
+        let budget = Budgets::default();
+        let first = budget.reserve_scan_workers(None).unwrap();
+        assert_eq!(first.count, 4);
+        let second = budget.reserve_scan_workers(Some(1)).unwrap();
+        assert_eq!(second.count, 1);
+        let refresh = budget.reserve_scan_workers(None).unwrap();
+        assert_eq!(refresh.count, 3);
+        assert!(budget.reserve_scan_workers(Some(1)).is_err());
+        drop(refresh);
+        let clamped = budget.reserve_scan_workers(Some(32)).unwrap();
+        assert_eq!(clamped.count, 3);
+        drop((first, second, clamped));
+        assert_eq!(budget.scan_workers.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn issue776_defaults_follow_small_caps_and_cap_reductions() {
+        let engine = Engine::open(crate::EngineConfig::new(
+            "unused".into(),
+            loomward_protocol::DatasetClass::Synthetic,
+        ))
+        .unwrap();
+        for cap in [1, 2, 3, 8] {
+            let wire = engine
+                .budgets_set(
+                    &serde_json::from_value(serde_json::json!({
+                        "pool":"scan_enumerate", "max_workers":cap
+                    }))
+                    .unwrap(),
+                )
+                .unwrap();
+            let first = engine.budgets.reserve_scan_workers(None).unwrap();
+            assert_eq!(first.count, (cap as usize).div_ceil(2));
+            assert_eq!(wire.pools[0].default_workers.get() as usize, first.count);
+            engine
+                .budgets_set(
+                    &serde_json::from_value(serde_json::json!({
+                        "pool":"scan_enumerate", "max_workers":1
+                    }))
+                    .unwrap(),
+                )
+                .unwrap();
+            assert!(engine.budgets.reserve_scan_workers(None).is_err());
+            drop(first);
+            assert_eq!(engine.budgets.reserve_scan_workers(None).unwrap().count, 1);
+        }
+    }
+
     #[test]
     fn shared_bytes_wait_is_cancellable_and_permits_release() {
         let budget = Arc::new(ByteBudget::new(32));

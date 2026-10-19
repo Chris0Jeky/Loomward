@@ -621,7 +621,17 @@ impl Inner {
             }
         }
         drop(claim);
-        Ok(out(encode(&JobResult { job: job? })?, None))
+        // Keep pool exhaustion distinct inside the pre-emption loop; expose contention as Busy.
+        let job = job.map_err(|error| match error {
+            loomward_engine::EngineError::ResourceBudget { message } => {
+                loomward_engine::EngineError::Busy {
+                    message,
+                    detail: None,
+                }
+            }
+            other => other,
+        })?;
+        Ok(out(encode(&JobResult { job })?, None))
     }
 
     /// The root a session may scan or read (scan.start, duplicates.inspect): a synthetic session
