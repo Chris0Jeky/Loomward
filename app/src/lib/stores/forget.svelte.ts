@@ -78,6 +78,7 @@ class Forget {
     if (!c || !p || this.working) return;
     const f: Flight = { client: c, epoch: session.connectionEpoch, info: session.info };
     this.flight = f;
+    this.promptIdentity = f;
     const current = () => { this.resume(); return this.flight === f; };
     this.working = true;
     this.attempted = true;

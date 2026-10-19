@@ -1448,7 +1448,8 @@ def check_health_forget_unused(browser) -> None:
 
 def check_health_forget_identity(browser) -> None:
     """A live SSE generation change must unlock status actions before the old HTTP call returns."""
-    for signal in ('stream.hello', 'stream.lagged'):
+    for signal, status_error in [('stream.hello', False), ('stream.lagged', False),
+                                 ('stream.hello', True), ('stream.lagged', True)]:
         class ForgetEngine(FakeEngine):
             def __init__(self):
                 super().__init__()
@@ -1466,6 +1467,8 @@ def check_health_forget_identity(browser) -> None:
                 if len(self.forgets) == 1:
                     self.release.wait(timeout=20)
                     self.first_returned.set()
+                if len(self.forgets) == 2 and status_error:
+                    return ('internal_error', 'synthetic status failure')
                 self.roots = []
                 return {'root_id': req['payload']['root_id'], 'forgotten_at': '2026-10-19T00:00:00Z'}
 
@@ -1504,9 +1507,18 @@ def check_health_forget_identity(browser) -> None:
             expect(heading).to_have_attribute('data-identity-fixture', 'mounted')
             ok(not engine.first_returned.is_set(), f'{signal} exposes the uncertain outcome while the old reply is still held')
             dialog.get_by_role('button', name='Check status', exact=True).click()
-            expect(page.get_by_role('status').filter(has_text='Forgotten at')).to_be_visible()
+            if status_error:
+                expect(page.get_by_role('alert').filter(has_text='synthetic status failure')).to_be_visible()
+                expect(dialog.get_by_role('button', name='Forget', exact=True)).to_be_enabled()
+            else:
+                expect(page.get_by_role('status').filter(has_text='Forgotten at')).to_be_visible()
             ok(len(engine.forgets) == 2 and engine.forgets[1]['request_id'] == engine.forgets[0]['request_id'],
                f'{signal} checks the original forget action key')
+            if status_error:
+                dialog.get_by_role('button', name='Forget', exact=True).click()
+                expect(page.get_by_role('status').filter(has_text='Forgotten at')).to_be_visible()
+                ok(len(engine.forgets) == 3 and engine.forgets[2]['request_id'] != engine.forgets[0]['request_id'],
+                   f'{signal} retries a definite status failure with a fresh action key')
         finally:
             engine.release.set()
             page.close()
