@@ -283,7 +283,8 @@ impl Engine {
         budget: loomward_windows::duplicate_reader::Budget,
         job_cancel: Option<Arc<AtomicBool>>,
     ) -> EngineResult<loomward_windows::duplicate_reader::Report> {
-        let root_cancel = if job_cancel.is_some() {
+        let job_cancel_was_some = job_cancel.is_some();
+        let root_cancel = if job_cancel_was_some {
             self.duplicate_read_admission_worker(root)?
         } else {
             self.duplicate_read_admission(root)?
@@ -299,6 +300,16 @@ impl Engine {
         .map_err(|reason| EngineError::PermissionDenied {
             message: reason.as_str().into(),
         })?;
+        #[cfg(test)]
+        if let Some(hook) = tests::DUPLICATE_READ_DONE_HOOK.with_borrow_mut(Option::take) {
+            hook();
+        }
+        // A durable revoke can commit while the read ran, ahead of its in-memory fence.
+        if job_cancel_was_some {
+            self.duplicate_read_admission_worker(root)?;
+        } else {
+            self.duplicate_read_admission(root)?;
+        }
         // Refuse evidence if revocation is observed at this final gate.
         let gate = self.scan_root_gate(root.key());
         let revoked = gate
@@ -634,6 +645,28 @@ impl Engine {
             return Err(EngineError::PermissionDenied {
                 message: "root revoked".into(),
             });
+        }
+        // A durable revoke can precede its in-memory cancellation fence after root minting.
+        if let RootKey::Grant(grant) = root.key() {
+            let denied = |message: &str| EngineError::PermissionDenied {
+                message: message.into(),
+            };
+            let conn = rusqlite::Connection::open_with_flags(
+                loomward_catalog::sqlite_dir(&self.config.state_dir).join("state.db"),
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+                    | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            )
+            .map_err(|_| denied("grant store unavailable"))?;
+            let active: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM root_grant WHERE id=?1 AND state='active')",
+                    [grant],
+                    |r| r.get(0),
+                )
+                .map_err(|_| denied("grant store unavailable"))?;
+            if !active {
+                return Err(denied("grant_not_active"));
+            }
         }
         revoked.aliases.insert(root.root_id().clone());
         if let Some(job_id) = revoked

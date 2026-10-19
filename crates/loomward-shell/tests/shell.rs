@@ -621,6 +621,14 @@ fn non_windows_probe_and_reader_stubs_stay_unknown_and_unsupported() {
     assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
 }
 #[test]
+fn known_folder_scan_uses_the_api_terminator_contract() {
+    let source = include_str!("../src/known_folders.rs");
+    // A maximum path length does not establish the provider allocation's size.
+    assert!(!source.contains("*out.add("));
+    assert!(source.contains("lstrlenW(out)"));
+}
+
+#[test]
 fn pins_checks_volume_before_opening_the_drive_root() {
     let source = include_str!("../src/shortcuts.rs");
     let pins = source.split("fn pins(").nth(1).unwrap();

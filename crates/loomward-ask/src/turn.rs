@@ -13,6 +13,7 @@ use loomward_protocol::{CallContext, RequestEnvelope, ResponseEnvelope, ViewServ
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
+use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 /// Per-turn budgets (docs/46 section 8.2).
@@ -105,12 +106,26 @@ pub fn cited(text: &str) -> Vec<String> {
 }
 
 /// Runs one turn. Every round is appended to `log` before the provider is called.
+///
+/// `view` is owned (an `Arc`) because each tool call runs on its own thread so that a hung service
+/// cannot outlive [`TURN_BUDGET`]: the turn ends `Timeout` and the stuck thread is left behind.
 pub fn ask(
-    view: &dyn ViewService,
+    view: Arc<dyn ViewService>,
     provider: &dyn Provider,
     profile: &ProviderProfile,
     question: &str,
     log: &mut Vec<OutboundRecord>,
+) -> Result<Answer, Failure> {
+    ask_within(view, provider, profile, question, log, TURN_BUDGET)
+}
+
+fn ask_within(
+    view: Arc<dyn ViewService>,
+    provider: &dyn Provider,
+    profile: &ProviderProfile,
+    question: &str,
+    log: &mut Vec<OutboundRecord>,
+    budget: Duration,
 ) -> Result<Answer, Failure> {
     let started = Instant::now();
     let principal = profile.principal();
@@ -124,6 +139,8 @@ pub fn ask(
     ];
     let mut tools = Tools {
         view,
+        deadline: started + budget,
+        timed_out: false,
         principal,
         handles: Vec::new(),
         output_bytes: 0,
@@ -146,7 +163,7 @@ pub fn ask(
                 false,
             )));
         }
-        let Some(left) = TURN_BUDGET.checked_sub(started.elapsed()) else {
+        let Some(left) = budget.checked_sub(started.elapsed()) else {
             return Err(tools.failure(ProviderError::new(
                 ErrorKind::Timeout,
                 "turn budget spent",
@@ -201,6 +218,13 @@ pub fn ask(
             });
         }
         let results: Vec<Message> = tool_calls.iter().map(|c| tools.run(c)).collect();
+        if tools.timed_out {
+            return Err(tools.failure(ProviderError::new(
+                ErrorKind::Timeout,
+                "turn budget spent during a tool call",
+                false,
+            )));
+        }
         messages.push(Message::Assistant {
             content,
             tool_calls,
@@ -226,7 +250,10 @@ fn tool_schemas() -> Vec<Value> {
 }
 
 struct Tools<'a> {
-    view: &'a dyn ViewService,
+    view: Arc<dyn ViewService>,
+    deadline: Instant,
+    /// A tool call outlived the turn budget: the turn ends `Timeout` instead of answering.
+    timed_out: bool,
     principal: &'a str,
     handles: Vec<(String, String)>,
     output_bytes: usize,
@@ -245,7 +272,9 @@ impl Tools<'_> {
     /// A tool's result or a tool error, as the model sees it. Never panics on model input.
     fn run(&mut self, call: &ToolCall) -> Message {
         self.calls += 1;
-        let content = if self.calls > MAX_TOOL_CALLS {
+        let content = if self.timed_out {
+            tool_error("turn budget spent")
+        } else if self.calls > MAX_TOOL_CALLS {
             tool_error("tool call budget spent")
         } else {
             // Handles minted for a result the model never sees must not enter the ledger, or an
@@ -306,10 +335,14 @@ impl Tools<'_> {
                            "max_bytes": null, "modified_after": null, "modified_before": null,
                            "kind": "any", "limit": FIND_PAGE, "cursor": null}),
                 )?);
+                // The service pages at FIND_PAGE; the ledger bound (MAX_LEDGER) holds here even if
+                // a service returns more. Rows past the page are unseen, so the page says so.
                 let hits = result.get("hits").and_then(Value::as_array);
+                let over = hits.is_some_and(|h| h.len() > FIND_PAGE as usize);
                 let rows: Vec<Value> = hits
                     .into_iter()
                     .flatten()
+                    .take(FIND_PAGE as usize)
                     .map(|hit| self.row(hit))
                     .collect();
                 let mut out = model_fields(
@@ -319,8 +352,11 @@ impl Tools<'_> {
                 out.insert("rows".into(), json!(rows));
                 out.insert(
                     "more".into(),
-                    json!(result.get("next_cursor").is_some_and(|c| !c.is_null())),
+                    json!(over || result.get("next_cursor").is_some_and(|c| !c.is_null())),
                 );
+                if over {
+                    out.insert("truncated".into(), json!(true));
+                }
                 // Coverage is grant-scoped already; identifiers and paths are not model data.
                 let roots: Vec<_> = result
                     .get("roots")
@@ -349,13 +385,32 @@ impl Tools<'_> {
     }
 
     /// One call as the client principal: the service applies the grant, not this code.
-    fn call(&self, command: &str, payload: Value) -> Result<Map<String, Value>, String> {
+    /// Bounded by the turn's remaining budget; a call still running at the deadline marks the turn
+    /// timed out.
+    fn call(&mut self, command: &str, payload: Value) -> Result<Map<String, Value>, String> {
         let req: RequestEnvelope = serde_json::from_value(json!({
             "protocol": "loomward/3", "request_id": format!("ask_{}", self.calls),
             "command": command, "payload": payload
         }))
         .map_err(|_| "invalid request".to_string())?;
-        match self.view.call(req, &CallContext::client(self.principal)) {
+        let (tx, rx) = mpsc::channel();
+        let (view, principal) = (Arc::clone(&self.view), self.principal.to_owned());
+        std::thread::Builder::new()
+            .name("lw-ask-tool".into())
+            .spawn(move || {
+                let _ = tx.send(view.call(req, &CallContext::client(&principal)));
+            })
+            .map_err(|_| "no worker".to_string())?;
+        let left = self.deadline.saturating_duration_since(Instant::now());
+        let response = match rx.recv_timeout(left) {
+            Ok(r) => r,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                self.timed_out = true;
+                return Err("turn budget spent".into());
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => return Err("service call failed".into()),
+        };
+        match response {
             ResponseEnvelope::Ok(ok) => Ok(ok.result),
             ResponseEnvelope::Err(e) => Err(serde_json::to_value(e.error.code)
                 .ok()
@@ -460,7 +515,9 @@ fn tool_error(message: &str) -> Value {
 }
 
 /// Names are untrusted data (docs/46 section 8.4): control, bidi, invisible format and line or
-/// paragraph separator characters escaped, at most 255 characters before escaping.
+/// paragraph separator characters escaped as `\u{..}`, and every literal backslash doubled so a
+/// spelled `\u{..}` cannot pass for an escape (#583 follow-up b). At most 255 characters before
+/// escaping.
 pub fn clean(s: &str) -> String {
     s.chars()
         .take(255)
@@ -478,7 +535,9 @@ pub fn clean(s: &str) -> String {
                         | '\u{FEFF}'
                         | '\u{E0000}'..='\u{E007F}'
                 );
-            let escaped: Vec<char> = if hostile {
+            let escaped: Vec<char> = if c == '\\' {
+                vec!['\\', '\\']
+            } else if hostile {
                 c.escape_unicode().collect()
             } else {
                 vec![c]

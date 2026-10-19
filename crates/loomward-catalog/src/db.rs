@@ -357,7 +357,7 @@ pub(crate) fn open_pair_with(dir: &Path, dataset: &str, ranked: bool) -> Result<
         if tx.execute("UPDATE st.object_ref SET state='unresolved',retired=1 WHERE state='resolved' AND catalog_instance IS NOT ?1",[instance])?>0{tx.execute("UPDATE st.revision SET state_rev=state_rev+1",[])?;}
         tx.commit()?;
     }
-    let tx = conn.transaction()?;
+    let mut tx = conn.transaction()?;
     let grants = {
         let mut s = tx
             .prepare("SELECT id FROM st.root_grant WHERE state IN ('active','identity_changed')")?;
@@ -378,11 +378,26 @@ pub(crate) fn open_pair_with(dir: &Path, dataset: &str, ranked: bool) -> Result<
     };
     for root in interrupted {
         tx.execute("UPDATE root SET state='repairing' WHERE id=?1", [root])?;
-        crate::writer::rollup(&tx, root, false)?;
-        tx.execute(
-            "UPDATE root SET state='partial',active_run=NULL WHERE id=?1",
-            [root],
-        )?;
+        let repair = tx.savepoint()?;
+        match crate::writer::rollup(&repair, root, false) {
+            Ok(()) => {
+                repair.execute(
+                    "UPDATE root SET state='partial',active_run=NULL WHERE id=?1",
+                    [root],
+                )?;
+                repair.commit()?;
+            }
+            Err(Error::Invalid("tree depth limit")) => {
+                drop(repair);
+                // Quarantine legacy overdeep trees without certifying their old sums or blocking other roots.
+                tx.execute(
+                    "UPDATE dir SET agg_valid_rev=dirty_rev-1,sub_complete=0 WHERE root_id=?1",
+                    [root],
+                )?;
+                tx.execute("UPDATE root SET active_run=NULL WHERE id=?1", [root])?;
+            }
+            Err(e) => return Err(e),
+        }
     }
     tx.execute("UPDATE scan_run SET state='failed',error_json='{\"code\":\"restart_interrupted\"}' WHERE state='running'",[])?;
     tx.execute("DELETE FROM stage_entry", [])?;
@@ -613,5 +628,70 @@ mod tests {
                 .unwrap(),
             -2000
         );
+    }
+
+    /// #495: SQLite 3.51.0-3.51.1's unix VFS takes the process-global `unixBigLock` inside
+    /// `unixLock` (via `unixIsSharingShmNode`) while holding the inode mutex, and `findReusableFd`
+    /// takes them in the other order. One thread closing the last WAL connection to a file (the
+    /// checkpoint-on-close EXCLUSIVE lock) while another opens it deadlocks both, and every later
+    /// SQLite call in the process then waits on the global lock: the hosted ubuntu freeze. Fixed
+    /// upstream in 3.51.2; this pins the bundled SQLite past it. The race is unix-only.
+    #[test]
+    fn closing_and_opening_one_wal_database_concurrently_never_deadlocks() {
+        use std::time::Duration;
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("race.db");
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE t(x INTEGER)")
+            .unwrap();
+        // Readers of another WAL database contend for the global lock on every snapshot (the
+        // `unixShmBarrier` the CI dump shows), which holds a closer on the inode mutex for longer.
+        let noise_path = temp.path().join("noise.db");
+        Connection::open(&noise_path)
+            .unwrap()
+            .execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE n(x INTEGER)")
+            .unwrap();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let noise: Vec<_> = (0..4)
+            .map(|_| {
+                let (conn, stop) = (Connection::open(&noise_path).unwrap(), stop.clone());
+                std::thread::spawn(move || {
+                    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                        conn.query_row("SELECT count(*) FROM n", [], |r| r.get::<_, i64>(0))
+                            .unwrap();
+                    }
+                })
+            })
+            .collect();
+        let (done, finished) = crossbeam_channel::bounded::<()>(2);
+        for _ in 0..2 {
+            let (path, done) = (path.clone(), done.clone());
+            std::thread::spawn(move || {
+                for _ in 0..1_000 {
+                    // Each close of the last connection takes the checkpoint-on-close lock.
+                    Connection::open(&path)
+                        .unwrap()
+                        .query_row("SELECT count(*) FROM t", [], |r| r.get::<_, i64>(0))
+                        .unwrap();
+                }
+                done.send(()).unwrap();
+            });
+        }
+        for _ in 0..2 {
+            if finished.recv_timeout(Duration::from_secs(120)).is_err() {
+                // Deadlocked threads hold SQLite's global VFS lock for good, so every other test
+                // in this process would hang too: end it here with the cause.
+                let _ = std::io::Write::write_all(
+                    &mut std::io::stderr(),
+                    b"concurrent open/close of one WAL database deadlocked inside SQLite (#495)\n",
+                );
+                std::process::abort();
+            }
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        for thread in noise {
+            thread.join().unwrap();
+        }
     }
 }

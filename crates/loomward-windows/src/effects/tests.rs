@@ -23,6 +23,124 @@ fn lab() -> (tempfile::TempDir, Destination) {
     (temp, destination)
 }
 
+/// Host measurement (#687), not a product invariant: run with `--nocapture`.
+#[test]
+fn h2_relative_rename_host_probe() {
+    if skip_elevated() {
+        return;
+    }
+    use windows_sys::Wdk::Storage::FileSystem::{
+        FileRenameInformation, NtSetInformationFile, FILE_RENAME_INFORMATION,
+    };
+    println!(
+        "H2 layout: Win32 size={} root={} length={} name={}; native size={} root={} length={} name={}",
+        size_of::<FILE_RENAME_INFO>(),
+        offset_of!(FILE_RENAME_INFO, RootDirectory),
+        offset_of!(FILE_RENAME_INFO, FileNameLength),
+        offset_of!(FILE_RENAME_INFO, FileName),
+        size_of::<FILE_RENAME_INFORMATION>(),
+        offset_of!(FILE_RENAME_INFORMATION, RootDirectory),
+        offset_of!(FILE_RENAME_INFORMATION, FileNameLength),
+        offset_of!(FILE_RENAME_INFORMATION, FileName),
+    );
+    for api in [
+        "Win32 ReplaceIfExists=false",
+        "Win32 Flags=0",
+        "Win32 Ex Flags=0",
+        "native",
+    ] {
+        for hold in ["none", "named", "default"] {
+            let (_temp, destination) = lab();
+            let stage = destination.stage("staging").unwrap();
+            let file = stage.create_file(&[], "payload").unwrap();
+            file.write_and_flush(&mut &b"data"[..], 4).unwrap();
+            let stream = file.create_stream("note").unwrap();
+            stream.write_and_flush(&mut &b"n"[..], 1).unwrap();
+            let id = file.identity().unwrap();
+            drop((stream, file));
+            let default_hold = (hold != "none").then(|| stage.verify(&[], "payload", &id).unwrap());
+            let named_hold = (hold == "named").then(|| {
+                default_hold
+                    .as_ref()
+                    .unwrap()
+                    .verify_stream("note")
+                    .unwrap()
+            });
+            // Isolate a named-stream hold from a default-stream hold.
+            let default_hold = if hold == "named" {
+                drop(default_hold);
+                None
+            } else {
+                default_hold
+            };
+            let file = relative(
+                destination.parent(),
+                &stage.name,
+                DELETE | FILE_READ_ATTRIBUTES,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                false,
+                0,
+            )
+            .unwrap();
+            let name = component("published").unwrap();
+            let bytes = size_of::<FILE_RENAME_INFO>()
+                .max(offset_of!(FILE_RENAME_INFO, FileName) + (name.len() + 1) * 2);
+            let mut storage = vec![0u64; bytes.div_ceil(8)];
+            let rename = storage.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+            unsafe {
+                if api == "Win32 ReplaceIfExists=false" {
+                    (*rename).Anonymous.ReplaceIfExists = false;
+                } else {
+                    (*rename).Anonymous.Flags = 0;
+                }
+                (*rename).RootDirectory = destination.parent().as_raw_handle();
+                (*rename).FileNameLength = (name.len() * 2) as u32;
+                ptr::copy_nonoverlapping(
+                    name.as_ptr(),
+                    ptr::addr_of_mut!((*rename).FileName).cast::<u16>(),
+                    name.len(),
+                );
+            }
+            let result = if api == "native" {
+                let mut status = IO_STATUS_BLOCK::default();
+                let code = unsafe {
+                    NtSetInformationFile(
+                        file.as_raw_handle(),
+                        &mut status,
+                        rename.cast(),
+                        bytes as u32,
+                        FileRenameInformation,
+                    )
+                };
+                println!("H2 native hold={hold}: NTSTATUS=0x{:08x}", code as u32);
+                if code < 0 {
+                    Err(nt_error(code))
+                } else {
+                    Ok(())
+                }
+            } else if unsafe {
+                SetFileInformationByHandle(
+                    file.as_raw_handle(),
+                    if api == "Win32 Ex Flags=0" {
+                        FileRenameInfoEx
+                    } else {
+                        FileRenameInfo
+                    },
+                    rename.cast(),
+                    bytes as u32,
+                )
+            } == 0
+            {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(())
+            };
+            println!("H2 {api} hold={hold}: {result:?}");
+            drop((file, named_hold, default_hold, stage));
+        }
+    }
+}
+
 #[test]
 fn copy_staged_writes_and_metadata_keep_file_and_ancestry_pinned() {
     if skip_elevated() {
@@ -53,6 +171,24 @@ fn copy_staged_writes_and_metadata_keep_file_and_ancestry_pinned() {
     assert_eq!(
         fs::read(temp.path().join("published/child/payload")).unwrap(),
         b"payload"
+    );
+}
+
+#[test]
+fn staging_entry_limit_is_inclusive() {
+    assert_eq!(loomward_operations::MAX_ITEMS, 200_000);
+    if skip_elevated() {
+        return;
+    }
+    let (_temp, destination) = lab();
+    let stage = destination.stage("staging").unwrap();
+    for n in 0..9 {
+        drop(stage.create_file(&[], &format!("file-{n}")).unwrap());
+    }
+    assert_eq!(stage.entries_with_limit(&[], 9).unwrap().len(), 9);
+    assert_eq!(
+        stage.entries_with_limit(&[], 8).unwrap_err().to_string(),
+        "incomplete staging listing"
     );
 }
 
@@ -1295,4 +1431,38 @@ fn destination_volume_hint_follows_the_observed_volume_not_the_drive_letter() {
         .expect("the alias opens its pinned parent through the observed volume");
     let _stage = destination.stage("staging").unwrap();
     assert!(temp.path().join("staging").is_dir());
+}
+
+/// Muse bug hunt (copy-exec): a verification read may legally return fewer bytes than asked. A short
+/// read on a sector boundary is continued, not reported as the file changing; an early end, a short
+/// read off a boundary (the end moved) or extra bytes (the file grew) still are.
+#[test]
+fn sector_hash_continues_short_reads_and_still_catches_a_changed_size() {
+    struct Trickle<'a>(&'a [u8], usize);
+    impl Read for Trickle<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            let n = buf.len().min(self.1).min(self.0.len());
+            buf[..n].copy_from_slice(&self.0[..n]);
+            self.0 = &self.0[n..];
+            Ok(n)
+        }
+    }
+    let data: Vec<u8> = (0..10_000u32).map(|i| (i * 7) as u8).collect();
+    let mut buffer = vec![0u8; 4096];
+    let want = <[u8; 32]>::from(Sha256::digest(&data));
+    let size = data.len() as u64;
+    for step in [512, 1024, 4096, usize::MAX] {
+        assert_eq!(
+            sector_hash(Trickle(&data, step), size, 512, &mut buffer).unwrap(),
+            want,
+            "step {step}"
+        );
+    }
+    let changed = |reader: Trickle<'_>, size: u64, buffer: &mut [u8]| {
+        let e = sector_hash(reader, size, 512, buffer).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof, "{e}");
+    };
+    changed(Trickle(&data[..9_000], usize::MAX), size, &mut buffer);
+    changed(Trickle(&data, 100), size, &mut buffer);
+    changed(Trickle(&data, usize::MAX), size - 1, &mut buffer);
 }

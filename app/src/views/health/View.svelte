@@ -11,6 +11,7 @@
   import { scans } from '../../lib/stores/scan.svelte';
   import { session } from '../../lib/stores/session.svelte';
   import { Say } from '../../lib/ui/say.svelte';
+  import { LoomwardError, TransportError } from '../../lib/transport/client';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
   import Diagnostics from './Diagnostics.svelte';
   import type { GrantList, Health, Root, RootList } from '../../lib/contracts.gen';
@@ -20,7 +21,7 @@
   untrack(() => picker.resume());
 
   /** A revocation (or forgetting) the owner has asked for and not yet confirmed. */
-  type Pending = { kind: 'root'; id: string; label: string } | { kind: 'grant'; id: string; label: string } | { kind: 'forget'; id: string; label: string };
+  type Pending = { kind: 'root'; id: string; label: string } | { kind: 'grant'; id: string; label: string } | { kind: 'forget'; id: string; label: string; requestId?: string };
 
   /** The last folder of a display path, for the confirmation's question. */
   const leaf = (path: string) => path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || path;
@@ -38,6 +39,7 @@
   let pending = $state<Pending | null>(null);
   let purge = $state(false);
   let working = $state(false);
+  let forgetUnknown = $state(false);
   let done = $state('');
   let confirmEl = $state<HTMLElement>();
   let doneEl = $state<HTMLElement>();
@@ -86,6 +88,7 @@
   const rootLabel = (id: string) => roots?.roots.find((r) => r.root_id === id)?.display_path.text ?? id;
 
   async function ask(p: Pending) {
+    if (working || forgetUnknown) return;
     opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     pending = p;
     purge = false;
@@ -96,6 +99,7 @@
 
   /** Keep it: the confirmation closes and focus returns to the button that opened it. */
   async function cancel() {
+    if (working || forgetUnknown) return;
     pending = null;
     await tick();
     if (opener?.isConnected) opener.focus();
@@ -105,27 +109,48 @@
   async function confirm() {
     const c = session.client;
     const p = pending;
-    if (!c || !p) return;
+    if (!c || !p || working) return;
     working = true;
+    error = '';
+    let checkingForgottenRecord = false;
     try {
       if (p.kind === 'root') {
         const { result } = await c.call('roots.revoke', { root_id: p.id, purge_catalog: purge });
         done = `Revoked ${escapedName(p.label)} at ${formatTime(result.revoked_at)}. ${result.purged ? "Loomward's own catalogue rows for it were deleted." : 'Its catalogue rows were kept.'} No scanned file was touched.`;
       } else if (p.kind === 'forget') {
-        const { result } = await c.call('roots.forget', { root_id: p.id });
+        // Keep the action key: a timeout bounds the wait, not the mutation (#716).
+        p.requestId ??= c.nextRequestId();
+        let result;
+        try {
+          ({ result } = await c.call('roots.forget', { root_id: p.id }, { deadlineMs: 60000, requestId: p.requestId }));
+        } catch (e) {
+          if (!forgetUnknown || !(e instanceof LoomwardError) || e.code !== 'not_found') throw e;
+          // After receipt expiry or restart, the anonymised grant proves completion.
+          checkingForgottenRecord = true;
+          const { result: records } = await c.call('grants.list', {});
+          const record = records.grants.find(g => g.kind === 'metadata_root' && g.root_id === p.id);
+          if (!record || record.kind !== 'metadata_root' || !record.forgotten_at) throw e;
+          result = { root_id: p.id, forgotten_at: record.forgotten_at };
+        }
         // the result does not repeat the name it just removed
-        done = `Forgotten at ${formatTime(result.forgotten_at)}. Its name and catalogue were removed from Loomward's database and its own backup copies; traces may remain in unused disk space until it is overwritten. No scanned file was touched.`;
+        done = `Forgotten at ${formatTime(result.forgotten_at)}. ${checkingForgottenRecord ? "Its name and catalogue were removed from Loomward's database. Backup cleanup is unverified after the service receipt was lost." : "Its name and catalogue were removed from Loomward's database and its own backup copies; traces may remain in unused disk space until it is overwritten."} No scanned file was touched.`;
       } else {
         const { result } = await c.call('grants.revoke', { grant_id: p.id });
         done = `Revoked ${escapedName(p.label)} at ${formatTime(result.revoked_at)}.`;
       }
+      forgetUnknown = false;
       pending = null;
       await load();
       // the confirmation (and, for a root, its now disabled button) is gone: focus the result, which is announced
       await tick();
       doneEl?.focus();
     } catch (e) {
-      error = session.handle(e);
+      forgetUnknown = p.kind === 'forget' && (checkingForgottenRecord || e instanceof TransportError || e instanceof LoomwardError && e.code === 'deadline_exceeded');
+      if (!forgetUnknown) {
+        // A definite answer is cached under its request id: a retry must start a new attempt, not replay it.
+        if (p.kind === 'forget') p.requestId = undefined;
+        error = session.handle(e);
+      }
     } finally {
       working = false;
     }
@@ -189,6 +214,7 @@
 <!-- live regions stay in the page and only their text changes: one inserted already filled is often not announced -->
 <p class="bad live" class:has={!!error} role="alert">{error}</p>
 <p class="ok live" class:has={!!done} role="status" tabindex="-1" bind:this={doneEl}>{done}</p>
+<p class="live" class:has={pending?.kind === 'forget' && (working || forgetUnknown)} role="status">{pending?.kind === 'forget' ? forgetUnknown ? 'Forget outcome pending. It may already have completed. Check status to retrieve the result.' : working ? 'Forgetting. Large roots can take a while; no scanned file is touched.' : '' : ''}</p>
 
 {#if pending}
   <section class="panel confirm" role="group" aria-labelledby="h-confirm" bind:this={confirmEl} tabindex="-1">
@@ -203,8 +229,8 @@
       <p class="muted">The grant stops authorising anything further. Anything already sent under it cannot be recalled.</p>
     {/if}
     <div class="row">
-      <button class="btn danger" type="button" disabled={working} onclick={() => void confirm()}>{pending.kind === 'forget' ? (working ? 'Forgetting' : 'Forget') : working ? 'Revoking' : 'Revoke'}</button>
-      <button class="btn" type="button" disabled={working} onclick={() => void cancel()}>Keep it</button>
+      <button class="btn danger" type="button" disabled={working} onclick={() => void confirm()}>{pending.kind === 'forget' ? (working ? 'Forgetting' : forgetUnknown ? 'Check status' : 'Forget') : working ? 'Revoking' : 'Revoke'}</button>
+      <button class="btn" type="button" disabled={working || forgetUnknown} onclick={() => void cancel()}>Keep it</button>
     </div>
   </section>
 {/if}

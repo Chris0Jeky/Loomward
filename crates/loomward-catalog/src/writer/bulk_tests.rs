@@ -975,3 +975,198 @@ fn an_opted_in_store_is_backfilled_in_the_background_to_the_queue_path_index() {
     drop(catalog);
     assert_eq!(settled(migrated.path()), expected);
 }
+
+fn backfill_fixture(ranked: bool, extra_files: i64) -> tempfile::TempDir {
+    let temp = tempfile::tempdir().unwrap();
+    let catalog = open_with(temp.path(), false, ranked);
+    let (grant, root) = register(catalog.writer(), 1);
+    scan(
+        catalog.writer(),
+        temp.path(),
+        grant,
+        root,
+        "completed",
+        &mut || {},
+    );
+    drop(catalog);
+    let mut db = crate::db::open_pair_with(temp.path(), "synthetic", ranked).unwrap();
+    let tx = db.transaction().unwrap();
+    tx.execute(
+        "WITH RECURSIVE ids(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM ids WHERE i<?2)
+         INSERT INTO file(dir_id,name,logical,attrs,flags,born_run,seen_run)
+         SELECT ?1,printf('AnnualReport-%05d final.csv',i),7,32,0,1,1 FROM ids",
+        params![root, extra_files],
+    )
+    .unwrap();
+    crate::search::drain_tokens(&tx).unwrap();
+    tx.commit().unwrap();
+    temp
+}
+
+fn wait_for_backfill(path: &Path) {
+    let db = Connection::open(path.join("catalog.db")).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while crate::search::backfilling(&db).unwrap() {
+        assert!(
+            Instant::now() < deadline,
+            "background backfill did not finish"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM search_dirty", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    db.execute_batch("INSERT INTO search_token(search_token,rank) VALUES('integrity-check',1)")
+        .unwrap();
+}
+
+#[test]
+fn backfill_above_one_round_finishes_with_full_token_parity() {
+    let _hang = watchdog();
+    let queued = backfill_fixture(true, 40_001);
+    let expected = token_entries(&Connection::open(queued.path().join("catalog.db")).unwrap());
+    let migrated = backfill_fixture(false, 40_001);
+    let mut db = crate::db::open_pair_with(migrated.path(), "synthetic", true).unwrap();
+    let count = |db: &Connection, table: &str| {
+        db.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| {
+            r.get::<_, i64>(0)
+        })
+        .unwrap()
+    };
+    let keys = count(&db, "search_backfill");
+    assert!(keys > 20_000);
+    assert!(backfill_step(&mut db).unwrap(), "one round must leave work");
+    assert_eq!(count(&db, "search_backfill"), keys - 20_000);
+    assert_eq!(count(&db, "search_token"), 20_000);
+    drop(db);
+    // Reopen resumes the remaining rounds even without opting in again.
+    let catalog = crate::Catalog::open(migrated.path(), "synthetic").unwrap();
+    wait_for_backfill(migrated.path());
+    let db = Connection::open(migrated.path().join("catalog.db")).unwrap();
+    assert_eq!(count(&db, "search_token"), keys);
+    assert_eq!(token_entries(&db), expected);
+    drop(catalog);
+}
+
+#[test]
+fn a_failed_backfill_round_rolls_back_and_the_writer_retries_it() {
+    let _hang = watchdog();
+    let queued = backfill_fixture(true, 3);
+    let expected = token_entries(&Connection::open(queued.path().join("catalog.db")).unwrap());
+    let migrated = backfill_fixture(false, 3);
+    let db = crate::db::open_pair_with(migrated.path(), "synthetic", true).unwrap();
+    let (attempt_tx, attempt_rx) = crossbeam_channel::unbounded();
+    let (commit_tx, commit_rx) = crossbeam_channel::bounded(0);
+    let mut attempts = 0;
+    // Reject the real SQLite COMMIT after indexing and queue deletion, not a mock round.
+    db.commit_hook(Some(move || {
+        attempts += 1;
+        attempt_tx.send(attempts).unwrap();
+        attempts == 1 || commit_rx.recv_timeout(Duration::from_secs(30)).is_err()
+    }))
+    .unwrap();
+    let writer = Writer::start(db).unwrap();
+    assert_eq!(attempt_rx.recv_timeout(Duration::from_secs(30)).unwrap(), 1);
+    let observer = Connection::open(migrated.path().join("catalog.db")).unwrap();
+    assert!(crate::search::backfilling(&observer).unwrap());
+    assert_eq!(
+        observer
+            .query_row("SELECT count(*) FROM search_token", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        0,
+        "failed round must publish no tokens"
+    );
+    assert_eq!(
+        observer
+            .query_row("SELECT count(*) FROM search_backfill", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        observer
+            .query_row("SELECT count(*) FROM file", [], |r| r.get::<_, i64>(0))
+            .unwrap()
+            + observer
+                .query_row(
+                    "SELECT count(*) FROM dir WHERE parent_id IS NOT NULL",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+        "failed round must lose no queued keys"
+    );
+    assert_eq!(attempt_rx.recv_timeout(Duration::from_secs(30)).unwrap(), 2);
+    commit_tx.send(()).unwrap();
+    wait_for_backfill(migrated.path());
+    assert_eq!(token_entries(&observer), expected);
+    drop(writer);
+}
+
+/// #774: a finished traversal with coverage gaps ends as `partial`. It is stored as a completed run
+/// with a partial sample and advances the generation, but never reconciles absence, even when the
+/// catalogue's own listings would make the traversal look full.
+#[test]
+fn partial_end_run_records_a_finished_run_without_reconciling_absence() {
+    let _hang = watchdog();
+    let temp = tempfile::tempdir().unwrap();
+    let catalog = open(temp.path(), false);
+    let w = catalog.writer();
+    let (grant, root_dir) = register(w, 1);
+    let listing = |run, dir_id, files, dirs| {
+        w.call(WriteCommand::DirListing(DirListing {
+            run_id: run,
+            dir_id,
+            files,
+            dirs,
+            state: "complete".into(),
+            skipped: 0,
+            errors: 0,
+        }))
+        .unwrap();
+    };
+    let run = begin(w, grant);
+    listing(
+        run,
+        root_dir,
+        vec![],
+        vec![obs("keep", 0, Some(0x11)), obs("gone", 0, Some(0x12))],
+    );
+    let (keep, gone) = (
+        child(temp.path(), root_dir, "keep"),
+        child(temp.path(), root_dir, "gone"),
+    );
+    listing(run, keep, vec![obs("k.txt", 5, Some(1))], vec![]);
+    listing(run, gone, vec![obs("g.txt", 7, Some(2))], vec![]);
+    end(w, run, "completed").unwrap();
+    let db = Connection::open(temp.path().join("catalog.db")).unwrap();
+    let rows = |run: i64| {
+        db.query_row(
+            "SELECT (SELECT count(*) FROM dir WHERE id=?2),(SELECT count(*) FROM file WHERE dir_id=?2),
+                    s.state,json_extract(s.counters_json,'$.complete'),r.state,r.generation
+             FROM scan_run s JOIN root r ON r.id=s.root_id WHERE s.id=?1",
+            params![run, gone],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?, r.get::<_, bool>(3)?, r.get::<_, String>(4)?, r.get::<_, i64>(5)?)),
+        )
+        .unwrap()
+    };
+    let rescan = |state: &str| {
+        let run = begin(w, grant);
+        listing(run, root_dir, vec![], vec![obs("keep", 0, Some(0x11))]);
+        listing(run, keep, vec![obs("k.txt", 5, Some(1))], vec![]);
+        end(w, run, state).unwrap();
+        run
+    };
+    let partial = rescan("partial");
+    assert_eq!(
+        rows(partial),
+        (1, 1, "completed".into(), false, "partial".into(), partial)
+    );
+    // Control: the same traversal ended as complete does reconcile the absent directory.
+    let full = rescan("completed");
+    assert_eq!(
+        rows(full),
+        (0, 0, "completed".into(), true, "complete".into(), full)
+    );
+}

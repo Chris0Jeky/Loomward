@@ -138,6 +138,8 @@ pub(crate) struct Registry {
     records: Mutex<HashMap<JobId, Record>>,
     runners: Mutex<HashMap<JobKind, JobRunner>>,
     seq: AtomicU64,
+    /// The newest scan job submitted per root; never pruned with the retained records.
+    last_scan: Mutex<HashMap<RootId, JobId>>,
 }
 impl Registry {
     /// One live scan or duplicates job per root and one live refit overall: `busy` with
@@ -312,6 +314,15 @@ impl Registry {
                     commit_gate: Arc::new(Mutex::new(())),
                 },
             );
+            // Kept apart from the retained records, which expire: a root's last scan stays named.
+            if spec.kind == JobKind::Scan {
+                if let Some(root) = &spec.root_id {
+                    self.last_scan
+                        .lock()
+                        .unwrap()
+                        .insert(root.clone(), job.job_id.clone());
+                }
+            }
             emit(&events, &job);
         }
         let registry = self.clone();
@@ -580,6 +591,12 @@ impl Engine {
                 )
             })
             .count())
+    }
+
+    /// The newest scan job this engine instance submitted for `root`. It is not persisted: after a
+    /// restart it is absent, and its job may already have expired from `jobs.get` retention.
+    pub fn last_scan_job(&self, root: &RootId) -> Option<JobId> {
+        self.jobs.last_scan.lock().unwrap().get(root).cloned()
     }
 
     /// Recent retained jobs, newest first, optionally filtered by kind.
@@ -895,6 +912,31 @@ mod tests {
     }
     fn drain(stream: &mut Box<dyn loomward_protocol::EventStream>) {
         while let loomward_protocol::RecvOutcome::Event(_) = stream.recv_timeout(Duration::ZERO) {}
+    }
+    #[test]
+    fn last_scan_job_is_the_latest_scan_submitted_for_each_root() {
+        let e = engine();
+        let runner: JobRunner = Arc::new(|_, _| Ok(CoverageState::Cancelled));
+        // The spawn closure never starts the worker, so each job stays queued and no runner runs.
+        let submit = |kind, root: Option<&str>| {
+            e.jobs
+                .submit_with_spawn(
+                    JobSpec::new(kind, root.map(|r| RootId::new(r).unwrap())),
+                    runner.clone(),
+                    e.events.clone(),
+                    None,
+                    |_, _| Ok(()),
+                )
+                .unwrap()
+                .job_id
+        };
+        let scan_a = submit(JobKind::Scan, Some("rt_a"));
+        let scan_b = submit(JobKind::Scan, Some("rt_b"));
+        // A duplicates job is not a scan and must not replace the root's last scan.
+        submit(JobKind::Duplicates, Some("rt_a"));
+        assert_eq!(e.last_scan_job(&RootId::new("rt_a").unwrap()), Some(scan_a));
+        assert_eq!(e.last_scan_job(&RootId::new("rt_b").unwrap()), Some(scan_b));
+        assert_eq!(e.last_scan_job(&RootId::new("rt_c").unwrap()), None);
     }
     #[test]
     fn submit_publishes_queued_before_running() {

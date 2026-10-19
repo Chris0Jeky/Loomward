@@ -11,13 +11,14 @@ loomward-protocol = { path = "../loomward-protocol" }
 loomward-windows = { path = "../loomward-windows" }
 loomward-service = { path = "../loomward-service" }
 loomward-catalog = { path = "../loomward-catalog" }
-rusqlite = { version = "0.38.0", features = ["bundled"] }
+rusqlite = { version = "0.39.0", features = ["bundled"] }
 sha2.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+loomward-service = { path = "../loomward-service", features = ["test-support"] }
 tempfile.workspace = true
 
 [target.'cfg(windows)'.dependencies]
