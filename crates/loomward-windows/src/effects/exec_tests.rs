@@ -2356,3 +2356,40 @@ fn copy_plan_preserves_source_volume_guid_binding() {
     let legacy: Plan = serde_json::from_value(legacy).unwrap();
     assert_eq!(legacy.root_identity().volume_guid, None);
 }
+
+/// #526: a staging folder name already taken in the destination parent (an entry Loomward did not
+/// create) refuses the run with the stable `staging_name_taken` code, not a null cause, and the entry
+/// is left untouched.
+#[test]
+fn a_taken_staging_folder_name_refuses_with_its_code() {
+    let Some(lab) = Lab::new() else { return };
+    fs::write(lab.src().join("f.bin"), b"payload").unwrap();
+    let op = lab.start(&["f.bin"]);
+    let db = lab.tmp.path().join("state/state.db");
+    let dest = lab.dest();
+    let control = Control::new(false).with_hook(move |p, _| {
+        if p == Point::CheckedStaging {
+            // The worker holds the write lock here; a separate read connection still sees the intent.
+            let raw = rusqlite::Connection::open(&db).unwrap();
+            let body: String = raw
+                .query_row(
+                    "SELECT body FROM op_journal WHERE op_id=?1 ORDER BY seq DESC LIMIT 1",
+                    [op as i64],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            let entry: loomward_operations::Entry = serde_json::from_str(&body).unwrap();
+            let Record::StagingIntent { token } = entry.record else {
+                panic!("staging intent is the last record: {entry:?}");
+            };
+            fs::create_dir(dest.join(token)).unwrap();
+        }
+        Flow::Continue
+    });
+    let outcome = run(&lab.store, op, &control).unwrap();
+    assert_eq!(outcome.state, OpState::Refused);
+    assert_eq!(outcome.refusal, Some((Refusal::StagingNameTaken, None)));
+    let token = replay(&lab.store, op).unwrap().staging_tokens.pop().unwrap();
+    assert!(lab.dest().join(&token).is_dir(), "the taken entry is kept");
+    assert_eq!(fs::read_dir(lab.dest().join(token)).unwrap().count(), 0);
+}

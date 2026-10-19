@@ -998,8 +998,10 @@ fn copy(journal: &Journal, plan: &Plan, control: &Control, dest: &Destination) -
             staging
         }
         Err(e) => {
+            // The token's name taken in the parent is `staging_name_taken` (#526). An unclassified OS
+            // error stays without a code: the cause is unknown, never guessed (invariant 4).
             let code = match io_refusal(&e) {
-                Stop::Refused(code, _) if code != Refusal::StagingNameTaken => Some(code),
+                Stop::Refused(code, _) => Some(code),
                 _ => None,
             };
             journal.log(Record::Transition {
