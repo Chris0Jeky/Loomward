@@ -2393,3 +2393,43 @@ fn a_taken_staging_folder_name_refuses_with_its_code() {
     assert!(lab.dest().join(&token).is_dir(), "the taken entry is kept");
     assert_eq!(fs::read_dir(lab.dest().join(token)).unwrap().count(), 0);
 }
+
+/// #639 Sol R1 (pin): `status` read while the worker is live, at every step from staging to after the
+/// publish rename, reports the journal's state and never a transient `needs_attention`.
+#[test]
+fn live_status_never_reports_transient_attention() {
+    let Some(lab) = Lab::new() else { return };
+    fs::write(lab.src().join("f.bin"), b"payload").unwrap();
+    let op = lab.start(&["f.bin"]);
+    let db = lab.tmp.path().join("state/state.db");
+    let seen = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let log = seen.clone();
+    let control = Control::new(false).with_hook(move |p, _| {
+        if matches!(
+            p,
+            Point::CheckedStaging
+                | Point::StagingCreated
+                | Point::Creating(_)
+                | Point::Written(_)
+                | Point::Verified(_)
+                | Point::BeforePublish
+                | Point::AfterPublish
+        ) {
+            let reopened = Mutex::new(Store::open(&db).unwrap());
+            log.lock()
+                .unwrap()
+                .push((p, status(&reopened, op).unwrap().state));
+        }
+        Flow::Continue
+    });
+    assert_eq!(
+        run(&lab.store, op, &control).unwrap().state,
+        OpState::Committed
+    );
+    let seen = seen.lock().unwrap();
+    assert!(seen.len() >= 7, "{seen:?}");
+    assert!(
+        seen.iter().all(|(_, s)| *s != OpState::NeedsAttention),
+        "{seen:?}"
+    );
+}
