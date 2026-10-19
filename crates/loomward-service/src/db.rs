@@ -272,7 +272,10 @@ pub struct VolumeRow {
 
 pub fn volumes(conn: &Connection, only: Option<i64>) -> Sql<Vec<VolumeRow>> {
     let mut stmt = conn.prepare_cached(
-        "SELECT v.id,v.volume_key,v.display_name,v.filesystem,v.online,v.observed_at_ns,
+        "SELECT v.id,v.volume_key,
+                CASE WHEN EXISTS(SELECT 1 FROM main.root r JOIN st.root_forgotten f ON f.grant_id=r.grant_id WHERE r.volume_id=v.id)
+                     THEN v.volume_key ELSE v.display_name END,
+                v.filesystem,v.online,v.observed_at_ns,
                 (SELECT 1 FROM st.tier_declaration t WHERE t.volume_key=v.volume_key),
                 (SELECT t.tier FROM st.tier_declaration t WHERE t.volume_key=v.volume_key ORDER BY t.declared_at_ns DESC,t.id DESC LIMIT 1)
          FROM main.volume v WHERE ?1 IS NULL OR v.id=?1 ORDER BY v.id LIMIT 65",

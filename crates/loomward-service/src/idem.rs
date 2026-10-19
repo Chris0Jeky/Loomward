@@ -23,6 +23,33 @@ fn digest(fingerprint: &Value) -> [u8; 32] {
 struct Slot {
     fingerprint: [u8; 32],
     outcome: Option<(ResponseEnvelope, Instant)>,
+    privacy: ReplyPrivacy,
+    withheld: bool,
+}
+
+/// Cached results carrying root or volume labels. No request paths are retained: the volume
+/// key here is the bounded session ID already present in a tier request. Alert reports may
+/// contain labels from every active root/volume, so their whole reply is conservatively scoped.
+enum ReplyPrivacy {
+    Other,
+    RootGrant,
+    Volume(String),
+    Alerts,
+}
+
+impl ReplyPrivacy {
+    fn from_request(fingerprint: &Value) -> Self {
+        match fingerprint.get("command").and_then(Value::as_str) {
+            Some("roots.request_grant") => Self::RootGrant,
+            Some("alerts.configure") => Self::Alerts,
+            Some("volumes.declare_tier") => fingerprint
+                .get("payload")
+                .and_then(|p| p.get("volume_id"))
+                .and_then(Value::as_str)
+                .map_or(Self::Other, |id| Self::Volume(id.to_owned())),
+            _ => Self::Other,
+        }
+    }
 }
 
 /// What a caller does with its `request_id`.
@@ -71,6 +98,7 @@ impl Idempotency {
         let ttl = self.ttl;
         // ponytail: O(MAX_SLOTS) sweep per claim; an expiry queue if the cap grows.
         slots.retain(|_, s| s.outcome.as_ref().is_none_or(|(_, at)| at.elapsed() < ttl));
+        let privacy = ReplyPrivacy::from_request(fingerprint);
         let fingerprint = digest(fingerprint);
         match slots.get(request_id) {
             Some(slot) if slot.fingerprint == fingerprint => Claim::Wait,
@@ -82,6 +110,8 @@ impl Idempotency {
                     Slot {
                         fingerprint,
                         outcome: None,
+                        privacy,
+                        withheld: false,
                     },
                 );
                 Claim::Run
@@ -101,10 +131,52 @@ impl Idempotency {
     pub fn finish(&self, request_id: &str, outcome: ResponseEnvelope) {
         let mut slots = self.slots.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(slot) = slots.get_mut(request_id) {
+            let outcome = if slot.withheld {
+                outcome.without_forgotten_result()
+            } else {
+                outcome
+            };
             slot.outcome = Some((outcome, Instant::now()));
         }
         drop(slots);
         self.done.notify_all();
+    }
+
+    /// Privacy withdraws a saved reply, never its action key. Complete slots keep their original
+    /// completion timestamp. Running slots stay running and cannot expire/reexecute a picker;
+    /// the flag prevents a later Settle::drop from restoring an earlier private snapshot.
+    ///
+    /// A pending picker has no root ID yet, and an alert report can name multiple roots/volumes.
+    /// These slots crossing forget are conservatively withheld on completion; the owner recovers
+    /// by reading state, without reopening a dialog or repeating an earlier settings mutation.
+    pub fn forget_root(&self, root_id: &str, volume_id: Option<&str>) {
+        let mut slots = self.slots.lock().unwrap_or_else(|e| e.into_inner());
+        for slot in slots.values_mut() {
+            let affected = match &slot.privacy {
+                ReplyPrivacy::Other => false,
+                ReplyPrivacy::Alerts => true,
+                ReplyPrivacy::Volume(id) => volume_id == Some(id.as_str()),
+                ReplyPrivacy::RootGrant => match &slot.outcome {
+                    None => true,
+                    Some((ResponseEnvelope::Ok(reply), _)) => {
+                        reply
+                            .result
+                            .get("root")
+                            .and_then(|root| root.get("root_id"))
+                            .and_then(Value::as_str)
+                            == Some(root_id)
+                    }
+                    Some((ResponseEnvelope::Err(_), _)) => false,
+                },
+            };
+            if affected {
+                slot.withheld = true;
+                slot.outcome = slot
+                    .outcome
+                    .take()
+                    .map(|(reply, completed)| (reply.without_forgotten_result(), completed));
+            }
+        }
     }
 
     /// The retained outcome, waiting until `until` for a running one. `None`: outcome unknown.
@@ -142,6 +214,127 @@ mod tests {
     fn outcome(n: u64) -> ResponseEnvelope {
         let body = ErrorBody::new(ErrorCode::Busy, &n.to_string(), true);
         ResponseEnvelope::error(Some(RequestId::new("r").unwrap()), body, None)
+    }
+
+    fn root_outcome(key: &str, root: &str) -> ResponseEnvelope {
+        let meta = serde_json::from_value(json!({
+            "served_at":"2026-10-19T00:00:00Z", "elapsed_ms":0,
+            "dataset_class":"synthetic", "budget_hit":false,
+            "catalog_rev":"1", "state_rev":"1"
+        }))
+        .unwrap();
+        ResponseEnvelope::ok_object(
+            RequestId::new(key).unwrap(),
+            json!({"outcome":"granted", "root":{"root_id":root, "display_path":"SyntheticPrivateRoot"}, "refusal":null})
+                .as_object().unwrap().clone(),
+            meta,
+        )
+    }
+
+    #[test]
+    fn retained_privacy_completed_slots_preserve_expiry_conflicts_and_other_roots() {
+        let cache = Idempotency::new(TTL);
+        let fingerprint =
+            json!({"command":"roots.request_grant", "payload":{"purpose":"metadata_scan"}});
+        for (key, root) in [("forgotten", "rt_forgotten"), ("kept", "rt_kept")] {
+            assert_eq!(cache.claim(key, &fingerprint), Claim::Run);
+            cache.finish(key, root_outcome(key, root));
+        }
+        let original_at = Instant::now() - Duration::from_secs(30);
+        cache
+            .slots
+            .lock()
+            .unwrap()
+            .get_mut("forgotten")
+            .unwrap()
+            .outcome
+            .as_mut()
+            .unwrap()
+            .1 = original_at;
+        cache.forget_root("rt_forgotten", None);
+        let erased = cache.wait("forgotten", Instant::now()).unwrap();
+        let ResponseEnvelope::Err(error) = &erased else {
+            panic!("cached path remained")
+        };
+        assert_eq!(error.error.code, ErrorCode::PermissionDenied);
+        assert!(!error.error.retryable);
+        assert_eq!(cache.claim("forgotten", &fingerprint), Claim::Wait);
+        assert_eq!(
+            cache.claim("forgotten", &json!({"different":"intent"})),
+            Claim::Conflict
+        );
+        assert_eq!(
+            cache.wait("kept", Instant::now()),
+            Some(root_outcome("kept", "rt_kept"))
+        );
+        cache.forget_root("rt_forgotten", None);
+        assert_eq!(cache.wait("forgotten", Instant::now()), Some(erased));
+        assert_eq!(
+            cache.slots.lock().unwrap()["forgotten"]
+                .outcome
+                .as_ref()
+                .unwrap()
+                .1,
+            original_at
+        );
+    }
+
+    #[test]
+    fn retained_privacy_running_picker_stays_claimed_until_its_actual_finish() {
+        // A zero TTL makes any accidentally completed slot expire on the very next claim.
+        let cache = Idempotency::new(Duration::ZERO);
+        let fingerprint =
+            json!({"command":"roots.request_grant", "payload":{"purpose":"metadata_scan"}});
+        assert_eq!(cache.claim("picker", &fingerprint), Claim::Run);
+        cache.forget_root("rt_forgotten", None);
+        assert_eq!(
+            cache.wait("picker", Instant::now()),
+            None,
+            "forget does not invent completion"
+        );
+        assert_eq!(
+            cache.claim("picker", &fingerprint),
+            Claim::Wait,
+            "a pending dialog cannot expire and run twice"
+        );
+        assert_eq!(
+            cache.claim("picker", &json!({"different":"intent"})),
+            Claim::Conflict
+        );
+        let finishing = Instant::now();
+        cache.finish("picker", root_outcome("picker", "rt_forgotten"));
+        let ResponseEnvelope::Err(error) = cache.wait("picker", Instant::now()).unwrap() else {
+            panic!("late completion restored its path")
+        };
+        assert_eq!(error.error.detail.unwrap()["reason"], "forgotten_result");
+        assert!(
+            cache.slots.lock().unwrap()["picker"]
+                .outcome
+                .as_ref()
+                .unwrap()
+                .1
+                >= finishing
+        );
+    }
+
+    #[test]
+    fn retained_privacy_volume_invalidation_is_scoped_to_its_original_request() {
+        let cache = Idempotency::new(TTL);
+        for (key, volume) in [("affected", "vo_1"), ("unrelated", "vo_2")] {
+            let request =
+                json!({"command":"volumes.declare_tier", "payload":{"volume_id":volume,"tier":2}});
+            assert_eq!(cache.claim(key, &request), Claim::Run);
+            cache.finish(key, root_outcome(key, "rt_fixture"));
+        }
+        cache.forget_root("rt_forgotten", Some("vo_1"));
+        assert!(matches!(
+            cache.wait("affected", Instant::now()),
+            Some(ResponseEnvelope::Err(_))
+        ));
+        assert_eq!(
+            cache.wait("unrelated", Instant::now()),
+            Some(root_outcome("unrelated", "rt_fixture"))
+        );
     }
 
     #[test]

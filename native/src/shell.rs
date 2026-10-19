@@ -26,12 +26,11 @@ async fn lw_call(
     let permit = desktop.begin_call()?;
     let bytes = bytes.clone();
     // Off the async runtime: the service is synchronous and may show a native dialog.
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::response::admit_after_work(tauri::async_runtime::spawn_blocking(move || {
         let _permit = permit;
-        desktop.dispatch_bytes(&bytes)
-    })
+        desktop.dispatch_bytes_pending(&bytes)
+    }))
     .await
-    .map_err(|_| "the service failed".to_string())?
 }
 
 #[tauri::command]
