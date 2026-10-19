@@ -47,9 +47,29 @@ injects `boundaries+1`). Earlier single-point tests stay: `PublicationCrash` in
 `src/writer/publication_tests.rs`, `grant_survives_a_crash_between_precious_and_derived_commits` and the
 uncommitted-transaction child in `tests/writer.rs`, `tests/open.rs` corruption and interrupted-run cases.
 
-**Gap.** A killed process is not a power cut (row 8). Writers outside the catalogue writer are not swept: the
-service's `collections` connection that writes both files, label, learning and job state, backup import. A torn
-`VACUUM INTO` backup file cannot be injected mid-copy by a boundary hook. The migration fixture is a synthetic
+The service-side writers are swept too: `crates/loomward-service/src/crash_sweep_tests.rs` arms the service
+connection (`catalog.db` with `state.db` attached) and the learning store's connection through
+`loomward_catalog::crash_arm` (live only in a process started with a crash or trace variable; a no-op without
+`test-hooks`), and drives real service commands in the child. Scenario `meaning` (synthetic session, 59 boundaries
+on 2026-10-19): each open's own recovery writes, `collections.create`, `collections.update_members` add (new
+references and memberships in one transaction) and remove, `feedback.record` on a node with no reference yet (the
+catalogue writer's reference, then the label, its provenance, node binding and replay receipt in one learning
+transaction), and a `learning.refit` model commit. Scenario `backup` (personal session, 27 boundaries):
+`backups.import`, a replacing import under the same label, `backups.forget`. Invariants: integrity and
+foreign-key checks on both files, no membership, label, node binding or provenance without its parent row, no label
+without its replay receipt or receipt without its label, no pending reference intent, no resolved reference bound
+to a missing catalogue row or another catalogue's instance (the cross-file check), at most one candidate model,
+every acknowledged step durable (a step that began but was not acknowledged may land either way, never half), a
+second recovery changes nothing (catalogue revision excepted: every open publishes one by design), and each
+writer still takes a write. The checker can fail: `the_service_verifier_catches_planted_damage` (five cases) and,
+by hand on 2026-10-19, a mutant that commits the label's replay receipt in its own transaction failed 3 of its 61
+crash points. `an_unreached_service_crash_point_fails_the_sweep` guards the boundary count. No defect found.
+Job state is in memory (`loomward-engine/src/jobs`): its only durable effect is the refit commit swept above.
+
+**Gap.** A killed process is not a power cut (row 8). Service writers not yet in a scenario: tier declarations,
+alert settings, client grants, placement saves, teacher requests, the copy journal and diagnostics export; the
+learning redaction after a revoke is armed but only its empty pass is swept. A torn `VACUUM INTO` backup file
+cannot be injected mid-copy by a boundary hook. The migration fixture is a synthetic
 downgrade of a current store, not a store written by an old binary. Finding **F1** below (fixed).
 
 **Prove.**
@@ -58,6 +78,8 @@ downgrade of a current store, not a store written by an old binary. Finding **F1
 cargo test -p loomward-catalog --features test-hooks --test crash_sweep   # about 53 s (2026-10-12), samples row boundaries
 $env:LOOMWARD_CRASH_SWEEP='full'; cargo test -p loomward-catalog --features test-hooks --test crash_sweep   # every boundary, about 505 s (2026-10-12)
 cargo test -p loomward-catalog --features test-hooks --test crash_sweep -- lifecycle_at 123   # one boundary
+cargo test -p loomward-service --lib crash_sweep   # service writers, about 18 s sampled (2026-10-19)
+$env:LOOMWARD_CRASH_SWEEP='full'; cargo test -p loomward-service --lib crash_sweep_tests::every   # all 86 boundaries, about 28 s
 ```
 
 ## 2. The 10M-entry lab: PARTIAL

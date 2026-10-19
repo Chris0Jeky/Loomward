@@ -15,6 +15,9 @@ mod crashpoint;
 mod developer_clutter;
 #[cfg(feature = "test-hooks")]
 pub use crashpoint::CRASH_EXIT;
+/// Crash points for the stores other crates write (q-39); no-ops without `test-hooks`.
+#[doc(hidden)]
+pub use crashpoint::{arm_external as crash_arm, hit as crash_hit};
 pub use developer_clutter::{DeveloperClutter, DeveloperClutterCandidate};
 mod db;
 mod duplicates;

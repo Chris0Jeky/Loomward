@@ -81,6 +81,8 @@ impl Store {
             [dir.join("state.db").to_string_lossy().as_ref()],
         )
         .map_err(internal)?;
+        // Every durable boundary of feedback, refit and redaction, in a crash sweep only (q-39).
+        loomward_catalog::crash_arm(&db);
         db.execute_batch("PRAGMA foreign_keys=ON;PRAGMA st.synchronous=FULL;PRAGMA st.secure_delete=ON;
             CREATE TABLE IF NOT EXISTS st.learning_receipt(client_event_id TEXT PRIMARY KEY, result_json TEXT NOT NULL) STRICT;
             CREATE TABLE IF NOT EXISTS st.learning_node(node_id TEXT PRIMARY KEY, object_ref_id INTEGER NOT NULL REFERENCES object_ref(id)) STRICT;
