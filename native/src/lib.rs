@@ -9,6 +9,7 @@
 //! invariant 1). Native dialogs are reachable only through the service's [`CallContext`], never
 //! from the webview directly ([`dialogs`]).
 
+mod delivery;
 pub mod dialogs;
 pub mod launch;
 pub mod selftest;
@@ -201,6 +202,8 @@ impl Desktop {
             slot: guard,
             stream: self.service.subscribe(resume(last_epoch, last_seq)),
         };
+        let policy = pump.stream.delivery_policy();
+        let first_stamp = policy.stamp();
         let first = match pump.stream.recv_timeout(FIRST_EVENT_TIMEOUT) {
             RecvOutcome::Event(e) => e,
             RecvOutcome::Closed(CloseReason::TooManyStreams) => {
@@ -210,16 +213,17 @@ impl Desktop {
                 return Err("the event stream did not open".into());
             }
         };
-        if !sink(first) {
+        if !delivery::emit(first_stamp, first, &mut sink) {
             return Err("the window cannot receive events".into());
         }
         let spawned = std::thread::Builder::new()
             .name("loomward-channel".into())
             .spawn(move || {
                 while !pump.slot.0.stop.load(Ordering::SeqCst) {
+                    let stamp = policy.stamp();
                     match pump.stream.recv_timeout(PUMP_POLL) {
                         RecvOutcome::Event(e) => {
-                            if !sink(e) {
+                            if !delivery::emit(stamp, e, &mut sink) {
                                 break;
                             }
                         }

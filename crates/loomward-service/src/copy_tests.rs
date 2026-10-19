@@ -1245,6 +1245,45 @@ mod lab_copy {
         assert_eq!(settle_copy(svc, &op)["state"], "cancelled");
     }
 
+    /// #636 item 3: only a journal whose head no longer matches its tail (refused by every writer and
+    /// reader, cached or not) is skipped by revocation instead of holding it at `copy_fence_pending`.
+    /// A tampered middle row is caught only by a full replay, while a detached worker's hot cache can
+    /// still pass its checks: that stays a pending, retryable fence (review of #771).
+    #[test]
+    fn only_a_refused_journal_tail_releases_a_pending_revocation() {
+        let Some((lab, a, b)) = scanned() else { return };
+        let svc = &lab.svc;
+        let p = preview(svc, &a, &b);
+        let op = p["operation_id"].as_str().unwrap().to_owned();
+        let consent = json!({"operation_id": op, "digest": digest(&p)});
+        ok("copy.approve", call(svc, "copy.approve", consent.clone()));
+        let writer = std::fs::OpenOptions::new()
+            .append(true)
+            .open(lab.path.join("a/deep/x.bin"))
+            .unwrap();
+        ok("copy.start", call(svc, "copy.start", consent));
+        assert_eq!(settle_copy(svc, &op)["state"], "blocked");
+        reap_copy(svc, &op);
+        drop(writer);
+        let journal = loomward_catalog::sqlite_dir(&lab.path.parent().unwrap().join("state"))
+            .join("state.db");
+        let raw = rusqlite::Connection::open(journal).unwrap();
+        raw.execute_batch(
+            "DROP TRIGGER op_journal_no_update;              UPDATE op_journal SET body=replace(body,'staging','stagin9') WHERE seq=2",
+        )
+        .unwrap();
+        let request = json!({"root_id": lab.root, "purge_catalog": false});
+        for _ in 0..2 {
+            let e = err(call(svc, "roots.revoke", request.clone()));
+            assert_eq!(reason(&e), Some("copy_fence_pending"), "{e:?}");
+        }
+        raw.execute("DELETE FROM op_journal_head", []).unwrap();
+        drop(raw);
+        ok("roots.revoke", call(svc, "roots.revoke", request));
+        let e = err(call(svc, "copy.status", json!({"operation_id": op})));
+        assert_eq!(e.code, ErrorCode::InternalError, "{e:?}");
+    }
+
     /// The ID of the child named `name` in a depth-3 slice, at any depth.
     fn node_named(slice: &Payload, name: &str) -> String {
         slice["nodes"]

@@ -15,6 +15,9 @@
 pub mod fixture;
 mod static_handle;
 
+#[cfg(test)]
+mod forget_delivery_tests;
+
 #[cfg(windows)]
 mod windows_socket;
 #[cfg(windows)]
@@ -28,8 +31,9 @@ use hyper::body::Incoming;
 use hyper_util::rt::{TokioIo, TokioTimer};
 use loomward_protocol::limits::MAX_REQUEST_BYTES;
 use loomward_protocol::{
-    Adapter, CallContext, CloseReason, Command, ErrorBody, ErrorCode, EventEnvelope, EventStream,
-    RecvOutcome, RequestEnvelope, ResponseEnvelope, StreamEpoch, ViewService,
+    Adapter, CallContext, CloseReason, Command, ErrorBody, ErrorCode, EventDeliveryStamp,
+    EventEnvelope, EventStream, RecvOutcome, RequestEnvelope, ResponseEnvelope, StreamEpoch,
+    ViewService,
 };
 use std::convert::Infallible;
 use std::future::Future;
@@ -779,11 +783,12 @@ async fn events_with_spawn(
     let service = s.service.clone();
     let opened = tokio::task::spawn_blocking(move || {
         let mut stream = service.subscribe(resume);
+        let stamp = stream.delivery_policy().stamp();
         let first = stream.recv_timeout(FIRST_EVENT_TIMEOUT);
-        (stream, first)
+        (stream, stamp, first)
     })
     .await;
-    let Ok((mut stream, first)) = opened else {
+    let Ok((mut stream, stamp, first)) = opened else {
         return refuse(StatusCode::INTERNAL_SERVER_ERROR, "the service failed");
     };
     let first = match first {
@@ -801,8 +806,11 @@ async fn events_with_spawn(
         }
     };
     let stream = ClosingStream(stream);
-    let (tx, rx) = mpsc::channel::<Bytes>(32);
-    let _ = tx.try_send(sse_frame(&first));
+    let (tx, rx) = mpsc::channel::<PendingFrame>(32);
+    let _ = tx.try_send(PendingFrame {
+        bytes: sse_frame(&first),
+        stamp,
+    });
     let stop = s.stop.clone();
     let runtime = tokio::runtime::Handle::current();
     let send_timeout = s.sse_send_timeout;
@@ -817,7 +825,14 @@ async fn events_with_spawn(
         );
     }
     let body = stream::unfold(rx, |mut rx| async move {
-        rx.recv().await.map(|b| (Ok::<_, Infallible>(b), rx))
+        let pending = rx.recv().await?;
+        // The final synchronous admission check follows serialization, with no await before the
+        // handoff. A retired queue closes here; the browser reconnects from its last applied ID
+        // and reads the now-redacted replay. Dropping rx also releases a blocked extra send.
+        if !pending.stamp.admit() {
+            return None;
+        }
+        Some((Ok::<_, Infallible>(pending.bytes), rx))
     });
     let mut res = Response::new(Body::from_stream(body));
     res.headers_mut().insert(
@@ -830,6 +845,12 @@ async fn events_with_spawn(
 /// Moves events from the service's stream into the response until the client goes, the
 /// service closes the stream or the adapter stops. Always releases the subscriber slot.
 struct ClosingStream(Box<dyn EventStream>);
+
+#[derive(Debug)]
+struct PendingFrame {
+    bytes: Bytes,
+    stamp: EventDeliveryStamp,
+}
 impl Drop for ClosingStream {
     fn drop(&mut self) {
         self.0.close();
@@ -838,18 +859,21 @@ impl Drop for ClosingStream {
 
 fn pump(
     mut stream: ClosingStream,
-    tx: &mpsc::Sender<Bytes>,
+    tx: &mpsc::Sender<PendingFrame>,
     stop: &AtomicBool,
     runtime: &tokio::runtime::Handle,
     timeout: Duration,
 ) {
+    let delivery = stream.0.delivery_policy();
     while !stop.load(Ordering::SeqCst) && !tx.is_closed() {
+        let stamp = delivery.stamp();
         match stream.0.recv_timeout(PUMP_POLL) {
             RecvOutcome::Event(e) => {
-                if runtime
-                    .block_on(tx.send_timeout(sse_frame(&e), timeout))
-                    .is_err()
-                {
+                let pending = PendingFrame {
+                    bytes: sse_frame(&e),
+                    stamp,
+                };
+                if runtime.block_on(tx.send_timeout(pending, timeout)).is_err() {
                     break;
                 }
             }

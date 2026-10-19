@@ -2,8 +2,8 @@
 use crate::{Engine, EngineError, EngineResult};
 use loomward_protocol::service::EVENT_QUEUE_CAPACITY;
 use loomward_protocol::{
-    CloseReason, Count, DatasetClass, EventEnvelope, EventName, EventStream, Generation, Payload,
-    Protocol, RecvOutcome, StreamEpoch, Timestamp,
+    CloseReason, Count, DatasetClass, EventDeliveryPolicy, EventDeliverySuspension, EventEnvelope,
+    EventName, EventStream, Generation, Payload, Protocol, RecvOutcome, StreamEpoch, Timestamp,
 };
 use std::{
     collections::VecDeque,
@@ -90,6 +90,7 @@ pub(crate) struct Bus {
     interval: Duration,
     state: Mutex<State>,
     changed: Condvar,
+    delivery: EventDeliveryPolicy,
 }
 impl Bus {
     pub fn new(class: DatasetClass, interval: Duration) -> Self {
@@ -105,6 +106,7 @@ impl Bus {
                 now: None,
             }),
             changed: Condvar::new(),
+            delivery: EventDeliveryPolicy::default(),
         }
     }
     fn oldest_replayable(&self, state: &State) -> u64 {
@@ -186,7 +188,8 @@ impl Bus {
         Ok(())
     }
     pub(crate) fn redact_job(&self, id: &loomward_protocol::JobId) {
-        for retained in &mut self.state.lock().unwrap().replay {
+        let mut state = self.state.lock().unwrap();
+        for retained in &mut state.replay {
             if retained.event.event == EventName::JobState {
                 if let Some(job) = retained
                     .event
@@ -200,6 +203,25 @@ impl Bus {
                 }
             }
         }
+        self.delivery.invalidate();
+    }
+    /// #391: a forgotten root leaves every retained `roots.changed`, so neither a replay nor a
+    /// reader that has not drained the buffer yet receives its name after the forget.
+    pub(crate) fn redact_root(&self, root_id: &str) {
+        let mut state = self.state.lock().unwrap();
+        for retained in &mut state.replay {
+            if retained.event.event == EventName::RootsChanged {
+                if let Some(roots) = retained
+                    .event
+                    .data
+                    .get_mut("roots")
+                    .and_then(|v| v.as_array_mut())
+                {
+                    roots.retain(|r| r.get("root_id").and_then(|v| v.as_str()) != Some(root_id));
+                }
+            }
+        }
+        self.delivery.invalidate();
     }
     fn subscribe(self: &Arc<Self>, resume: Option<EventResume>) -> Subscription {
         let state = self.state.lock().unwrap();
@@ -236,6 +258,9 @@ struct Subscription {
 impl EventStream for Subscription {
     fn epoch(&self) -> &str {
         &self.epoch
+    }
+    fn delivery_policy(&self) -> EventDeliveryPolicy {
+        self.bus.delivery.clone()
     }
     fn close(&mut self) {
         self.closed = true;
@@ -308,10 +333,66 @@ impl Engine {
     ) -> EngineResult<()> {
         self.events.publish(name, data, catalog_rev, state_rev)
     }
+    /// Drop a forgotten root from the retained `roots.changed` events (#391).
+    pub fn redact_root_events(&self, root_id: &str) {
+        self.events.redact_root(root_id);
+    }
+    /// Suspend unsent adapter events across a privacy mutation's durable and derived phases.
+    /// The returned guard owns no Bus lock; its final drop permits only fresh receives.
+    pub fn suspend_event_delivery(&self) -> EventDeliverySuspension {
+        self.events.delivery.suspend()
+    }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn root_redaction_invalidates_an_envelope_already_taken_from_replay() {
+        let bus = Arc::new(Bus::new(DatasetClass::Synthetic, Duration::from_secs(15)));
+        let mut stream = bus.subscribe(None);
+        event(&mut stream);
+        let roots: Payload = serde_json::from_str(include_str!(
+            "../../../contracts/v3/examples/commands/roots.list.result.json"
+        ))
+        .unwrap();
+        bus.publish(EventName::RootsChanged, roots, None, None)
+            .unwrap();
+        let delivery = stream.delivery_policy();
+        let stamp = delivery.stamp();
+        let owned = event(&mut stream);
+        assert!(serde_json::to_string(&owned).unwrap().contains("Lab"));
+        bus.redact_root("rt_synth1");
+        assert!(
+            !stamp.admit(),
+            "the old owned copy is outside the mutable replay buffer"
+        );
+        let mut replay = bus.subscribe(Some(EventResume {
+            epoch: bus.epoch.clone(),
+            last_seq: 0,
+        }));
+        event(&mut replay);
+        let fresh = delivery.stamp();
+        let redacted = event(&mut replay);
+        assert!(fresh.admit());
+        assert!(redacted.data["roots"].as_array().unwrap().is_empty());
+        assert_eq!(redacted.seq, owned.seq);
+    }
+
+    #[test]
+    fn redaction_during_suspended_delivery_never_reopens_the_old_stream() {
+        let bus = Arc::new(Bus::new(DatasetClass::Synthetic, Duration::from_secs(15)));
+        let stream = bus.subscribe(None);
+        let policy = stream.delivery_policy();
+        let guard = bus.delivery.suspend();
+        let pending = policy.stamp();
+        bus.redact_root("rt_synth1");
+        assert!(!policy.stamp().admit());
+        drop(guard);
+        assert!(!pending.admit());
+        assert!(policy.stamp().admit());
+    }
+
     fn emit(bus: &Bus) {
         bus.publish(
             EventName::HealthWarning,

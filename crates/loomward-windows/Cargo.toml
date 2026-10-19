@@ -29,8 +29,8 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage
 [dev-dependencies]
 loomward-operations = { path = "../loomward-operations", features = ["fault-injection"] }
 proptest.workspace = true
-# Interleaving tests probe the journal's write lock directly (#672).
-rusqlite = { version = "0.39.0", features = ["bundled"] }
+# Interleaving tests probe the journal's write lock (#672); hooks count commit transactions (#751).
+rusqlite = { version = "0.39.0", features = ["bundled", "hooks"] }
 tempfile.workspace = true
 
 # H7 measurement only: a child process keeps a writable mapped view of a staged file.
