@@ -898,12 +898,14 @@ fn writer(
     let mut staging_seconds = 0.;
     let mut first_error = None;
     let mut dirty = HashSet::new();
-    for e in rx {
+    // Prepares, barriers and the stop that a prepare's drain overtook, in arrival order.
+    let mut held: VecDeque<Envelope> = VecDeque::new();
+    let mut handle = |e: Envelope| -> bool {
         if matches!(e.command, Command::Stop) {
-            break;
+            return false;
         }
         if first_error.is_some() {
-            continue;
+            return true;
         }
         let start = Instant::now();
         let staging = matches!(
@@ -942,7 +944,7 @@ fn writer(
                 };
                 // Once a final is rejected, later ancestor finals belong to the same dirty epoch.
                 if !dirty.is_empty() && matches!(m, ScanMessage::DirFinal { .. }) {
-                    continue;
+                    return true;
                 }
                 match sink.consume(root, m) {
                     Err(e) if ticket.is_some() && listing_revision_changed(&e) => {
@@ -953,8 +955,10 @@ fn writer(
                 }
             }
             Command::Barrier(reply) => {
+                // Deferred steps settle here, so an obsolete one is relisted like a refusal.
+                let settled = sink.settle(root).map(|stale| dirty.extend(stale));
                 let _ = reply.send(dirty.drain().collect());
-                Ok(())
+                settled
             }
             Command::Stop => unreachable!(),
         };
@@ -966,6 +970,32 @@ fn writer(
         if let Err(error) = result {
             failed.store(true, Ordering::Release);
             first_error = Some(error);
+        }
+        true
+    };
+    loop {
+        let Some(e) = held.pop_front().or_else(|| rx.recv().ok()) else {
+            break;
+        };
+        // A child prepare can wait for its parent's publication to commit (#148). Messages
+        // already queued behind it belong to other workers (the preparing worker is blocked), so
+        // they reach the sink first and an asynchronous sink can commit them together. Messages
+        // keep their order; nothing overtakes a barrier or the stop.
+        if matches!(e.command, Command::Prepare { .. }) {
+            while held
+                .iter()
+                .all(|h| matches!(h.command, Command::Prepare { .. }))
+            {
+                let Ok(next) = rx.try_recv() else { break };
+                if matches!(next.command, Command::Message(_)) {
+                    handle(next);
+                } else {
+                    held.push_back(next);
+                }
+            }
+        }
+        if !handle(e) {
+            break;
         }
     }
     first_error.map_or(Ok((seconds, staging_seconds)), Err)

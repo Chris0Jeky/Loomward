@@ -152,6 +152,137 @@ fn open(dir: &Path, dataset: DatasetClass) -> Service {
     .unwrap()
 }
 
+#[test]
+fn normal_start_checks_each_database_once() {
+    let dir = temp_root();
+    let dist = dir.path().join("dist");
+    std::fs::create_dir(&dist).unwrap();
+    for dataset in [DatasetClass::Synthetic, DatasetClass::Personal] {
+        let state = dir.path().join(format!("{dataset:?}"));
+        drop(open(&state, dataset));
+        for static_dir in [None, Some(dist.as_path())] {
+            loomward_catalog::take_integrity_checks();
+            let service = Service::open_with_static(
+                Config {
+                    state_dir: state.clone(),
+                    dataset,
+                    allow_personal: true,
+                    allow_identity_unverified: false,
+                    grant_roots: vec![],
+                },
+                static_dir,
+            )
+            .unwrap();
+            let checks = loomward_catalog::take_integrity_checks();
+            for name in ["catalog.db", "state.db"] {
+                assert_eq!(
+                    checks.iter().filter(|path| path.ends_with(name)).count(),
+                    1,
+                    "{dataset:?}: {name}: {checks:?}"
+                );
+            }
+            drop(service);
+        }
+    }
+}
+
+fn damage_data_page(path: &Path) -> Vec<u8> {
+    // Leave the header and schema readable: only the full integrity check sees this damage.
+    let conn = rusqlite::Connection::open(path).unwrap();
+    conn.execute_batch("CREATE TABLE integrity_probe(value TEXT); INSERT INTO integrity_probe VALUES('synthetic'); PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE").unwrap();
+    let page: u32 = conn
+        .query_row(
+            "SELECT rootpage FROM sqlite_schema WHERE name='integrity_probe'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let page_size: u32 = conn
+        .pragma_query_value(None, "page_size", |r| r.get(0))
+        .unwrap();
+    drop(conn);
+    let mut corrupt = std::fs::read(path).unwrap();
+    corrupt[((page - 1) * page_size) as usize] = 0;
+    std::fs::write(path, &corrupt).unwrap();
+    corrupt
+}
+
+#[test]
+fn corrupt_catalogue_is_preserved_and_rebuilt_at_normal_start() {
+    let dir = temp_root();
+    drop(open(dir.path(), DatasetClass::Synthetic));
+    let corrupt = damage_data_page(&dir.path().join("catalog.db"));
+    loomward_catalog::take_integrity_checks();
+    drop(open(dir.path(), DatasetClass::Synthetic));
+    assert_eq!(
+        loomward_catalog::take_integrity_checks()
+            .iter()
+            .filter(|path| path.ends_with("catalog.db"))
+            .count(),
+        1
+    );
+    let preserved = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("catalog.corrupt-")
+        })
+        .expect("corrupt derived catalogue must be preserved");
+    assert_eq!(std::fs::read(preserved).unwrap(), corrupt);
+}
+
+#[test]
+fn state_integrity_failure_still_precedes_static_overlap() {
+    let dir = temp_root();
+    drop(open(dir.path(), DatasetClass::Synthetic));
+    let corrupt = damage_data_page(&dir.path().join("state.db"));
+    let error = Service::open_with_static(
+        Config {
+            state_dir: dir.path().to_path_buf(),
+            dataset: DatasetClass::Synthetic,
+            allow_personal: false,
+            allow_identity_unverified: false,
+            grant_roots: vec![],
+        },
+        Some(dir.path()),
+    )
+    .err()
+    .expect("corruption must refuse startup");
+    assert_eq!(error, "state store: CorruptDatabase");
+    assert_eq!(std::fs::read(dir.path().join("state.db")).unwrap(), corrupt);
+}
+
+#[test]
+fn corrupt_catalogue_is_refused_at_static_start_without_rewriting() {
+    let dir = temp_root();
+    let state = dir.path().join("state");
+    drop(open(&state, DatasetClass::Synthetic));
+    let corrupt = b"synthetic corrupt catalogue";
+    std::fs::write(state.join("catalog.db"), corrupt).unwrap();
+    let dist = dir.path().join("dist");
+    std::fs::create_dir(&dist).unwrap();
+    let error = Service::open_with_static(
+        Config {
+            state_dir: state.clone(),
+            dataset: DatasetClass::Synthetic,
+            allow_personal: false,
+            allow_identity_unverified: false,
+            grant_roots: vec![],
+        },
+        Some(&dist),
+    )
+    .err()
+    .expect("corrupt catalogue must refuse startup");
+    assert_eq!(
+        error,
+        "cannot inspect stored grants: catalogue version unavailable"
+    );
+    assert_eq!(std::fs::read(state.join("catalog.db")).unwrap(), corrupt);
+}
+
 pub(crate) fn temp_root() -> tempfile::TempDir {
     tempfile::tempdir_in(crate::paths::test_roots_base()).unwrap()
 }
@@ -4022,7 +4153,7 @@ fn revocation_before_the_final_end_run_is_refused_by_the_durable_writer() {
 /// #731: a half-applied revoke, whose durable grant commit landed but whose catalogue apply failed
 /// (the live cancel of the run was refused), leaves the run running and claiming its root. The
 /// run's final EndRun must still be refused by the grant-state guard in `active_run`: no completed
-/// run and no sweep.
+/// run and no sweep. #733: the refused finish must also settle the run and release its root.
 #[cfg(windows)]
 #[test]
 fn a_half_applied_revoke_still_refuses_the_final_end_run() {
@@ -4106,6 +4237,25 @@ fn a_half_applied_revoke_still_refuses_the_final_end_run() {
         scalar("SELECT generation FROM main.root WHERE id=?1"),
         generation,
         "a refused EndRun must not publish a sweep"
+    );
+    assert_eq!(
+        scalar("SELECT count(*) FROM main.scan_run WHERE root_id=?1 AND state='running'"),
+        0,
+        "a refused finish must settle the revoked run"
+    );
+    assert_eq!(
+        scalar("SELECT count(*) FROM main.scan_run WHERE root_id=?1 AND state IN ('cancelled','failed') AND json_extract(error_json,'$.code')='grant_not_active' AND finished_at_ns IS NOT NULL"),
+        1,
+        "the settled run must record why it could not finish"
+    );
+    assert_eq!(
+        scalar("SELECT count(*) FROM main.root WHERE id=?1 AND active_run IS NOT NULL"),
+        0,
+        "a refused finish must release the root without restart"
+    );
+    assert_eq!(
+        scalar("SELECT count(*) FROM main.root WHERE id=?1 AND state='scanning'"),
+        0
     );
 }
 
@@ -6856,6 +7006,8 @@ fn obsolete_listing_revisions_are_refused_and_never_complete() {
     assert_eq!(files(), vec!["stale.bin".to_string()]);
     sink.consume(&id, listing(new, &["kept.bin"])).unwrap();
     sink.consume(&id, done(new)).unwrap();
+    // Listing steps commit asynchronously (#148); settling waits for them and finds none obsolete.
+    assert_eq!(sink.settle(&id).unwrap(), Vec::<u64>::new());
     assert_eq!(files(), vec!["kept.bin".to_string()]);
     sink.finish_run(&id, 41, &RunScope::FullRoot, true).unwrap();
     assert_eq!(rows("file"), vec!["kept.bin".to_string()]);
@@ -6868,6 +7020,139 @@ fn obsolete_listing_revisions_are_refused_and_never_complete() {
         ErrorCode::StaleGeneration,
         "an ended run accepts nothing"
     );
+}
+
+/// #763: a send-time refusal never reaches the writer's chunk fence. Even if the caller keeps
+/// sending and claims Complete, keep accepted entries and publish partial without absence.
+#[test]
+fn a_send_time_rejected_chunk_never_publishes_a_complete_listing() {
+    use loomward_engine::scan::source::{IdBasis, ListOutcome, OpenedIdentity};
+    for chunks in [
+        &[false, true][..],
+        &[true, false],
+        &[true, false, true],
+        &[false],
+    ] {
+        let tmp = temp_root();
+        let svc = open(tmp.path(), DatasetClass::Synthetic);
+        let (root, grant) = register(&svc, 7);
+        let dir = crate::db::active_root_dir(&svc.inner.db(), root)
+            .unwrap()
+            .unwrap();
+        let id = RootId::new(svc.inner.root_id(root)).unwrap();
+        let sink = &svc.inner.scan;
+        sink.bind(&id, grant, dir);
+        let identity = OpenedIdentity {
+            id: None,
+            basis: IdBasis::None,
+            volume_guid: None,
+            volume_serial: None,
+            attributes: 0x10,
+            reparse_tag: None,
+        };
+        // Seed an existing row: a partial listing must not establish its absence.
+        sink.begin_run(&id, 40, &RunScope::FullRoot).unwrap();
+        let seed = sink.prepare_listing(&id, 40, None, &[], identity).unwrap();
+        sink.consume(
+            &id,
+            ScanMessage::DirListing {
+                run: 40,
+                ticket: seed,
+                entries: vec![entry("previous.bin", 1, false)],
+            },
+        )
+        .unwrap();
+        sink.consume(
+            &id,
+            ScanMessage::ListingDone {
+                run: 40,
+                ticket: seed,
+                outcome: ListOutcome::Complete,
+            },
+        )
+        .unwrap();
+        sink.finish_run(&id, 40, &RunScope::FullRoot, true).unwrap();
+
+        sink.begin_run(&id, 41, &RunScope::FullRoot).unwrap();
+        let ticket = sink.prepare_listing(&id, 41, None, &[], identity).unwrap();
+        let mut accepted = Vec::new();
+        for (i, valid) in chunks.iter().enumerate() {
+            let entries = if *valid {
+                let name = format!("accepted-{i}.bin");
+                accepted.push(name.clone());
+                vec![entry(&name, 2, false)]
+            } else {
+                vec![
+                    entry("rejected.bin", 3, false),
+                    entry("duplicate.bin", 4, false),
+                    entry("duplicate.bin", 5, false),
+                ]
+            };
+            let result = sink.consume(
+                &id,
+                ScanMessage::DirListing {
+                    run: 41,
+                    ticket,
+                    entries,
+                },
+            );
+            if *valid {
+                result.unwrap();
+            } else {
+                assert!(
+                    matches!(
+                        result,
+                        Err(loomward_engine::EngineError::StaleGeneration { .. })
+                    ),
+                    "duplicate names are refused at send time"
+                );
+            }
+        }
+        sink.consume(
+            &id,
+            ScanMessage::ListingDone {
+                run: 41,
+                ticket,
+                outcome: ListOutcome::Complete,
+            },
+        )
+        .unwrap();
+        sink.settle(&id).unwrap();
+        let conn = svc.inner.db();
+        let names: Vec<String> = conn
+            .prepare("SELECT name FROM main.file ORDER BY name")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert!(
+            !names.iter().any(|n| n == "rejected.bin"),
+            "rejected chunk entries never reached the writer"
+        );
+        for name in &accepted {
+            assert!(names.contains(name), "accepted chunk missing: {names:?}");
+        }
+        let (state, coverage): (String, String) = conn
+            .query_row(
+                "SELECT listing_state,listing_outcome FROM main.dir WHERE id=?1",
+                [dir],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            (state.as_str(), coverage.as_str()),
+            ("incomplete", "partial"),
+            "chunks={chunks:?}, published entries={names:?}"
+        );
+        assert!(
+            names.iter().any(|n| n == "previous.bin"),
+            "partial coverage must preserve unseen entries"
+        );
+        drop(conn);
+        sink.finish_run(&id, 41, &RunScope::FullRoot, false)
+            .unwrap();
+    }
 }
 
 /// Parallel workers over a wider tree: every child ticket follows its parent's publication, so
@@ -7208,6 +7493,8 @@ fn followup_inspect_uses_the_roots_actual_grant() {
     assert_eq!(result["display_path"]["text"], "Synthetic root");
 }
 
+#[path = "crash_sweep_tests.rs"]
+mod crash_sweep_tests;
 #[path = "duplicates_tests.rs"]
 mod duplicates_tests;
 #[path = "forget_tests.rs"]
@@ -7911,4 +8198,194 @@ fn active_grant_matches_guid_and_unverified_path_together() {
         .unwrap(),
         None
     );
+}
+
+/// #148: a listing's chunk and its publication reach the writer without waiting for each receipt,
+/// so one transaction commits both; the next child lookup waits for that commit first.
+#[cfg(windows)]
+#[test]
+fn a_listing_chunk_and_its_publication_share_one_transaction() {
+    use loomward_engine::scan::source::{FileIdObs, IdBasis, ListOutcome, OpenedIdentity};
+    use loomward_engine::scan::Entry;
+    let Some(lab) = lab() else { return };
+    let inner = &lab.svc.inner;
+    inner.freshness.pause_pump();
+    let row = inner.root_row(&lab.root).unwrap();
+    let stored = crate::db::roots(&inner.db(), Some(row)).unwrap().remove(0);
+    let id = RootId::new(&lab.root).unwrap();
+    inner.scan.bind(&id, stored.grant, stored.dir.unwrap());
+    let sink: &dyn ScanSink = &*inner.scan;
+    let identity = |id| OpenedIdentity {
+        id: Some(FileIdObs::Id64(id)),
+        basis: IdBasis::Listed,
+        volume_guid: None,
+        volume_serial: Some(42),
+        attributes: 0x10,
+        reparse_tag: None,
+    };
+    let entry = |name: &str, id, attributes| Entry {
+        name: name.encode_utf16().collect(),
+        file_id: Some(FileIdObs::Id64(id)),
+        identity_eligible: true,
+        attributes,
+        reparse_tag: None,
+        logical: 10,
+        allocated: Some(4096),
+        creation: Some(1),
+        last_write: Some(1),
+        change: Some(1),
+        last_access: Some(1),
+        excluded: false,
+        traversal_error: None,
+    };
+    sink.begin_run(&id, 7, &RunScope::FullRoot).unwrap();
+    let ticket = sink
+        .prepare_listing(&id, 7, None, &[], identity(1))
+        .unwrap();
+    let writer = inner.catalog.writer();
+    let before = writer.timings().transactions;
+    // The writer holds its first listing command; a waiting sink could not send the second.
+    writer.publication_window().arm();
+    let (sent, returned) = std::sync::mpsc::channel();
+    let outcome = std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let entries = vec![entry("a.bin", 2, 0x20), entry("sub", 3, 0x10)];
+            sink.consume(
+                &id,
+                ScanMessage::DirListing {
+                    run: 7,
+                    ticket,
+                    entries,
+                },
+            )
+            .unwrap();
+            let outcome = ListOutcome::Complete;
+            sink.consume(
+                &id,
+                ScanMessage::ListingDone {
+                    run: 7,
+                    ticket,
+                    outcome,
+                },
+            )
+            .unwrap();
+            sent.send(()).unwrap();
+        });
+        let pipelined = returned.recv_timeout(Duration::from_secs(10)).is_ok();
+        // The child lookup starts while the writer still holds the publication: it must wait.
+        let (looked_up, child) = std::sync::mpsc::channel();
+        let id = &id;
+        scope.spawn(move || {
+            let name: Vec<u16> = "sub".encode_utf16().collect();
+            let found = sink.prepare_listing(id, 7, Some(ticket.dir), &name, identity(3));
+            looked_up.send(found).unwrap();
+        });
+        let early = child.recv_timeout(Duration::from_millis(200));
+        writer.publication_window().release();
+        let late = child.recv_timeout(Duration::from_secs(10));
+        (pipelined, early, late)
+    });
+    let (pipelined, early, late) = outcome;
+    assert!(pipelined, "consume waited for a receipt");
+    assert!(
+        matches!(early, Err(std::sync::mpsc::RecvTimeoutError::Timeout)),
+        "the child lookup answered before its parent's publication committed"
+    );
+    late.expect("the child lookup finishes once the writer commits")
+        .expect("the child lookup waits for its parent's publication");
+    assert_eq!(writer.timings().transactions - before, 1);
+    sink.finish_run(&id, 7, &RunScope::FullRoot, false).unwrap();
+}
+
+/// Run 42 on a fresh root whose listing the writer will refuse after `consume` returned: each
+/// chunk is valid alone, but the publication names one entry twice.
+fn stage_deferred_refusal(svc: &Service) -> (RootId, u64) {
+    use loomward_engine::scan::source::{IdBasis, ListOutcome, OpenedIdentity};
+    let (root, grant) = register(svc, 7);
+    let dir = crate::db::active_root_dir(&svc.inner.db(), root)
+        .unwrap()
+        .unwrap();
+    let id = RootId::new(svc.inner.root_id(root)).unwrap();
+    let sink = &svc.inner.scan;
+    sink.bind(&id, grant, dir);
+    sink.begin_run(&id, 42, &RunScope::FullRoot).unwrap();
+    let identity = OpenedIdentity {
+        id: None,
+        basis: IdBasis::None,
+        volume_guid: None,
+        volume_serial: None,
+        attributes: 0x10,
+        reparse_tag: None,
+    };
+    let ticket = sink.prepare_listing(&id, 42, None, &[], identity).unwrap();
+    for n in 1..=2 {
+        let entries = vec![entry("dup.bin", n, false)];
+        sink.consume(
+            &id,
+            ScanMessage::DirListing {
+                run: 42,
+                ticket,
+                entries,
+            },
+        )
+        .unwrap();
+    }
+    let outcome = ListOutcome::Complete;
+    sink.consume(
+        &id,
+        ScanMessage::ListingDone {
+            run: 42,
+            ticket,
+            outcome,
+        },
+    )
+    .unwrap();
+    (id, ticket.dir)
+}
+
+/// #148: a chunk the writer refuses after `consume` returned is still relisted: settling names its
+/// directory, and its listing published partial, never complete.
+#[test]
+fn a_deferred_refusal_settles_as_a_relist_and_never_completes() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let (id, dir) = stage_deferred_refusal(&svc);
+    let sink = &svc.inner.scan;
+    assert_eq!(sink.settle(&id).unwrap(), vec![dir]);
+    assert_eq!(sink.settle(&id).unwrap(), Vec::<u64>::new(), "settled once");
+    let state: String = svc
+        .inner
+        .db()
+        .query_row(
+            "SELECT listing_state FROM main.bulk_dir WHERE id=?1 UNION ALL SELECT listing_state FROM main.dir WHERE id=?1 LIMIT 1",
+            [dir as i64],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_ne!(state, "complete");
+    sink.finish_run(&id, 42, &RunScope::FullRoot, false)
+        .unwrap();
+}
+
+/// #148, invariant 4: an engine that claims completeness while a deferred refusal is still
+/// unsettled cannot end the run completed; `finish_run` settles it itself and downgrades.
+#[test]
+fn an_unsettled_deferred_refusal_cannot_end_the_run_completed() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let (id, _) = stage_deferred_refusal(&svc);
+    svc.inner
+        .scan
+        .finish_run(&id, 42, &RunScope::FullRoot, true)
+        .unwrap();
+    let state: String = svc
+        .inner
+        .db()
+        .query_row(
+            "SELECT state FROM main.scan_run ORDER BY id DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(state, "cancelled", "the run must not end completed");
 }

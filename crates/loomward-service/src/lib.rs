@@ -207,7 +207,7 @@ impl Service {
         let sqlite_destination = loomward_catalog::sqlite_dir(&destination);
         // Grant the canonical spellings the rules approved, never the caller's raw text (#710).
         let roots = paths::validate_roots(&config.grant_roots, Some(&destination))?;
-        Catalog::validate_stores(&destination, class_name(config.dataset))
+        let stores = Catalog::validate_stores(&destination, class_name(config.dataset))
             .map_err(|e| format!("state store: {e}"))?;
         let mut protected = roots.clone();
         for root in &roots {
@@ -272,14 +272,11 @@ impl Service {
             .canonicalize()
             .map_err(|_| "cannot resolve the state directory".to_string())?;
         // The ranked token index exists only where ranked search is served (#520).
-        let catalog = Catalog::open_with(
-            &state_dir,
-            class_name(config.dataset),
-            &CatalogOptions {
+        let catalog = stores
+            .open(&CatalogOptions {
                 ranked_index: FEDERATED_SEARCH,
-            },
-        )
-        .map_err(|e| format!("catalogue refused to open: {e}"))?;
+            })
+            .map_err(|e| format!("catalogue refused to open: {e}"))?;
         // A root's first full scan publishes once, atomically, with its file indexes built once (#148).
         catalog.writer().set_bulk_first_scan(true);
         let engine = Engine::open(EngineConfig::new(state_dir.clone(), config.dataset))

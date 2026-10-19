@@ -83,6 +83,15 @@ impl ScanSink for ProbeWriter {
     }
     fn consume(&self, root: &RootId, message: ScanMessage) -> crate::EngineResult<()> {
         let notice = match &message {
+            ScanMessage::DirListing {
+                run,
+                ticket,
+                entries,
+            } => Some(ScanMessage::DirListing {
+                run: *run,
+                ticket: *ticket,
+                entries: entries.clone(),
+            }),
             ScanMessage::ListingDone {
                 run,
                 ticket,
@@ -1141,4 +1150,170 @@ fn native_child_handles_close_but_root_stays_pinned_until_finalization() {
     )
     .unwrap();
     assert!(report.complete);
+}
+
+/// docs/45 row 5: listing is denied after the scan has started. The `DeniedDirectory` fixture's
+/// deny ACE is lifted before the scan and applied again by the source the moment the root's own
+/// listing reports `denied`, before that child is opened. The real ACL then refuses the child's
+/// open; the run must be partial, the root's entry for the child must carry `AccessDenied` (what
+/// the catalogue sink stores as its denied flag, `ACCESS_DENIED` in the service's `sink.rs`), and
+/// neither the root nor the run may report complete (invariant 4).
+#[cfg(windows)]
+#[test]
+fn listing_denied_mid_scan_is_partial_and_flagged() {
+    use loomward_lab::pathological::{generate, GeneratedTree, Profile};
+    use loomward_windows::enumerate::{NativeDir, NativeSource};
+    if skip_elevated() {
+        return;
+    }
+    let temp = canonical_tempdir();
+    let path = temp.path().join("tree");
+    std::fs::create_dir(&path).unwrap();
+    let mut tree = generate(&path, Profile::DeniedDirectory).unwrap();
+    let denied = tree
+        .allow_listing()
+        .unwrap()
+        .expect("the fixture denies a directory");
+    assert_eq!(
+        std::fs::read_dir(&denied).unwrap().count(),
+        1,
+        "listable before the scan"
+    );
+    struct Source {
+        native: NativeSource,
+        tree: Mutex<GeneratedTree>,
+        denied: std::path::PathBuf,
+        applied: AtomicBool,
+    }
+    impl DirSource for Source {
+        type Dir = NativeDir;
+        fn strategy(&self) -> Strategy {
+            self.native.strategy()
+        }
+        fn open_root(
+            &self,
+            p: &std::path::Path,
+        ) -> Result<(NativeDir, OpenedIdentity), SourceError> {
+            self.native.open_root(p)
+        }
+        fn open_child(
+            &self,
+            p: &NativeDir,
+            e: &RawEntry<'_>,
+        ) -> Result<(NativeDir, OpenedIdentity), SourceError> {
+            self.native.open_child(p, e)
+        }
+        fn list(&self, d: &NativeDir, sink: &mut dyn FnMut(RawEntry<'_>) -> Flow) -> ListOutcome {
+            self.native.list(d, &mut |e| {
+                if e.name == "denied".encode_utf16().collect::<Vec<_>>()
+                    && !self.applied.swap(true, Ordering::SeqCst)
+                {
+                    self.tree
+                        .lock()
+                        .unwrap()
+                        .deny_listing(&self.denied)
+                        .unwrap();
+                }
+                sink(e)
+            })
+        }
+    }
+    let source = Source {
+        native: NativeSource::default(),
+        tree: Mutex::new(tree),
+        denied: denied.clone(),
+        applied: AtomicBool::new(false),
+    };
+    let expected = source.open_root(&path).unwrap().1;
+    let grant = GrantedRoot::new(
+        RootId::new("rt_denied_mid_scan").unwrap(),
+        path.clone(),
+        DatasetClass::Synthetic,
+        expected,
+    );
+    let listings = Arc::new(Mutex::new(Vec::new()));
+    let finals = Arc::new(Mutex::new(Vec::new()));
+    let flagged = Arc::new(Mutex::new(Vec::new()));
+    let (seen, finished, entries) = (listings.clone(), finals.clone(), flagged.clone());
+    let sink = Arc::new(ProbeWriter {
+        sink: MemorySink::default(),
+        hook: Box::new(move |_, notice, _| {
+            match notice {
+                Notice::Message(ScanMessage::DirListing { entries: e, .. }) => entries
+                    .lock()
+                    .unwrap()
+                    .extend(e.into_iter().map(|e| (e.name, e.traversal_error))),
+                Notice::Message(ScanMessage::ListingDone {
+                    ticket, outcome, ..
+                }) => seen.lock().unwrap().push((ticket.dir, outcome)),
+                Notice::Message(ScanMessage::DirFinal {
+                    ticket, complete, ..
+                }) => finished.lock().unwrap().push((ticket.dir, complete)),
+                _ => {}
+            }
+            Ok(())
+        }),
+    });
+    let scan = |sink: Arc<ProbeWriter>| {
+        run_scan(
+            &source,
+            &grant,
+            1,
+            sink,
+            Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES)),
+            Arc::new(AtomicBool::new(false)),
+            ScanOptions {
+                workers: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+    };
+    let report = scan(sink.clone());
+    assert!(
+        source.applied.load(Ordering::SeqCst),
+        "the deny never landed mid-scan"
+    );
+    assert_eq!(
+        std::fs::read_dir(&denied).unwrap_err().kind(),
+        std::io::ErrorKind::PermissionDenied
+    );
+    assert!(
+        !report.complete && !report.coverage_complete(),
+        "{report:?}"
+    );
+    assert_eq!(report.failed, 1, "{report:?}");
+    // The root listed to its end; the child was never listed, and its entry says why.
+    let listings = listings.lock().unwrap().clone();
+    assert_eq!(listings.len(), 1, "{listings:?}");
+    assert_eq!(listings[0].1, ListOutcome::Complete);
+    let name = |n: &str| n.encode_utf16().collect::<Vec<_>>();
+    let mut flagged = flagged.lock().unwrap().clone();
+    flagged.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(
+        flagged,
+        vec![
+            (name("denied"), Some(SourceError::AccessDenied)),
+            (name("synthetic.bin"), None)
+        ]
+    );
+    // No false completeness: the root is never final-complete and counts only the visible file.
+    let finals = finals.lock().unwrap().clone();
+    assert!(finals.iter().all(|(_, complete)| !complete), "{finals:?}");
+    assert!(
+        finals.iter().any(|(dir, _)| *dir == listings[0].0),
+        "{finals:?}"
+    );
+    let totals = sink.sink.totals(grant.root_id()).expect("root totals");
+    // The unopened child adds nothing: its subtree is unknown, not empty, so the root is partial.
+    assert_eq!((totals.files, totals.dirs), (1, 0), "{totals:?}");
+    assert!(!sink.sink.sweep_allowed(grant.root_id()));
+    // Once listing is allowed again the next scan sees everything and says so.
+    source.tree.lock().unwrap().allow_listing().unwrap();
+    let report = scan(Arc::new(ProbeWriter {
+        sink: MemorySink::default(),
+        hook: Box::new(|_, _, _| Ok(())),
+    }));
+    assert!(report.coverage_complete(), "{report:?}");
+    assert_eq!((report.totals.files, report.totals.dirs), (2, 1));
 }

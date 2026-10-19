@@ -453,6 +453,16 @@ and no correctness property depends on it; precious writes go first. `state.db` 
 every start (7 kept) and before migrations. Catalogue recovery recreates roots only from active grants.
 Revocation commits first, then cancels the root's run and fences the writer against later messages for that
 grant. Disclosure grants are consumed with their request row before any process starts.
+
+A successful `EndRun` receipt confirms that its catalogue transaction committed. Before sending it, the writer
+attempts a best-effort `TRUNCATE` checkpoint without waiting for readers; an incomplete or failed checkpoint does not turn
+that committed receipt into an error. Under `NORMAL`, a power loss may therefore discard a whole-transaction
+suffix that includes acknowledged run ends. An open reader can prevent the checkpoint from making them durable:
+the receipt does not promise that the catalogue rows have reached durable storage. This is the existing derived
+state contract ([#793](https://github.com/Chris0Jeky/Loomward/issues/793)); current evidence and remaining
+power-cut limits are recorded in [daily-use readiness, row 8](45-daily-use-readiness.md). Forcing durability at every run end would be a
+separate design decision. Precious state retains its `FULL` guarantee.
+
 **Consequences.** Good: acknowledged labels, revocations and grant consumption survive power loss; corruption of
 derived data cannot create or revive consent. Bad: slower `state.db` commits (small, infrequent). Neutral: the
 catalogue keeps `NORMAL` for scan throughput.

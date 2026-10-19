@@ -57,7 +57,6 @@ mod tests {
     use crate::{Config, Service};
     use loomward_catalog::{Catalog, DirListing, RootObservation, WriteCommand, WriteReply};
     use loomward_protocol::DatasetClass;
-    use std::path::Path;
     use std::time::Duration;
 
     fn fixture() -> (
@@ -66,9 +65,7 @@ mod tests {
         rusqlite::Connection,
         db::RootRow,
     ) {
-        let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/test-roots");
-        std::fs::create_dir_all(&target).unwrap();
-        let tmp = tempfile::tempdir_in(target.canonicalize().unwrap()).unwrap();
+        let tmp = tempfile::tempdir_in(crate::paths::test_roots_base()).unwrap();
         let catalog = Catalog::open(tmp.path(), "synthetic").unwrap();
         let WriteReply::Root {
             grant_id,

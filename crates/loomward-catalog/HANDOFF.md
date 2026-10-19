@@ -2041,3 +2041,98 @@ work-budget regression, three interleaved baseline/candidate runs of the through
 and 1M memory examples, exact source identity and limits are in
 [the scoped lane evidence](evidence/endrun-646.md). Shared-host timings do not
 establish quiet-host throughput parity or the 250k through-EndRun P4 target.
+
+## First-scan ingest: pipelined service sink (#148, 2026-10-19)
+
+Measured first: on a synthetic tree shaped like the 18 October real folder (126,629 files in
+15,976 directories), the product scan spent its time in the catalogue writer, not in
+enumeration (0.1 s of OS queries). The writer ran 32,090 transactions, two per directory,
+because the service sink waited for every `StageChunk` and `ListingDone` receipt. COMMIT,
+the per-transaction statements and the ancestor dirty walk repeated per directory.
+
+- **Service sink** (`loomward-service/src/sink.rs`): listing steps are sent without
+  waiting. Receipts settle in order where something depends on them: a child lookup waits
+  only through its parent's publication, and the engine's relist barrier and `EndRun` wait
+  for all of them. A deferred obsolete step names its directory for the relist, as a waited
+  refusal did. Any other refusal still stops the scan, and the run is not reported complete.
+  COMMIT-before-receipt, fencing and the byte quota are unchanged. In-flight payload is
+  bounded by the writer queue quota (`QUEUE_BYTES`); unsettled receipts are capped at 256.
+- **Engine writer thread** (`scan/pipeline.rs`): before a child prepare blocks, the other
+  workers' queued messages are forwarded first, so they join the same transaction. Nothing
+  overtakes a barrier or the stop. `ScanSink::settle` (default no-op) is called at the barrier.
+- **Writer** (`writer.rs`): the per-listing scratch DDL and the hot per-command and
+  per-listing statements come from the statement cache. A listing with one payload skips
+  `listing_names`, since send-time validation already rejects repeated names inside a payload.
+
+Interleaved release runs on the shared host (`LOOMWARD_SCAN_PROFILE=1`, warm cache):
+
+| Workload | Metric | main `b0927794` | branch |
+|---|---|---:|---:|
+| Real-shaped lab, 3 pairs | elapsed s, median [range] | 53.7 [50.4-103.5] | 16.0 [15.8-16.2] |
+| | entries/s, median | 2,654 | 8,941 |
+| | transactions | 32,090 | 2,112-2,172 |
+| | writer COMMIT s, median | 10.8 | 3.2 |
+| | process CPU s, median | 42.4 | 18.5 |
+| | peak working set MiB | 152-162 | 158-169 |
+| 100k lab (1,000 dirs), 2 pairs | elapsed s | 8.7 / 6.3 | 4.0 / 3.3 |
+| | transactions | 2,008 | 17 / 15 |
+| P4 bench 1M, 2 pairs | process CPU s | 43.9 / 34.9 | 38.6 / 38.2 |
+| | peak working set MiB | 326.8 / 326.0 | 325.8 / 326.2 |
+| `memory_bounds listing 1000000` | peak working set MiB | 355.2 | 358.4 |
+
+The P4 bench has 1,001 listings, so this change is not expected to move it. Its CPU time is
+unchanged within noise. Its wall times (through-EndRun 9.5k/12.1k against 22.9k/20.9k
+rows/s) followed host load, so no P4 gain is claimed. P4 stays far from 250k. The real folder
+was not rescanned in this lane.
+
+Pinned by `a_listing_chunk_and_its_publication_share_one_transaction` (consume returns while
+the writer is held; one transaction commits both steps) and
+`a_deferred_refusal_settles_as_a_relist_and_never_completes`. The N1 test now settles before
+it reads committed rows. Three mutations were each killed by those tests: swallowing deferred
+refusals, a child lookup that does not wait, and skipping the name guard for multi-chunk listings.
+
+## First-scan publication cost per listing (#646, 2026-10-19)
+
+Measured first with SQLite's statement trace (a test-only `rusqlite` `trace` feature): one bulk
+first-scan listing, a staged chunk plus its publication as the service sends them, ran 47
+statements. Now 23. Fixed per-scan and per-transaction work is cancelled out by differencing
+two tree sizes. `bulk_first_scan_statements_per_listing_are_bounded` pins the count at 23 or
+fewer (sharing the sequences before every bulk publication again makes it 25 and fails it).
+
+- No earlier-file scratch (`old_file` DDL, fill and probe, both retire deletes) when the
+  directory holds no files; one read now proves the directory listable and returns its depth,
+  filesystem, chunk count and that probe.
+- The ID sequences are shared by one combined UPDATE, and before a bulk publication only when
+  something other than a bulk publication or a staged chunk ran since the last share in the
+  transaction. The share after every bulk publication stays.
+- A run proven active stays proven for the rest of its transaction (listing commands change no
+  run, root or grant row, and the transaction reads one snapshot).
+- The revision comes back through `RETURNING`; bulk listings skip the token drain (bulk tables
+  carry no token triggers); the witness write is skipped when no reference intent was pending
+  at the transaction's start (intents are staged only before it begins).
+- `listing_names` scratch is created only for multi-payload listings.
+
+Not done: folding the directory's own dirty mark into its publication UPDATE (one statement)
+conflicts with `aborted_ok_batch_reports_the_failure_to_every_caller`, which injects the flush
+failure through a `dirty_rev` trigger.
+
+Interleaved release runs, real-shaped lab (142,605 entries), shared host:
+
+| Metric (3 pairs) | #761 head `57948db7` | branch |
+|---|---:|---:|
+| elapsed s, median [range] | 15.0 [14.1-37.5] | 13.2 [11.7-15.5] |
+| writer listing s, median | 5.20 | 4.54 |
+| writer COMMIT s, median | 4.28 | 2.51 |
+| process CPU s, median | 18.3 | 17.4 |
+| transactions | 2,071-2,127 | 2,085-2,130 |
+| peak working set MiB | 158.2-166.1 | 156.2-166.2 |
+
+Both variants published identical catalogues (path-keyed digests of every `dir` and `file`
+column except IDs and revision counters, plus `multilink`). The gain is modest: statements
+were not the dominant per-listing cost.
+
+EndRun at 127k rows (bench example, temporary probe, not committed): 1.7-2.1 s, of which the
+file copy with its per-row trigram trigger 0.69 s, the four file index builds 0.29 s (already
+built once after the copy), the WAL checkpoint 0.5-0.6 s. Nothing cheap remains there without
+a design change (for example renaming the bulk table into place, or deferring the trigram
+index, which would change what search returns right after EndRun).

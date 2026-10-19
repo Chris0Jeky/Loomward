@@ -754,6 +754,8 @@ fn chain_lengths_reuse_proven_seeds_but_count_the_unproven_prefix() {
         fenced_listings: HashSet::new(),
         bulk: HashMap::new(),
         bulk_enabled: Arc::default(),
+        active: HashMap::new(),
+        sequences_shared: false,
     };
     let mut proven = HashMap::new();
     assert_eq!(
@@ -1798,6 +1800,8 @@ fn prepared_file_matches_survive_until_publication_without_recopied_or_rematched
         fenced_listings: HashSet::new(),
         bulk: HashMap::new(),
         bulk_enabled: Arc::default(),
+        active: HashMap::new(),
+        sequences_shared: false,
     };
     let tx = conn.transaction().unwrap();
     tx.execute("UPDATE revision SET catalog_rev=catalog_rev+1", [])
@@ -2371,5 +2375,170 @@ fn rollup_scratch_disk_full_is_atomic_and_restart_recovers() {
             .get::<_, String>(0))
             .unwrap(),
         "failed"
+    );
+}
+
+/// Counts every finished SQL statement of a traced connection, by text (#646).
+static TRACED: Mutex<Option<HashMap<String, u64>>> = Mutex::new(None);
+fn trace_statement(event: rusqlite::trace::TraceEvent<'_>) {
+    if let rusqlite::trace::TraceEvent::Profile(statement, _) = event {
+        if let Some(seen) = TRACED.lock().unwrap().as_mut() {
+            *seen.entry(statement.sql().into_owned()).or_default() += 1;
+        }
+    }
+}
+
+/// Every SQL statement a bulk first scan of `children` real-shaped directory pairs runs, by text:
+/// the root lists `children` directories; each child lists 8 files and one directory, which lists
+/// 8 files. Every listing is a staged chunk and its publication, as the service sink sends them,
+/// pre-queued so they share one transaction.
+fn first_scan_statements(children: i64) -> HashMap<String, u64> {
+    let temp = tempfile::tempdir().unwrap();
+    let conn = crate::db::open_pair(temp.path(), "synthetic").unwrap();
+    conn.trace_v2(
+        rusqlite::trace::TraceEventCodes::SQLITE_TRACE_PROFILE,
+        Some(trace_statement),
+    );
+    let files = |dir: i64| -> Vec<Observation> {
+        (0..8)
+            .map(|i| {
+                let mut o = Observation::file(format!("item-{i}.txt"), 100 + i, Some(4096));
+                let mut id = vec![0; 16];
+                id[..8].copy_from_slice(&(dir * 16 + i as i64).to_le_bytes());
+                o.file_id = Some(id);
+                o.extension = Some("txt".into());
+                o.family = "other".into();
+                o.created_ft = Some(1);
+                o.modified_ft = Some(2);
+                o
+            })
+            .collect()
+    };
+    let dir = |name: String, key: i64| {
+        let mut o = Observation::file(name, 0, None);
+        let mut id = vec![0xff; 16];
+        id[..8].copy_from_slice(&key.to_le_bytes());
+        o.file_id = Some(id);
+        o.created_ft = Some(1);
+        o
+    };
+    let listing = |dir_id: i64, files: Vec<Observation>, dirs: Vec<Observation>| {
+        [
+            WriteCommand::StageChunk {
+                run_id: 1,
+                dir_id,
+                seq: 0,
+                files,
+                dirs,
+            },
+            WriteCommand::ListingDone {
+                run_id: 1,
+                dir_id,
+                outcome: ListingOutcome::Complete,
+                skipped: 0,
+                errors: 0,
+            },
+        ]
+    };
+    let mut commands = vec![
+        WriteCommand::RegisterRoot(RootObservation {
+            volume_guid: None,
+            volume_key: "fixture".into(),
+            display_name: "Fixture".into(),
+            display_path: "Fixture root".into(),
+            root_file_id: Some(vec![1; 16]),
+            filesystem: Some("NTFS".into()),
+            origin: "fixture".into(),
+            granted_via: "fixture".into(),
+            observed_at_ns: 0,
+        }),
+        WriteCommand::BeginRun {
+            grant_id: 1,
+            mode: "full".into(),
+            strategy: "fixture".into(),
+            started_at_ns: 1,
+        },
+    ];
+    // Bulk IDs come from one sequence in insertion order: children 2.., then grandchildren.
+    commands.extend(listing(
+        1,
+        vec![],
+        (0..children)
+            .map(|c| dir(format!("child-{c}"), c))
+            .collect(),
+    ));
+    for c in 0..children {
+        commands.extend(listing(
+            2 + c,
+            files(2 + c),
+            vec![dir("inner".into(), 1000 + c)],
+        ));
+    }
+    for g in 0..children {
+        commands.extend(listing(2 + children + g, files(2 + children + g), vec![]));
+    }
+    let (tx, rx) = bounded(commands.len());
+    let quota = Arc::new((Mutex::new(commands.len() * 4096), Condvar::new()));
+    let mut replies = Vec::new();
+    for command in commands {
+        let (reply, result) = bounded(1);
+        tx.send(Pending {
+            command,
+            reply,
+            _permit: BytePermit {
+                quota: quota.clone(),
+                bytes: 4096,
+            },
+        })
+        .unwrap();
+        replies.push(result);
+    }
+    drop(tx);
+    *TRACED.lock().unwrap() = Some(HashMap::new());
+    let timings = Arc::new(Mutex::new(WriterTimings::default()));
+    let (alive, _) = bounded(0);
+    super::hold_batch_window_open();
+    serve(
+        conn,
+        rx,
+        timings.clone(),
+        alive,
+        Arc::new(AtomicBool::new(true)),
+        None,
+        None,
+    );
+    let traced = TRACED.lock().unwrap().take().unwrap();
+    for reply in replies {
+        reply.recv().unwrap().unwrap();
+    }
+    // RegisterRoot, BeginRun, and one transaction for every listing.
+    assert_eq!(timings.lock().unwrap().transactions, 3);
+    traced
+}
+
+/// A first scan's publication cost per listing is pinned (#646): the marginal statements of one
+/// more directory, fixed per-scan and per-transaction work cancelled out.
+#[test]
+fn bulk_first_scan_statements_per_listing_are_bounded() {
+    let small = first_scan_statements(10);
+    let large = first_scan_statements(30);
+    let total = |m: &HashMap<String, u64>| m.values().sum::<u64>();
+    // Two listings per child pair.
+    let per_listing = (total(&large) - total(&small)) as f64 / 40.0;
+    let mut grown: Vec<_> = large
+        .iter()
+        .map(|(sql, n)| (n - small.get(sql).copied().unwrap_or(0), sql))
+        .filter(|(n, _)| *n > 0)
+        .collect();
+    grown.sort();
+    let report: Vec<_> = grown
+        .iter()
+        .rev()
+        .map(|(n, sql)| format!("{n:>5} {sql:.150}"))
+        .collect();
+    assert!(
+        per_listing <= 23.0,
+        "{per_listing} statements per listing:\n{}",
+        report.join("\n")
     );
 }

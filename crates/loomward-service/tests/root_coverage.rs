@@ -3,13 +3,10 @@ use loomward_catalog::{Catalog, DirListing, RootObservation, WriteCommand, Write
 use loomward_protocol::{CallContext, DatasetClass, ResponseEnvelope, ViewService};
 use loomward_service::{Config, Service};
 use serde_json::{json, Value};
-use std::path::Path;
 use std::time::Duration;
 
 fn fixture() -> (tempfile::TempDir, Service, rusqlite::Connection, i64) {
-    let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/test-roots");
-    std::fs::create_dir_all(&target).unwrap();
-    let tmp = tempfile::tempdir_in(target.canonicalize().unwrap()).unwrap();
+    let tmp = tempfile::tempdir_in(loomward_service::paths::test_roots_base()).unwrap();
     let catalog = Catalog::open(tmp.path(), "synthetic").unwrap();
     let WriteReply::Root {
         grant_id,

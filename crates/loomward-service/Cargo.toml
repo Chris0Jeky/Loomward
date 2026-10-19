@@ -34,6 +34,8 @@ loomward-windows = { path = "../loomward-windows", features = ["fixtures"] }
 loomward-catalog = { path = "../loomward-catalog", features = ["test-hooks"] }
 # #567: the journal append fault seam, to lose an acknowledgement under the service copy module.
 loomward-operations = { path = "../loomward-operations", features = ["fault-injection"] }
+# #675: integration tests under tests/ reach `paths::test_roots_base` through the test-support feature.
+loomward-service = { path = ".", features = ["test-support"] }
 tempfile.workspace = true
 
 [features]

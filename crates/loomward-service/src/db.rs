@@ -20,6 +20,8 @@ pub fn open(dir: &Path) -> Sql<Connection> {
     conn.execute_batch(
         "PRAGMA foreign_keys=ON;PRAGMA st.synchronous=FULL;PRAGMA st.foreign_keys=ON",
     )?;
+    // Every durable boundary of the service's owner-state writes, in a crash sweep only (q-39).
+    loomward_catalog::crash_arm(&conn);
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS st.root_freshness (
         grant_id INTEGER PRIMARY KEY REFERENCES root_grant(id),
