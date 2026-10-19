@@ -76,6 +76,7 @@ fn crash_child() {
         "recover" => {
             recover(&store, op, &control).unwrap();
         }
+        "commit_pending_fence" => commit_pending_fence(&store, op),
         "abandon" => {
             let r = recover(&store, op, &control).unwrap();
             if !r.state.is_terminal() {
@@ -87,6 +88,29 @@ fn crash_child() {
         }
         other => panic!("unknown child action {other}"),
     }
+}
+
+/// The rename has returned with a fence still pending, the state covered by Journal::commit (#751).
+fn commit_pending_fence(store: &Mutex<Store>, op: u64) {
+    let control = Control::new(false);
+    let step = control.admit().ok().unwrap();
+    assert_eq!(
+        fence_waiting(
+            store,
+            op,
+            &control,
+            loomward_operations::FenceCause::GrantRevoked,
+            Duration::ZERO,
+        )
+        .unwrap(),
+        Ack::PendingInFlightStep
+    );
+    drop(step);
+    let epoch = replay(store, op).unwrap().epoch;
+    Journal { store, op, epoch }
+        .commit(&control)
+        .map_err(fault)
+        .unwrap();
 }
 
 // ---- scenarios and trees --------------------------------------------------------------------------
@@ -313,6 +337,10 @@ impl Prepared {
     /// Run the scenario's child step, killed at boundary `n` (None: to the end), tracing every
     /// boundary. Returns the exit code and the trace labels.
     fn child(&self, n: Option<u64>) -> (i32, Vec<String>) {
+        self.child_action(self.case.scenario.action(), n)
+    }
+
+    fn child_action(&self, action: &str, n: Option<u64>) -> (i32, Vec<String>) {
         let trace = self
             .lab
             .tmp
@@ -324,7 +352,7 @@ impl Prepared {
                 "LOOMWARD_COPY_CHILD",
                 format!(
                     "{}|{}|{}|{}",
-                    self.case.scenario.action(),
+                    action,
                     u8::from(self.case.removal),
                     self.op,
                     self.lab.tmp.path().display()
@@ -502,7 +530,8 @@ impl Prepared {
 
 /// docs/47 section 10's CP-01 to CP-15 (every section 5 journal boundary, mid-write at four offsets,
 /// mid-verify, mid-abandon), extended with section 12's lane C2 items and the C5 records as CP-16 to
-/// CP-22. CP-F marks refusal records reached by the fault scenarios. An unknown label fails the matrix.
+/// CP-22. CP-F marks refusal records reached by the fault scenarios; CP-Fence covers the pending
+/// annotation before commit (#751). An unknown label fails the matrix.
 fn class(label: &str) -> &'static str {
     match label {
         "before staging_intent" => "CP-01",
@@ -527,6 +556,7 @@ fn class(label: &str) -> &'static str {
         "after publish_intent" => "CP-12",
         "renamed" | "before committed" => "CP-13",
         "after committed" => "CP-14",
+        "before fenced" | "after fenced" => "CP-Fence",
         "before transition:cancelling"
         | "after transition:cancelling"
         | "before transition:cancelled"
@@ -549,6 +579,111 @@ fn class(label: &str) -> &'static str {
         | "after transition:needs_attention" => "CP-F",
         other => panic!("unclassified kill point {other:?}: add it to the CP map"),
     }
+}
+
+/// #751: a durable pending-fence annotation followed by process death still asks for confirmation
+/// of the already published copy. The child exits without unwinding at both sides of that gap.
+#[test]
+fn a_crash_between_pending_fence_and_commit_keeps_confirm_and_annotation() {
+    let case = Case {
+        scenario: Scenario::Confirm,
+        removal: false,
+        tree: None,
+    };
+    let Some(clean) = Prepared::new(case) else {
+        return;
+    };
+    let (code, labels) = clean.child_action("commit_pending_fence", None);
+    assert_eq!(code, 0);
+    assert_eq!(
+        labels,
+        [
+            "before fenced",
+            "after fenced",
+            "before committed",
+            "after committed"
+        ],
+        "every append boundary must be injectable, in durable order"
+    );
+    assert_eq!(class("before fenced"), "CP-Fence");
+    assert_eq!(class("after fenced"), "CP-Fence");
+    for label in ["after fenced", "before committed"] {
+        let n = labels.iter().position(|l| l == label).unwrap() as u64 + 1;
+        let mut p = Prepared::new(case).unwrap();
+        let at_crash = dest_snapshot(&p.lab.dest());
+        let (code, reached) = p.child_action("commit_pending_fence", Some(n));
+        assert_eq!(code, crash::EXIT as i32);
+        assert_eq!(reached.last().map(String::as_str), Some(label));
+        p.lab.reopen();
+        let r = replay(&p.lab.store, p.op).unwrap();
+        assert_eq!(r.state, OpState::Publishing, "{label}");
+        assert!(r.fenced, "{label}: the committed annotation was lost");
+        let plan = p.lab.plan(p.op);
+        let disk = PathDisk::new(&plan, &r);
+        let recovery = p.lab.store.lock().unwrap().recover(p.op, &disk).unwrap();
+        assert!(
+            matches!(recovery.decision, Decision::Confirm { .. }),
+            "{label}: {:?}",
+            recovery.decision
+        );
+        drop(disk);
+        let outcome = recover(&p.lab.store, p.op, &Control::new(false)).unwrap();
+        assert_eq!(outcome.state, OpState::Committed, "{label}");
+        assert_eq!(outcome.refusal, Some((Refusal::GrantRevoked, None)));
+        p.oracle(label, &at_crash, &outcome);
+        p.lab.reopen();
+        let durable = status(&p.lab.store, p.op).unwrap();
+        assert_eq!(durable.state, OpState::Committed);
+        assert_eq!(durable.refusal, Some((Refusal::GrantRevoked, None)));
+    }
+}
+
+/// The normal commit still validates its append, but needs no separate full replay for an absent
+/// fence. Count real SQLite transactions on the adopted connection, without weakening its checks.
+#[test]
+fn a_commit_without_a_pending_fence_uses_one_journal_transaction() {
+    use rusqlite::hooks::{AuthAction, AuthContext, Authorization, TransactionOperation};
+    use std::sync::atomic::AtomicUsize;
+    let Some(p) = Prepared::new(Case {
+        scenario: Scenario::Confirm,
+        removal: false,
+        tree: None,
+    }) else {
+        return;
+    };
+    let begins = Arc::new(AtomicUsize::new(0));
+    let count = begins.clone();
+    let connection = rusqlite::Connection::open(p.lab.tmp.path().join("state/state.db")).unwrap();
+    connection
+        .authorizer(Some(move |context: AuthContext<'_>| {
+            if matches!(
+                context.action,
+                AuthAction::Transaction {
+                    operation: TransactionOperation::Begin
+                }
+            ) {
+                count.fetch_add(1, Ordering::SeqCst);
+            }
+            Authorization::Allow
+        }))
+        .unwrap();
+    let store = Mutex::new(Store::new(connection).unwrap());
+    let epoch = replay(&store, p.op).unwrap().epoch;
+    begins.store(0, Ordering::SeqCst);
+    Journal {
+        store: &store,
+        op: p.op,
+        epoch,
+    }
+    .commit(&Control::new(false))
+    .map_err(fault)
+    .unwrap();
+    assert_eq!(
+        begins.load(Ordering::SeqCst),
+        1,
+        "an unfenced commit opened an extra replay transaction"
+    );
+    assert_eq!(replay(&store, p.op).unwrap().state, OpState::Committed);
 }
 
 const REQUIRED: [&str; 22] = [
