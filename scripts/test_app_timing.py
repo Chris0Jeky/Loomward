@@ -3,6 +3,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import socket
 import time
 import unittest
 from http.client import HTTPConnection
@@ -19,6 +20,17 @@ spec.loader.exec_module(atlas)
 
 
 class AppE2ETimingTests(unittest.TestCase):
+    def test_fake_servers_accept_a_browser_burst_before_dispatch(self):
+        for server_type in (test_app.ThreadingHTTPServer, test_app_views.ThreadingHTTPServer):
+            with self.subTest(server=server_type), contextlib.ExitStack() as cleanup:
+                server = server_type(('127.0.0.1', 0), test_app.Handler)
+                cleanup.callback(server.server_close)
+                # Simulate a busy dispatcher: connections queue before any handler can run.
+                # Chromium can open six HTTP/1 connections, plus ones from a replaced document.
+                for _ in range(12):
+                    connection = socket.create_connection(server.server_address, timeout=0.5)
+                    cleanup.callback(connection.close)
+
     def test_fake_engine_broadcasts_changes_to_each_event_stream(self):
         engine = test_app_views.FakeEngine()
         engine.start()

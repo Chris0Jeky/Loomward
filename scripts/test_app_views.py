@@ -14,11 +14,12 @@ import threading
 import time
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from playwright.sync_api import Page, expect
+from test_app_server import ThreadingHTTPServer
 
 ROOT = Path(__file__).resolve().parents[1]
 # The same directory test_app.py builds (.loomward/app-e2e). test_app.py also assigns this before running any leg,
