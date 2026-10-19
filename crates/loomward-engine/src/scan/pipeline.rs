@@ -973,7 +973,6 @@ fn writer(
             break;
         }
     }
-    drop(handle);
     first_error.map_or(Ok((seconds, staging_seconds)), Err)
 }
 /// Scan one granted root into a bounded sink. No real metadata is exported or retained by this API.
