@@ -6,9 +6,12 @@ use loomward_protocol::RootId;
 use loomward_protocol::{SearchFreshness, SearchFreshnessState};
 #[cfg(windows)]
 use loomward_windows::usn::Bookmark;
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 use rusqlite::{params, OptionalExtension};
 use std::sync::Arc;
+#[cfg(test)]
+#[path = "freshness_hint_tests.rs"]
+mod hint_tests;
 #[cfg(windows)]
 mod reach;
 #[cfg(all(test, windows))]
@@ -523,10 +526,7 @@ impl Inner {
                         && !dirs.is_empty()
                         && dirs.len() <= 1024
                         && targets.iter().all(|dir| dirs.contains(dir))
-                        && paths.iter().all(|path| {
-                            resolve_hint(self, row, path)
-                                .is_some_and(|(dir, exact)| exact && dirs.contains(&dir))
-                        }) =>
+                        && paths.iter().all(|path| hint_covered(self, row, path, dirs)) =>
                 {
                     Some(epoch)
                 }
@@ -1142,7 +1142,7 @@ pub(crate) fn refresh(inner: &Inner) {
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 const RESOLVE_CHILD_SQL: &str =
     "SELECT id,listing_state FROM main.dir WHERE parent_id=?1 AND name=?2
      ORDER BY listing_state IN ('absent_pending','excluded') LIMIT 1";
@@ -1152,9 +1152,16 @@ fn resolve(inner: &Inner, root: i64, path: &[Vec<u16>]) -> Option<u64> {
     resolve_hint(inner, root, path).map(|(dir, _)| dir)
 }
 
+/// A targeted start may consume a path hint only if it names the complete directory path.
+/// An ancestor can select useful work while a renamed known descendant retains an old listing.
+#[cfg(any(windows, test))]
+fn hint_covered(inner: &Inner, root: i64, path: &[Vec<u16>], dirs: &[u64]) -> bool {
+    resolve_hint(inner, root, path).is_some_and(|(dir, exact)| exact && dirs.contains(&dir))
+}
+
 /// The second value records whether the complete hinted directory path was already known.
 /// An ancestor substitution selects useful work but cannot prove the hinted directory was listed.
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 fn resolve_hint(inner: &Inner, root: i64, path: &[Vec<u16>]) -> Option<(u64, bool)> {
     if path.len() >= loomward_catalog::MAX_DIRECTORY_CHAIN_LENGTH {
         return None;
