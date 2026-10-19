@@ -441,6 +441,87 @@ mod tests {
         assert!(!e.dispatched);
     }
 
+    /// A stand-in broker that exits normally at once, leaving a grandchild that holds one of its
+    /// pipes open: stdin when `holds_stdin` (the body write never finishes), otherwise stdout (the
+    /// reply read never reaches end of file). The grandchild lives for about 30 seconds.
+    fn exits_leaving_a_grandchild(dir: &std::path::Path, holds_stdin: bool) -> PathBuf {
+        #[cfg(windows)]
+        let (name, body) = if holds_stdin {
+            (
+                "orphan-stdin.cmd",
+                "@start \"\" /b %SystemRoot%\\System32\\ping.exe -n 30 127.0.0.1 >nul\r\n",
+            )
+        } else {
+            (
+                "orphan-stdout.cmd",
+                "@start \"\" /b %SystemRoot%\\System32\\ping.exe -n 30 127.0.0.1 <nul\r\n",
+            )
+        };
+        #[cfg(not(windows))]
+        let (name, body) = if holds_stdin {
+            (
+                "orphan-stdin.sh",
+                "#!/bin/sh\nsleep 30 <&0 >/dev/null &\nexit 0\n",
+            )
+        } else {
+            ("orphan-stdout.sh", "#!/bin/sh\nsleep 30 &\nexit 0\n")
+        };
+        let path = dir.join(name);
+        std::fs::write(&path, body).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        path
+    }
+
+    #[test]
+    fn a_grandchild_holding_the_reply_pipe_does_not_hold_the_round_past_its_deadline() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = open(
+            &profile("http://127.0.0.1:11434/v1", "m"),
+            exits_leaving_a_grandchild(dir.path(), false),
+            None,
+        )
+        .unwrap();
+        let req = ChatRequest {
+            messages: vec![Message::User {
+                content: "q".into(),
+            }],
+            tools: vec![],
+        };
+        let t = Instant::now();
+        let e = p.complete(&req, Duration::from_millis(300)).unwrap_err();
+        // The deadline plus the kill grace is 2.3 s; a join on the reply pipe would take 30 s.
+        assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
+        assert_eq!(e.kind, ErrorKind::Timeout, "{}", e.message);
+    }
+
+    #[test]
+    fn a_grandchild_holding_the_request_pipe_does_not_hold_the_round_past_its_deadline() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = open(
+            &profile("http://127.0.0.1:11434/v1", "m"),
+            exits_leaving_a_grandchild(dir.path(), true),
+            None,
+        )
+        .unwrap();
+        // Far more than any pipe buffer holds, so the write blocks behind the grandchild.
+        let req = ChatRequest {
+            messages: vec![Message::User {
+                content: "q".repeat(200 * 1024),
+            }],
+            tools: vec![],
+        };
+        let t = Instant::now();
+        let e = p.complete(&req, Duration::from_millis(300)).unwrap_err();
+        assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
+        assert_eq!(e.kind, ErrorKind::Timeout, "{}", e.message);
+        // The body never finished reaching the broker, so nothing provably left the machine.
+        assert!(!e.dispatched);
+    }
+
     #[test]
     fn only_an_explicit_loopback_http_endpoint_with_a_local_model_is_local() {
         for url in [
