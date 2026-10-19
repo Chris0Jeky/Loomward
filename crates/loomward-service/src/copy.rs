@@ -506,6 +506,8 @@ impl Inner {
     /// then cancelled through the abandon path; `needs_attention` stays for the owner. Q1 applies.
     /// `PublishUnobserved` (a publish intent, and the destination could not settle which side of
     /// the rename the run is on) is answered like a pending fence: retryable `copy_fence_pending`.
+    /// An operation whose stored journal does not replay is skipped, not pending (#636 item 3): it
+    /// can take no further effect, and no retry would change the answer.
     pub(crate) fn copies_fence(&self, grant: i64) -> Result<(), ErrorBody> {
         #[cfg(windows)]
         {
@@ -543,7 +545,8 @@ impl Inner {
                 let cause = loomward_operations::FenceCause::GrantRevoked;
                 let stopped = match exec::fence(store, op, &control, cause) {
                     Ok(exec::Ack::StoppedBeforePublish | exec::Ack::Published) => true,
-                    Ok(exec::Ack::Settled) => false,
+                    // Unreplayable: inert (no step or append passes validation); not a retryable fence.
+                    Ok(exec::Ack::Settled | exec::Ack::Unreplayable) => false,
                     _ => {
                         pending = true;
                         false

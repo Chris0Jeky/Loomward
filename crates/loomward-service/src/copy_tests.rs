@@ -1245,6 +1245,40 @@ mod lab_copy {
         assert_eq!(settle_copy(svc, &op)["state"], "cancelled");
     }
 
+    /// #636 item 3: a stored operation whose journal no longer replays can take no further effect
+    /// (every step and append re-validates it), so it must not hold every revoke retry for the grant
+    /// at `copy_fence_pending` forever. It stays for the owner: its status still refuses to replay.
+    #[test]
+    fn an_unreplayable_journal_does_not_hold_revocation_pending() {
+        let Some((lab, a, b)) = scanned() else { return };
+        let svc = &lab.svc;
+        let p = preview(svc, &a, &b);
+        let op = p["operation_id"].as_str().unwrap().to_owned();
+        let consent = json!({"operation_id": op, "digest": digest(&p)});
+        ok("copy.approve", call(svc, "copy.approve", consent.clone()));
+        let writer = std::fs::OpenOptions::new()
+            .append(true)
+            .open(lab.path.join("a/deep/x.bin"))
+            .unwrap();
+        ok("copy.start", call(svc, "copy.start", consent));
+        assert_eq!(settle_copy(svc, &op)["state"], "blocked");
+        reap_copy(svc, &op);
+        drop(writer);
+        let journal = loomward_catalog::sqlite_dir(&lab.path.parent().unwrap().join("state"))
+            .join("state.db");
+        let raw = rusqlite::Connection::open(journal).unwrap();
+        // Tampering through a dropped trigger is caught by the chain on every full replay.
+        raw.execute_batch(
+            "DROP TRIGGER op_journal_no_update;              UPDATE op_journal SET body=replace(body,'staging','stagin9') WHERE seq=2",
+        )
+        .unwrap();
+        drop(raw);
+        let request = json!({"root_id": lab.root, "purge_catalog": false});
+        ok("roots.revoke", call(svc, "roots.revoke", request));
+        let e = err(call(svc, "copy.status", json!({"operation_id": op})));
+        assert_eq!(e.code, ErrorCode::InternalError, "{e:?}");
+    }
+
     /// The ID of the child named `name` in a depth-3 slice, at any depth.
     fn node_named(slice: &Payload, name: &str) -> String {
         slice["nodes"]

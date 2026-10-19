@@ -460,6 +460,10 @@ pub enum Ack {
     /// The run had a publish intent and the destination could not be observed after the fence, so
     /// which side of the rename it ended on is unknown (invariant 4). The fence is durable; retry.
     PublishUnobserved,
+    /// The stored journal does not replay (#636 item 3), so nothing could be appended. Not a pending
+    /// fence: every effect step and every append re-validates the journal and refuses, so the run can
+    /// take no further effect, and retrying cannot change the answer. It stays for the owner.
+    Unreplayable,
 }
 
 /// docs/47 section 5 revocation step 3 (assumption: 30 s, to be measured).
@@ -1623,10 +1627,9 @@ pub fn fence(
         // One store lock across the read and the append: no record slips between them.
         let mut s = store.lock().unwrap_or_else(|e| e.into_inner());
         control.fenced.store(true, Ordering::SeqCst);
-        let r = s
-            .replay(op)
-            .map_err(|e| Fault::Journal(e.to_string()))?
-            .map_err(|e| Fault::Journal(format!("{e:?}")))?;
+        let Ok(r) = s.replay(op).map_err(|e| Fault::Journal(e.to_string()))? else {
+            return Ok(Ack::Unreplayable);
+        };
         if r.state.is_terminal() {
             return Ok(Ack::Settled);
         }
