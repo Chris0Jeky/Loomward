@@ -3,6 +3,7 @@ use loomward_protocol::{
     CallContext, DatasetClass, ErrorCode, RequestEnvelope, ResponseEnvelope, ViewService,
 };
 use loomward_service::{Config, Service};
+use loomward_windows::enumerate::SourceError;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, time::Duration};
@@ -21,6 +22,32 @@ const STAGES: &[&str] = &[
     "forget",
     "restart",
 ];
+
+// A shared host may starve a live watcher; budget retries separately from the native wait.
+fn watch_retry<T>(
+    timeout: Duration,
+    mut action: impl FnMut() -> Result<T, SourceError>,
+) -> io::Result<T> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match action() {
+            Ok(value) => return Ok(value),
+            Err(SourceError::Busy) if Instant::now() < deadline => {
+                thread::sleep(
+                    Duration::from_millis(10)
+                        .min(deadline.saturating_duration_since(Instant::now())),
+                );
+            }
+            Err(SourceError::Busy) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "watch still busy; coverage unknown",
+                ))
+            }
+            Err(error) => return Err(io::Error::other(format!("watch failed: {error:?}"))),
+        }
+    }
+}
 
 fn check_root(input: &str) -> io::Result<()> {
     real_root(input)?;
@@ -445,14 +472,16 @@ fn run(root: &Path, out: &Path, duration: Duration, cycles: Option<u64>) -> io::
                         }
                         "watch" => {
                             let (tx, rx) = std::sync::mpsc::sync_channel(1);
-                            let watch = loomward_windows::watch::Watcher::start(
-                                &data,
-                                None,
-                                move |changes| {
-                                    let _ = tx.try_send(changes);
-                                },
-                            )
-                            .map_err(|e| io::Error::other(format!("watch start: {e:?}")))?;
+                            let watch = watch_retry(Duration::from_secs(30), || {
+                                let tx = tx.clone();
+                                loomward_windows::watch::Watcher::start(
+                                    &data,
+                                    None,
+                                    move |changes| {
+                                        let _ = tx.try_send(changes);
+                                    },
+                                )
+                            })?;
                             let probe = data.join("soak-watch-probe.bin");
                             OpenOptions::new()
                                 .write(true)
@@ -462,9 +491,7 @@ fn run(root: &Path, out: &Path, duration: Duration, cycles: Option<u64>) -> io::
                             rx.recv_timeout(Duration::from_secs(5))
                                 .map_err(io::Error::other)?;
                             fs::remove_file(probe)?;
-                            watch.checkpoint().map_err(|e| {
-                                io::Error::other(format!("watch checkpoint: {e:?}"))
-                            })?;
+                            watch_retry(Duration::from_secs(30), || watch.checkpoint())?;
                             watch.stop();
                             if watch.failed() {
                                 return Err(io::Error::other("watch lost coverage"));
@@ -533,6 +560,32 @@ fn run(root: &Path, out: &Path, duration: Duration, cycles: Option<u64>) -> io::
 mod tests {
     use super::*;
     use loomward_protocol::ErrorBody;
+
+    #[test]
+    fn watch_busy_retries_but_refusal_and_exhaustion_remain_distinct() {
+        let mut calls = 0;
+        watch_retry(Duration::from_secs(1), || {
+            calls += 1;
+            if calls < 3 {
+                Err(SourceError::Busy)
+            } else {
+                Ok(())
+            }
+        })
+        .unwrap();
+        assert_eq!(calls, 3);
+        let error = watch_retry(Duration::ZERO, || Err::<(), _>(SourceError::Busy)).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        calls = 0;
+        let error = watch_retry(Duration::from_secs(1), || {
+            calls += 1;
+            Err::<(), _>(SourceError::Refused)
+        })
+        .unwrap_err();
+        assert_eq!(calls, 1);
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+        assert!(error.to_string().contains("Refused"));
+    }
 
     #[test]
     fn retryable_partial_coverage_settles_before_returning_the_slice() {

@@ -352,7 +352,11 @@ pub(crate) fn start(inner: &Arc<Inner>) {
 
 impl Inner {
     #[cfg(windows)]
-    fn freshness_checkpoint(&self, row: i64) -> Option<bool> {
+    fn freshness_checkpoint(
+        &self,
+        row: i64,
+    ) -> Option<Result<(), loomward_windows::enumerate::SourceError>> {
+        use loomward_windows::enumerate::SourceError;
         let watched = self
             .freshness
             .roots
@@ -374,19 +378,41 @@ impl Inner {
             .fail_freshness_checkpoint
             .swap(false, Ordering::SeqCst)
         {
-            return Some(false);
+            return Some(Err(SourceError::Refused));
+        }
+        #[cfg(test)]
+        if self
+            .hooks
+            .busy_freshness_checkpoint
+            .swap(false, Ordering::SeqCst)
+        {
+            return Some(Err(SourceError::Busy));
         }
         #[cfg(test)]
         self.hooks.gate(
             loomward_protocol::Command::ScanStart,
             "freshness_checkpoint_claimed",
         );
-        Some(watch.checkpoint().is_ok() && !watch.failed())
+        let result = watch.checkpoint();
+        Some(if watch.failed() {
+            Err(SourceError::Refused)
+        } else {
+            result
+        })
     }
     pub(crate) fn hit_freshness(&self, row: i64) -> SearchFreshness {
         #[cfg(windows)]
         {
-            if self.freshness_checkpoint(row) == Some(false) {
+            let checkpoint = self.freshness_checkpoint(row);
+            if checkpoint == Some(Err(loomward_windows::enumerate::SourceError::Busy)) {
+                if let Some(root) = self.freshness.roots.lock().unwrap().get(&row) {
+                    return SearchFreshness {
+                        state: SearchFreshnessState::Stale,
+                        at: Some(ts_ns(root.stale_since.unwrap_or(root.at))),
+                        reason: Some(loomward_protocol::UnknownReason::new("watch_busy").unwrap()),
+                    };
+                }
+            } else if matches!(checkpoint, Some(Err(_))) {
                 if let Some(root) = self.freshness.roots.lock().unwrap().get_mut(&row) {
                     // Missing coverage is not a new filesystem hint or a new scan epoch.
                     root.stale_since.get_or_insert(root.at);
@@ -465,7 +491,7 @@ impl Inner {
                 return;
             };
             // Flush kernel notifications before comparing the scan's start epoch.
-            let healthy = self.freshness_checkpoint(row).unwrap_or(false);
+            let healthy = self.freshness_checkpoint(row) == Some(Ok(()));
             {
                 let mut roots = self.freshness.roots.lock().unwrap();
                 let Some(root) = roots.get_mut(&row) else {
@@ -844,8 +870,12 @@ pub(crate) fn refresh(inner: &Inner) {
             .unwrap()
             .get(&row.root)
             .is_some_and(|r| r.completed.is_some());
-        if pending && inner.freshness_checkpoint(row.root) == Some(true) {
-            inner.freshness_settle(row.root, row.grant);
+        if pending {
+            match inner.freshness_checkpoint(row.root) {
+                Some(Ok(())) => inner.freshness_settle(row.root, row.grant),
+                Some(Err(loomward_windows::enumerate::SourceError::Busy)) => continue,
+                _ => (),
+            }
         }
         let action = {
             let mut roots = inner.freshness.roots.lock().unwrap();
@@ -1336,6 +1366,70 @@ mod tests {
 mod restart_tests {
     use super::*;
     use crate::tests::{f3_wait_live, lab, settle, start};
+
+    #[test]
+    fn f3_busy_checkpoint_is_unknown_without_scheduling_a_rescan() {
+        let Some(lab) = lab() else { return };
+        let svc = &lab.svc;
+        settle(svc, &start(svc, &lab.root, "full"));
+        f3_wait_live(svc);
+        svc.inner.freshness.pause_pump();
+        svc.inner.freshness.ready_targeted_hint(1);
+        let before = svc.inner.freshness.roots.lock().unwrap()[&1].epoch;
+        svc.inner
+            .hooks
+            .busy_freshness_checkpoint
+            .store(true, Ordering::SeqCst);
+        let freshness = svc.inner.hit_freshness(1);
+        assert_eq!(freshness.state, SearchFreshnessState::Stale);
+        assert_eq!(freshness.reason.unwrap().as_str(), "watch_busy");
+        {
+            let roots = svc.inner.freshness.roots.lock().unwrap();
+            let root = &roots[&1];
+            assert_eq!(root.epoch, before);
+            assert!(!root.full && !root.auto && root.stale_since.is_none());
+            assert!(!root.watch.as_ref().unwrap().failed());
+        }
+        refresh(&svc.inner);
+        assert!(svc.inner.freshness.roots.lock().unwrap()[&1].job.is_none());
+        assert_eq!(svc.inner.hit_freshness(1).state, SearchFreshnessState::Live);
+    }
+
+    #[test]
+    fn f3_busy_completed_checkpoint_keeps_witness_and_does_not_rescan() {
+        let Some(lab) = lab() else { return };
+        let svc = &lab.svc;
+        settle(svc, &start(svc, &lab.root, "full"));
+        f3_wait_live(svc);
+        svc.inner.freshness.pause_pump();
+        svc.inner.freshness.ready_targeted_hint(1);
+        {
+            let mut roots = svc.inner.freshness.roots.lock().unwrap();
+            let root = roots.get_mut(&1).unwrap();
+            root.completed = Some((root.epoch, None));
+            root.stale_since = Some(root.at);
+            root.auto = true;
+        }
+        svc.inner
+            .hooks
+            .busy_freshness_checkpoint
+            .store(true, Ordering::SeqCst);
+        refresh(&svc.inner);
+        {
+            let roots = svc.inner.freshness.roots.lock().unwrap();
+            let root = &roots[&1];
+            assert!(
+                root.job.is_none(),
+                "busy witness must not trigger a new scan"
+            );
+            assert!(root.completed.is_some());
+            assert_eq!(root.attempts, 0);
+        }
+        refresh(&svc.inner);
+        let roots = svc.inner.freshness.roots.lock().unwrap();
+        let root = &roots[&1];
+        assert!(root.completed.is_none() && root.stale_since.is_none() && root.job.is_none());
+    }
 
     // Force the same lost-coverage state as an exited native thread, without OS timing.
     fn fail_watch(inner: &Inner) {

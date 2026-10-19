@@ -1246,6 +1246,7 @@ mod containment_tests {
 }
 fn incomplete(error: SourceError) -> ListOutcome {
     ListOutcome::Incomplete(match error {
+        SourceError::Busy => IncompleteReason::Io(ERROR_BUSY as i32),
         SourceError::Refused => IncompleteReason::Refused,
         SourceError::IdentityUnverified => IncompleteReason::IdentityUnverified,
         SourceError::AccessDenied => IncompleteReason::AccessDenied,

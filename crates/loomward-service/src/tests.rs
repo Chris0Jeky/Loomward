@@ -71,6 +71,8 @@ pub(crate) struct Hooks {
     #[cfg(windows)]
     pub fail_freshness_checkpoint: std::sync::atomic::AtomicBool,
     #[cfg(windows)]
+    pub busy_freshness_checkpoint: std::sync::atomic::AtomicBool,
+    #[cfg(windows)]
     pub before_freshness_finish: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 

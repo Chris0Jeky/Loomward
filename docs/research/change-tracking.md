@@ -198,6 +198,15 @@ fixes buffer capacity for that handle's lifetime; resizing needs a new handle. N
 over 64 KiB are rejected [S1]. A larger local buffer is a later measured tuning choice, not part
 of the required correctness design.
 
+Checkpoint waits use a two-second budget per attempt. A full checkpoint queue or a wait timeout
+on a live worker returns retryable `SourceError::Busy`, without invalidating coverage. Startup
+allows 30 seconds to arm its first read and also returns Busy on a live-worker timeout; no watch
+is published before arming. Disconnection, an exited worker, invalid handles and lost root identity
+remain failures. Engine reconciliation defers with Busy when its native or dispatcher barrier is
+pending; search reports stale with reason `watch_busy` without scheduling a repair scan. The soak
+retries Busy for a 30-second retry budget (plus the in-flight native wait), then reports a timeout
+with coverage unknown, separately from a failed watch.
+
 For **LW-007**, treat unprivileged USN as an optional dirty-ID accelerator. Establish a valid
 bookmark before the baseline scan, persist `(native volume identity, journal ID, next USN)`
 alongside the catalogue state it covers, and replay up to a captured head before declaring

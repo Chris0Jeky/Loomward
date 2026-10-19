@@ -139,6 +139,8 @@ pub struct OpenedIdentity {
 /// Why a directory could not be opened or validated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceError {
+    /// A live worker has not drained within its wait budget; retry without assuming coverage loss.
+    Busy,
     /// Reparse point, offline or recall-on-access: refused, never listed or hydrated.
     Refused,
     /// The listed and post-open IDs disagree; the directory is recorded `partial`.

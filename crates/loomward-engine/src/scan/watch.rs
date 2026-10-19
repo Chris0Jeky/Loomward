@@ -207,11 +207,15 @@ impl RootWatch {
         if self.stop.load(Ordering::Acquire) {
             return false;
         }
-        if self.native.checkpoint().is_err() {
-            let mut state = self.dirty.lock().unwrap();
-            state.record(vec![Change::RootDirty]);
-            state.failed = true;
-            return false;
+        match self.native.checkpoint() {
+            Ok(()) => (),
+            Err(SourceError::Busy) => return false,
+            Err(_) => {
+                let mut state = self.dirty.lock().unwrap();
+                state.record(vec![Change::RootDirty]);
+                state.failed = true;
+                return false;
+            }
         }
         let (reply, ack) = mpsc::sync_channel(1);
         let mut work = Work::Barrier(reply);
@@ -223,15 +227,20 @@ impl RootWatch {
                     work = item;
                     std::thread::sleep(Duration::from_millis(2));
                 }
+                Err(mpsc::TrySendError::Full(_)) => return false,
                 _ => {
                     self.dirty.lock().unwrap().failed = true;
                     return false;
                 }
             }
         }
-        if ack.recv_timeout(Duration::from_secs(2)).is_err() {
-            self.dirty.lock().unwrap().failed = true;
-            return false;
+        match ack.recv_timeout(Duration::from_secs(2)) {
+            Ok(()) => (),
+            Err(mpsc::RecvTimeoutError::Timeout) => return false,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                self.dirty.lock().unwrap().failed = true;
+                return false;
+            }
         }
         true
     }
@@ -259,6 +268,10 @@ impl RootWatch {
 #[cfg(windows)]
 fn watch_error(error: SourceError) -> EngineError {
     match error {
+        SourceError::Busy => EngineError::Busy {
+            message: "watch_busy".into(),
+            detail: None,
+        },
         SourceError::Io(code) => EngineError::Internal {
             message: format!("watch_io_error_{code}"),
             detail: None,
@@ -395,6 +408,20 @@ fn reconcile<S: DirSource>(
     checkpoint: impl Fn() -> bool,
 ) -> EngineResult<ScanReport> {
     let start = std::time::Instant::now();
+    let drain = || {
+        if !checkpoint() {
+            let state = dirty.lock().unwrap();
+            if !state.failed && !state.stopped && !cancel.load(Ordering::Acquire) {
+                drop(state);
+                sink.watch_dirty(root.root_id())?;
+                return Err(EngineError::Busy {
+                    message: "watch checkpoint pending; retry reconciliation".into(),
+                    detail: None,
+                });
+            }
+        }
+        Ok(())
+    };
     let repair = Arc::new(RepairSink {
         inner: sink.clone(),
         valid: Mutex::new(true),
@@ -402,7 +429,7 @@ fn reconcile<S: DirSource>(
     });
     // Every scan needs a full baseline: no watcher history survives between scans.
     options.scope = RunScope::FullRoot;
-    checkpoint();
+    drain()?;
     let mut covered = dirty.lock().unwrap().epoch;
     let mut report = run_scan(
         source,
@@ -420,7 +447,7 @@ fn reconcile<S: DirSource>(
     let mut settled = report.complete;
     let mut attempted = report.enumeration_attempts;
     for attempt in 0..=MAX_RELISTS {
-        checkpoint();
+        drain()?;
         let mut state = dirty.lock().unwrap();
         if repair.reparented.swap(false, Ordering::AcqRel) {
             state.record(vec![Change::RootDirty]);
@@ -436,7 +463,7 @@ fn reconcile<S: DirSource>(
             sink.begin_run(root.root_id(), run, &RunScope::FullRoot)?;
             sink.finish_run(root.root_id(), run, &RunScope::FullRoot, true)?;
             drop(state);
-            checkpoint();
+            drain()?;
             state = dirty.lock().unwrap();
             if state.clean() && !cancel.load(Ordering::Acquire) {
                 report.complete = true;
@@ -520,6 +547,39 @@ mod tests {
     use std::{collections::HashMap, path::PathBuf};
     type DirectoryRows = BTreeMap<Vec<u16>, (Option<FileIdObs>, u32, u64)>;
     type Rows = HashMap<FileIdObs, DirectoryRows>;
+    #[test]
+    fn busy_checkpoint_defers_reconciliation_without_lost_coverage_or_relist() {
+        use super::super::tests::{root, Tree};
+        for busy_at in 0..3 {
+            let root = root();
+            let sink = Arc::new(MemorySink::default());
+            let dirty = Mutex::new(Dirty::default());
+            let calls = std::cell::Cell::new(0);
+            let result = reconcile(
+                &Tree,
+                &root,
+                1,
+                sink,
+                Arc::new(ByteBudget::new(crate::budgets::SCAN_BYTES)),
+                Arc::new(AtomicBool::new(false)),
+                ScanOptions::default(),
+                &dirty,
+                || {
+                    let call = calls.get();
+                    calls.set(call + 1);
+                    call != busy_at
+                },
+            );
+            assert!(
+                matches!(result, Err(EngineError::Busy { .. })),
+                "{result:?}"
+            );
+            let state = dirty.lock().unwrap();
+            assert!(!state.failed && state.root.is_none() && state.dirs.is_empty());
+            assert_eq!(calls.get(), busy_at + 1, "must defer, not relist");
+        }
+    }
+
     #[test]
     fn repair_reparent_does_not_hide_an_obsolete_run_or_unrelated_ticket() {
         use super::super::tests::{root, Tree};

@@ -317,20 +317,41 @@ mod native {
                 thread: Mutex::new(Some(thread)),
                 checkpoints,
             };
-            match ready_rx.recv_timeout(Duration::from_secs(2)) {
+            // Startup gets a larger scheduling allowance, but never claims unarmed coverage.
+            match ready_rx.recv_timeout(Duration::from_secs(30)) {
                 Ok(Ok(())) => Ok(watcher),
                 Ok(Err(error)) => Err(error),
+                Err(mpsc::RecvTimeoutError::Timeout) if !watcher.failed() => Err(SourceError::Busy),
                 Err(_) => Err(SourceError::Refused),
             }
         }
         /// Drain already-completed hints before taking a reconciliation epoch.
+        /// Each attempt waits at most two seconds; Busy means retry, not loss of coverage.
         pub fn checkpoint(&self) -> Result<(), SourceError> {
+            if self.failed() || self.done.load(Ordering::Acquire) {
+                return Err(SourceError::Refused);
+            }
             let (tx, rx) = mpsc::sync_channel(1);
-            self.checkpoints
-                .try_send(tx)
-                .map_err(|_| SourceError::Refused)?;
-            rx.recv_timeout(Duration::from_secs(2))
-                .map_err(|_| SourceError::Refused)?;
+            match self.checkpoints.try_send(tx) {
+                Ok(()) => (),
+                Err(mpsc::TrySendError::Full(_)) if !self.failed() => {
+                    return Err(SourceError::Busy)
+                }
+                Err(_) => {
+                    self.failed.store(true, Ordering::Release);
+                    return Err(SourceError::Refused);
+                }
+            }
+            match rx.recv_timeout(Duration::from_secs(2)) {
+                Ok(()) => (),
+                Err(mpsc::RecvTimeoutError::Timeout) if !self.failed() => {
+                    return Err(SourceError::Busy)
+                }
+                Err(_) => {
+                    self.failed.store(true, Ordering::Release);
+                    return Err(SourceError::Refused);
+                }
+            }
             if self.failed() {
                 return Err(SourceError::Refused);
             }
@@ -338,13 +359,25 @@ mod native {
         }
         /// Native I/O or the granted path lost coverage; the next scan must rebuild this watch.
         pub fn failed(&self) -> bool {
+            // A joining thread's callback may need a lock held by this caller.
+            if !self.done.load(Ordering::Acquire)
+                && self
+                    .thread
+                    .try_lock()
+                    .is_ok_and(|thread| thread.as_ref().is_some_and(|t| t.is_finished()))
+            {
+                self.failed.store(true, Ordering::Release);
+            }
             self.failed.load(Ordering::Acquire)
         }
         /// Stop and join, cancelling and draining pending I/O before releasing root pins.
         pub fn stop(&self) {
+            self.failed(); // Retain an unexpected exit after taking the join handle.
             self.done.store(true, Ordering::Release);
             if let Some(thread) = self.thread.lock().unwrap().take() {
-                let _ = thread.join();
+                if thread.join().is_err() {
+                    self.failed.store(true, Ordering::Release);
+                }
             }
         }
     }
@@ -357,6 +390,154 @@ mod native {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[test]
+        fn checkpoint_busy_past_two_seconds_is_not_refused_and_can_retry() {
+            let (checkpoints, requests) = mpsc::sync_channel::<mpsc::SyncSender<()>>(1);
+            let (release, held) = mpsc::channel();
+            let worker = thread::spawn(move || {
+                let first = requests.recv().unwrap();
+                held.recv().unwrap(); // Hold the drain beyond the caller's two-second budget.
+                let _ = first.send(());
+                if let Ok(next) = requests.recv() {
+                    let _ = next.send(());
+                }
+                let _ = held.recv();
+            });
+            let watcher = Watcher {
+                done: Arc::default(),
+                failed: Arc::default(),
+                thread: Mutex::new(Some(worker)),
+                checkpoints,
+            };
+            let result = watcher.checkpoint();
+            let failed = watcher.failed();
+            release.send(()).unwrap();
+            let retried = watcher.checkpoint();
+            drop(release);
+            watcher.stop();
+            assert_eq!(result, Err(SourceError::Busy));
+            assert!(!failed, "a busy thread did not lose coverage");
+            assert_eq!(retried, Ok(()));
+        }
+
+        #[test]
+        fn checkpoint_dead_thread_is_refused() {
+            let (checkpoints, requests) = mpsc::sync_channel(1);
+            let worker = thread::spawn(move || drop(requests));
+            while !worker.is_finished() {
+                thread::yield_now();
+            }
+            let watcher = Watcher {
+                done: Arc::default(),
+                failed: Arc::default(),
+                thread: Mutex::new(Some(worker)),
+                checkpoints,
+            };
+            assert_eq!(watcher.checkpoint(), Err(SourceError::Refused));
+            assert!(watcher.failed(), "an exited thread lost coverage");
+            watcher.stop();
+            assert!(watcher.failed(), "joining must retain failure");
+        }
+
+        #[test]
+        fn checkpoint_liveness_does_not_wait_for_a_concurrent_join() {
+            let (checkpoints, requests) = mpsc::sync_channel(1);
+            let (release_tx, held) = mpsc::channel::<()>();
+            let worker = thread::spawn(move || {
+                let _ = held.recv();
+                drop(requests);
+            });
+            let watcher = Watcher {
+                done: Arc::default(),
+                failed: Arc::default(),
+                thread: Mutex::new(Some(worker)),
+                checkpoints,
+            };
+            let release = release_tx;
+            let result = thread::scope(|scope| {
+                let joining = watcher.thread.lock().unwrap();
+                let (tx, rx) = mpsc::channel();
+                let watcher = &watcher;
+                scope.spawn(move || {
+                    let _ = tx.send(watcher.failed());
+                });
+                let result = rx.recv_timeout(Duration::from_secs(2));
+                drop(joining);
+                result
+            });
+            drop(release);
+            watcher.stop();
+            assert_eq!(
+                result,
+                Ok(false),
+                "liveness must not wait on a joining thread"
+            );
+        }
+
+        #[test]
+        fn native_checkpoint_delayed_drain_is_busy_then_recovers() {
+            let tree = fixture();
+            if elevated_refusal(tree.path()) {
+                return;
+            }
+            let (entered_tx, entered) = mpsc::channel();
+            let (release_tx, held) = mpsc::channel::<()>();
+            let first = AtomicBool::new(true);
+            let watcher = Watcher::start(tree.path(), None, move |_| {
+                if first.swap(false, Ordering::AcqRel) {
+                    let _ = entered_tx.send(());
+                    let _ = held.recv(); // Test hook: hold the real watcher drain past two seconds.
+                }
+            })
+            .unwrap();
+            // Release the callback before Watcher::drop, including when a test assertion panics.
+            let release = release_tx;
+            File::create(tree.path().join("checkpoint-delay")).unwrap();
+            entered.recv_timeout(Duration::from_secs(30)).unwrap();
+            let result = watcher.checkpoint();
+            let failed = watcher.failed();
+            drop(release);
+            let deadline = Instant::now() + Duration::from_secs(30);
+            let retried = loop {
+                let result = watcher.checkpoint();
+                if result != Err(SourceError::Busy) || Instant::now() >= deadline {
+                    break result;
+                }
+                thread::sleep(Duration::from_millis(10));
+            };
+            watcher.stop();
+            assert_eq!(result, Err(SourceError::Busy));
+            assert!(!failed);
+            assert_eq!(retried, Ok(()));
+            assert!(!watcher.failed());
+        }
+
+        #[test]
+        fn checkpoint_full_queue_on_live_worker_is_busy() {
+            let (checkpoints, requests) = mpsc::sync_channel(1);
+            let (release, held) = mpsc::channel::<()>();
+            let worker = thread::spawn(move || {
+                let _ = held.recv();
+                drop(requests);
+            });
+            let watcher = Watcher {
+                done: Arc::default(),
+                failed: Arc::default(),
+                thread: Mutex::new(Some(worker)),
+                checkpoints,
+            };
+            watcher
+                .checkpoints
+                .try_send(mpsc::sync_channel(1).0)
+                .unwrap();
+            let result = watcher.checkpoint();
+            let failed = watcher.failed();
+            drop(release);
+            watcher.stop();
+            assert_eq!(result, Err(SourceError::Busy));
+            assert!(!failed);
+        }
 
         #[test]
         fn continuous_completions_do_not_starve_checkpoint() {
