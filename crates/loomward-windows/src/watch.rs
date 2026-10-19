@@ -385,6 +385,15 @@ mod native {
                 .get_or_insert_with(Instant::now);
             Err(SourceError::Busy)
         }
+        /// Lab seam: pretend the current Busy run began `by` earlier, so a test need not wait
+        /// out `WEDGE_AFTER`.
+        #[cfg(feature = "fixtures")]
+        pub fn age_busy(&self, by: Duration) {
+            let mut since = self.busy_since.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(earlier) = since.and_then(|t| t.checked_sub(by)) {
+                *since = Some(earlier);
+            }
+        }
         fn wedged(&self) -> bool {
             self.busy.load(Ordering::Acquire) >= BUSY_LIMIT
                 && self

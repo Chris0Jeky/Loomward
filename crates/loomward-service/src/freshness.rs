@@ -1522,6 +1522,9 @@ mod restart_tests {
                 "watch_busy"
             );
         }
+        // Eight quick Busy answers are load; the wedge also needs a minute of Busy.
+        assert!(!stalled.failed());
+        stalled.age_busy(Duration::from_secs(61));
         assert!(stalled.failed());
         let now = Instant::now();
         tick(inner, now);
