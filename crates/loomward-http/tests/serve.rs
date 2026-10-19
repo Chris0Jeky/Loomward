@@ -1120,8 +1120,9 @@ fn static_gate_refuses_existing_grant_roots_in_every_spelling() {
         PathBuf::from(full.replace('\\', "/")),
         relative_to_cwd(&grants),
     ];
-    #[cfg(windows)]
-    spellings.push(PathBuf::from(full.to_uppercase()));
+    if cfg!(windows) {
+        spellings.push(PathBuf::from(full.to_uppercase()));
+    }
     for spelled in spellings {
         let err = serve(
             Arc::new(fixture()),
