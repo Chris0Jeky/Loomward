@@ -708,8 +708,9 @@ impl ScanSink for CatalogScanSink {
             r.dirs.clear();
             catalog_run
         };
-        // Only an engine-complete run may let the writer finalise absence and the generation;
-        // the writer still requires its own full traversal for that.
+        // Only an engine-complete run may let the writer finalise absence and coverage; the writer
+        // still requires its own full traversal for that. A settled traversal with coverage gaps
+        // (a denied folder) finished, so it ends `partial`, never `cancelled` (#774).
         let end = |state: &str| {
             self.call(WriteCommand::EndRun {
                 run_id: catalog_run,
@@ -717,7 +718,13 @@ impl ScanSink for CatalogScanSink {
                 finished_at_ns: now_ns(),
             })
         };
-        if let Err(e) = end(if complete { "completed" } else { "cancelled" }) {
+        if let Err(e) = end(if complete {
+            "completed"
+        } else if settled {
+            "partial"
+        } else {
+            "cancelled"
+        }) {
             // Release the catalogue run, or every later begin_run answers busy until restart.
             let _ = end("failed");
             // Throttling may have held back the last publication's event: announce it now.
