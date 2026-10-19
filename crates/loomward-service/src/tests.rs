@@ -53,6 +53,8 @@ pub(crate) struct Hooks {
     pub skew: Mutex<Duration>,
     /// How far ahead of the wall clock a read's receiver reads time once it starts waiting.
     pub read_ahead: Mutex<Duration>,
+    /// #758: a manually advanced service read clock; None keeps production timing.
+    pub read_clock: Mutex<Option<Instant>>,
     /// (profile, profiles directory) for the scan-time fence instead of the OS folders (#312).
     pub profile: Mutex<Option<(std::path::PathBuf, std::path::PathBuf)>>,
     /// #219: the filesystem name grant-time probes observe instead of the volume's.
@@ -104,6 +106,28 @@ impl SpaceFake {
 }
 
 impl Hooks {
+    pub fn receive_read<T>(
+        &self,
+        rx: &std::sync::mpsc::Receiver<T>,
+        deadline: Instant,
+        now: Instant,
+    ) -> Result<T, std::sync::mpsc::RecvTimeoutError> {
+        if self.read_clock.lock().unwrap().is_none() {
+            return rx.recv_timeout(deadline.saturating_duration_since(now));
+        }
+        let safety = Instant::now() + Duration::from_secs(60);
+        loop {
+            let now = self.read_clock.lock().unwrap().expect("read clock removed");
+            let left = deadline.saturating_duration_since(now);
+            match rx.recv_timeout(left.min(Duration::from_millis(10))) {
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) if !left.is_zero() => {
+                    assert!(Instant::now() < safety, "read worker never answered");
+                }
+                reply => return reply,
+            }
+        }
+    }
+
     pub fn before(&self, c: Command) {
         *self.runs.lock().unwrap().entry(c).or_default() += 1;
         let delay = *self.delay.lock().unwrap();
@@ -151,6 +175,27 @@ fn open(dir: &Path, dataset: DatasetClass) -> Service {
 
 pub(crate) fn temp_root() -> tempfile::TempDir {
     tempfile::tempdir_in(crate::paths::test_roots_base()).unwrap()
+}
+
+#[test]
+fn an_injected_read_clock_expires_the_receiver_and_catalogue_open() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    *svc.inner.hooks.read_clock.lock().unwrap() = Some(deadline + Duration::from_secs(1));
+    let (_tx, rx) = std::sync::mpsc::channel::<()>();
+    assert_eq!(
+        svc.inner.hooks.receive_read(&rx, deadline, Instant::now()),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+    );
+    let work = crate::ReadWork {
+        deadline,
+        interrupt: Mutex::new(None),
+    };
+    assert_eq!(
+        svc.inner.read_reader(Some(&work)).err().unwrap().code,
+        ErrorCode::DeadlineExceeded
+    );
 }
 
 /// Fixtures stay outside the source tree and inside the profile fence wherever the checkout is
@@ -5622,6 +5667,28 @@ fn a_junction_replacing_a_directory_stays_visible_as_excluded() {
         settle(svc, &start(svc, &lab.root, "refresh"))["state"],
         "completed"
     );
+    // Reproduce a late watcher refresh overlapping the read after the foreground scan.
+    svc.inner.scan.gate.arm();
+    svc.inner.freshness.record(
+        1,
+        vec![loomward_windows::watch::Change::Name {
+            action: 1,
+            name: "a/new.bin"
+                .replace('/', std::path::MAIN_SEPARATOR_STR)
+                .encode_utf16()
+                .collect(),
+        }],
+    );
+    svc.inner.freshness.ready_targeted_hint(1);
+    svc.inner.scan.gate.wait_reached();
+    let overlapping = call(
+        svc,
+        "tree.slice",
+        json!({"anchor": {"kind": "root", "root_id": lab.root}, "depth": 3, "max_nodes": 256, "min_share": 0.0, "basis": "logical", "include_files": true}),
+    );
+    svc.inner.scan.gate.release();
+    assert_eq!(err(overlapping).code, ErrorCode::PartialCoverage);
+    f3_wait_live(svc);
     let again = lab_slice(svc, &lab.root);
     assert_eq!(child_named(&again, "b"), Some(kept));
     assert_eq!(slice_totals(&again), (5, 2, 165));

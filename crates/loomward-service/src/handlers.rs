@@ -1528,6 +1528,20 @@ impl Inner {
     }
 
     pub(crate) fn read_reader(&self, work: Option<&crate::ReadWork>) -> Result<Reader, ErrorBody> {
+        #[cfg(test)]
+        if let (Some(work), Some(now)) = (work, *self.hooks.read_clock.lock().unwrap()) {
+            let reader = self.catalog.reader().map_err(catalog_error)?;
+            let mut handle = work.interrupt.lock().unwrap();
+            if now >= work.deadline {
+                return Err(fail(
+                    ErrorCode::DeadlineExceeded,
+                    "the read deadline expired",
+                ));
+            }
+            // SQLite uses real Instants; the injected receiver clock owns its hard stop instead.
+            *handle = Some(reader.interrupt_handle());
+            return Ok(reader);
+        }
         match work {
             Some(work) => work.reader(&self.catalog),
             None => self.catalog.reader().map_err(catalog_error),

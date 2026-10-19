@@ -58,14 +58,23 @@ fn collection(conn: &Connection, id: i64) -> Result<Value, ErrorBody> {
 }
 
 impl Inner {
-    /// Whether `deadline` has passed. Tests may run the clock ahead (`Hooks::skew`) to expire a
-    /// page deterministically at a gate instead of racing a wall-clock budget.
+    /// Whether `deadline` has passed. Tests may pin the read clock or run it ahead
+    /// (`Hooks::skew`) instead of racing a wall-clock budget.
     pub(crate) fn past(&self, deadline: std::time::Instant) -> bool {
         #[cfg(test)]
         let ahead = *self.hooks.skew.lock().unwrap();
+        #[cfg(test)]
+        let now = self
+            .hooks
+            .read_clock
+            .lock()
+            .unwrap()
+            .unwrap_or_else(std::time::Instant::now);
         #[cfg(not(test))]
         let ahead = std::time::Duration::ZERO;
-        std::time::Instant::now() + ahead >= deadline
+        #[cfg(not(test))]
+        let now = std::time::Instant::now();
+        now + ahead >= deadline
     }
     fn collection_read(&self, work: Option<&ReadWork>) -> Result<Connection, ErrorBody> {
         let conn = db::open(&self.state_dir).map_err(sql_error)?;
