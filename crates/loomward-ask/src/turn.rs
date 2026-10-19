@@ -515,7 +515,9 @@ fn tool_error(message: &str) -> Value {
 }
 
 /// Names are untrusted data (docs/46 section 8.4): control, bidi, invisible format and line or
-/// paragraph separator characters escaped, at most 255 characters before escaping.
+/// paragraph separator characters escaped as `\u{..}`, and every literal backslash doubled so a
+/// spelled `\u{..}` cannot pass for an escape (#583 follow-up b). At most 255 characters before
+/// escaping.
 pub fn clean(s: &str) -> String {
     s.chars()
         .take(255)
@@ -533,7 +535,9 @@ pub fn clean(s: &str) -> String {
                         | '\u{FEFF}'
                         | '\u{E0000}'..='\u{E007F}'
                 );
-            let escaped: Vec<char> = if hostile {
+            let escaped: Vec<char> = if c == '\\' {
+                vec!['\\', '\\']
+            } else if hostile {
                 c.escape_unicode().collect()
             } else {
                 vec![c]
