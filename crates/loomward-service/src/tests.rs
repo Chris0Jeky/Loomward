@@ -3719,11 +3719,15 @@ pub(crate) struct Lab {
 
 #[cfg(windows)]
 pub(crate) fn lab() -> Option<Lab> {
+    lab_in(temp_root())
+}
+
+#[cfg(windows)]
+pub(crate) fn lab_in(tmp: tempfile::TempDir) -> Option<Lab> {
     if loomward_windows::enumerate::running_elevated() {
         eprintln!("skipped: elevated token; the native scan refuses elevation (invariant 2)");
         return None;
     }
-    let tmp = temp_root();
     let state = tmp.path().join("state");
     let path = tmp.path().join("lab-scan");
     crate::lab::register(

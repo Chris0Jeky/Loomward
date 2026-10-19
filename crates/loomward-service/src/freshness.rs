@@ -460,6 +460,8 @@ impl Inner {
                 }
                 root.completed = None;
                 root.stale_since.get_or_insert(root.at);
+                // Consumed hints need a full fallback unless this run establishes a baseline.
+                root.full = true;
                 root.paths.clear();
                 root.targets.clear();
             }
@@ -893,9 +895,6 @@ pub(crate) fn refresh(inner: &Inner) {
                     }
                 }
                 root.job = None;
-                // Targeted scans deliberately leave root coverage partial. One full fallback
-                // establishes a clean baseline before claiming live/caught_up.
-                root.full = true;
             }
             if (root.restart.recovering && root.watch.as_ref().is_none_or(|w| w.failed()))
                 || !root.auto
@@ -1355,6 +1354,142 @@ mod tests {
             began.elapsed()
         );
         assert_eq!(after, Some(expected));
+    }
+}
+
+#[cfg(all(test, windows))]
+mod refresh_tests {
+    use super::*;
+    use crate::tests::{f3_wait_live, settle, start};
+
+    fn lab() -> Option<crate::tests::Lab> {
+        // The lane's dedicated target directory keeps these roots outside its checkout.
+        let exe = std::env::current_exe().unwrap();
+        crate::tests::lab_in(tempfile::tempdir_in(exe.parent().unwrap()).unwrap())
+    }
+
+    fn automatic(svc: &crate::Service) -> serde_json::Map<String, serde_json::Value> {
+        let previous = svc.inner.freshness.roots.lock().unwrap()[&1].job.clone();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let job = loop {
+            // Expire only the debounce; preserve the job, full flag and pending hints.
+            svc.inner
+                .freshness
+                .roots
+                .lock()
+                .unwrap()
+                .get_mut(&1)
+                .unwrap()
+                .changed = Instant::now() - Duration::from_secs(1);
+            refresh(&svc.inner);
+            let job = svc.inner.freshness.roots.lock().unwrap()[&1].job.clone();
+            if let Some(job) = job.filter(|job| Some(job) != previous.as_ref()) {
+                break job;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "automatic refresh was not scheduled: {}",
+                svc.inner.freshness.debug(1)
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let result = settle(svc, job.as_str());
+        assert_eq!(result["state"], "completed");
+        result
+    }
+
+    #[test]
+    fn f3_issue775_settled_automatic_full_refresh_preserves_targeted_hints() {
+        let Some(lab) = lab() else { return };
+        let svc = &lab.svc;
+        // Keep fixture creation outside the scan-read ChangeTime slack (#717).
+        std::thread::sleep(Duration::from_millis(400));
+        settle(svc, &start(svc, &lab.root, "full"));
+        f3_wait_live(svc);
+        svc.inner.freshness.pause_pump();
+
+        svc.inner
+            .freshness
+            .record(1, vec![loomward_windows::watch::Change::RootDirty]);
+        let full = automatic(svc);
+        refresh(&svc.inner);
+        assert!(!svc.inner.freshness.stale(1));
+        let after_full = svc.inner.freshness.debug(1);
+
+        for size in [7, 9] {
+            std::fs::write(lab.path.join("a/deep/x.bin"), vec![1; size]).unwrap();
+            assert_eq!(
+                svc.inner.hit_freshness(1).state,
+                SearchFreshnessState::Stale
+            );
+            let targeted = automatic(svc);
+            let mode: String = svc
+                .inner
+                .db()
+                .query_row(
+                    "SELECT mode FROM main.scan_run ORDER BY id DESC LIMIT 1",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                mode, "targeted",
+                "after full: {after_full}; job={targeted:?}"
+            );
+            assert_eq!(targeted["coverage"], "partial");
+            // The current engine restricts publication, not traversal (pipeline.rs).
+            eprintln!(
+                "F3 #775: full examined={}, targeted examined={}",
+                full["progress"]["examined"], targeted["progress"]["examined"]
+            );
+            // Targeted coverage remains stale until its full fallback establishes continuity.
+            assert!(svc.inner.freshness.stale(1));
+            automatic(svc);
+            refresh(&svc.inner);
+            assert!(!svc.inner.freshness.stale(1));
+        }
+
+        // A real coverage loss still forces a full-root refresh after settling.
+        svc.inner
+            .freshness
+            .record(1, vec![loomward_windows::watch::Change::RootDirty]);
+        let overflow = automatic(svc);
+        assert_eq!(
+            overflow["progress"]["examined"],
+            full["progress"]["examined"]
+        );
+        assert!(!svc.inner.freshness.stale(1));
+    }
+
+    #[test]
+    fn f3_issue775_consumed_hints_require_full_recovery_before_writer_admission() {
+        let Some(lab) = lab() else { return };
+        let svc = &lab.svc;
+        settle(svc, &start(svc, &lab.root, "full"));
+        f3_wait_live(svc);
+        svc.inner.freshness.pause_pump();
+        let hint = || loomward_windows::watch::Change::Name {
+            action: 1,
+            name: "a\\new.bin".encode_utf16().collect(),
+        };
+        svc.inner.freshness.record(1, vec![hint()]);
+        let row = db::roots(&svc.inner.db(), Some(1)).unwrap().remove(0);
+        // The sink consumes hints before BeginRun can return Busy. Model that boundary.
+        svc.inner.freshness_begin(
+            row.grant,
+            &RunScope::Targeted(vec![row.dir.unwrap() as u64]),
+        );
+        let (empty, full) = {
+            let roots = svc.inner.freshness.roots.lock().unwrap();
+            (roots[&1].paths.is_empty(), roots[&1].full)
+        };
+        assert!(empty);
+        assert!(full, "consumed hints lost the full recovery requirement");
+        // A later hint must not narrow away the work lost at admission.
+        svc.inner.freshness.record(1, vec![hint()]);
+        let recovered = automatic(svc);
+        assert_eq!(recovered["coverage"], "complete");
+        assert!(!svc.inner.freshness.stale(1));
     }
 }
 
