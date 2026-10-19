@@ -145,8 +145,7 @@ The test lives in the writer's test module rather than `crash_sweep.rs`.
 
 I/O faults below SQLite (2026-10-19): `crates/loomward-catalog/tests/fault_vfs/mod.rs` is a test-only VFS that wraps
 the platform one (`win32`) inside a sweep child and fails the Nth read, write, fsync or truncate of the process with
-the code `os_win.c` returns for the Win32 failure: `read` (a failed ReadFile, `SQLITE_IOERR_READ`), `short-read`
-(`ERROR_HANDLE_EOF` mid-buffer: half the bytes, the rest zeroed, `SQLITE_IOERR_SHORT_READ`), `write`
+the code `os_win.c` returns for the Win32 failure: `read` (a failed ReadFile, `SQLITE_IOERR_READ`), `write`
 (`SQLITE_IOERR_WRITE`), `full` (`ERROR_DISK_FULL`: `SQLITE_FULL`, nothing written, every later write fails until the
 space is freed), `short-write` (the disk fills inside one WriteFile: half the bytes land, then `SQLITE_FULL`, sticky
 like `full`), `sync` (`SQLITE_IOERR_FSYNC`) and `truncate` (`SQLITE_IOERR_TRUNCATE`). The child drives the crash
@@ -155,13 +154,17 @@ forget) through the real writer; `every_io_fault_below_sqlite_fails_honestly_and
 enumerates the calls in a clean run (356 reads, 1,172 writes, 47 fsyncs, 12 truncates) and injects each kind at 12
 evenly spread calls of its class, every call with `LOOMWARD_CRASH_SWEEP=full`. Each fault must: fire (an unreached
 fault fails); end the lifecycle with an honest typed error (`SQLITE_FULL` for the full-disk kinds, `SQLITE_IOERR` for
-the others; never corruption, busy, `Closed` or success), or be absorbed with a store row-for-row-count equal to the
-clean run's; leave no panicking thread; let the same process reopen the store and take a write once the fault clears;
-and pass the crash sweep's `verify` unchanged (both recoveries, integrity and foreign-key checks on both files, no
-running run or staged residue, rollups agree with rows, every acknowledged step durable, forget all-or-nothing, a
-write probe). The checker can fail: `a_disk_that_drops_writes_fails_the_fault_sweep` injects a lying disk that
-acknowledges writes it never makes, and the same checks catch 9 of its 12 points. No injected fault exposed a
-defect; the matrix is in the run record.
+the others; never corruption, busy, `Closed` or success), or be absorbed with a store whose row counts and revision
+equal the clean run's; leave no panicking thread; let the same process reopen the store and take a write once the
+fault clears; and pass the crash sweep's `verify` unchanged (both recoveries, integrity and foreign-key checks on both
+files, no running run or staged residue, rollups agree with rows, every acknowledged step durable, forget
+all-or-nothing, a write probe). `a_full_disk_while_creating_the_store_never_wedges_it` faults the full disk at every
+write before the store's first open (finding **F2** below, fixed). The checker can fail:
+`a_disk_that_drops_writes_fails_the_fault_sweep` injects a lying disk that acknowledges writes it never makes, and the
+same checks catch 9 of its 12 points. A `short-read` (ReadFile stopping mid-file, `ERROR_HANDLE_EOF`: half the bytes,
+the rest zeroed) is also a lie to SQLite, whose VFS contract zero-fills a short read and carries on, so the error that
+follows can be "malformed", a constraint or a missing row, or none: `a_short_read_mid_file_still_recovers` holds it
+to every recovery check but not to an honest code. The matrix is in the run record.
 
 Access denied mid-scan (2026-10-19): `listing_denied_mid_scan_is_partial_and_flagged`
 (`crates/loomward-engine/src/scan/followups.rs`) generates the `DeniedDirectory` fixture, lifts its ACE
@@ -176,8 +179,8 @@ counts only the visible file, and once listing is allowed again the next scan is
 the service's own connections (collections, labels, learning, job state, backup import) are not faulted, as in row 1.
 Not faulted: the `-shm` mapping, locking, file size, and the VFS-level open, delete and access calls (an
 `ERROR_ACCESS_DENIED` opening the log, for one). The full disk is the VFS's word, not a real full volume: no run fills
-an actual NTFS volume (a small VHD would). A short read mid-file is absorbed by SQLite's own rule (it zero-fills and
-carries on); every sampled one recovered clean, which is evidence about these call sites, not a guarantee. The
+an actual NTFS volume (a small VHD would). A short read mid-file cannot get an honest error (SQLite zero-fills it); it is
+held to recovery only, and one of 356 was absorbed with a different state revision than the clean run's. The
 mid-scan denial runs through the engine with the in-memory sink; the catalogue's mapping of that entry to its
 flag and the slice's `denied` coverage are proven by the pre-scan `real_acl_denied_directory_stays_visible_and_partial`
 through the service, not by one mid-scan run end to end. A deny on a directory whose handle is already open, and a deny
@@ -186,9 +189,9 @@ on the root itself mid-scan, are not exercised.
 **Prove.**
 
 ```powershell
-cargo test -p loomward-catalog --features test-hooks --test crash_sweep -- io_fault drops_writes   # sampled, about 50 s
-$env:LOOMWARD_CRASH_SWEEP='full'; cargo test -p loomward-catalog --features test-hooks --test crash_sweep -- every_io_fault
-cargo test -p loomward-catalog --features test-hooks --test crash_sweep -- fault_at full:40   # one fault
+cargo test -p loomward-catalog --features test-hooks --test crash_sweep -- io_fault drops_writes creating_the_store short_read   # sampled, about 2 min
+$env:LOOMWARD_CRASH_SWEEP='full'; cargo test -p loomward-catalog --features test-hooks --test crash_sweep -- every_io_fault short_read
+cargo test -p loomward-catalog --features test-hooks --test crash_sweep -- --nocapture fault_at full:53   # one fault; the plan must be the last argument (no -q)
 cargo test -p loomward-engine --lib listing_denied_mid_scan
 ```
 
@@ -317,6 +320,18 @@ covered by F1: the older `state.start-*`, `state.before-v*` and `catalog.corrupt
 
 The sweep found no recovery defect other than the window F1's marker closes.
 
+**F2 (fixed; found by the row-5 fault sweep, 2026-10-19). A full disk while a store is first created wedged it.** A new
+`state.db` or `catalog.db` is created and migrated in rollback-journal mode before it switches to WAL. When the disk
+fills inside that commit, SQLite's own rollback cannot write either and leaves a hot journal. `inspect` in `db.rs`
+opens each file read-only before anything else, and a read-only connection cannot roll a hot journal back
+(`SQLITE_READONLY_ROLLBACK`), so every later open failed with "attempt to write a readonly database", in the same
+process and in a new one, after the space was freed: 2 of 1,172 `full` points and the same 2 `short-write` points
+(the commits creating `state.db` and `catalog.db`). Fix: on that error `inspect` opens the file read-write once, which
+makes SQLite roll the journal back, and inspects again. Regression test:
+`a_full_disk_while_creating_the_store_never_wedges_it` (red before the fix at `full:53` and `full:134`). A process
+killed inside that commit would leave the same hot journal; the crash sweep's boundaries (row, pre-commit,
+post-commit) never fall inside a commit's page writes, so it could not see this.
+
 ## Run record
 
 The 2026-10-17 soak-r7 checks use `CARGO_BUILD_JOBS=4`,
@@ -331,6 +346,12 @@ The depth-483 commands use `--manifest-path C:/lw/wt/depth-483/Cargo.toml`,
 
 | Date | Commit | Host | Command | Result |
 |---|---|---|---|---|
+| 2026-10-19 | 4ba5762 (fault sweep before F2's fix) | KRASPYON, Windows 11 Home, debug build, shared host | `LOOMWARD_CRASH_SWEEP=full cargo test -p loomward-catalog --features test-hooks --test crash_sweep -- every_io_fault --nocapture` (short-read then still in the honest set) | Failed, 34 of 4,287 faults in 1,306 s: `full:53`, `full:134`, `short-write:53`, `short-write:134` left a store every later open refused (`SQLITE_READONLY_ROLLBACK`; **F2**); 30 short reads ended in a non-I/O code (21 corrupt, 4 missing row, 3 SQL parse of a zeroed schema, 1 NOT NULL) and one was absorbed with state revision 4 instead of 6, all with `verify` otherwise clean |
+| 2026-10-19 | 0a32983 (F2 fixed) | same | `LOOMWARD_CRASH_SWEEP=full cargo test -p loomward-catalog --features test-hooks --test crash_sweep -- every_io_fault short_read creating_the_store --nocapture` | 3 passed in 1,188 s, every call of each class. Honest set, 3,931 faults: read 139 `SQLITE_IOERR` / 217 absorbed; write 791 / 381; full 895 `SQLITE_FULL` / 277; short-write 895 / 277; sync 26 / 21; truncate 12 absorbed; no violation. Store creation, 185 writes before first open: 185 `SQLITE_FULL`, every store reopened and wrote. Short read (recovery only), 356: 308 absorbed, 19 `SQLITE_IOERR`, 21 corrupt, 4 missing row, 3 parse, 1 constraint; every recovery check clean |
+| 2026-10-19 | 2c12b6f (before F2) | same | `cargo test -p loomward-catalog --features test-hooks --test crash_sweep -- a_disk_that_drops --nocapture` | 1 passed: the lost-write mutant (a disk that acknowledges writes it never makes) fails 9 of 12 sampled points (of the 12: 7 absorbed, 1 corrupt, 3 I/O, 1 other SQLite error) |
+| 2026-10-19 | 2c12b6f + the regression test, before the `db.rs` fix | same | `cargo test -p loomward-catalog --features test-hooks --test crash_sweep -- creating_the_store` | Failed as expected: `full:53` and `full:134` reopen failed `attempt to write a readonly database` |
+| 2026-10-19 | 4ba5762 | same, non-elevated | `cargo test -p loomward-engine --lib listing_denied_mid_scan` | 1 passed: deny ACE applied during the root's listing, child open refused, run partial, entry `AccessDenied`, root totals 1 file; rescan after allow complete with 2 files |
+| 2026-10-19 | 0a32983 + docs | same | `cargo fmt --all --check`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo clippy --workspace --all-targets -- -D warnings`; `cargo test -p loomward-catalog --all-features`; `cargo test -p loomward-engine -p loomward-service -p loomward-lab --no-fail-fast`; `git diff --check` | All exit 0: catalogue 317 passed, 1 ignored (existing); engine, service and lab 711 passed, 1 ignored (existing), 0 failed. Workspace-wide `cargo test --workspace` not run in this lane |
 | 2026-10-17 | 7bac459 + final depth-483 working diff (#483) | KRASPYON, Windows 11 Home, shared host | `cargo test --workspace --no-fail-fast` | Exit 0: **1,131 passed, 0 failed, 1 ignored** across 70 test/doc-test targets. Only ignore is the existing #190 Both-strategy wire-progress test. All five named #292 host-failure cases passed here. Pathological engine target 9/9 passed again; no failing test disabled, skipped or weakened. Fresh workspace test build took 14m 02s; timing is shared-host evidence, not a performance gate |
 | 2026-10-17 | 7bac459 + depth-483 working diff (#483) | KRASPYON, Windows 11 Home, shared host | `cargo test -p loomward-engine -p loomward-catalog -p loomward-protocol -p loomward-lab --no-fail-fast` | Exit 0: **533 passed, 0 failed, 1 ignored** across ordinary and doc tests: engine 233 passed/1 existing #190 ignore, catalogue 207 passed, protocol 53 passed, lab 40 passed. Engine pathological target **9/9 passed**, including the unignored 512 regression and new partial 513 case; strategy matrix passed. The four named #292 engine cases passed in this run; no tests disabled or weakened |
 | 2026-10-17 | same | same | `cargo clippy --workspace --all-targets -- -D warnings`; `PYTHONPATH=C:/lw/wt/depth-483/python py -3 -m unittest discover -s tests` | Both exit 0. Workspace clippy completed in 1m 24s. Python: 276 run, 275 passed, 1 skipped (optional `mistune` HTML renderer unavailable); JSON Schema validator available. Initial standalone Python invocation omitted the wrapper's `PYTHONPATH` and failed imports; corrected process-scoped environment, no source change |
