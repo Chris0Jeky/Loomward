@@ -76,6 +76,7 @@ class FakeEngine:
         self.tier_volumes: list[dict] | None = None
         self.candidate_sources: list[str] = []
         self.placement_groups: dict[str, list[dict]] = {}
+        self.legacy_placement_candidates = False
         self.saved_source = 'vo_x'
         self.simulate_overrides: list = []
         self.plan_mode = 'executable'  # 'executable', 'malformed', or a 'safe' nonexecutable reply
@@ -265,7 +266,10 @@ class FakeEngine:
                 gate[0].set()
                 if not gate[1].wait(60):  # every user releases in finally; slow CI runners need the headroom
                     return ('deadline_exceeded', 'synthetic candidate gate expired')
-            return {'source_volume_id': p['source_volume_id'], 'root_generations': [], 'groups': groups, 'excluded_volumes': [], 'note': 'n'}
+            result = {'source_volume_id': p['source_volume_id'], 'root_generations': [], 'groups': groups, 'excluded_volumes': [], 'note': 'n'}
+            if self.legacy_placement_candidates:
+                del result['excluded_volumes']
+            return result
         if cmd == 'volumes.declare_tier':
             return {'volume': json.loads((ROOT / 'contracts/v3/examples/commands/volumes.declare_tier.result.json').read_text())['volume'], 'preference_recorded_at': '2026-10-01T00:00:00Z'}
         if cmd == 'proposals.get':
@@ -880,6 +884,20 @@ def check_tiers_assumption_refresh(page: Page, engine: FakeEngine) -> None:
         engine.plan_mode = 'executable'
 
 
+def check_tiers_legacy_candidates(page: Page, engine: FakeEngine) -> None:
+    engine.legacy_placement_candidates = True
+    try:
+        page.goto(f'{engine.base}/#token={TOKEN}')
+        page.evaluate("location.hash = '#/tiers'")
+        expect(page.get_by_role('heading', name='Tiers', level=1)).to_be_visible()
+        expect(rows(page).first).to_be_visible()
+        expect(page.get_by_role('button', name='Simulate', exact=True)).to_be_enabled()
+        expect(page.get_by_role('list', name='Excluded placement volumes')).to_have_count(0)
+        print('PASS Tiers: older candidates without excluded_volumes remain readable')
+    finally:
+        engine.legacy_placement_candidates = False
+
+
 def check_tiers(page: Page, base: str, shoot) -> None:
     page.goto(f'{base}/?transport=mock#/tiers')
     expect(page.get_by_role('heading', name='Tiers', level=1)).to_be_visible()
@@ -887,11 +905,14 @@ def check_tiers(page: Page, base: str, shoot) -> None:
         expect(page.get_by_role('heading', name=v, level=3)).to_be_visible()
     main = page.locator('main')
     expect(main.get_by_text('Tier 1 · hinted')).to_be_visible()
-    expect(main.get_by_text('Tier 2 · declared')).to_be_visible()
+    expect(main.locator('article').filter(has=page.get_by_role('heading', name='G:', exact=True)).get_by_text('Tier 2 · declared')).to_be_visible()
     expect(main.get_by_text('Tier unknown').first).to_be_visible()
     expect(main.get_by_text('Under pressure')).to_be_visible()
     expect(page.get_by_role('button', name='Source volume')).to_have_count(1)
-    ok(page.get_by_role('button', name='Use as source').and_(page.locator('[disabled]')).count() == 1, 'the unknown-tier volume cannot be chosen as a source')
+    ok(page.get_by_role('button', name='Use as source').and_(page.locator('[disabled]')).count() == 5, 'all excluded volumes cannot be chosen as a source')
+    excluded = page.get_by_role('list', name='Excluded placement volumes')
+    for reason in ('Tier unknown', 'Offline', 'Capacity unknown', 'No active grant', 'Observed volume physics is unusable'):
+        expect(excluded).to_contain_text(reason)
     expect(rows(page).first).to_be_visible()
     ok(page.get_by_text('synthetic-model-store').count() >= 1, 'candidate groups are listed for the source volume')
     ok(page.get_by_text('unknown', exact=True).count() >= 3, 'unknown relief and heat stay unknown')
@@ -1745,6 +1766,7 @@ def run_views(page: Page, base: str, shots: Path | None) -> None:
         check_tiers_source_eligibility(page, engine)
         check_tiers_assumption_refresh(page, engine)
         check_tiers_refused(page, engine)
+        check_tiers_legacy_candidates(page, engine)
         check_backups_import(page, engine)
         check_diagnostics_save(page, engine)
         check_add_folder(page, engine)

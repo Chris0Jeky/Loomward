@@ -197,11 +197,13 @@ pub(super) fn sample(
         }
     }
     let system = if requested(TelemetryChannel::System) {
-        raw.logical_processor_count.filter(|v| *v > 0).map(|cpus| {
-            let memory = match &raw.memory {
-                Observation::Observed { value } => Some(value),
-                _ => None,
-            };
+        let memory = match &raw.memory {
+            Observation::Observed { value } => Some(value),
+            _ => None,
+        };
+        let cpus = raw.logical_processor_count.filter(|v| *v > 0);
+        // Nothing observed at all (an unsupported platform) stays an absent section, not a row of nulls.
+        (memory.is_some() || cpus.is_some() || raw.system_cpu_busy_fraction.is_some()).then(|| {
             SystemSample {
                 memory: SystemSampleMemory {
                     total_bytes: memory.and_then(|v| v.total_bytes).map(Bytes::from),
@@ -213,7 +215,7 @@ pub(super) fn sample(
                         .and_then(|v| Fraction::new(v).ok()),
                 },
                 cpu: SystemSampleCpu {
-                    logical_cpus: cpus.into(),
+                    logical_cpus: cpus.map(Count::from),
                     busy_fraction: raw
                         .system_cpu_busy_fraction
                         .and_then(|v| Fraction::new(v).ok()),

@@ -55,6 +55,22 @@ class V3ContractTests(unittest.TestCase):
                     if isinstance(spec, dict) and isinstance(spec.get(key), str):
                         self.assertIn(spec[key], self.defs, f'{kind} {name}.{key}')
 
+    def test_cold_learning_queue_has_required_null_model_ids(self):
+        try:
+            import jsonschema
+        except ImportError:
+            self.skipTest('jsonschema not installed')
+        queue = load('examples/commands/learning.queue.result.json')
+        queue['model_id'] = None
+        suggestion = queue['items'][0]['suggestion']
+        suggestion.update(model_id=None, ranked=[], abstain=True,
+                          reasons=['no_training_examples'], teacher=None)
+        validator = jsonschema.Draft202012Validator({
+            '$defs': self.defs, '$ref': '#/$defs/LearningQueue'})
+        validator.validate(queue)
+        del suggestion['model_id']
+        self.assertFalse(validator.is_valid(queue))
+
     def test_duplicate_examples_validate_requests_and_terminal_evidence(self):
         queued = load('examples/commands/duplicates.inspect.result.json')['job']
         self.assertIsNone(queued['started_at'])

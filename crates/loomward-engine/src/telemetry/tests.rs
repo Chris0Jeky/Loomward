@@ -477,6 +477,30 @@ fn mapping_preserves_exact_bytes_units_and_distinct_quantities() {
 }
 
 #[test]
+fn unknown_cpu_capacity_keeps_requested_system_and_known_memory() {
+    for cpus in [None, Some(0), Some(8)] {
+        let mut raw = raw();
+        raw.logical_processor_count = cpus;
+        let sample = mapping::sample(&raw, None, 1, &[TelemetryChannel::System], false).unwrap();
+        let wire = to_value(&sample).unwrap();
+        assert!(wire["system"].is_object());
+        assert_eq!(wire["system"]["memory"]["available_bytes"], "512");
+        assert_eq!(
+            wire["system"]["cpu"]["logical_cpus"],
+            json!(cpus.filter(|n| *n > 0))
+        );
+        assert_eq!(wire["system"]["cpu"]["busy_fraction"], 0.5);
+        assert_eq!(sample, serde_json::from_value(wire).unwrap());
+        assert!(
+            mapping::sample(&raw, None, 1, &[TelemetryChannel::Engine], false)
+                .unwrap()
+                .system
+                .is_none()
+        );
+    }
+}
+
+#[test]
 fn missing_invalid_and_unsupported_stay_unknown_not_zero() {
     let mut raw = raw();
     raw.memory = Observation::Unknown {
@@ -503,7 +527,7 @@ fn missing_invalid_and_unsupported_stay_unknown_not_zero() {
     raw.logical_processor_count = None;
     raw.status = "unsupported".into();
     let sample = mapping::sample(&raw, None, 1, CHANNELS, false).unwrap();
-    assert!(sample.system.is_none());
+    assert!(sample.system.unwrap().cpu.logical_cpus.is_none());
     assert!(sample.processes.is_none());
     assert!(
         mapping::sample(&raw, None, 1, &[TelemetryChannel::Engine], false)
