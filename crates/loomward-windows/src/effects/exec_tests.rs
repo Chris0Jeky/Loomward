@@ -2389,7 +2389,11 @@ fn a_taken_staging_folder_name_refuses_with_its_code() {
     let outcome = run(&lab.store, op, &control).unwrap();
     assert_eq!(outcome.state, OpState::Refused);
     assert_eq!(outcome.refusal, Some((Refusal::StagingNameTaken, None)));
-    let token = replay(&lab.store, op).unwrap().staging_tokens.pop().unwrap();
+    let token = replay(&lab.store, op)
+        .unwrap()
+        .staging_tokens
+        .pop()
+        .unwrap();
     assert!(lab.dest().join(&token).is_dir(), "the taken entry is kept");
     assert_eq!(fs::read_dir(lab.dest().join(token)).unwrap().count(), 0);
 }
