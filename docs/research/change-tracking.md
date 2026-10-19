@@ -212,7 +212,7 @@ excludes competing starts; publication under the lock rechecks the active grant,
 and reservation identity. Revocation can acknowledge during a slow arm, and that arm's result
 is discarded. Retired freshness callbacks cannot dirty a replacement reservation.
 
-Eight consecutive Busy checkpoints make a live worker eligible for the existing bounded
+Eight consecutive Busy checkpoints spanning at least a minute make a live worker eligible for the existing bounded
 restart/backoff path; a successful checkpoint resets the count. Search stays stale with
 `watch_busy` while that worker awaits replacement. Stopping this wedged worker sets its stop
 flag and retires its join handle without waiting: the worker retains its native handles and

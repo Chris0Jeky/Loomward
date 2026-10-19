@@ -81,6 +81,8 @@ mod native {
     };
 
     const BUSY_LIMIT: u8 = 8;
+    /// A burst of Busy answers inside one stall is load, not a wedge: also require this span.
+    const WEDGE_AFTER: Duration = Duration::from_secs(60);
     const BUFFER_WORDS: usize = 64 * 1024 / 4;
     const FILTER: u32 = FILE_NOTIFY_CHANGE_FILE_NAME
         | FILE_NOTIFY_CHANGE_DIR_NAME
@@ -209,6 +211,7 @@ mod native {
         done: Arc<AtomicBool>,
         failed: Arc<AtomicBool>,
         busy: AtomicU8,
+        busy_since: Mutex<Option<Instant>>,
         thread: Mutex<Option<JoinHandle<()>>>,
         checkpoints: mpsc::SyncSender<mpsc::SyncSender<()>>,
     }
@@ -319,6 +322,7 @@ mod native {
                 done,
                 failed,
                 busy: AtomicU8::new(0),
+                busy_since: Mutex::new(None),
                 thread: Mutex::new(Some(thread)),
                 checkpoints,
             };
@@ -366,6 +370,7 @@ mod native {
                 return Err(SourceError::Refused);
             }
             self.busy.store(0, Ordering::Release);
+            *self.busy_since.lock().unwrap_or_else(|e| e.into_inner()) = None;
             Ok(())
         }
         fn checkpoint_busy(&self) -> Result<(), SourceError> {
@@ -374,10 +379,19 @@ mod native {
                 .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
                     Some(n.saturating_add(1))
                 });
+            self.busy_since
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get_or_insert_with(Instant::now);
             Err(SourceError::Busy)
         }
         fn wedged(&self) -> bool {
             self.busy.load(Ordering::Acquire) >= BUSY_LIMIT
+                && self
+                    .busy_since
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .is_some_and(|since| since.elapsed() >= WEDGE_AFTER)
         }
         /// Native I/O or the granted path lost coverage; the next scan must rebuild this watch.
         pub fn failed(&self) -> bool {
@@ -392,7 +406,7 @@ mod native {
             }
             self.failed.load(Ordering::Acquire) || self.wedged()
         }
-        /// Stop and join. A worker wedged across eight checkpoints is retired without waiting;
+        /// Stop and join. A worker Busy across eight checkpoints and a minute is retired without waiting;
         /// it owns its I/O buffers and pins until it returns and drains cancellation itself.
         pub fn stop(&self) {
             self.failed(); // Retain an unexpected exit after taking the join handle.
@@ -431,6 +445,7 @@ mod native {
                 done: Arc::default(),
                 failed: Arc::default(),
                 busy: AtomicU8::new(0),
+                busy_since: Mutex::new(None),
                 thread: Mutex::new(Some(worker)),
                 checkpoints,
             };
@@ -457,6 +472,7 @@ mod native {
                 done: Arc::default(),
                 failed: Arc::default(),
                 busy: AtomicU8::new(0),
+                busy_since: Mutex::new(None),
                 thread: Mutex::new(Some(worker)),
                 checkpoints,
             });
@@ -468,6 +484,10 @@ mod native {
             for _ in 0..8 {
                 assert_eq!(watcher.checkpoint(), Err(SourceError::Busy));
             }
+            // A burst inside one stall (e.g. search-as-you-type) is load, not a wedge.
+            let burst = watcher.failed();
+            *watcher.busy_since.lock().unwrap() =
+                Instant::now().checked_sub(WEDGE_AFTER + Duration::from_secs(1));
             let failed = watcher.failed();
             let (stopped, ack) = mpsc::channel();
             let retiring = watcher.clone();
@@ -478,6 +498,7 @@ mod native {
             let early = ack.recv_timeout(Duration::from_secs(1));
             drop(release);
             stop.join().unwrap();
+            assert!(!burst, "eight quick Busy answers retired a healthy worker");
             assert!(failed, "a live worker cannot remain Busy forever");
             assert!(early.is_ok(), "self-heal waited for the wedged worker");
         }
@@ -502,6 +523,7 @@ mod native {
                 done: Arc::default(),
                 failed: Arc::default(),
                 busy: AtomicU8::new(0),
+                busy_since: Mutex::new(None),
                 thread: Mutex::new(Some(worker)),
                 checkpoints,
             };
@@ -539,12 +561,14 @@ mod native {
                 done: Arc::default(),
                 failed: Arc::default(),
                 busy: AtomicU8::new(0),
+                busy_since: Mutex::new(None),
                 thread: Mutex::new(Some(worker)),
                 checkpoints,
             };
             assert_eq!(watcher.checkpoint(), Err(SourceError::Refused));
             assert!(watcher.failed(), "an exited thread lost coverage");
             watcher.busy.store(BUSY_LIMIT, Ordering::Release);
+            *watcher.busy_since.lock().unwrap() = Instant::now().checked_sub(WEDGE_AFTER);
             assert_eq!(watcher.checkpoint(), Err(SourceError::Refused));
             watcher.stop();
             assert!(watcher.failed(), "joining must retain failure");
@@ -562,6 +586,7 @@ mod native {
                 done: Arc::default(),
                 failed: Arc::default(),
                 busy: AtomicU8::new(0),
+                busy_since: Mutex::new(None),
                 thread: Mutex::new(Some(worker)),
                 checkpoints,
             };
@@ -636,6 +661,7 @@ mod native {
                 done: Arc::default(),
                 failed: Arc::default(),
                 busy: AtomicU8::new(0),
+                busy_since: Mutex::new(None),
                 thread: Mutex::new(Some(worker)),
                 checkpoints,
             };
