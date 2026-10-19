@@ -488,6 +488,16 @@ or expired timer alone never makes a hit current. Replacement advances the fresh
 scan begun during backoff or native open cannot publish a false live state. Existing scan retry limits and owner pre-emption
 continue to apply; automatic scans are deferred while the replacement watcher is unavailable.
 
+An unresolved journal record (its parent is not among the root's catalogued directories) may be
+proved outside the root instead of forcing a refresh (#550). This runs only when the root has no
+file identity gaps. Catch-up then opens the record's parent and its ancestors **by identity only**,
+outside the granted root as well: zero access, no reparse following, no cloud recall. It reads only
+each folder's parent reference, never a name, a listing or content, and stops at the volume root.
+The record counts as outside only when that chain never meets the granted root and no folder on it
+has a record of its own in the replay window. The walk is bounded to depth 64, 4,096 opens per
+replay and the catch-up deadline. Nothing it reads is persisted, logged or sent anywhere. Any failed
+open, limit, deadline or doubt falls back to the full-root refresh.
+
 ## 8. Ask
 
 ### 8.1 Provider interface

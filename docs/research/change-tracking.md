@@ -204,7 +204,8 @@ alongside the catalogue state it covers, and replay up to a captured head before
 catch-up complete. Never advance the durable cursor before publishing the corresponding dirty
 state. Requery to detect truncation or ID changes during catch-up. Redacted names mean new,
 deleted and renamed objects still require parent-directory relists; unknown IDs/parents require
-a conservative root relist. Preserve 128-bit IDs for V3 and reject unsupported/malformed formats.
+a conservative root relist, unless the bounded identity-only parent walk in docs/46 section 7 (#550)
+proves the record outside the root. Preserve 128-bit IDs for V3 and reject unsupported/malformed formats.
 The spike's high-half-zero restriction is deliberately lab-only.
 
 On startup/gap/error, show stale/repairing coverage, validate the active grant, re-establish the
