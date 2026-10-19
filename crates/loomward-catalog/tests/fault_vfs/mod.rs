@@ -21,13 +21,29 @@
 //! The wrapper keeps the platform file object as is and only swaps its method table for a copy
 //! whose read, write, sync and truncate check the plan first. Shared-memory (`-shm`) mapping,
 //! locking and the VFS-level calls (delete, access) are not faulted.
+//!
+//! Power cut (docs/45 row 8), `LOOMWARD_POWER_CUT=<mode>:<N>[:<seed>]`: every write and truncate
+//! of a store file (database, WAL, rollback journal; not temporary files, not `-shm`) is kept in
+//! memory per file name until a successful xSync of that file makes it durable. At the entry of
+//! sync N+1 of the process (or at `cut_now`) the power fails: `cut_now` writes each file's image
+//! as the disk would hold it to the armed directory and ends the process (`exit(CRASH_EXIT)`).
+//! - `drop`: every write since the file's last sync is lost.
+//! - `tear`: a prefix of them survives, split at 512-byte sector boundaries, its length drawn per
+//!   file from `seed` (deterministic).
+//! - `lie` (the checker's mutant): a disk whose flush does nothing, so nothing written in this
+//!   process is durable.
+//!
+//! Model limits: a delete (xDelete) is durable at once, creating a file is durable (its content is
+//! not), a rename is not seen, and `-shm` is volatile (the parent removes it: SQLite rebuilds it).
 #![allow(unsafe_code)]
 use rusqlite::ffi;
 use std::{
-    ffi::{c_char, c_int, c_void},
+    collections::{BTreeMap, HashMap},
+    ffi::{c_char, c_int, c_void, CStr},
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering::SeqCst},
-        OnceLock,
+        Mutex, OnceLock,
     },
 };
 
@@ -151,6 +167,11 @@ unsafe extern "C" fn write(
     amt: c_int,
     off: i64,
 ) -> c_int {
+    if cut_plan().is_some() {
+        // SAFETY: SQLite passed a buffer of `amt` bytes.
+        let bytes = unsafe { std::slice::from_raw_parts(buf as *const u8, amt as usize) };
+        record(f, Op::Write(off as u64, bytes.to_vec()));
+    }
     match inject(Class::Write) {
         Some("write") => ffi::SQLITE_IOERR_WRITE,
         Some("full") => ffi::SQLITE_FULL,
@@ -168,13 +189,25 @@ unsafe extern "C" fn write(
 }
 
 unsafe extern "C" fn sync(f: *mut ffi::sqlite3_file, flags: c_int) -> c_int {
+    if let Some(plan) = cut_plan() {
+        if SYNCS.fetch_add(1, SeqCst) + 1 > plan.after {
+            cut_now();
+        }
+    }
     if inject(Class::Sync).is_some() {
         return ffi::SQLITE_IOERR_FSYNC;
     }
-    unsafe { orig().xSync.unwrap()(f, flags) }
+    let rc = unsafe { orig().xSync.unwrap()(f, flags) };
+    if rc == ffi::SQLITE_OK && cut_plan().is_some_and(|p| p.mode != CutMode::Lie) {
+        durable(f);
+    }
+    rc
 }
 
 unsafe extern "C" fn truncate(f: *mut ffi::sqlite3_file, size: i64) -> c_int {
+    if cut_plan().is_some() {
+        record(f, Op::Truncate(size as u64));
+    }
     if inject(Class::Truncate).is_some() {
         return ffi::SQLITE_IOERR_TRUNCATE;
     }
@@ -206,6 +239,41 @@ unsafe extern "C" fn open(
             "a second platform method table"
         );
         unsafe { (*file).pMethods = faulting };
+        let tracked = ffi::SQLITE_OPEN_MAIN_DB
+            | ffi::SQLITE_OPEN_MAIN_JOURNAL
+            | ffi::SQLITE_OPEN_WAL
+            | ffi::SQLITE_OPEN_SUPER_JOURNAL;
+        if rc == ffi::SQLITE_OK
+            && cut_plan().is_some()
+            && !name.is_null()
+            && flags & tracked != 0
+            && flags & ffi::SQLITE_OPEN_DELETEONCLOSE == 0
+        {
+            // SAFETY: SQLite passes a NUL-terminated path.
+            let path = unsafe { CStr::from_ptr(name) }
+                .to_string_lossy()
+                .into_owned();
+            track(file as usize, Path::new(&path));
+        }
+    }
+    rc
+}
+
+unsafe extern "C" fn delete(
+    _vfs: *mut ffi::sqlite3_vfs,
+    name: *const c_char,
+    dir_sync: c_int,
+) -> c_int {
+    let inner = *INNER.get().unwrap() as *mut ffi::sqlite3_vfs;
+    let rc = unsafe { (*inner).xDelete.unwrap()(inner, name, dir_sync) };
+    if cut_plan().is_some() && !name.is_null() {
+        // SAFETY: SQLite passes a NUL-terminated path.
+        let path = unsafe { CStr::from_ptr(name) }
+            .to_string_lossy()
+            .into_owned();
+        if let Some(key) = file_key(Path::new(&path)) {
+            files().remove(&key);
+        }
     }
     rc
 }
@@ -222,7 +290,171 @@ pub fn install() {
         vfs.zName = c"loomward-fault".as_ptr();
         vfs.pNext = std::ptr::null_mut();
         vfs.xOpen = Some(open);
+        vfs.xDelete = Some(delete);
         let vfs = Box::leak(Box::new(vfs));
         assert_eq!(ffi::sqlite3_vfs_register(vfs, 1), ffi::SQLITE_OK);
     }
+}
+
+// ---- power cut (docs/45 row 8) --------------------------------------------------------------
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CutMode {
+    Drop,
+    Tear,
+    Lie,
+}
+#[derive(Clone, Copy, Debug)]
+pub struct Cut {
+    pub mode: CutMode,
+    /// The power fails at the entry of sync `after + 1`.
+    pub after: u64,
+    pub seed: u64,
+}
+/// Parses `<mode>:<N>[:<seed>]`.
+pub fn parse_cut(spec: &str) -> Option<Cut> {
+    let mut parts = spec.split(':');
+    let mode = match parts.next()? {
+        "drop" => CutMode::Drop,
+        "tear" => CutMode::Tear,
+        "lie" => CutMode::Lie,
+        _ => return None,
+    };
+    let after = parts.next()?.parse().ok()?;
+    let seed = parts.next().map_or(Some(0), |s| s.parse().ok())?;
+    parts.next().is_none().then_some(Cut { mode, after, seed })
+}
+fn cut_plan() -> Option<Cut> {
+    static PLAN: OnceLock<Option<Cut>> = OnceLock::new();
+    *PLAN.get_or_init(|| {
+        let spec = std::env::var("LOOMWARD_POWER_CUT").ok()?;
+        Some(parse_cut(&spec).unwrap_or_else(|| panic!("LOOMWARD_POWER_CUT={spec}")))
+    })
+}
+
+enum Op {
+    Write(u64, Vec<u8>),
+    Truncate(u64),
+}
+impl Op {
+    fn apply(&self, image: &mut Vec<u8>) {
+        match self {
+            Op::Write(off, bytes) => {
+                let (start, end) = (*off as usize, *off as usize + bytes.len());
+                if image.len() < end {
+                    image.resize(end, 0);
+                }
+                image[start..end].copy_from_slice(bytes);
+            }
+            Op::Truncate(size) => image.resize(*size as usize, 0),
+        }
+    }
+    /// The pieces a torn write can stop between: the 512-byte sectors of the file it touches.
+    fn sectors(&self) -> Vec<Op> {
+        match self {
+            Op::Truncate(size) => vec![Op::Truncate(*size)],
+            Op::Write(off, bytes) => {
+                let mut out = Vec::new();
+                let (mut at, mut rest) = (*off, bytes.as_slice());
+                while !rest.is_empty() {
+                    let take = ((512 - at % 512) as usize).min(rest.len());
+                    out.push(Op::Write(at, rest[..take].to_vec()));
+                    at += take as u64;
+                    rest = &rest[take..];
+                }
+                out
+            }
+        }
+    }
+}
+/// A store file as the disk holds it (`durable`) and the writes still only in the OS cache.
+struct Track {
+    durable: Vec<u8>,
+    pending: Vec<Op>,
+}
+static SYNCS: AtomicU64 = AtomicU64::new(0);
+static OUT: OnceLock<(PathBuf, PathBuf)> = OnceLock::new();
+fn files() -> std::sync::MutexGuard<'static, BTreeMap<String, Track>> {
+    static FILES: Mutex<BTreeMap<String, Track>> = Mutex::new(BTreeMap::new());
+    FILES.lock().unwrap_or_else(|e| e.into_inner())
+}
+fn handles() -> std::sync::MutexGuard<'static, HashMap<usize, String>> {
+    static HANDLES: OnceLock<Mutex<HashMap<usize, String>>> = OnceLock::new();
+    HANDLES
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+/// Files are keyed by name (one store directory per child): every handle on a file shares the
+/// OS cache, so a sync through any handle flushes them all.
+fn file_key(path: &Path) -> Option<String> {
+    let name = path.file_name()?.to_string_lossy().into_owned();
+    (!name.ends_with("-shm")).then_some(name)
+}
+fn track(handle: usize, path: &Path) {
+    let Some(key) = file_key(path) else { return };
+    handles().insert(handle, key.clone());
+    // First sight of the file in this process: what is on disk now survived earlier processes.
+    files().entry(key).or_insert_with(|| Track {
+        durable: std::fs::read(path).unwrap_or_default(),
+        pending: Vec::new(),
+    });
+}
+fn record(f: *mut ffi::sqlite3_file, op: Op) {
+    let Some(key) = handles().get(&(f as usize)).cloned() else {
+        return;
+    };
+    if let Some(t) = files().get_mut(&key) {
+        t.pending.push(op);
+    }
+}
+fn durable(f: *mut ffi::sqlite3_file) {
+    let Some(key) = handles().get(&(f as usize)).cloned() else {
+        return;
+    };
+    if let Some(t) = files().get_mut(&key) {
+        for op in std::mem::take(&mut t.pending) {
+            op.apply(&mut t.durable);
+        }
+    }
+}
+/// Arms the power cut: `images` gets each store file as the disk holds it after the cut,
+/// `report` the syncs reached, the files with unsynced writes and the files torn mid-way.
+pub fn arm_power_cut(images: PathBuf, report: PathBuf) {
+    OUT.set((images, report)).expect("armed twice");
+}
+fn splitmix(state: &mut u64) -> u64 {
+    *state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    let mut z = *state;
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^ (z >> 31)
+}
+/// The power fails now: write what the disk holds and end the process.
+pub fn cut_now() -> ! {
+    let plan = cut_plan().expect("no power cut armed");
+    let (images, report) = OUT.get().expect("arm_power_cut first");
+    std::fs::create_dir_all(images).unwrap();
+    let files = files();
+    let mut torn = 0;
+    for (name, t) in files.iter() {
+        let mut image = t.durable.clone();
+        if plan.mode == CutMode::Tear {
+            let pieces: Vec<Op> = t.pending.iter().flat_map(Op::sectors).collect();
+            let mut rng = plan.seed ^ plan.after.wrapping_mul(0x100_0000_01b3);
+            for b in name.bytes() {
+                rng = (rng ^ u64::from(b)).wrapping_mul(0x100_0000_01b3);
+            }
+            let keep = (splitmix(&mut rng) % (pieces.len() as u64 + 1)) as usize;
+            torn += usize::from(keep > 0 && keep < pieces.len());
+            for p in &pieces[..keep] {
+                p.apply(&mut image);
+            }
+        }
+        std::fs::write(images.join(name), image).unwrap();
+    }
+    let unsynced = files.values().filter(|t| !t.pending.is_empty()).count();
+    let syncs = SYNCS.load(SeqCst);
+    std::fs::write(report, format!("{syncs} {unsynced} {torn}\n")).unwrap();
+    std::process::exit(loomward_catalog::CRASH_EXIT);
 }

@@ -169,8 +169,22 @@ impl Ack {
 /// open, scan A (staged chunks, the form the service publishes: a root listing plus a sub directory),
 /// durable reference and labels, bulk first scan of B (one-shot listing), rescan of A (one file gone, one new), revoke A, forget A.
 fn lifecycle(store: &Path, ack: &Ack) -> Step {
+    lifecycle_with(store, ack, false)
+}
+/// `hold_reader`: a reader keeps a catalogue snapshot from the open until A's rescan ends, so
+/// each end-of-run checkpoint (best effort, it never waits for a reader) cannot sync the log and
+/// every run end is acknowledged under synchronous=NORMAL alone.
+fn lifecycle_with(store: &Path, ack: &Ack, hold_reader: bool) -> Step {
     let c = Catalog::open_with(store, "synthetic", &ranked())?;
     ack.log("open");
+    let reader = if hold_reader {
+        let r = Connection::open(store.join("catalog.db"))?;
+        r.execute_batch("BEGIN")?;
+        r.query_row("SELECT count(*) FROM dir", [], |r| r.get::<_, i64>(0))?;
+        Some(r)
+    } else {
+        None
+    };
     let w = c.writer();
     let (ga, da) = register(w, A_NAME, A_PATH, 1)?;
     ack.log(&format!("register-a {ga} {da}"));
@@ -236,6 +250,7 @@ fn lifecycle(store: &Path, ack: &Ack) -> Step {
     staged(w, run, sub, vec![ident(A_DEEP, 14, 4096)], vec![])?;
     end(w, run)?;
     ack.log("end-a2");
+    drop(reader);
     w.call(WriteCommand::RevokeGrant {
         grant_id: ga,
         revoked_at_ns: 10,
@@ -313,6 +328,13 @@ fn crash_child() {
             ack.log("opened");
         }
         "faults" => fault_child(&store, &ack, &work.join("fault.txt")),
+        // The lifecycle until the power fails (`LOOMWARD_POWER_CUT`), or to its end and then.
+        "powercut" | "powercut-reader" => {
+            fault_vfs::install();
+            fault_vfs::arm_power_cut(work.join("cut"), work.join("cut.txt"));
+            lifecycle_with(&store, &ack, scenario == "powercut-reader").unwrap();
+            fault_vfs::cut_now();
+        }
         other => panic!("scenario {other}"),
     }
 }
@@ -366,9 +388,15 @@ fn run_child_with(scenario: &str, work: &Path, at: Option<u64>, fault: Option<&s
         .env("LOOMWARD_CRASH_WORK", work)
         .env_remove("LOOMWARD_CRASH_AT")
         .env_remove("LOOMWARD_CRASH_TRACE")
-        .env_remove("LOOMWARD_FAULT");
+        .env_remove("LOOMWARD_FAULT")
+        .env_remove("LOOMWARD_POWER_CUT");
     if let Some(plan) = fault {
-        cmd.env("LOOMWARD_FAULT", plan);
+        let var = if scenario.starts_with("powercut") {
+            "LOOMWARD_POWER_CUT"
+        } else {
+            "LOOMWARD_FAULT"
+        };
+        cmd.env(var, plan);
     }
     match at {
         Some(n) => cmd.env("LOOMWARD_CRASH_AT", n.to_string()),
@@ -379,7 +407,12 @@ fn run_child_with(scenario: &str, work: &Path, at: Option<u64>, fault: Option<&s
     let crashed = code == Some(CRASH_EXIT);
     // A crash point that is never reached is a missing test, not a recovery: require the exit the
     // run was meant to end with.
-    let want = if at.is_some() { CRASH_EXIT } else { 0 };
+    // A power-cut child always ends at its cut.
+    let want = if at.is_some() || scenario.starts_with("powercut") {
+        CRASH_EXIT
+    } else {
+        0
+    };
     if at.is_some() && code == Some(0) {
         panic!("the crash point was not reached: {scenario} at {at:?}");
     }
@@ -618,7 +651,16 @@ fn verify(store: &Path, acks: &[String], scenario: &str) -> Vec<String> {
             "register-a: grant 1",
         );
     }
-    if acked("end-a") && !forgotten {
+    // After a power cut, catalogue publications without references (synchronous=NORMAL) may be
+    // lost, but only as a suffix of whole transactions (`normal_suffix`). A killed process loses
+    // none of them.
+    let power_cut = scenario == "powercut";
+    let suffix = if power_cut {
+        normal_suffix(&db, forgotten)
+    } else {
+        Vec::new()
+    };
+    if acked("end-a") && !forgotten && !power_cut {
         want(file_in(1, A_DEEP).map(|n| n == 1), "end-a: the deep file");
         want(one(&db, "SELECT count(*) FROM scan_run s JOIN root r ON r.id=s.root_id WHERE r.grant_id=1 AND s.state='completed'").map(|n| n >= 1), "end-a: a completed run");
     }
@@ -638,7 +680,7 @@ fn verify(store: &Path, acks: &[String], scenario: &str) -> Vec<String> {
             "labels-a: the human label",
         );
     }
-    if acked("end-b") {
+    if acked("end-b") && !power_cut {
         want(
             one(
                 &db,
@@ -654,7 +696,7 @@ fn verify(store: &Path, acks: &[String], scenario: &str) -> Vec<String> {
             );
         }
     }
-    if acked("end-a2") && !forgotten {
+    if acked("end-a2") && !forgotten && !power_cut {
         want(file_in(1, A_NEW).map(|n| n == 1), "end-a2: the new file");
         want(
             file_in(1, A_ROOT_FILES[1]).map(|n| n == 0),
@@ -674,6 +716,7 @@ fn verify(store: &Path, acks: &[String], scenario: &str) -> Vec<String> {
     if acked("forget-a") {
         want(Ok(forgotten), "forget-a: the forget record");
     }
+    bad.extend(suffix);
     if forgotten {
         // Forget is all or nothing once recovered: nothing of the root's survives, in rows or bytes.
         for (what, sql) in [
@@ -747,6 +790,57 @@ fn verify(store: &Path, acks: &[String], scenario: &str) -> Vec<String> {
             .into_iter()
             .map(|b| format!("after the write probe: {b}")),
     );
+    bad
+}
+
+/// The durability contract for catalogue commits under synchronous=NORMAL after a power cut: each
+/// listing is published whole (never torn), and a later publication never survives an earlier
+/// one that was lost (root A's first scan, then root B's bulk first scan, then A's rescan).
+/// Read before verify's write probe republishes the roots.
+fn normal_suffix(db: &Connection, forgotten: bool) -> Vec<String> {
+    let mut bad = Vec::new();
+    let names = |grant: i64, root_dir: bool| {
+        text(db, &format!("SELECT coalesce((SELECT group_concat(name,'|') FROM (SELECT f.name FROM file f JOIN dir d ON d.id=f.dir_id JOIN root r ON r.id=d.root_id WHERE r.grant_id={grant} AND (d.parent_id IS NULL)={root_dir} ORDER BY f.name)),'')"))
+    };
+    let check = |what: &str, got: Res<String>, allowed: &[String]| match got {
+        Ok(s) if allowed.contains(&s) => None,
+        other => Some(format!("torn publication of {what}: {other:?}")),
+    };
+    let a_first = format!("{}|{}", A_ROOT_FILES[0], A_ROOT_FILES[1]);
+    let a_rescan = format!("{}|{A_NEW}", A_ROOT_FILES[0]);
+    let b_files = B_FILES.join("|");
+    bad.extend(check(
+        "root B",
+        names(2, true),
+        &[String::new(), b_files.clone()],
+    ));
+    let b_complete = one(
+        db,
+        "SELECT count(*) FROM root WHERE grant_id=2 AND state='complete'",
+    );
+    if b_complete == Ok(1) && names(2, true) != Ok(b_files) {
+        bad.push("root B complete without its files".into());
+    }
+    if forgotten {
+        return bad;
+    }
+    bad.extend(check(
+        "root A's root directory",
+        names(1, true),
+        &[String::new(), a_first, a_rescan.clone()],
+    ));
+    bad.extend(check(
+        "root A's sub directory",
+        names(1, false),
+        &[String::new(), A_DEEP.to_owned()],
+    ));
+    let a_done = one(db, "SELECT count(*) FROM scan_run s JOIN root r ON r.id=s.root_id WHERE r.grant_id=1 AND s.state='completed'");
+    if names(1, true) == Ok(a_rescan) && b_complete != Ok(1) {
+        bad.push("A's rescan survived the earlier bulk first scan of B that was lost".into());
+    }
+    if b_complete == Ok(1) && !matches!(a_done, Ok(n) if n >= 1) {
+        bad.push("B's bulk first scan survived A's earlier first scan that was lost".into());
+    }
     bad
 }
 
@@ -1103,6 +1197,266 @@ fn a_short_read_mid_file_still_recovers() {
         false,
     );
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+// ---- power cut (docs/45 row 8) --------------------------------------------------------------
+
+/// What a power-cut child reports: the syncs it reached, the files that held unsynced writes at
+/// the cut, and the files a `tear` cut kept only part of.
+struct CutRun {
+    syncs: u64,
+    unsynced: u64,
+    torn: u64,
+}
+/// A power-cut child, then the store as the disk holds it: each store file's surviving image, and
+/// no `-shm` (volatile shared memory, rebuilt on open).
+/// `plan`: `[reader+]<mode>:<after>[:<seed>]`; `reader+` holds a catalogue reader across the
+/// scans (`lifecycle_with`).
+fn run_power_cut(work: &Path, plan: &str) -> (Outcome, CutRun) {
+    let (scenario, plan) = match plan.strip_prefix("reader+") {
+        Some(plan) => ("powercut-reader", plan),
+        None => ("powercut", plan),
+    };
+    let out = run_child_with(scenario, work, None, Some(plan));
+    let (store, cut) = (work.join("store"), work.join("cut"));
+    let imaged: Vec<_> = std::fs::read_dir(&cut)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    for e in std::fs::read_dir(&store).unwrap() {
+        let name = e.unwrap().file_name();
+        let shm = name.to_string_lossy().ends_with("-shm");
+        // Every other store file must have gone through the VFS, or the model misses its writes.
+        assert!(
+            shm || imaged.contains(&name),
+            "{name:?} was written outside the power-cut model"
+        );
+        if shm {
+            std::fs::remove_file(store.join(&name)).unwrap();
+        }
+    }
+    for name in imaged {
+        std::fs::copy(cut.join(&name), store.join(&name)).unwrap();
+    }
+    let n: Vec<u64> = std::fs::read_to_string(work.join("cut.txt"))
+        .unwrap()
+        .split_whitespace()
+        .map(|n| n.parse().unwrap())
+        .collect();
+    (
+        out,
+        CutRun {
+            syncs: n[0],
+            unsynced: n[1],
+            torn: n[2],
+        },
+    )
+}
+fn cut_plan(plan: &str) -> Option<fault_vfs::Cut> {
+    fault_vfs::parse_cut(plan.strip_prefix("reader+").unwrap_or(plan))
+}
+/// Cut points `after` in 0..=total (the power fails at the entry of sync `after + 1`; `total` is
+/// after the lifecycle's end): all in `full` mode, else `per` spread evenly.
+fn cut_points(total: u64, per: u64) -> Vec<u64> {
+    fault_targets(total + 1, per)
+        .into_iter()
+        .map(|n| n - 1)
+        .collect()
+}
+/// Acknowledged NORMAL publications missing after the cut, read on a copy before any recovery.
+fn normal_lost(store: &Path, acks: &[String], peek: &Path) -> Option<usize> {
+    copy_store(store, peek);
+    let db = Connection::open(peek.join("catalog.db")).ok()?;
+    db.execute(
+        "ATTACH DATABASE ?1 AS st",
+        [peek.join("state.db").to_string_lossy().as_ref()],
+    )
+    .ok()?;
+    let acked = |step: &str| acks.iter().any(|a| a == step);
+    let gone = |sql: &str| one(&db, sql).map(|n| n == 0);
+    let mut lost = 0;
+    let rescan = format!("SELECT count(*) FROM file WHERE name='{A_NEW}'");
+    for (step, sql) in [
+        ("end-a", "SELECT count(*) FROM scan_run s JOIN root r ON r.id=s.root_id WHERE r.grant_id=1 AND s.state='completed'"),
+        ("end-b", "SELECT count(*) FROM root WHERE grant_id=2 AND state='complete'"),
+        ("end-a2", rescan.as_str()),
+    ] {
+        // A's rows are legitimately gone once its forget is durable.
+        let forgotten = one(&db, "SELECT count(*) FROM st.root_forgotten").ok()? > 0;
+        if acked(step) && !(forgotten && step != "end-b") && gone(sql).ok()? {
+            lost += 1;
+        }
+    }
+    Some(lost)
+}
+
+/// Power cuts at `plans` (`<mode>:<after>[:<seed>]`, given the lifecycle's sync count): every cut
+/// must recover to the crash sweep's invariants (`verify`), keep every acknowledged FULL commit
+/// (state.db, and publications carrying references) and lose NORMAL ones only as a whole-
+/// transaction suffix (`normal_suffix`). Returns the cuts that break that.
+/// `variant`: `""`, or `"reader+"` for the lifecycle that holds a catalogue reader.
+fn power_cut_sweep(variant: &str, plans: impl Fn(u64) -> Vec<String>) -> Vec<String> {
+    let started = std::time::Instant::now();
+    let root = tempfile::tempdir().unwrap();
+    let clean_work = root.path().join("clean");
+    let (base, clean) = run_power_cut(&clean_work, &format!("{variant}drop:{}", u64::MAX));
+    assert_eq!(base.acks.last().map(String::as_str), Some("closed"));
+    // The power failing after a graceful close loses nothing: the strict checks hold.
+    let bad = verify(&clean_work.join("store"), &base.acks, "lifecycle");
+    assert!(
+        bad.is_empty(),
+        "a cut after a clean close violates {bad:#?}"
+    );
+    let todo: Vec<String> = plans(clean.syncs)
+        .into_iter()
+        .map(|p| format!("{variant}{p}"))
+        .collect();
+    eprintln!(
+        "power cut {variant}: {} syncs in the lifecycle, {} cuts",
+        clean.syncs,
+        todo.len()
+    );
+    let failures = Mutex::new(Vec::<String>::new());
+    let stats = Mutex::new([0usize; 4]); // cuts, with unsynced writes, torn, lost NORMAL commits
+    parallel(todo, |plan| {
+        let work = root.path().join(plan.replace([':', '+'], "-"));
+        let store = work.join("store");
+        let (out, run) = run_power_cut(&work, &plan);
+        let after = cut_plan(&plan).unwrap().after;
+        let mut bad = Vec::new();
+        if after < clean.syncs && run.syncs != after + 1 {
+            bad.push(format!("the cut was not reached: {} syncs", run.syncs));
+        }
+        let lost = normal_lost(&store, &out.acks, &work.join("peek"));
+        {
+            let mut s = stats.lock().unwrap();
+            s[0] += 1;
+            s[1] += usize::from(run.unsynced > 0);
+            s[2] += usize::from(run.torn > 0);
+            s[3] += usize::from(lost.unwrap_or(0) > 0);
+        }
+        bad.extend(verify(&store, &out.acks, "powercut"));
+        if !bad.is_empty() {
+            failures.lock().unwrap().push(format!(
+                "{plan} (last ack {:?}; {} files unsynced, {} torn): {bad:#?}
+  repro: cargo test -p loomward-catalog --features test-hooks --test crash_sweep -- --nocapture power_cut_at {plan}",
+                out.acks.last(),
+                run.unsynced,
+                run.torn
+            ));
+        }
+        let _ = std::fs::remove_dir_all(&work);
+    });
+    let [cuts, unsynced, torn, lost] = stats.into_inner().unwrap();
+    eprintln!(
+        "power cut {variant}: {cuts} cuts, {unsynced} with unsynced writes, {torn} tearing a file mid-way, {lost} losing an acknowledged NORMAL publication; {:.0} s",
+        started.elapsed().as_secs_f64()
+    );
+    let mut failures = failures.into_inner().unwrap();
+    failures.sort();
+    failures
+}
+
+/// Every sync of the lifecycle, with and without a reader held across the scans, as a power-cut
+/// point (12 spread, `full`: all), dropping every
+/// unsynced write and tearing them at a seeded sector prefix (`full`: four seeds).
+#[test]
+fn every_power_cut_keeps_full_commits_and_recovers() {
+    let plans = |total| {
+        let points = cut_points(total, 12);
+        let seeds = if sweep_all() { 4 } else { 1 };
+        let mut plans: Vec<String> = points.iter().map(|n| format!("drop:{n}")).collect();
+        for seed in 1..=seeds {
+            plans.extend(points.iter().map(|n| format!("tear:{n}:{seed}")));
+        }
+        plans
+    };
+    let mut failures = power_cut_sweep("", plans);
+    failures.extend(power_cut_sweep("reader+", plans));
+    assert!(
+        failures.is_empty(),
+        "{} power cuts break the store\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+/// The power-cut checker must be able to fail: a disk whose flush does nothing loses
+/// acknowledged FULL commits, and the sweep has to say so.
+#[test]
+fn a_disk_that_ignores_flushes_fails_the_power_cut_sweep() {
+    let failures = power_cut_sweep("", |total| {
+        cut_points(total, 12)
+            .into_iter()
+            .map(|n| format!("lie:{n}"))
+            .collect()
+    });
+    eprintln!("lie: {} cuts caught", failures.len());
+    assert!(!failures.is_empty(), "a disk that ignores flushes passed");
+}
+
+/// The NORMAL-commit checker must be able to fail: a torn listing, and a later publication that
+/// survived an earlier lost one, each planted in a store holding A's scan, B's and A's rescan.
+#[test]
+fn the_power_cut_contract_catches_planted_damage() {
+    let root = tempfile::tempdir().unwrap();
+    let store = root.path().join("store");
+    {
+        let c = Catalog::open_with(&store, "synthetic", &ranked()).unwrap();
+        let w = c.writer();
+        let (ga, da) = register(w, A_NAME, A_PATH, 1).unwrap();
+        let a_files =
+            |third: &str, id: u8| vec![ident(A_ROOT_FILES[0], 11, 100), ident(third, id, 200)];
+        let run = begin(w, ga, "full").unwrap();
+        listing(w, run, da, a_files(A_ROOT_FILES[1], 12), vec![]).unwrap();
+        end(w, run).unwrap();
+        let (gb, db) = register(w, B_NAME, r"C:\Synthetic\KeepPathBeta", 2).unwrap();
+        let run = begin(w, gb, "full").unwrap();
+        let b = vec![ident(B_FILES[0], 21, 50), ident(B_FILES[1], 22, 60)];
+        listing(w, run, db, b, vec![]).unwrap();
+        end(w, run).unwrap();
+        let run = begin(w, ga, "refresh").unwrap();
+        listing(w, run, da, a_files(A_NEW, 15), vec![]).unwrap();
+        end(w, run).unwrap();
+    }
+    let control = normal_suffix(&reader(&store), false);
+    assert!(control.is_empty(), "{control:#?}");
+    for (what, sql, expected) in [
+        ("half of B's listing", "DELETE FROM file WHERE name='keepB1.yyqx'", "torn publication of root B"),
+        ("half of A's rescan", "UPDATE file SET name='crashrootA2.zzqx' WHERE name='crashrootA1.zzqx'", "torn publication of root A"),
+        ("B's run end lost under A's rescan", "UPDATE root SET state='partial' WHERE grant_id=2", "A's rescan survived"),
+        ("A's first run end lost under B's", "UPDATE scan_run SET state='failed' WHERE root_id=(SELECT id FROM root WHERE grant_id=1)", "B's bulk first scan survived"),
+    ] {
+        let copy = root.path().join(format!("copy-{}", what.len()));
+        copy_store(&store, &copy);
+        let db = reader(&copy);
+        db.execute_batch(sql).unwrap();
+        let found = normal_suffix(&db, false);
+        assert!(found.iter().any(|v| v.contains(expected)), "undetected {what}: {found:?}");
+    }
+}
+
+/// One power cut, for reproducing a failure: `-- power_cut_at tear:17:1` (the plan last, no -q).
+#[test]
+fn power_cut_at() {
+    let Some(plan) = std::env::args()
+        .next_back()
+        .filter(|a| cut_plan(a).is_some())
+    else {
+        return;
+    };
+    let root = tempfile::tempdir().unwrap();
+    let work = root.path().join("one");
+    let (out, run) = run_power_cut(&work, &plan);
+    eprintln!(
+        "{plan}: {} syncs, {} files unsynced, {} torn, last ack {:?}",
+        run.syncs,
+        run.unsynced,
+        run.torn,
+        out.acks.last()
+    );
+    let bad = verify(&work.join("store"), &out.acks, "powercut");
+    assert!(bad.is_empty(), "{plan}: {bad:#?}");
 }
 
 /// One fault, for reproducing a failure: `-- fault_at full:40`.
