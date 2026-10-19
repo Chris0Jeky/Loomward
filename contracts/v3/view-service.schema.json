@@ -2034,7 +2034,7 @@
           "additionalProperties": false,
           "required": ["logical_cpus", "busy_fraction"],
           "properties": {
-            "logical_cpus": { "$ref": "#/$defs/Count" },
+            "logical_cpus": { "$ref": "#/$defs/NullableCount" },
             "busy_fraction": { "$ref": "#/$defs/NullableFraction" }
           }
         }

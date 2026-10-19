@@ -1360,7 +1360,7 @@ export interface SystemSample {
     load_fraction: NullableFraction;
   };
   cpu: {
-    logical_cpus: Count;
+    logical_cpus: NullableCount;
     busy_fraction: NullableFraction;
   };
 }
