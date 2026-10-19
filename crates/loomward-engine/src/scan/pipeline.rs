@@ -98,6 +98,23 @@ impl ScanReport {
 const PENDING: usize = usize::MAX;
 
 #[cfg(test)]
+type PublishHook = Box<dyn FnMut(&str)>;
+#[cfg(test)]
+thread_local! {
+    /// Test hook run on the scan thread where coverage is about to be published.
+    pub(super) static BEFORE_PUBLISH: std::cell::RefCell<Option<PublishHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+#[cfg(test)]
+pub(super) fn before_publish(at: &str) {
+    let taken = BEFORE_PUBLISH.with_borrow_mut(Option::take);
+    if let Some(mut hook) = taken {
+        hook(at);
+        BEFORE_PUBLISH.with_borrow_mut(|slot| *slot = slot.take().or(Some(hook)));
+    }
+}
+
+#[cfg(test)]
 #[test]
 fn directory_limit_releases_pending_identity_before_parent_relist() {
     use super::tests::{identity, Tree};
@@ -997,26 +1014,31 @@ pub fn run_scan<S: DirSource>(
             .map_err(|_| EngineError::PermissionDenied {
                 message: "root open refused".into(),
             })?;
+    // The basis is part of the identity: the same IDs under another basis no longer bind what
+    // the grant bound (a verified root reading unverified, or the reverse), docs/41 admission.
     if root.expected.is_some_and(|e| {
         e.id != identity.id
             || e.volume_serial != identity.volume_serial
             || e.volume_guid != identity.volume_guid
+            || e.basis != identity.basis
     }) {
         sink.root_identity_changed(root.root_id());
         return Err(EngineError::PermissionDenied {
             message: "root_identity_changed".into(),
         });
     }
+    // A state path that cannot be opened or carries no ID fails closed: excluding nothing would
+    // count Loomward's own state as data and still call the coverage complete.
     let excluded = match &options.excluded_path {
-        Some(path) if path.exists() => vec![
-            source
-                .open_root(path)
-                .map_err(|_| EngineError::PermissionDenied {
-                    message: "state exclusion identity unavailable".into(),
-                })?
-                .1,
-        ],
-        _ => Vec::new(),
+        Some(path) => vec![source
+            .open_root(path)
+            .ok()
+            .map(|(_, state)| state)
+            .filter(|state| state.id.is_some())
+            .ok_or_else(|| EngineError::PermissionDenied {
+                message: "state exclusion identity unavailable".into(),
+            })?],
+        None => Vec::new(),
     };
     if excluded
         .iter()
@@ -1276,6 +1298,8 @@ pub fn run_scan<S: DirSource>(
         && !cancel.load(Ordering::Acquire)
         && worker_result.is_ok()
         && writer_result.is_ok();
+    #[cfg(test)]
+    before_publish("run_scan");
     let aggregation = Instant::now();
     let finish = sink.finish_run(root.root_id(), run, &options.scope, complete);
     aggregation_seconds += aggregation.elapsed().as_secs_f64();
