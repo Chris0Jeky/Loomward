@@ -1761,16 +1761,7 @@ fn apply(
                 return Err(Error::Invalid("failed staged listing"));
             }
             let started = Instant::now();
-            stage(
-                conn,
-                ctx.tables(*run_id),
-                *run_id,
-                *dir_id,
-                *seq,
-                files,
-                dirs,
-                &mut ctx.active,
-            )?;
+            stage(conn, ctx, *run_id, *dir_id, *seq, files, dirs)?;
             ctx.timings.lock().expect("timing lock").staging_calls += 1;
             ctx.timings.lock().expect("timing lock").staging_seconds +=
                 started.elapsed().as_secs_f64();
@@ -1934,15 +1925,15 @@ fn apply(
 }
 fn stage(
     conn: &Connection,
-    t: Tables,
+    ctx: &mut Context,
     run: i64,
     dir: i64,
     seq: i64,
     files: &Vec<Observation>,
     dirs: &Vec<Observation>,
-    active: &mut HashMap<i64, i64>,
 ) -> Result<()> {
-    let root = active_root(conn, active, run)?;
+    let t = ctx.tables(run);
+    let root = active_root(conn, &mut ctx.active, run)?;
     if !conn.prepare_cached(&format!("SELECT EXISTS(SELECT 1 FROM {} WHERE id=?1 AND root_id=?2 AND listing_state!='absent_pending')",t.dir))?.query_row(params![dir,root],|r|r.get::<_,bool>(0))?{return Err(Error::NotFound);}
     let previous:Option<(i64,i64)>=conn.prepare_cached("SELECT seq,entry_count_total FROM stage_entry WHERE run_id=?1 AND dir_id=?2 ORDER BY seq DESC LIMIT 1").and_then(|mut s| s.query_row(params![run,dir],|r|Ok((r.get(0)?,r.get(1)?)))).optional()?;
     let (next, count) = previous.map_or((0, 0), |(seq, count)| (seq + 1, count));

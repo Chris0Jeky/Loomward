@@ -2090,3 +2090,49 @@ the writer is held; one transaction commits both steps) and
 `a_deferred_refusal_settles_as_a_relist_and_never_completes`. The N1 test now settles before
 it reads committed rows. Three mutations were each killed by those tests: swallowing deferred
 refusals, a child lookup that does not wait, and skipping the name guard for multi-chunk listings.
+
+## First-scan publication cost per listing (#646, 2026-10-19)
+
+Measured first with SQLite's statement trace (a test-only `rusqlite` `trace` feature): one bulk
+first-scan listing, a staged chunk plus its publication as the service sends them, ran 47
+statements. Now 23. Fixed per-scan and per-transaction work is cancelled out by differencing
+two tree sizes. `bulk_first_scan_statements_per_listing_are_bounded` pins the count at 23 or
+fewer (sharing the sequences before every bulk publication again makes it 25 and fails it).
+
+- No earlier-file scratch (`old_file` DDL, fill and probe, both retire deletes) when the
+  directory holds no files; one read now proves the directory listable and returns its depth,
+  filesystem, chunk count and that probe.
+- The ID sequences are shared by one combined UPDATE, and before a bulk publication only when
+  something other than a bulk publication or a staged chunk ran since the last share in the
+  transaction. The share after every bulk publication stays.
+- A run proven active stays proven for the rest of its transaction (listing commands change no
+  run, root or grant row, and the transaction reads one snapshot).
+- The revision comes back through `RETURNING`; bulk listings skip the token drain (bulk tables
+  carry no token triggers); the witness write is skipped when no reference intent was pending
+  at the transaction's start (intents are staged only before it begins).
+- `listing_names` scratch is created only for multi-payload listings.
+
+Not done: folding the directory's own dirty mark into its publication UPDATE (one statement)
+conflicts with `aborted_ok_batch_reports_the_failure_to_every_caller`, which injects the flush
+failure through a `dirty_rev` trigger.
+
+Interleaved release runs, real-shaped lab (142,605 entries), shared host:
+
+| Metric (3 pairs) | #761 head `57948db7` | branch |
+|---|---:|---:|
+| elapsed s, median [range] | 15.0 [14.1-37.5] | 13.2 [11.7-15.5] |
+| writer listing s, median | 5.20 | 4.54 |
+| writer COMMIT s, median | 4.28 | 2.51 |
+| process CPU s, median | 18.3 | 17.4 |
+| transactions | 2,071-2,127 | 2,085-2,130 |
+| peak working set MiB | 158.2-166.1 | 156.2-166.2 |
+
+Both variants published identical catalogues (path-keyed digests of every `dir` and `file`
+column except IDs and revision counters, plus `multilink`). The gain is modest: statements
+were not the dominant per-listing cost.
+
+EndRun at 127k rows (bench example, temporary probe, not committed): 1.7-2.1 s, of which the
+file copy with its per-row trigram trigger 0.69 s, the four file index builds 0.29 s (already
+built once after the copy), the WAL checkpoint 0.5-0.6 s. Nothing cheap remains there without
+a design change (for example renaming the bulk table into place, or deferring the trigram
+index, which would change what search returns right after EndRun).
