@@ -306,10 +306,14 @@ then fences later messages. The copy run follows the same pattern, with one addi
    each chunk, before each identity or `verified` commit, the publish intent, and the rename itself. The rename
    step's epoch read is therefore the pre-rename check (HIGH fix (d)).
 2. **Revocation.** Revoking a source grant, or pressing emergency stop, runs in this order:
-   1. commit the revocation and bump the run's fence epoch in `state.db`, marking the approval unusable;
-   2. acquire the run's admission lock, which waits for at most one in-flight step;
-   3. read and journal the run's position (`stopped_before_publish`, or `published`);
-   4. release the lock and return the acknowledgement.
+   1. for a grant revocation, first commit it in `state.db`, making the approval unusable;
+   2. under the Store mutex, record the pending cause on the run's Control and raise its in-memory fence,
+      closing admission to later effect steps;
+   3. release the Store mutex and wait for the admitted step to return; a worker may need Store before it
+      can release its admission lock;
+   4. once the step has returned, journal `Fenced` with a new run epoch, determine the run's position
+      (`stopped_before_publish`, or `published`), and return the acknowledgement. The fencer or the worker
+      can journal the pending cause first; the same Store mutex serialises them.
 3. **Acknowledgement semantics.** An acknowledged revocation means four things:
    1. the revocation is durable;
    2. no effect step of the run starts after the acknowledgement, because every later step reads the new epoch under

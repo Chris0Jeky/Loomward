@@ -2815,7 +2815,13 @@ fn only_a_refused_journal_tail_is_an_unreplayable_fence() {
 /// Acknowledgement waits for that step outside the Store lock, even though no fence can be logged.
 #[test]
 fn an_unreplayable_fence_waits_for_the_admitted_step_without_holding_store() {
-    use std::sync::mpsc::{channel, RecvTimeoutError};
+    use std::sync::mpsc::{channel, RecvTimeoutError, Sender};
+    struct ReleaseStep(Sender<()>);
+    impl Drop for ReleaseStep {
+        fn drop(&mut self) {
+            let _ = self.0.send(());
+        }
+    }
     let Some(lab) = Lab::new() else { return };
     fs::write(lab.src().join("f.bin"), b"payload").unwrap();
     let op = lab.start(&["f.bin"]);
@@ -2828,11 +2834,13 @@ fn an_unreplayable_fence_waits_for_the_admitted_step_without_holding_store() {
     let (release, released) = channel();
     let (answer, received) = channel();
     std::thread::scope(|scope| {
+        // Release even on a failed handoff assertion, before the scope joins its parked worker.
+        let release = ReleaseStep(release);
         let effect_marker = marker.clone();
         let worker = scope.spawn(move || {
             let _step = control.admit().unwrap_or_else(|_| panic!("step refused"));
             entered.send(()).unwrap();
-            released.recv_timeout(Duration::from_secs(5)).unwrap();
+            released.recv().unwrap();
             // A worker may need the Store before it can leave the admitted step. Probe without
             // blocking so a lock-order regression fails this test without deadlocking its threads.
             let store_free = store.try_lock().is_ok();
@@ -2854,18 +2862,26 @@ fn an_unreplayable_fence_waits_for_the_admitted_step_without_holding_store() {
                 .unwrap();
         });
         let until = std::time::Instant::now() + Duration::from_secs(5);
-        while !control.fenced() && std::time::Instant::now() < until {
+        // `fenced` precedes replay and tail classification. Observe Store's release explicitly:
+        // an elapsed delay after the flag says nothing about whether those reads have finished.
+        let store_released = loop {
+            if control.fenced() && store.try_lock().is_ok() {
+                break true;
+            }
+            if std::time::Instant::now() >= until {
+                break false;
+            }
             std::thread::sleep(Duration::from_millis(1));
-        }
-        let started = control.fenced();
+        };
         let early = received.recv_timeout(Duration::from_millis(50));
         // Always release the worker before checking the answer, including on the old early-ack bug.
-        release.send(()).unwrap();
-        assert!(worker.join().unwrap(), "fence waited while holding Store");
+        drop(release);
+        let store_free = worker.join().unwrap();
         assert!(
-            started,
-            "the fence did not start within the fixture deadline"
+            store_released,
+            "the fence did not release Store within the fixture deadline"
         );
+        assert!(store_free, "fence waited while holding Store");
         assert!(
             matches!(early, Err(RecvTimeoutError::Timeout)),
             "revocation acknowledged before its admitted step ended: {early:?}"
