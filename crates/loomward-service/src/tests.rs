@@ -3899,7 +3899,7 @@ fn revocation_before_the_final_end_run_is_refused_by_the_durable_writer() {
 /// #731: a half-applied revoke, whose durable grant commit landed but whose catalogue apply failed
 /// (the live cancel of the run was refused), leaves the run running and claiming its root. The
 /// run's final EndRun must still be refused by the grant-state guard in `active_run`: no completed
-/// run and no sweep.
+/// run and no sweep. #733: the refused finish must also settle the run and release its root.
 #[cfg(windows)]
 #[test]
 fn a_half_applied_revoke_still_refuses_the_final_end_run() {
@@ -3983,6 +3983,25 @@ fn a_half_applied_revoke_still_refuses_the_final_end_run() {
         scalar("SELECT generation FROM main.root WHERE id=?1"),
         generation,
         "a refused EndRun must not publish a sweep"
+    );
+    assert_eq!(
+        scalar("SELECT count(*) FROM main.scan_run WHERE root_id=?1 AND state='running'"),
+        0,
+        "a refused finish must settle the revoked run"
+    );
+    assert_eq!(
+        scalar("SELECT count(*) FROM main.scan_run WHERE root_id=?1 AND state IN ('cancelled','failed') AND json_extract(error_json,'$.code')='grant_not_active' AND finished_at_ns IS NOT NULL"),
+        1,
+        "the settled run must record why it could not finish"
+    );
+    assert_eq!(
+        scalar("SELECT count(*) FROM main.root WHERE id=?1 AND active_run IS NOT NULL"),
+        0,
+        "a refused finish must release the root without restart"
+    );
+    assert_eq!(
+        scalar("SELECT count(*) FROM main.root WHERE id=?1 AND state='scanning'"),
+        0
     );
 }
 

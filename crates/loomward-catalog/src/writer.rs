@@ -822,6 +822,15 @@ fn serve(
                                 // Savepoint rollback must not make the accepted prefix publishable as complete.
                                 context.fenced_listings.insert((*run_id, *dir_id));
                             }
+                            // A refused finish still releases a revoked run in this transaction (#733).
+                            // Never open a savepoint after SQLite has rolled back the outer transaction.
+                            if !tx.is_autocommit() {
+                                if let Err(e) =
+                                    settle_inactive_run(&mut tx, &p.command, &mut context)
+                                {
+                                    *results.last_mut().expect("refused command") = Err(e);
+                                }
+                            }
                         }
                         bytes += command_bytes;
                         // Free the applied payload so producers can refill the bounded queue before COMMIT.
@@ -1101,6 +1110,44 @@ fn active_run(conn: &Connection, t: Tables, run: i64, dir: Option<i64>) -> Resul
         if !conn.prepare_cached(&format!("SELECT EXISTS(SELECT 1 FROM {} WHERE id=?1 AND root_id=?2 AND listing_state!='absent_pending')",t.dir))?.query_row(params![dir,root],|r|r.get::<_,bool>(0))?{return Err(Error::NotFound);}
     }
     Ok(root)
+}
+fn settle_inactive_run(
+    tx: &mut rusqlite::Transaction<'_>,
+    command: &WriteCommand,
+    ctx: &mut Context,
+) -> Result<()> {
+    let WriteCommand::EndRun {
+        run_id,
+        finished_at_ns,
+        ..
+    } = command
+    else {
+        return Ok(());
+    };
+    let save = tx.savepoint()?;
+    let root: Option<i64> = save.query_row(
+        "SELECT s.root_id FROM scan_run s JOIN root r ON r.id=s.root_id JOIN st.root_grant g ON g.id=r.grant_id WHERE s.id=?1 AND s.state='running' AND r.active_run=s.id AND g.state!='active'",
+        [run_id], |r| r.get(0),
+    ).optional()?;
+    let Some(root) = root else { return Ok(()) };
+    save.execute("UPDATE scan_run SET state='cancelled',finished_at_ns=?2,error_json='{\"code\":\"grant_not_active\"}' WHERE id=?1", params![run_id, finished_at_ns])?;
+    save.execute(
+        "UPDATE root SET active_run=NULL,state='stale' WHERE id=?1",
+        [root],
+    )?;
+    save.execute("DELETE FROM stage_entry WHERE run_id=?1", [run_id])?;
+    save.execute("DELETE FROM bulk_dir WHERE root_id=?1", [root])?;
+    let revision = save.query_row(
+        "UPDATE revision SET catalog_rev=catalog_rev+1 WHERE id=1 RETURNING catalog_rev",
+        [],
+        |r| r.get(0),
+    )?;
+    save.commit()?;
+    ctx.revision = revision;
+    ctx.bulk.remove(run_id);
+    ctx.fenced_listings.retain(|(run, _)| run != run_id);
+    ctx.parents.clear();
+    Ok(())
 }
 fn state_revision(conn: &Connection) -> Result<()> {
     conn.execute(
