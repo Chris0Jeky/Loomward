@@ -58,6 +58,9 @@ pub(crate) struct Hooks {
     /// #219: the filesystem name grant-time probes observe instead of the volume's.
     #[cfg_attr(not(windows), allow(dead_code))]
     pub filesystem: Mutex<Option<&'static str>>,
+    /// The error the old-path probe of a renamed unverified grant meets instead of opening it.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub probe_error: Mutex<Option<loomward_windows::enumerate::SourceError>>,
     /// #519 review: a personal space read for one volume key answers this instead of the OS.
     pub space: Mutex<Vec<(String, SpaceFake)>>,
     /// #530: the personal space read budget a test sets instead of the production 500 ms.
@@ -3839,6 +3842,156 @@ fn scan_start_refuses_a_grant_revoked_after_root_mint() {
     }
 }
 
+/// #731: a revoke that commits while a full scan is held mid-walk is refused by the durable
+/// writer at the scan's final EndRun, on a real catalogue. The job ends cancelled or failed, its
+/// coverage is never complete, and no sweep publishes: the root's generation and the count of
+/// completed runs stay where the baseline scan left them.
+#[cfg(windows)]
+#[test]
+fn revocation_before_the_final_end_run_is_refused_by_the_durable_writer() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    let inner = &svc.inner;
+    // A completed baseline scan fixes the generation and run count a refused sweep must not move.
+    settle(svc, &start(svc, &lab.root, "full"));
+    f3_wait_live(svc);
+    let root_row = inner.root_row(&lab.root).unwrap();
+    let grant = crate::db::roots(&inner.db(), Some(root_row))
+        .unwrap()
+        .remove(0)
+        .grant;
+    let scalar =
+        |sql: &str| -> i64 { inner.db().query_row(sql, [root_row], |r| r.get(0)).unwrap() };
+    let generation = scalar("SELECT generation FROM main.root WHERE id=?1");
+    let completed =
+        scalar("SELECT count(*) FROM main.scan_run WHERE root_id=?1 AND state='completed'");
+    inner.scan.gate.arm();
+    let job = start(svc, &lab.root, "full");
+    inner.scan.gate.wait_reached();
+    // The durable revoke commits while the walk is held: the run's remaining writer commands,
+    // including its final EndRun, now meet a revoked grant.
+    let revoked = inner.catalog.writer().call(WriteCommand::RevokeGrant {
+        grant_id: grant,
+        revoked_at_ns: crate::now_ns(),
+    });
+    inner.scan.gate.release();
+    assert!(revoked.is_ok(), "{revoked:?}");
+    let done = settle(svc, &job);
+    assert!(
+        matches!(
+            done.get("state").and_then(|v| v.as_str()),
+            Some("cancelled" | "failed")
+        ),
+        "{done:?}"
+    );
+    assert_ne!(
+        done.get("coverage").and_then(|v| v.as_str()),
+        Some("complete"),
+        "{done:?}"
+    );
+    assert_eq!(
+        scalar("SELECT count(*) FROM main.scan_run WHERE root_id=?1 AND state='completed'"),
+        completed,
+        "a refused EndRun must not publish a completed run"
+    );
+    assert_eq!(
+        scalar("SELECT generation FROM main.root WHERE id=?1"),
+        generation,
+        "a refused EndRun must not publish a sweep"
+    );
+    f3_wait_live(svc);
+}
+
+/// #731: a half-applied revoke, whose durable grant commit landed but whose catalogue apply failed
+/// (the live cancel of the run was refused), leaves the run running and claiming its root. The
+/// run's final EndRun must still be refused by the grant-state guard in `active_run`: no completed
+/// run and no sweep.
+#[cfg(windows)]
+#[test]
+fn a_half_applied_revoke_still_refuses_the_final_end_run() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    let inner = &svc.inner;
+    settle(svc, &start(svc, &lab.root, "full"));
+    f3_wait_live(svc);
+    let root_row = inner.root_row(&lab.root).unwrap();
+    let grant = crate::db::roots(&inner.db(), Some(root_row))
+        .unwrap()
+        .remove(0)
+        .grant;
+    let scalar =
+        |sql: &str| -> i64 { inner.db().query_row(sql, [root_row], |r| r.get(0)).unwrap() };
+    let generation = scalar("SELECT generation FROM main.root WHERE id=?1");
+    let completed =
+        scalar("SELECT count(*) FROM main.scan_run WHERE root_id=?1 AND state='completed'");
+    inner.scan.gate.arm();
+    let job = start(svc, &lab.root, "full");
+    inner.scan.gate.wait_reached();
+    // Test-local: the trigger lives on this lab's own catalogue and is dropped right after the
+    // revoke, so it only fails the revoke's own cancel of the run.
+    inner
+        .db()
+        .execute_batch(
+            "CREATE TRIGGER main.half_applied_cancel_refusal BEFORE UPDATE OF state ON scan_run
+             WHEN NEW.state='cancelled' BEGIN SELECT RAISE(ABORT,'injected'); END;",
+        )
+        .unwrap();
+    let revoked = inner.catalog.writer().call(WriteCommand::RevokeGrant {
+        grant_id: grant,
+        revoked_at_ns: crate::now_ns(),
+    });
+    inner
+        .db()
+        .execute_batch("DROP TRIGGER main.half_applied_cancel_refusal")
+        .unwrap();
+    // The half-applied state: the grant is revoked durably, the run and its root claim are not.
+    assert!(
+        revoked.is_err(),
+        "the injected cancel must fail the revoke: {revoked:?}"
+    );
+    let grant_state: String = inner
+        .db()
+        .query_row(
+            "SELECT state FROM st.root_grant WHERE id=?1",
+            [grant],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(grant_state, "revoked");
+    assert_eq!(
+        scalar("SELECT count(*) FROM main.scan_run WHERE root_id=?1 AND state='running'"),
+        1
+    );
+    assert_eq!(
+        scalar("SELECT count(*) FROM main.root WHERE id=?1 AND active_run IS NOT NULL"),
+        1
+    );
+    inner.scan.gate.release();
+    let done = settle(svc, &job);
+    assert!(
+        matches!(
+            done.get("state").and_then(|v| v.as_str()),
+            Some("cancelled" | "failed")
+        ),
+        "{done:?}"
+    );
+    assert_ne!(
+        done.get("coverage").and_then(|v| v.as_str()),
+        Some("complete"),
+        "{done:?}"
+    );
+    assert_eq!(
+        scalar("SELECT count(*) FROM main.scan_run WHERE root_id=?1 AND state='completed'"),
+        completed,
+        "a refused EndRun must not publish a completed run"
+    );
+    assert_eq!(
+        scalar("SELECT generation FROM main.root WHERE id=?1"),
+        generation,
+        "a refused EndRun must not publish a sweep"
+    );
+}
+
 /// Independent walk: (files, dirs below the root, logical bytes); reparse points are neither
 /// followed nor counted, as the scan's exclusion rule says.
 #[cfg(windows)]
@@ -3930,6 +4083,7 @@ fn scan_start_publishes_a_lab_tree_matching_an_independent_walk_with_live_events
     assert_eq!(slice["aggregate_state"], "consistent", "{slice:?}");
     let (roots, _) = ok("roots.list", call(svc, "roots.list", json!({})));
     assert_eq!(roots["roots"][0]["scan"]["coverage"], "complete");
+    assert_eq!(roots["roots"][0]["scan"]["last_job_id"], json!(job));
     // Events: catalogue revisions arrive before the job's terminal state, each after its commit.
     let mut seen = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -4135,6 +4289,33 @@ fn f3_watch_survives_scan_completion_and_reconciles() {
     );
 }
 
+/// #717: NTFS reports the scan's own directory listing (a last-access update) as MODIFIED, which
+/// dirtied the root and started a second, automatic scan about a second after the pressed one.
+#[cfg(windows)]
+#[test]
+fn f3_issue717_a_scan_does_not_dirty_its_own_root_through_reads() {
+    let Some(lab) = lab() else { return };
+    // The fixture's ChangeTimes must precede the scan by more than the clock-tick slack.
+    std::thread::sleep(Duration::from_millis(400));
+    settle(&lab.svc, &start(&lab.svc, &lab.root, "full"));
+    // Lazily flushed notifications arrive within about a second; the pump runs every 200 ms.
+    std::thread::sleep(Duration::from_millis(2500));
+    let (jobs, _) = ok(
+        "jobs.list",
+        call(
+            &lab.svc,
+            "jobs.list",
+            json!({"kinds": ["scan"], "limit": 50}),
+        ),
+    );
+    assert_eq!(jobs["jobs"].as_array().unwrap().len(), 1, "{jobs:?}");
+    assert!(
+        !lab.svc.inner.freshness.stale(1),
+        "tracker={}",
+        lab.svc.inner.freshness.debug(1)
+    );
+}
+
 #[cfg(windows)]
 #[test]
 fn f3_journal_wrap_dirties_scope_until_explicit_full_refresh() {
@@ -4165,6 +4346,175 @@ fn f3_journal_wrap_dirties_scope_until_explicit_full_refresh() {
         settle(&svc, &start(&svc, &root, "full"));
         f3_wait_live(&svc);
     }
+}
+
+#[cfg(windows)]
+#[test]
+fn f3_completed_partial_full_scan_is_current_without_claiming_complete_coverage() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    svc.inner.freshness.pause_pump();
+    struct Denied(std::path::PathBuf);
+    impl Drop for Denied {
+        fn drop(&mut self) {
+            assert!(std::process::Command::new("icacls")
+                .arg(&self.0)
+                .args(["/remove:d", "*S-1-1-0"])
+                .output()
+                .unwrap()
+                .status
+                .success());
+        }
+    }
+    let denied = Denied(lab.path.join("a"));
+    assert!(std::process::Command::new("icacls")
+        .arg(&denied.0)
+        .args(["/deny", "*S-1-1-0:(R)"])
+        .output()
+        .unwrap()
+        .status
+        .success());
+    assert!(std::fs::read_dir(&denied.0).is_err());
+    let job = settle(svc, &start(svc, &lab.root, "full"));
+    assert_eq!(job["state"], "completed");
+    assert_eq!(job["coverage"], "partial");
+    let page = f3_hits(svc);
+    assert_eq!(page["index_state"], "current", "{page:?}");
+    assert_eq!(page["partial"], true);
+    assert_eq!(page["roots"][0]["coverage"], "partial");
+    assert!(!page["hits"].as_array().unwrap().is_empty());
+    assert!(page["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|hit| { hit["freshness"]["state"] == "live" && hit["freshness"]["at"].is_null() }));
+    let (roots, _) = ok("roots.list", call(svc, "roots.list", json!({})));
+    assert_eq!(roots["roots"][0]["scan"]["coverage"], "partial");
+    assert_eq!(roots["roots"][0]["totals"]["complete"], false);
+}
+
+/// #774: a full scan that ran to the end around a denied folder is a finished (partial) run, not a
+/// cancelled one: roots.list and alerts see it, and the denied folder's catalogued rows survive.
+#[cfg(windows)]
+#[test]
+fn finished_partial_full_scan_is_recorded_without_reconciling_the_denied_subtree() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    assert_eq!(
+        settle(svc, &start(svc, &lab.root, "full"))["coverage"],
+        "complete"
+    );
+    struct Denied(std::path::PathBuf);
+    impl Drop for Denied {
+        fn drop(&mut self) {
+            let _ = std::process::Command::new("icacls")
+                .arg(&self.0)
+                .args(["/remove:d", "*S-1-1-0"])
+                .output();
+        }
+    }
+    let denied = Denied(lab.path.join("a"));
+    assert!(std::process::Command::new("icacls")
+        .arg(&denied.0)
+        .args(["/deny", "*S-1-1-0:(R)"])
+        .output()
+        .unwrap()
+        .status
+        .success());
+    assert!(std::fs::read_dir(&denied.0).is_err());
+    let job = settle(svc, &start(svc, &lab.root, "full"));
+    assert_eq!(job["state"], "completed");
+    assert_eq!(job["coverage"], "partial");
+    let db = svc.inner.db();
+    let (state, complete): (String, Option<bool>) = db
+        .query_row(
+            "SELECT state,json_extract(counters_json,'$.complete') FROM main.scan_run ORDER BY id DESC LIMIT 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((state.as_str(), complete), ("completed", Some(false)));
+    // The denied folder's rows from the first scan are not reconciled as absent.
+    let kept: (i64, i64) = db
+        .query_row(
+            "SELECT (SELECT count(*) FROM main.dir WHERE name IN ('a','deep') AND listing_state!='absent_pending'),
+                    (SELECT count(*) FROM main.file f JOIN main.dir d ON d.id=f.dir_id WHERE d.name IN ('a','deep'))",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(kept, (2, 4));
+    drop(db);
+    let (roots, _) = ok("roots.list", call(svc, "roots.list", json!({})));
+    let scan = &roots["roots"][0]["scan"];
+    assert_eq!(scan["coverage"], "partial");
+    assert!(!scan["finished_at"].is_null(), "{scan:?}");
+    assert!(!scan["generation"].is_null(), "{scan:?}");
+    let (alerts, _) = ok("alerts.list", call(svc, "alerts.list", json!({})));
+    let growth = alerts["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["kind"] == "fast_growth")
+        .unwrap();
+    assert_eq!(growth["coverage"], "partial", "{growth:?}");
+    assert!(
+        !growth["note"]
+            .as_str()
+            .unwrap()
+            .contains("No completed scan"),
+        "{growth:?}"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn f3_limited_full_scan_stays_stale_until_an_unlimited_pass() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    let claim = svc.inner.freshness.explicit(1);
+    let (started, _) = ok(
+        "scan.start",
+        call(
+            svc,
+            "scan.start",
+            json!({
+                "root_id": lab.root, "mode": "full", "budget": {"max_entries": 1}
+            }),
+        ),
+    );
+    let job = settle(svc, started["job"]["job_id"].as_str().unwrap());
+    assert_eq!(job["state"], "completed");
+    assert_eq!(job["coverage"], "partial");
+    assert_eq!(f3_hits(svc)["index_state"], "stale");
+    drop(claim);
+    assert_eq!(
+        settle(svc, &start(svc, &lab.root, "full"))["coverage"],
+        "complete"
+    );
+    assert_eq!(f3_wait_live(svc)["index_state"], "current");
+}
+
+#[cfg(windows)]
+#[test]
+fn f3_cancelled_full_scan_stays_stale_until_a_finished_pass() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    let claim = svc.inner.freshness.explicit(1);
+    svc.inner.scan.gate.arm();
+    let job = start(svc, &lab.root, "full");
+    svc.inner.scan.gate.wait_reached();
+    let cancelled = call(svc, "scan.cancel", json!({"job_id": job}));
+    svc.inner.scan.gate.release();
+    ok("scan.cancel", cancelled);
+    assert_eq!(settle(svc, &job)["state"], "cancelled");
+    assert_eq!(f3_hits(svc)["index_state"], "stale");
+    drop(claim);
+    assert_eq!(
+        settle(svc, &start(svc, &lab.root, "full"))["coverage"],
+        "complete"
+    );
+    assert_eq!(f3_wait_live(svc)["index_state"], "current");
 }
 
 #[cfg(windows)]
@@ -5317,12 +5667,46 @@ fn a_duplicates_job_started_past_its_deadline_reports_the_started_job() {
     );
 }
 
-/// #698: sends `req` once, holds its worker after the handler started the job and its caller
+/// #716: a completed forget keeps its receipt when the caller has already timed out.
+#[test]
+fn a_forget_started_past_its_deadline_reports_success_on_retry() {
+    let dir = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    let (root, _) = fixture(&svc, 3);
+    let root = svc.inner.root_id(root);
+    ok(
+        "roots.revoke",
+        call(
+            &svc,
+            "roots.revoke",
+            json!({"root_id": root, "purge_catalog": false}),
+        ),
+    );
+    let mut req = request("roots.forget", json!({"root_id": root}));
+    let first = past_deadline_once(&svc, &mut req, Command::RootsForget);
+    assert_eq!(err(first).code, ErrorCode::DeadlineExceeded);
+    let retry = svc.call(req.clone(), &CallContext::http());
+    let (forgotten, _) = ok("roots.forget", retry.clone());
+    assert_eq!(forgotten["root_id"], json!(root));
+    assert!(forgotten["forgotten_at"].is_string());
+    assert_eq!(svc.call(req, &CallContext::http()), retry);
+    assert_eq!(
+        svc.inner.hooks.runs.lock().unwrap()[&Command::RootsForget],
+        1
+    );
+    assert!(
+        ok("roots.list", call(&svc, "roots.list", json!({}))).0["roots"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+/// #698: sends `req` once, holds its worker after the handler finished and its caller
 /// before the wait, then runs the service clock (`Hooks::skew`) past the deadline. The caller
 /// therefore answers at its deadline and the worker finishes past it, on any host load; the
 /// generous real deadline leaves the handler's own work out of the race. The clock is reset
 /// before returning, so a retry with the same request_id waits on the real clock.
-#[cfg(windows)]
 fn past_deadline_once(
     svc: &Service,
     req: &mut RequestEnvelope,
@@ -5707,6 +6091,138 @@ fn regranting_a_renamed_root_mints_a_grant_for_its_new_path() {
         svc.inner.grant(&moved, "cli_flag", false).unwrap(),
         (root, false)
     );
+}
+
+/// Retro review (w12): an identity-unverified grant whose folder was renamed ends
+/// `identity_changed` too, once its old path no longer answers; the weak ID alone retires nothing.
+#[cfg(windows)]
+#[test]
+fn regranting_a_renamed_unverified_root_retires_the_grant_naming_the_old_path() {
+    if loomward_windows::enumerate::running_elevated() {
+        return;
+    }
+    let tmp = temp_root();
+    let folder = tmp.path().join("fat-folder");
+    std::fs::create_dir(&folder).unwrap();
+    let folder = folder.canonicalize().unwrap();
+    let svc = open(&tmp.path().join("state"), DatasetClass::Personal);
+    *svc.inner.hooks.filesystem.lock().unwrap() = Some("exFAT");
+    let (old, _) = svc.inner.grant(&folder, "cli_flag", true).unwrap();
+    let moved = tmp.path().join("fat-folder-renamed");
+    std::fs::rename(&folder, &moved).unwrap();
+    let moved = moved.canonicalize().unwrap();
+    let (root, fresh) = svc.inner.grant(&moved, "cli_flag", true).unwrap();
+    assert!(fresh && root != old);
+    let states: Vec<(String, String)> = svc
+        .inner
+        .db()
+        .prepare("SELECT identity_mode,state FROM st.root_grant ORDER BY id")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        states,
+        [
+            ("unverified".into(), "identity_changed".into()),
+            ("unverified".into(), "active".into())
+        ],
+        "one active grant per native folder"
+    );
+}
+
+/// Renames an unverified grant's folder (optionally recreating another folder at the old path),
+/// re-grants it at the new path with the probe error injected, and returns the two grants' states.
+#[cfg(windows)]
+fn regrant_renamed_unverified(
+    probe_error: Option<loomward_windows::enumerate::SourceError>,
+    replace_old: bool,
+) -> Option<(String, String)> {
+    if loomward_windows::enumerate::running_elevated() {
+        return None;
+    }
+    let tmp = temp_root();
+    let folder = tmp.path().join("fat-folder");
+    std::fs::create_dir(&folder).unwrap();
+    let folder = folder.canonicalize().unwrap();
+    let svc = open(&tmp.path().join("state"), DatasetClass::Personal);
+    *svc.inner.hooks.filesystem.lock().unwrap() = Some("exFAT");
+    svc.inner.grant(&folder, "cli_flag", true).unwrap();
+    let moved = tmp.path().join("fat-folder-renamed");
+    std::fs::rename(&folder, &moved).unwrap();
+    if replace_old {
+        std::fs::create_dir(&folder).unwrap();
+    }
+    let moved = moved.canonicalize().unwrap();
+    *svc.inner.hooks.probe_error.lock().unwrap() = probe_error;
+    svc.inner.grant(&moved, "cli_flag", true).unwrap();
+    let states: Vec<String> = svc
+        .inner
+        .db()
+        .prepare("SELECT state FROM st.root_grant ORDER BY id")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    Some((states[0].clone(), states[1].clone()))
+}
+
+/// An old path whose probe fails for any reason but "not found" proves nothing about the folder:
+/// access denied, a not-ready volume or a cancelled open must keep the healthy grant active.
+#[cfg(windows)]
+#[test]
+fn an_inconclusive_old_path_probe_never_retires_an_unverified_grant() {
+    use loomward_windows::enumerate::SourceError;
+    for error in [
+        SourceError::AccessDenied,
+        SourceError::Io(21),
+        SourceError::Io(995),
+        SourceError::Refused,
+    ] {
+        if let Some(states) = regrant_renamed_unverified(Some(error), false) {
+            assert_eq!(states, ("active".into(), "active".into()), "{error:?}");
+        }
+    }
+}
+
+/// An old path that now answers with another folder's identity is definitely not the same folder.
+#[cfg(windows)]
+#[test]
+fn an_old_path_answering_another_identity_retires_the_unverified_grant() {
+    if let Some(states) = regrant_renamed_unverified(None, true) {
+        assert_eq!(states, ("identity_changed".into(), "active".into()));
+    }
+}
+
+/// An old path that still opens the same folder (here another spelling of it) is no rename.
+#[cfg(windows)]
+#[test]
+fn an_old_path_still_answering_the_same_identity_keeps_the_unverified_grant() {
+    if loomward_windows::enumerate::running_elevated() {
+        return;
+    }
+    let tmp = temp_root();
+    let folder = tmp.path().join("fat-folder");
+    std::fs::create_dir(&folder).unwrap();
+    let folder = folder.canonicalize().unwrap();
+    let svc = open(&tmp.path().join("state"), DatasetClass::Personal);
+    *svc.inner.hooks.filesystem.lock().unwrap() = Some("exFAT");
+    svc.inner.grant(&folder, "cli_flag", true).unwrap();
+    let other_spelling = std::path::PathBuf::from(folder.to_string_lossy().to_uppercase());
+    let (_, fresh) = svc.inner.grant(&other_spelling, "cli_flag", true).unwrap();
+    assert!(fresh, "another spelling is another path");
+    let states: Vec<String> = svc
+        .inner
+        .db()
+        .prepare("SELECT state FROM st.root_grant ORDER BY id")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(states, ["active", "active"]);
 }
 
 /// #378: duplicate inspection that finds the root replaced records `identity_changed` and emits

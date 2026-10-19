@@ -1147,6 +1147,18 @@ impl Inner {
         &self,
         root: &Path,
     ) -> Result<(String, loomward_windows::enumerate::OpenedIdentity), Refusal> {
+        self.open_observation(root)
+            .map_err(|_| Refusal::IdentityUnavailable)
+    }
+    /// [`Self::root_observation`] keeping the native error, so a caller can tell "not found" from
+    /// "could not tell".
+    fn open_observation(
+        &self,
+        root: &Path,
+    ) -> Result<
+        (String, loomward_windows::enumerate::OpenedIdentity),
+        loomward_windows::enumerate::SourceError,
+    > {
         #[cfg(windows)]
         {
             use loomward_engine::scan::source::DirSource;
@@ -1156,10 +1168,7 @@ impl Inner {
                 Some(name) => source.with_filesystem(name),
                 None => source,
             };
-            let (dir, identity) = source
-                .with_identity_unverified()
-                .open_root(root)
-                .map_err(|_| Refusal::IdentityUnavailable)?;
+            let (dir, identity) = source.with_identity_unverified().open_root(root)?;
             Ok((
                 match dir.filesystem() {
                     "" => "unknown".into(),
@@ -1171,8 +1180,48 @@ impl Inner {
         #[cfg(not(windows))]
         {
             let _ = root;
-            Err(Refusal::IdentityUnavailable)
+            Err(loomward_windows::enumerate::SourceError::Unsupported)
         }
+    }
+
+    /// Whether a renamed unverified grant's old path is definitely not this folder: it is not
+    /// there (ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND or their NT statuses), or it opens with
+    /// another identity. Any other failure (access denied, not ready, cancelled) proves nothing,
+    /// so the grant stays active and a later re-grant can retire it.
+    fn old_path_is_another_folder(&self, old: &Path, identity: &(String, Vec<u8>, String)) -> bool {
+        use loomward_windows::enumerate::SourceError;
+        #[cfg(test)]
+        let injected = *self.hooks.probe_error.lock().unwrap();
+        #[cfg(not(test))]
+        let injected = None;
+        match injected.map_or_else(|| self.open_observation(old), Err) {
+            Ok((_, seen)) => Self::identity_triple(&seen).is_ok_and(|seen| seen != *identity),
+            Err(SourceError::Io(code)) => {
+                matches!(code as u32, 2 | 3 | 0xC000_000F | 0xC000_0034 | 0xC000_003A)
+            }
+            Err(_) => false,
+        }
+    }
+
+    fn identity_triple(
+        identity: &loomward_windows::enumerate::OpenedIdentity,
+    ) -> Result<(String, Vec<u8>, String), Refusal> {
+        let file_id = match identity.id {
+            Some(loomward_windows::enumerate::FileIdObs::Id128(id)) => id.to_vec(),
+            Some(loomward_windows::enumerate::FileIdObs::Id64(id)) => id.to_le_bytes().to_vec(),
+            None => return Err(Refusal::IdentityUnavailable),
+        };
+        Ok((
+            format!(
+                "vsn_{}",
+                identity.volume_serial.ok_or(Refusal::IdentityUnavailable)?
+            ),
+            file_id,
+            format!(
+                "{:032x}",
+                identity.volume_guid.ok_or(Refusal::IdentityUnavailable)?
+            ),
+        ))
     }
 
     /// Grants one already path-checked root under the session's provenance policy. A synthetic
@@ -1185,19 +1234,7 @@ impl Inner {
         confirmed_unverified: bool,
     ) -> Result<(i64, bool), Refused> {
         let (filesystem, identity) = self.root_observation(root)?;
-        let volume_key = format!(
-            "vsn_{}",
-            identity.volume_serial.ok_or(Refusal::IdentityUnavailable)?
-        );
-        let file_id = match identity.id {
-            Some(loomward_windows::enumerate::FileIdObs::Id128(id)) => id.to_vec(),
-            Some(loomward_windows::enumerate::FileIdObs::Id64(id)) => id.to_le_bytes().to_vec(),
-            None => return Err(Refusal::IdentityUnavailable.into()),
-        };
-        let volume_guid = format!(
-            "{:032x}",
-            identity.volume_guid.ok_or(Refusal::IdentityUnavailable)?
-        );
+        let (volume_key, file_id, volume_guid) = Self::identity_triple(&identity)?;
         // #219: a personal root on a volume that cannot verify identity needs the owner's
         // explicit confirmation; a synthetic lab root may list unverified freely.
         let unverified = !loomward_windows::enumerate::verifies_identity(&filesystem);
@@ -1209,8 +1246,21 @@ impl Inner {
         // and the grant still naming its old path ends identity_changed.
         let existing = db::active_grant(&conn, &volume_key, &file_id, &display_path, &volume_guid)
             .map_err(|_| Refusal::IdentityUnavailable)?;
-        let renamed = db::renamed_grants(&conn, &volume_key, &file_id, &display_path, &volume_guid)
-            .map_err(|_| Refusal::IdentityUnavailable)?;
+        // An identity-unverified ID is weak and recyclable, so its grant retires only once the old
+        // path is definitely another folder; a verified one retires on the ID alone.
+        let renamed: Vec<i64> =
+            db::renamed_grants(&conn, &volume_key, &file_id, &display_path, &volume_guid)
+                .map_err(|_| Refusal::IdentityUnavailable)?
+                .into_iter()
+                .filter(|(_, unverified, old)| {
+                    !*unverified
+                        || self.old_path_is_another_folder(
+                            Path::new(old),
+                            &(volume_key.clone(), file_id.clone(), volume_guid.clone()),
+                        )
+                })
+                .map(|(id, ..)| id)
+                .collect();
         if unverified
             && self.dataset == DatasetClass::Personal
             && !confirmed_unverified
