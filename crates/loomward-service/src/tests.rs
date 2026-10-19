@@ -7295,7 +7295,7 @@ fn a_listing_chunk_and_its_publication_share_one_transaction() {
     // The writer holds its first listing command; a waiting sink could not send the second.
     writer.publication_window().arm();
     let (sent, returned) = std::sync::mpsc::channel();
-    let pipelined = std::thread::scope(|scope| {
+    let outcome = std::thread::scope(|scope| {
         scope.spawn(|| {
             let entries = vec![entry("a.bin", 2, 0x20), entry("sub", 3, 0x10)];
             sink.consume(
@@ -7320,25 +7320,36 @@ fn a_listing_chunk_and_its_publication_share_one_transaction() {
             sent.send(()).unwrap();
         });
         let pipelined = returned.recv_timeout(Duration::from_secs(10)).is_ok();
+        // The child lookup starts while the writer still holds the publication: it must wait.
+        let (looked_up, child) = std::sync::mpsc::channel();
+        let id = &id;
+        scope.spawn(move || {
+            let name: Vec<u16> = "sub".encode_utf16().collect();
+            let found = sink.prepare_listing(id, 7, Some(ticket.dir), &name, identity(3));
+            looked_up.send(found).unwrap();
+        });
+        let early = child.recv_timeout(Duration::from_millis(200));
         writer.publication_window().release();
-        pipelined
+        let late = child.recv_timeout(Duration::from_secs(10));
+        (pipelined, early, late)
     });
+    let (pipelined, early, late) = outcome;
     assert!(pipelined, "consume waited for a receipt");
-    let name: Vec<u16> = "sub".encode_utf16().collect();
-    sink.prepare_listing(&id, 7, Some(ticket.dir), &name, identity(3))
+    assert!(
+        matches!(early, Err(std::sync::mpsc::RecvTimeoutError::Timeout)),
+        "the child lookup answered before its parent's publication committed"
+    );
+    late.expect("the child lookup finishes once the writer commits")
         .expect("the child lookup waits for its parent's publication");
     assert_eq!(writer.timings().transactions - before, 1);
     sink.finish_run(&id, 7, &RunScope::FullRoot, false).unwrap();
 }
 
-/// #148: a chunk the writer refuses after `consume` returned is still relisted: settling names its
-/// directory, and its listing published partial, never complete.
-#[test]
-fn a_deferred_refusal_settles_as_a_relist_and_never_completes() {
+/// Run 42 on a fresh root whose listing the writer will refuse after `consume` returned: each
+/// chunk is valid alone, but the publication names one entry twice.
+fn stage_deferred_refusal(svc: &Service) -> (RootId, u64) {
     use loomward_engine::scan::source::{IdBasis, ListOutcome, OpenedIdentity};
-    let tmp = temp_root();
-    let svc = open(tmp.path(), DatasetClass::Synthetic);
-    let (root, grant) = register(&svc, 7);
+    let (root, grant) = register(svc, 7);
     let dir = crate::db::active_root_dir(&svc.inner.db(), root)
         .unwrap()
         .unwrap();
@@ -7355,7 +7366,6 @@ fn a_deferred_refusal_settles_as_a_relist_and_never_completes() {
         reparse_tag: None,
     };
     let ticket = sink.prepare_listing(&id, 42, None, &[], identity).unwrap();
-    // Each chunk is valid alone; the writer refuses the publication naming one entry twice.
     for n in 1..=2 {
         let entries = vec![entry("dup.bin", n, false)];
         sink.consume(
@@ -7378,18 +7388,52 @@ fn a_deferred_refusal_settles_as_a_relist_and_never_completes() {
         },
     )
     .unwrap();
-    assert_eq!(sink.settle(&id).unwrap(), vec![ticket.dir]);
+    (id, ticket.dir)
+}
+
+/// #148: a chunk the writer refuses after `consume` returned is still relisted: settling names its
+/// directory, and its listing published partial, never complete.
+#[test]
+fn a_deferred_refusal_settles_as_a_relist_and_never_completes() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let (id, dir) = stage_deferred_refusal(&svc);
+    let sink = &svc.inner.scan;
+    assert_eq!(sink.settle(&id).unwrap(), vec![dir]);
     assert_eq!(sink.settle(&id).unwrap(), Vec::<u64>::new(), "settled once");
     let state: String = svc
         .inner
         .db()
         .query_row(
             "SELECT listing_state FROM main.bulk_dir WHERE id=?1 UNION ALL SELECT listing_state FROM main.dir WHERE id=?1 LIMIT 1",
-            [ticket.dir as i64],
+            [dir as i64],
             |r| r.get(0),
         )
         .unwrap();
     assert_ne!(state, "complete");
     sink.finish_run(&id, 42, &RunScope::FullRoot, false)
         .unwrap();
+}
+
+/// #148, invariant 4: an engine that claims completeness while a deferred refusal is still
+/// unsettled cannot end the run completed; `finish_run` settles it itself and downgrades.
+#[test]
+fn an_unsettled_deferred_refusal_cannot_end_the_run_completed() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let (id, _) = stage_deferred_refusal(&svc);
+    svc.inner
+        .scan
+        .finish_run(&id, 42, &RunScope::FullRoot, true)
+        .unwrap();
+    let state: String = svc
+        .inner
+        .db()
+        .query_row(
+            "SELECT state FROM main.scan_run ORDER BY id DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(state, "cancelled", "the run must not end completed");
 }
