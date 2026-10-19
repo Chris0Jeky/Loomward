@@ -86,8 +86,8 @@ struct Tracked {
     epoch: u64,
     stale_since: Option<i64>,
     at: i64,
-    /// Unix ns of the latest full-root scan's start (or the root's last scan): a hint for a target not
-    /// changed since then is the scan's own read (#717).
+    /// Unix ns of the latest full scan or checkpoint-drained targeted start: directory hints
+    /// older than this boundary are scan reads (#717), not unconsumed modifications.
     since: i64,
     caught_up: bool,
     full: bool,
@@ -98,8 +98,9 @@ struct Tracked {
     retry_after: Option<Instant>,
     changed: Instant,
     job: Option<loomward_protocol::JobId>,
-    started: Option<(u64, Option<Bookmark>)>,
-    completed: Option<(u64, Option<Bookmark>)>,
+    // The final bit witnesses a targeted run that consumed every pending hint without lost coverage.
+    started: Option<(u64, Option<Bookmark>, bool)>,
+    completed: Option<(u64, Option<Bookmark>, bool)>,
 }
 
 /// Retry history survives recovery so a flapping root cannot reset the hourly limit.
@@ -406,6 +407,12 @@ impl Inner {
                     root.stale_since.get_or_insert(root.at);
                     root.full = true;
                     root.auto = true;
+                    if let Some(started) = root.started.as_mut() {
+                        started.2 = false;
+                    }
+                    if root.completed.as_ref().is_some_and(|witness| witness.2) {
+                        root.completed = None;
+                    }
                 }
             }
         }
@@ -456,13 +463,41 @@ impl Inner {
             } else {
                 None
             };
+            let since = now_ns();
+            // Drain earlier notifications before moving the access-only filter's time boundary.
+            let healthy =
+                matches!(scope, RunScope::FullRoot) || self.freshness_checkpoint(row) == Some(true);
+            let pending = self.freshness.roots.lock().unwrap().get(&row).map(|r| {
+                (
+                    r.epoch,
+                    r.full || r.restart.recovering,
+                    r.paths.clone(),
+                    r.targets.clone(),
+                )
+            });
+            let targeted = match (scope, pending) {
+                (RunScope::Targeted(dirs), Some((epoch, false, paths, targets)))
+                    if healthy
+                        && !dirs.is_empty()
+                        && dirs.len() <= 1024
+                        && targets.iter().all(|dir| dirs.contains(dir))
+                        && paths.iter().all(|path| {
+                            resolve(self, row, path).is_some_and(|dir| dirs.contains(&dir))
+                        }) =>
+                {
+                    Some(epoch)
+                }
+                _ => None,
+            };
             if let Some(root) = self.freshness.roots.lock().unwrap().get_mut(&row) {
-                root.started = Some((root.epoch, bookmark));
-                if matches!(scope, RunScope::FullRoot) {
-                    root.since = now_ns();
+                root.started = Some((root.epoch, bookmark, targeted == Some(root.epoch)));
+                if matches!(scope, RunScope::FullRoot) || targeted == Some(root.epoch) {
+                    root.since = since;
                 }
                 root.completed = None;
                 root.stale_since.get_or_insert(root.at);
+                // Consumed hints need full recovery if admission or publication cannot finish.
+                root.full = true;
                 root.paths.clear();
                 root.targets.clear();
             }
@@ -489,9 +524,11 @@ impl Inner {
                     return;
                 };
                 let started = root.started.take();
-                // Coverage gaps do not make a settled traversal stale. Keep its witness even
-                // when the checkpoint times out; coverage remains the catalogue's own fact.
-                root.completed = started.filter(|_| settled && matches!(scope, RunScope::FullRoot));
+                // A full traversal retains its witness across checkpoint timeouts; targeted
+                // settlement needs uninterrupted coverage and a healthy checkpoint now.
+                root.completed = started.filter(|(_, _, targeted)| {
+                    settled && (matches!(scope, RunScope::FullRoot) || (*targeted && healthy))
+                });
             }
             if healthy {
                 self.freshness_settle(row, grant);
@@ -508,7 +545,7 @@ impl Inner {
             let Some(root) = roots.get_mut(&row) else {
                 return;
             };
-            let Some((epoch, bookmark)) = root.completed.take() else {
+            let Some((epoch, bookmark, targeted)) = root.completed.take() else {
                 return;
             };
             // A successful scan followed by newer hints is new work, not a failed retry.
@@ -521,7 +558,9 @@ impl Inner {
                 root.full = false;
                 root.auto = false;
                 root.caught_up = false;
-                Some((root.at, bookmark))
+                // Targeted freshness is not a new full-root or journal witness. Retain the
+                // last full scan's persisted bookmark so restart replay cannot skip anything.
+                (!targeted).then_some((root.at, bookmark))
             } else {
                 None
             }
@@ -896,9 +935,6 @@ pub(crate) fn refresh(inner: &Inner) {
                     }
                 }
                 root.job = None;
-                // Targeted scans deliberately leave root coverage partial. One full fallback
-                // establishes a clean baseline before claiming live/caught_up.
-                root.full = true;
             }
             if (root.restart.recovering && root.watch.as_ref().is_none_or(|w| w.failed()))
                 || !root.auto
@@ -932,6 +968,7 @@ pub(crate) fn refresh(inner: &Inner) {
                 None => full = true,
             }
         }
+        full |= targets.len() > 1024;
         // Start and record under the claim fence, so an explicit request sees every auto job.
         let claimed = inner.freshness.explicit.lock().unwrap();
         if !claimed.is_empty() {
@@ -993,10 +1030,27 @@ pub(crate) fn refresh(inner: &Inner) {
 }
 
 #[cfg(windows)]
-const RESOLVE_CHILD_SQL: &str = "SELECT id FROM main.dir WHERE parent_id=?1 AND name=?2 AND listing_state NOT IN ('absent_pending','excluded')";
+const RESOLVE_CHILD_SQL: &str =
+    "SELECT id,listing_state FROM main.dir WHERE parent_id=?1 AND name=?2
+     ORDER BY listing_state IN ('absent_pending','excluded') LIMIT 1";
 
 #[cfg(windows)]
 fn resolve(inner: &Inner, root: i64, path: &[Vec<u16>]) -> Option<u64> {
+    if path.len() >= loomward_catalog::MAX_DIRECTORY_CHAIN_LENGTH {
+        return None;
+    }
+    let names: Vec<String> = path
+        .iter()
+        .map(|name| String::from_utf16(name))
+        .collect::<Result<_, _>>()
+        .ok()?;
+    if names.iter().any(|name| {
+        name.is_empty()
+            || matches!(name.as_str(), "." | "..")
+            || name.contains(['\\', '/', ':', '\0'])
+    }) {
+        return None;
+    }
     let conn = inner.db();
     let mut dir: u64 = conn
         .query_row(
@@ -1006,13 +1060,21 @@ fn resolve(inner: &Inner, root: i64, path: &[Vec<u16>]) -> Option<u64> {
         )
         .ok()?;
     let mut lookup = conn.prepare_cached(RESOLVE_CHILD_SQL).ok()?;
-    for name in path {
-        let text = String::from_utf16(name).ok()?;
-        dir = lookup
-            .query_row(params![dir as i64, text], |r| {
-                r.get::<_, i64>(0).map(|v| v as u64)
+    for name in names {
+        match lookup
+            .query_row(params![dir as i64, name], |r| {
+                Ok((r.get::<_, i64>(0)? as u64, r.get::<_, String>(1)?))
             })
-            .ok()?;
+            .optional()
+            .ok()?
+        {
+            Some((_, state)) if matches!(state.as_str(), "absent_pending" | "excluded") => {
+                return None
+            }
+            Some((child, _)) => dir = child,
+            // Listing this ancestor recursively discovers children not yet in the catalogue.
+            None => return Some(dir),
+        }
     }
     Some(dir)
 }
@@ -1066,6 +1128,15 @@ mod tests {
                 .unwrap();
             assert_eq!(resolve(&svc.inner, root, &path), None);
         }
+        // A replacement may share a name with a retired row; prefer its current identity.
+        let replacement = {
+            let conn = svc.inner.db();
+            conn.execute("INSERT INTO main.dir(root_id,parent_id,name,id_quality,id_basis,depth,attrs,listing_state,born_run,seen_run)
+                SELECT root_id,parent_id,name,id_quality,id_basis,depth,attrs,'complete',0,0 FROM main.dir WHERE id=?1", [leaf - 1]).unwrap();
+            conn.last_insert_rowid() as u64
+        };
+        assert_eq!(resolve(&svc.inner, root, &path[..19]), Some(replacement));
+        assert_eq!(resolve(&svc.inner, root, &path), Some(replacement));
         assert_eq!(resolve(&svc.inner, root, &[vec![0xd800]]), None);
         assert_eq!(resolve(&svc.inner, i64::MAX, &[]), None);
     }

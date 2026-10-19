@@ -473,6 +473,15 @@ directory or an excluded reparse entry). Search uses the existing `index_state: 
 coverage or authorise absence reconciliation. Cancelled, limited or unsettled traversals remain stale,
 as do traversals followed by newer watcher hints or lacking a healthy watcher checkpoint.
 
+A bounded targeted refresh can also make watched hits current when every consumed hint resolves
+to a listed target, every visited listing succeeds without skipped entries, the start epoch still
+matches at publication, and watcher coverage was not lost. New-subtree hints select their nearest
+catalogued ancestor (within the existing depth and 1,024-target bounds); the engine lists new
+children recursively. Any failed condition retains the full-refresh fallback. This settles hint
+freshness only: the targeted job and catalogue retain their conservative partial root coverage,
+and the last full traversal's persisted journal witness is kept for restart replay. Targeted
+settlement never establishes complete root coverage or permits global absence reconciliation.
+
 ### F3 failed-watcher recovery (#592)
 
 A failed per-root watcher (including a failed initial open) is retried by the existing service

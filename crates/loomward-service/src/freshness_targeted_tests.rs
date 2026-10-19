@@ -1,4 +1,4 @@
-//! #782: a targeted refresh lists only its hinted directories (and the new subtrees under them),
+//! #782/#789: a targeted refresh lists its hinted directories and settles their freshness,
 //! through the same tracker -> `scan_refresh_scopes` path the freshness pump uses. Synthetic
 //! fixtures only, created outside the checkout.
 use super::*;
@@ -188,6 +188,268 @@ fn assert_matches_walk(lab: &Lab, case: &str) {
 }
 
 #[test]
+fn f3_issue789_one_file_settles_without_a_following_full_job() {
+    let Some(lab) = ready() else { return };
+    let bookmark = || -> (Option<Vec<u8>>, Option<i64>, i64) {
+        lab.svc
+            .inner
+            .db()
+            .query_row(
+                "SELECT journal_id,next_usn,at_ns FROM st.root_freshness WHERE grant_id=1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap()
+    };
+    let full_witness = bookmark();
+    std::fs::write(lab.path.join("a/2.bin"), [9u8; 21]).unwrap();
+    let (job, mode) = refresh_with(&lab.svc, &["a\\2.bin"], false);
+    assert_eq!(mode, "targeted");
+    assert_eq!(examined(&job), 4);
+    assert_eq!(job["coverage"], "partial");
+    assert_eq!(
+        lab.svc.inner.hit_freshness(1).state,
+        SearchFreshnessState::Live
+    );
+    assert_eq!(
+        bookmark(),
+        full_witness,
+        "targeted run replaced the full-root witness"
+    );
+    let page = f3_wait_live(&lab.svc);
+    assert_eq!(page["index_state"], "current");
+    assert_eq!(page["partial"], true);
+    assert_eq!(page["roots"][0]["coverage"], "partial");
+    assert!(page["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|h| h["freshness"]["state"] == "live"));
+    let runs = || -> i64 {
+        lab.svc
+            .inner
+            .db()
+            .query_row("SELECT count(*) FROM main.scan_run", [], |r| r.get(0))
+            .unwrap()
+    };
+    let before = runs();
+    lab.svc
+        .inner
+        .freshness
+        .roots
+        .lock()
+        .unwrap()
+        .get_mut(&1)
+        .unwrap()
+        .changed = Instant::now() - Duration::from_secs(1);
+    refresh(&lab.svc.inner);
+    assert_eq!(
+        runs(),
+        before,
+        "settled targeted run scheduled another scan"
+    );
+    let roots = lab.svc.inner.freshness.roots.lock().unwrap();
+    assert!(roots[&1].job.is_none());
+    assert!(!roots[&1].full, "the next hint must remain targeted");
+    drop(roots);
+    assert_eq!(
+        lab.svc.inner.hit_freshness(1).state,
+        SearchFreshnessState::Live
+    );
+    assert_matches_walk(&lab, "settled one-file change");
+    ran("issue789_one_file_settles_without_a_following_full_job");
+}
+
+#[test]
+fn f3_issue789_new_nested_subtree_targets_the_nearest_catalogued_ancestor() {
+    let Some(lab) = ready() else { return };
+    let b = dir_id(&lab, "b");
+    std::fs::create_dir_all(lab.path.join("b/new/n1/n2")).unwrap();
+    std::fs::write(lab.path.join("b/new/n1/n2/leaf.bin"), [4u8; 6]).unwrap();
+    std::fs::write(lab.path.join("b/new/top.bin"), [4u8; 7]).unwrap();
+    // The pump normally debounces for 500 ms; keep creation outside #717's access-only slack.
+    std::thread::sleep(Duration::from_millis(400));
+    // Flush the real notifications before selecting exactly the below-catalogue hint.
+    lab.svc.inner.hit_freshness(1);
+    let path: Vec<Vec<u16>> = ["b", "new", "n1", "n2"]
+        .iter()
+        .map(|part| part.encode_utf16().collect())
+        .collect();
+    assert_eq!(resolve(&lab.svc.inner, 1, &path), Some(b));
+    let (job, mode) = refresh_with(&lab.svc, &["b\\new\\n1\\n2\\leaf.bin"], false);
+    assert_eq!(mode, "targeted");
+    // Five entries under b; the native watcher may also hint the root's five entries.
+    assert!(
+        examined(&job) <= 10,
+        "only b, its new subtree and the hinted parent: {job:?}"
+    );
+    assert_eq!(job["coverage"], "partial");
+    assert_eq!(
+        lab.svc.inner.hit_freshness(1).state,
+        SearchFreshnessState::Live
+    );
+    assert_matches_walk(&lab, "new nested subtree");
+    ran("issue789_new_nested_subtree_targets_the_nearest_catalogued_ancestor");
+}
+
+#[test]
+fn f3_issue789_ancestor_resolution_preserves_depth_and_invalid_hint_bounds() {
+    let Some(lab) = ready() else { return };
+    for path in [
+        vec![vec![b'z' as u16]; loomward_catalog::MAX_DIRECTORY_CHAIN_LENGTH],
+        vec![vec![b'z' as u16], vec![0xd800]],
+        vec!["z".encode_utf16().collect(), "..".encode_utf16().collect()],
+    ] {
+        assert_eq!(resolve(&lab.svc.inner, 1, &path), None);
+    }
+    ran("issue789_ancestor_resolution_preserves_depth_and_invalid_hint_bounds");
+}
+
+/// Advance the real automatic scheduler, preserving full mode, pending hints and retry state.
+fn next_automatic(svc: &crate::Service) -> (Payload, String) {
+    let previous = svc.inner.freshness.roots.lock().unwrap()[&1].job.clone();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let job = loop {
+        svc.inner
+            .freshness
+            .roots
+            .lock()
+            .unwrap()
+            .get_mut(&1)
+            .unwrap()
+            .changed = Instant::now() - Duration::from_secs(1);
+        refresh(&svc.inner);
+        let job = svc.inner.freshness.roots.lock().unwrap()[&1].job.clone();
+        if let Some(job) = job.filter(|job| Some(job) != previous.as_ref()) {
+            break job;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no fallback: {}",
+            svc.inner.freshness.debug(1)
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let result = settle(svc, job.as_str());
+    assert_eq!(result["state"], "completed");
+    let mode = svc
+        .inner
+        .db()
+        .query_row(
+            "SELECT mode FROM main.scan_run ORDER BY id DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    (result, mode)
+}
+
+#[test]
+fn f3_issue789_overflow_during_targeted_run_requires_a_full_fallback() {
+    for change in [
+        Change::RootDirty,
+        Change::Name {
+            action: 3,
+            name: "b\\later.bin".encode_utf16().collect(),
+        },
+    ] {
+        let Some(lab) = ready() else { return };
+        let weak = Arc::downgrade(&lab.svc.inner);
+        *lab.svc.inner.hooks.before_freshness_finish.lock().unwrap() = Some(Box::new(move || {
+            weak.upgrade().unwrap().freshness.record(1, vec![change]);
+        }));
+        let (job, mode) = refresh_with(&lab.svc, &["a\\2.bin"], false);
+        assert_eq!(mode, "targeted");
+        assert_eq!(job["coverage"], "partial");
+        assert!(lab.svc.inner.freshness.stale(1));
+        let (fallback, mode) = next_automatic(&lab.svc);
+        assert_eq!(mode, "full");
+        assert_eq!(examined(&fallback), walked(&lab.path).len() as u64);
+        assert!(!lab.svc.inner.freshness.stale(1));
+        ran("issue789_overflow_during_targeted_run_requires_a_full_fallback");
+    }
+}
+
+#[test]
+fn f3_issue789_consumed_hints_and_checkpoint_loss_require_full_recovery() {
+    let Some(lab) = ready() else { return };
+    let svc = &lab.svc;
+    svc.inner.freshness.record(
+        1,
+        vec![Change::Name {
+            action: 3,
+            name: "a\\2.bin".encode_utf16().collect(),
+        }],
+    );
+    let row = db::roots(&svc.inner.db(), Some(1)).unwrap().remove(0);
+    svc.inner.freshness.ready_targeted_hint(1);
+    // The sink begins before writer admission; Busy can leave its consumed hints without a job.
+    svc.inner
+        .freshness_begin(row.grant, &RunScope::Targeted(vec![dir_id(&lab, "a")]));
+    assert!(svc.inner.freshness.roots.lock().unwrap()[&1]
+        .paths
+        .is_empty());
+    assert!(svc.inner.freshness.roots.lock().unwrap()[&1].full);
+    assert_eq!(next_automatic(svc).1, "full");
+
+    for intervening_search in [false, true] {
+        let weak = Arc::downgrade(&svc.inner);
+        *svc.inner.hooks.before_freshness_finish.lock().unwrap() = Some(Box::new(move || {
+            let inner = weak.upgrade().unwrap();
+            inner
+                .hooks
+                .fail_freshness_checkpoint
+                .store(true, Ordering::SeqCst);
+            if intervening_search {
+                assert_eq!(inner.hit_freshness(1).state, SearchFreshnessState::Stale);
+            }
+        }));
+        let (_, mode) = refresh_with(svc, &["a\\2.bin"], false);
+        assert_eq!(mode, "targeted");
+        assert!(svc.inner.freshness.stale(1));
+        assert_eq!(next_automatic(svc).1, "full");
+        assert!(!svc.inner.freshness.stale(1));
+    }
+    svc.inner
+        .freshness
+        .roots
+        .lock()
+        .unwrap()
+        .get_mut(&1)
+        .unwrap()
+        .restart
+        .recovering = true;
+    let (_, mode) = refresh_with(svc, &["a\\2.bin"], false);
+    assert_eq!(mode, "targeted");
+    assert!(
+        svc.inner.freshness.stale(1),
+        "watcher replacement is lost coverage"
+    );
+    assert_eq!(next_automatic(svc).1, "full");
+    assert!(!svc.inner.freshness.stale(1));
+    ran("issue789_consumed_hints_and_checkpoint_loss_require_full_recovery");
+}
+
+#[test]
+fn f3_issue789_failed_target_listing_requires_a_full_fallback() {
+    let Some(lab) = ready() else { return };
+    let outside = lab.path.parent().unwrap().join("outside-789");
+    std::fs::create_dir(&outside).unwrap();
+    std::fs::rename(lab.path.join("c/sub1"), outside.join("sub1")).unwrap();
+    std::thread::sleep(Duration::from_millis(400));
+    lab.svc.inner.hit_freshness(1);
+    let (job, mode) = refresh_with(&lab.svc, &["c\\sub1\\0.bin"], false);
+    assert_eq!(mode, "targeted");
+    assert_eq!(job["progress"]["failed"], 1, "{job:?}");
+    assert!(lab.svc.inner.freshness.stale(1));
+    let (_, mode) = next_automatic(&lab.svc);
+    assert_eq!(mode, "full");
+    assert_matches_walk(&lab, "failed target recovered by full fallback");
+    assert!(!lab.svc.inner.freshness.stale(1));
+    ran("issue789_failed_target_listing_requires_a_full_fallback");
+}
+
+#[test]
 fn f3_issue782_one_file_change_examines_only_its_directory() {
     let Some(lab) = ready() else {
         return;
@@ -249,9 +511,8 @@ fn f3_issue782_targeted_refresh_matches_an_independent_walk() {
         assert!(examined(&job) <= bound, "{case}: {job:?}");
         assert_matches_walk(&lab, case);
     }
-    // New subtree. The real watcher also names directories below `b` that the catalogue has never
-    // seen, and the tracker sends those unresolved hints to a full refresh; drive the targeted
-    // engine call the tracker makes for a resolved hint on `b` directly.
+    // Keep direct engine coverage for discovering new descendants; #789 above separately tests
+    // the watcher hint -> nearest catalogued ancestor -> automatic targeted path.
     std::fs::create_dir_all(p.join("b/new/n1/n2")).unwrap();
     std::fs::write(p.join("b/new/n1/n2/leaf.bin"), [4u8; 6]).unwrap();
     std::fs::write(p.join("b/new/top.bin"), [4u8; 7]).unwrap();
@@ -273,11 +534,11 @@ fn f3_issue782_coverage_loss_still_takes_the_full_fallback() {
     let (job, mode) = refresh_with(&lab.svc, &["a\\3.bin"], true);
     assert_eq!(mode, "full");
     assert_eq!(examined(&job), total, "{job:?}");
-    // An unresolved hint (no catalogue record for its directory) cannot be bounded either.
+    // A new directory now resolves to its nearest known ancestor (#789); overflow still won above.
     std::fs::create_dir_all(lab.path.join("zz").join("unknown")).unwrap();
     let (job, mode) = refresh_with(&lab.svc, &["zz\\unknown\\f.bin"], false);
-    assert_eq!(mode, "full");
-    assert_eq!(examined(&job), total + 2, "{job:?}");
+    assert_eq!(mode, "targeted");
+    assert!(examined(&job) < total, "{job:?}");
     assert_matches_walk(&lab, "full fallback");
     ran("coverage_loss_still_takes_the_full_fallback");
 }

@@ -1409,6 +1409,9 @@ pub fn run_scan<S: DirSource>(
         totals
     });
     let settled = reconciled
+        // Targeted freshness needs every visited listing, not full-root aggregate coverage.
+        && (!matches!(options.scope, RunScope::Targeted(_))
+            || (bounded && counts[1] == 0 && counts[2] == 0))
         && shared.duplicate_identity.load(Ordering::Relaxed) == 0
         && !shared.limit_hit.load(Ordering::Acquire)
         && !cancel.load(Ordering::Acquire)

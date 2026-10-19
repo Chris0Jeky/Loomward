@@ -219,6 +219,7 @@ pub trait ScanSink: Send + Sync {
     /// Finish a traversal whose observations may have coverage gaps. `settled` requires drained,
     /// published work without cancellation, limits or unresolved reconciliation; it never permits
     /// absence reconciliation, which still requires `complete`.
+    /// For targeted runs it also requires bounded traversal with no skipped or failed listings.
     fn finish_traversal(
         &self,
         root: &RootId,

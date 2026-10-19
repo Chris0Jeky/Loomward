@@ -4179,6 +4179,7 @@ pub(crate) fn f3_wait_live(svc: &Service) -> Value {
         });
         if !svc.inner.freshness.stale(1)
             && settled
+            && page["index_state"] == "current"
             && page["hits"]
                 .as_array()
                 .unwrap()
@@ -4671,6 +4672,18 @@ fn f3_completed_foreground_job_does_not_mean_background_catalogue_is_quiescent()
     let foreground = start(&lab.svc, &lab.root, "full");
     assert_eq!(settle(&lab.svc, &foreground)["coverage"], "complete");
     f3_wait_live(&lab.svc);
+    let full_runs = || -> i64 {
+        lab.svc
+            .inner
+            .db()
+            .query_row(
+                "SELECT count(*) FROM main.scan_run WHERE mode!='targeted'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    let before = full_runs();
     let phase = (Command::ScanStart, "targeted_catalogue_published");
     lab.svc.inner.hooks.closed.lock().unwrap().push(phase);
     lab.svc.inner.freshness.record(
@@ -4721,9 +4734,12 @@ fn f3_completed_foreground_job_does_not_mean_background_catalogue_is_quiescent()
         .unwrap()
         .iter()
         .all(|hit| hit["freshness"]["state"] == "stale"));
-    f3_wait_live(&lab.svc);
+    let current = f3_wait_live(&lab.svc);
+    assert_eq!(current["index_state"], "current");
+    assert_eq!(current["partial"], true);
+    assert_eq!(full_runs(), before, "settled hints started a full fallback");
     assert!(
-        lab.svc
+        !lab.svc
             .inner
             .db()
             .query_row(
@@ -4732,7 +4748,7 @@ fn f3_completed_foreground_job_does_not_mean_background_catalogue_is_quiescent()
                 |r| r.get::<_, bool>(0),
             )
             .unwrap(),
-        "freshness/idle signal preceded full-root fallback"
+        "targeted freshness must not establish complete root coverage"
     );
 }
 
