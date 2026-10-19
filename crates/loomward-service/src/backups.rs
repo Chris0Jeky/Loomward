@@ -34,8 +34,10 @@ fn out(result: Value, revs: Option<(i64, i64)>) -> Out {
 }
 
 /// Opens an owner-picked receipt for reading without following a link or hydrating a placeholder.
-/// On Windows the handle is to the link itself, so the caller's handle check refuses it. This is
-/// the same open `handlers::pin_backup` uses (OPEN_REPARSE_POINT | OPEN_NO_RECALL).
+/// On Windows the handle is to the link itself, so the caller's handle check refuses it. The
+/// Windows open carries pin_backup's no-follow flags (OPEN_REPARSE_POINT | OPEN_NO_RECALL) but not
+/// its share mode or alias checks. Other platforms have no no-follow flag here; refusal there
+/// rests on the caller's pre-open symlink_metadata check.
 pub(crate) fn open_receipt(path: &Path) -> std::io::Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
@@ -55,8 +57,9 @@ pub(crate) fn open_receipt(path: &Path) -> std::io::Result<std::fs::File> {
 /// The handle is dropped before this returns, so nothing
 /// holds the file while parsing. Returns the bytes and the file's modification time in Unix
 /// seconds (when the provider wrote it, not when Loomward read it).
-/// The file itself is opened without following a link (OPEN_REPARSE_POINT), so the handle check
-/// describes the link, not its target.
+/// On Windows the file is opened with OPEN_REPARSE_POINT (no-follow), so the handle check describes
+/// the link, not its target. Elsewhere the open does not avoid following a link: refusal of links
+/// rests on the symlink_metadata check before the open.
 /// shortcut: the pre-open path checks can race a swap of the parent directories; anchored
 /// no-follow opens of each ancestor are the next step before widening beyond owner-picked receipts.
 pub(crate) fn read_receipt(path: &Path) -> Result<(Vec<u8>, u64), Why> {
