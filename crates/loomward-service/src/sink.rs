@@ -1,8 +1,11 @@
 //! The catalogue-backed scan writer: the engine's [`ScanSink`] over `loomward-catalog`'s single
 //! writer (docs/41 section 7, errata #117).
 //!
-//! Every engine call becomes catalogue writer commands, and each one waits for its receipt, which
-//! the writer sends only after COMMIT: the engine never sees a publication confirmed early.
+//! Every engine call becomes catalogue writer commands. The writer sends a receipt only after
+//! COMMIT. A listing's chunks and publication are sent without waiting (#148), so the writer
+//! commits several listings in one transaction; their receipts are settled, in order, before
+//! anything depends on them: a child lookup, the engine's relist barrier and `EndRun`. A step
+//! refused as obsolete then names its directory for relisting, exactly as a waited refusal did.
 //! Listings always take the chunked form (`StageChunk` then `ListingDone`), never the one-shot
 //! `DirListing`, so a rejected chunk is fenced by the writer and its listing publishes partial.
 //!
@@ -30,7 +33,7 @@
 
 use crate::{db, now_ns, Inner};
 use loomward_catalog::{
-    Error as CatalogError, ListingOutcome, Observation, WriteCommand, WriteReply,
+    Error as CatalogError, ListingOutcome, Observation, Receipt, WriteCommand, WriteReply,
 };
 use loomward_engine::scan::source::{
     FileIdObs, IdBasis, IncompleteReason, ListOutcome, OpenedIdentity,
@@ -66,7 +69,21 @@ struct Root {
     last_event: Option<Instant>,
     /// #219: this run's root opened identity-unverified, so every row it publishes is flagged.
     unverified: bool,
+    /// Listing steps sent but not yet settled, in send order.
+    sent: Vec<Sent>,
+    /// Directories whose settled step was obsolete, for the engine's next relist barrier.
+    stale: Vec<u64>,
 }
+
+/// One unsettled listing step; a publication also resets its listing once committed.
+struct Sent {
+    ticket: ListingTicket,
+    publication: bool,
+    receipt: Receipt,
+}
+
+/// Unsettled steps beyond this are settled before the next is sent, bounding the receipts held.
+const MAX_SENT: usize = 256;
 
 /// The listing a directory's current ticket reserves.
 #[derive(Default)]
@@ -304,14 +321,108 @@ impl CatalogScanSink {
             dirs: HashMap::new(),
             last_event: None,
             unverified: false,
+            sent: Vec::new(),
+            stale: Vec::new(),
         });
         r.grant = grant;
         r.root_dir = root_dir;
     }
 
-    // ponytail: one command per receipt, so the writer never batches a scan's listings (the
-    // 159-directory lab test takes about 6 s here); pipeline chunk receipts and wait only at
-    // ListingDone when scan throughput matters (#148).
+    /// Send a listing step without waiting for its receipt (#148).
+    fn send(
+        &self,
+        root: &RootId,
+        ticket: ListingTicket,
+        publication: bool,
+        command: WriteCommand,
+    ) -> EngineResult<()> {
+        let full = {
+            let s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            s.roots.get(root).is_some_and(|r| r.sent.len() >= MAX_SENT)
+        };
+        if full {
+            let obsolete = self.settle_sent(root, None)?;
+            let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            s.roots
+                .get_mut(root)
+                .ok_or_else(stale)?
+                .stale
+                .extend(obsolete);
+        }
+        let inner = self
+            .inner
+            .upgrade()
+            .ok_or_else(|| listing_error(CatalogError::Closed))?;
+        let receipt = inner
+            .catalog
+            .writer()
+            .send(command)
+            .map_err(listing_error)?;
+        let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        s.roots.get_mut(root).ok_or_else(stale)?.sent.push(Sent {
+            ticket,
+            publication,
+            receipt,
+        });
+        Ok(())
+    }
+
+    /// Wait for unsettled steps in send order: all of them, or with `upto` only through that
+    /// directory's last sent publication (none when it has settled already). The writer applies
+    /// commands in order, so every earlier step has committed too. Obsolete steps return their
+    /// directories; any other refusal is the first error, after every taken receipt was read.
+    fn settle_sent(&self, root: &RootId, upto: Option<u64>) -> EngineResult<Vec<u64>> {
+        let sent: Vec<Sent> = {
+            let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            match s.roots.get_mut(root) {
+                Some(r) => {
+                    let end = match upto {
+                        None => r.sent.len(),
+                        Some(dir) => r
+                            .sent
+                            .iter()
+                            .rposition(|step| step.publication && step.ticket.dir == dir)
+                            .map_or(0, |i| i + 1),
+                    };
+                    r.sent.drain(..end).collect()
+                }
+                None => Vec::new(),
+            }
+        };
+        let (mut stale, mut first, mut published) = (Vec::new(), None, false);
+        for step in sent {
+            match step.receipt.wait() {
+                Ok(_) => {
+                    if step.publication {
+                        published = true;
+                        let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                        if let Some(listing) = s
+                            .roots
+                            .get_mut(root)
+                            .and_then(|r| Self::current(r, step.ticket).ok())
+                        {
+                            // Published: the stage is empty and its counters are spent.
+                            *listing = Listing {
+                                revision: listing.revision,
+                                ..Listing::default()
+                            };
+                        }
+                    }
+                }
+                Err(e) => match listing_error(e) {
+                    EngineError::StaleGeneration { .. } => stale.push(step.ticket.dir),
+                    e => {
+                        first.get_or_insert(e);
+                    }
+                },
+            }
+        }
+        if published {
+            self.invalidated(root, false);
+        }
+        first.map_or(Ok(stale), Err)
+    }
+
     fn call(&self, command: WriteCommand) -> loomward_catalog::Result<WriteReply> {
         let inner = self.inner.upgrade().ok_or(CatalogError::Closed)?;
         let reply = inner.catalog.writer().call(command);
@@ -487,6 +598,8 @@ impl ScanSink for CatalogScanSink {
         }
         r.run = Some((run, catalog_run));
         r.dirs.clear();
+        r.sent.clear();
+        r.stale.clear();
         Ok(())
     }
 
@@ -507,6 +620,13 @@ impl ScanSink for CatalogScanSink {
         let dir = match parent {
             None => root_dir,
             Some(parent) => {
+                // The parent's publication must have committed before its child row is read.
+                let obsolete = self.settle_sent(root, Some(parent))?;
+                let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(r) = s.roots.get_mut(root) {
+                    r.stale.extend(obsolete);
+                }
+                drop(s);
                 let id = identity
                     .id
                     .filter(|_| matches!(identity.basis, IdBasis::Listed | IdBasis::PostOpen))
@@ -612,14 +732,20 @@ impl ScanSink for CatalogScanSink {
                 if files.is_empty() && dirs.is_empty() {
                     return Ok(());
                 }
-                self.call(WriteCommand::StageChunk {
-                    run_id: catalog_run,
-                    dir_id: ticket.dir as i64,
-                    seq,
-                    files,
-                    dirs,
-                })
-                .map_err(listing_error)?;
+                self.send(
+                    root,
+                    ticket,
+                    false,
+                    WriteCommand::StageChunk {
+                        run_id: catalog_run,
+                        dir_id: ticket.dir as i64,
+                        seq,
+                        files,
+                        dirs,
+                    },
+                )?;
+                // Optimistic: a refused chunk fences the listing in the writer, which then
+                // publishes it partial, and settling names the directory for a relist.
                 let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
                 let r = Self::active(&mut s, root, run)?;
                 let listing = Self::current(r, ticket)?;
@@ -639,27 +765,19 @@ impl ScanSink for CatalogScanSink {
                     let listing = Self::current(r, ticket)?;
                     (catalog_run, listing.skipped, listing.errors)
                 };
-                self.call(WriteCommand::ListingDone {
-                    run_id: catalog_run,
-                    dir_id: ticket.dir as i64,
-                    outcome: outcome(done),
-                    skipped,
-                    errors,
-                })
-                .map_err(listing_error)?;
-                {
-                    let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
-                    let r = Self::active(&mut s, root, run)?;
-                    if let Ok(listing) = Self::current(r, ticket) {
-                        // Published: the stage is empty and its counters are spent.
-                        *listing = Listing {
-                            revision: listing.revision,
-                            ..Listing::default()
-                        };
-                    }
-                }
-                self.invalidated(root, false);
-                Ok(())
+                // Settling resets the listing and announces the publication once it commits.
+                self.send(
+                    root,
+                    ticket,
+                    true,
+                    WriteCommand::ListingDone {
+                        run_id: catalog_run,
+                        dir_id: ticket.dir as i64,
+                        outcome: outcome(done),
+                        skipped,
+                        errors,
+                    },
+                )
             }
             ScanMessage::DirFinal { run, ticket, .. } => {
                 let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -690,6 +808,10 @@ impl ScanSink for CatalogScanSink {
         scope: &RunScope,
         complete: bool,
     ) -> EngineResult<()> {
+        // EndRun queues behind every step sent; a step still unsettled or obsolete here means
+        // the engine never relisted it, so the run cannot claim completeness.
+        let settled = self.settle(root);
+        let complete = complete && settled.as_ref().is_ok_and(Vec::is_empty);
         let catalog_run = {
             let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
             let r = Self::active(&mut s, root, run)?;
@@ -738,6 +860,7 @@ impl ScanSink for CatalogScanSink {
             inner.freshness_finish(grant, scope, complete);
         }
         self.invalidated(root, true);
+        settled?;
         if std::env::var_os("LOOMWARD_SCAN_PROFILE").is_some() {
             if let Some(inner) = self.inner.upgrade() {
                 eprintln!(
@@ -748,6 +871,15 @@ impl ScanSink for CatalogScanSink {
             }
         }
         Ok(())
+    }
+
+    fn settle(&self, root: &RootId) -> EngineResult<Vec<u64>> {
+        let mut stale = self.settle_sent(root, None)?;
+        let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(r) = s.roots.get_mut(root) {
+            stale.append(&mut r.stale);
+        }
+        Ok(stale)
     }
 
     fn fence_root(&self, root: &RootId) -> EngineResult<()> {

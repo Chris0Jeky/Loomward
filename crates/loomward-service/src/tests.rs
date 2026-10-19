@@ -6223,6 +6223,8 @@ fn obsolete_listing_revisions_are_refused_and_never_complete() {
     assert_eq!(files(), vec!["stale.bin".to_string()]);
     sink.consume(&id, listing(new, &["kept.bin"])).unwrap();
     sink.consume(&id, done(new)).unwrap();
+    // Listing steps commit asynchronously (#148); settling waits for them and finds none obsolete.
+    assert_eq!(sink.settle(&id).unwrap(), Vec::<u64>::new());
     assert_eq!(files(), vec!["kept.bin".to_string()]);
     sink.finish_run(&id, 41, &RunScope::FullRoot, true).unwrap();
     assert_eq!(rows("file"), vec!["kept.bin".to_string()]);
@@ -7243,4 +7245,150 @@ fn active_grant_matches_guid_and_unverified_path_together() {
         .unwrap(),
         None
     );
+}
+
+/// #148: a listing's chunk and its publication reach the writer without waiting for each receipt,
+/// so one transaction commits both; the next child lookup waits for that commit first.
+#[cfg(windows)]
+#[test]
+fn a_listing_chunk_and_its_publication_share_one_transaction() {
+    use loomward_engine::scan::source::{FileIdObs, IdBasis, ListOutcome, OpenedIdentity};
+    use loomward_engine::scan::Entry;
+    let Some(lab) = lab() else { return };
+    let inner = &lab.svc.inner;
+    inner.freshness.pause_pump();
+    let row = inner.root_row(&lab.root).unwrap();
+    let stored = crate::db::roots(&inner.db(), Some(row)).unwrap().remove(0);
+    let id = RootId::new(&lab.root).unwrap();
+    inner.scan.bind(&id, stored.grant, stored.dir.unwrap());
+    let sink: &dyn ScanSink = &*inner.scan;
+    let identity = |id| OpenedIdentity {
+        id: Some(FileIdObs::Id64(id)),
+        basis: IdBasis::Listed,
+        volume_guid: None,
+        volume_serial: Some(42),
+        attributes: 0x10,
+        reparse_tag: None,
+    };
+    let entry = |name: &str, id, attributes| Entry {
+        name: name.encode_utf16().collect(),
+        file_id: Some(FileIdObs::Id64(id)),
+        identity_eligible: true,
+        attributes,
+        reparse_tag: None,
+        logical: 10,
+        allocated: Some(4096),
+        creation: Some(1),
+        last_write: Some(1),
+        change: Some(1),
+        last_access: Some(1),
+        excluded: false,
+        traversal_error: None,
+    };
+    sink.begin_run(&id, 7, &RunScope::FullRoot).unwrap();
+    let ticket = sink
+        .prepare_listing(&id, 7, None, &[], identity(1))
+        .unwrap();
+    let writer = inner.catalog.writer();
+    let before = writer.timings().transactions;
+    // The writer holds its first listing command; a waiting sink could not send the second.
+    writer.publication_window().arm();
+    let (sent, returned) = std::sync::mpsc::channel();
+    let pipelined = std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let entries = vec![entry("a.bin", 2, 0x20), entry("sub", 3, 0x10)];
+            sink.consume(
+                &id,
+                ScanMessage::DirListing {
+                    run: 7,
+                    ticket,
+                    entries,
+                },
+            )
+            .unwrap();
+            let outcome = ListOutcome::Complete;
+            sink.consume(
+                &id,
+                ScanMessage::ListingDone {
+                    run: 7,
+                    ticket,
+                    outcome,
+                },
+            )
+            .unwrap();
+            sent.send(()).unwrap();
+        });
+        let pipelined = returned.recv_timeout(Duration::from_secs(10)).is_ok();
+        writer.publication_window().release();
+        pipelined
+    });
+    assert!(pipelined, "consume waited for a receipt");
+    let name: Vec<u16> = "sub".encode_utf16().collect();
+    sink.prepare_listing(&id, 7, Some(ticket.dir), &name, identity(3))
+        .expect("the child lookup waits for its parent's publication");
+    assert_eq!(writer.timings().transactions - before, 1);
+    sink.finish_run(&id, 7, &RunScope::FullRoot, false).unwrap();
+}
+
+/// #148: a chunk the writer refuses after `consume` returned is still relisted: settling names its
+/// directory, and its listing published partial, never complete.
+#[test]
+fn a_deferred_refusal_settles_as_a_relist_and_never_completes() {
+    use loomward_engine::scan::source::{IdBasis, ListOutcome, OpenedIdentity};
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let (root, grant) = register(&svc, 7);
+    let dir = crate::db::active_root_dir(&svc.inner.db(), root)
+        .unwrap()
+        .unwrap();
+    let id = RootId::new(svc.inner.root_id(root)).unwrap();
+    let sink = &svc.inner.scan;
+    sink.bind(&id, grant, dir);
+    sink.begin_run(&id, 42, &RunScope::FullRoot).unwrap();
+    let identity = OpenedIdentity {
+        id: None,
+        basis: IdBasis::None,
+        volume_guid: None,
+        volume_serial: None,
+        attributes: 0x10,
+        reparse_tag: None,
+    };
+    let ticket = sink.prepare_listing(&id, 42, None, &[], identity).unwrap();
+    // Each chunk is valid alone; the writer refuses the publication naming one entry twice.
+    for n in 1..=2 {
+        let entries = vec![entry("dup.bin", n, false)];
+        sink.consume(
+            &id,
+            ScanMessage::DirListing {
+                run: 42,
+                ticket,
+                entries,
+            },
+        )
+        .unwrap();
+    }
+    let outcome = ListOutcome::Complete;
+    sink.consume(
+        &id,
+        ScanMessage::ListingDone {
+            run: 42,
+            ticket,
+            outcome,
+        },
+    )
+    .unwrap();
+    assert_eq!(sink.settle(&id).unwrap(), vec![ticket.dir]);
+    assert_eq!(sink.settle(&id).unwrap(), Vec::<u64>::new(), "settled once");
+    let state: String = svc
+        .inner
+        .db()
+        .query_row(
+            "SELECT listing_state FROM main.bulk_dir WHERE id=?1 UNION ALL SELECT listing_state FROM main.dir WHERE id=?1 LIMIT 1",
+            [ticket.dir as i64],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_ne!(state, "complete");
+    sink.finish_run(&id, 42, &RunScope::FullRoot, false)
+        .unwrap();
 }

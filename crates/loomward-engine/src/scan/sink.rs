@@ -190,6 +190,12 @@ pub trait ScanSink: Send + Sync {
     ) -> EngineResult<()>;
     /// After durable revocation commits, reject all subsequently arriving writer messages.
     fn fence_root(&self, root: &RootId) -> EngineResult<()>;
+    /// Wait until every message consumed so far is durable. Returns the directories whose
+    /// deferred step was obsolete, to relist like a `listing_revision_changed` refusal. A sink
+    /// whose `consume` waits for durability has nothing to settle.
+    fn settle(&self, _root: &RootId) -> EngineResult<Vec<u64>> {
+        Ok(Vec::new())
+    }
 }
 #[derive(Debug, Default)]
 struct MemoryState {
