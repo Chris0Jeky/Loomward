@@ -18,8 +18,8 @@ use windows_sys::{
     Wdk::{
         Foundation::OBJECT_ATTRIBUTES,
         Storage::FileSystem::{
-            NtCreateFile, FILE_OPEN, FILE_OPEN_NO_RECALL, FILE_OPEN_REPARSE_POINT,
-            FILE_SYNCHRONOUS_IO_NONALERT,
+            FileVolumeNameInformation, NtCreateFile, NtQueryInformationFile, FILE_OPEN,
+            FILE_OPEN_NO_RECALL, FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
         },
     },
     Win32::{
@@ -947,6 +947,20 @@ pub(crate) fn volume_guid(file: &File) -> Result<u128, SourceError> {
 /// The `\\?\Volume{GUID}` device path of the volume `file` lives on, NUL-terminated and without the root
 /// separator: a handle opened on it is the volume device itself, not the volume's root directory.
 pub(crate) fn volume_device(file: &File) -> Result<Vec<u16>, SourceError> {
+    match volume_device_path(file) {
+        Err(SourceError::Io(code))
+            if matches!(
+                code as u32,
+                ERROR_ARITHMETIC_OVERFLOW | ERROR_BAD_PATHNAME | ERROR_FILENAME_EXCED_RANGE
+            ) =>
+        {
+            volume_device_from_root(file)
+        }
+        result => result,
+    }
+}
+
+fn volume_device_path(file: &File) -> Result<Vec<u16>, SourceError> {
     let mut path = vec![0u16; 256];
     let n = loop {
         let n = unsafe {
@@ -978,11 +992,51 @@ pub(crate) fn volume_device(file: &File) -> Result<Vec<u16>, SourceError> {
     Ok(path)
 }
 
+fn volume_device_from_root(file: &File) -> Result<Vec<u16>, SourceError> {
+    // Query only the pinned handle's volume device: a full descendant NT name may
+    // exceed UNICODE_STRING even when its DOS spelling can still be opened.
+    // FileVolumeNameInformation is available on our Windows 10+ baseline.
+    let mut buffer = vec![0u32; 16384];
+    let mut status: IO_STATUS_BLOCK = unsafe { zeroed() };
+    let code = unsafe {
+        NtQueryInformationFile(
+            file.as_raw_handle(),
+            &mut status,
+            buffer.as_mut_ptr().cast(),
+            (buffer.len() * size_of::<u32>()) as u32,
+            FileVolumeNameInformation,
+        )
+    };
+    if code < 0 {
+        return Err(SourceError::Io(code));
+    }
+    let bytes = buffer[0] as usize;
+    if bytes == 0 || bytes % 2 != 0 || bytes > (buffer.len() - 1) * size_of::<u32>() {
+        return Err(SourceError::IdentityUnverified);
+    }
+    // FILE_VOLUME_NAME_INFORMATION has a u32 byte count followed by UTF-16.
+    let device =
+        unsafe { std::slice::from_raw_parts(buffer.as_ptr().add(1).cast::<u16>(), bytes / 2) };
+    if !device.starts_with(&r"\Device\".encode_utf16().collect::<Vec<_>>()) || device.contains(&0) {
+        return Err(SourceError::IdentityUnverified);
+    }
+    let mut path: Vec<_> = r"\\?\GLOBALROOT".encode_utf16().collect();
+    path.extend_from_slice(device);
+    path.extend([u16::from(b'\\'), 0]);
+    // Resolve the GUID from this device's root, never from a drive letter or a
+    // serial-number search (serials need not be unique across volumes).
+    volume_device_path(&open_volume_root(&path)?)
+}
+
 /// A metadata handle on the root directory of the volume `file` lives on, by volume GUID.
 fn volume_root(file: &File) -> Result<File, SourceError> {
     let mut path = volume_device(file)?;
     path.pop();
     path.extend([u16::from(b'\\'), 0]);
+    open_volume_root(&path)
+}
+
+fn open_volume_root(path: &[u16]) -> Result<File, SourceError> {
     let handle = unsafe {
         CreateFileW(
             path.as_ptr(),
@@ -1510,20 +1564,103 @@ mod cancellation_tests {
         };
         let file = open(tree.path());
         let expected = volume_device(&file).unwrap();
-        let mut path = tree.path().to_owned();
-        // The GUID prefix is longer than the DOS and NT prefixes. Keep those below
-        // the native path limit while the GUID spelling needs more than 32768 units.
-        while path.as_os_str().encode_wide().count() < 32740 {
-            let remaining = 32740 - path.as_os_str().encode_wide().count();
-            if remaining < 2 {
-                break;
+        // Measure both spellings at the actual temp base; no host prefix assumption.
+        let query = |file: &File, flags| {
+            let mut buffer = vec![0u16; 65536];
+            let n = unsafe {
+                GetFinalPathNameByHandleW(
+                    file.as_raw_handle(),
+                    buffer.as_mut_ptr(),
+                    buffer.len() as u32,
+                    flags,
+                )
+            } as usize;
+            if n == 0 {
+                return Err(unsafe { GetLastError() });
             }
-            path.push("x".repeat((remaining - 1).min(240)));
-            std::fs::create_dir(&path).unwrap();
+            assert!(n < buffer.len());
+            buffer.truncate(n);
+            Ok(buffer)
+        };
+        let guid_units = query(&file, VOLUME_NAME_GUID).unwrap().len();
+        let nt_units = query(&file, VOLUME_NAME_NT).unwrap().len();
+        let targets = [
+            32766 - guid_units,
+            32767 - guid_units,
+            32768 - guid_units,
+            32766 - nt_units,
+            32767 - nt_units,
+            32768 - nt_units,
+        ];
+        // Create synthetic children relative to handles, so fixture construction
+        // does not hit CreateDirectoryW's separate full-path limit (#770).
+        let create = |parent: &File, name: &str| {
+            use windows_sys::Wdk::Storage::FileSystem::{FILE_CREATE, FILE_DIRECTORY_FILE};
+            let mut name: Vec<_> = name.encode_utf16().collect();
+            let unicode = UNICODE_STRING {
+                Length: (name.len() * 2) as u16,
+                MaximumLength: (name.len() * 2) as u16,
+                Buffer: name.as_mut_ptr(),
+            };
+            let attributes = OBJECT_ATTRIBUTES {
+                Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
+                RootDirectory: parent.as_raw_handle(),
+                ObjectName: &unicode as *const _ as *mut _,
+                Attributes: 0,
+                SecurityDescriptor: null_mut(),
+                SecurityQualityOfService: null_mut(),
+            };
+            let mut status: IO_STATUS_BLOCK = unsafe { zeroed() };
+            let mut handle = null_mut();
+            let code = unsafe {
+                NtCreateFile(
+                    &mut handle,
+                    FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                    &attributes,
+                    &mut status,
+                    null(),
+                    0,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    FILE_CREATE,
+                    FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+                    null(),
+                    0,
+                )
+            };
+            assert!(
+                code >= 0,
+                "synthetic relative directory creation: NTSTATUS {code:#x}"
+            );
+            unsafe { File::from_raw_handle(handle) }
+        };
+        let trunk_limit = *targets.iter().min().unwrap() - 2;
+        let mut appended = 0;
+        let mut parent = file;
+        while appended + 128 <= trunk_limit {
+            parent = create(&parent, &"x".repeat(127));
+            appended += 128;
         }
-        let file = open(&path);
-        assert!(normalized_path(&file).unwrap().len() < 32768);
-        assert_eq!(volume_device(&file).unwrap(), expected);
+        for target in targets {
+            let file = create(&parent, &"z".repeat(target - appended - 1));
+            let raw_guid = query(&file, VOLUME_NAME_GUID);
+            eprintln!(
+                "NT={}, GUID={}, raw={:?}",
+                nt_units + target,
+                guid_units + target,
+                raw_guid.as_ref().map(Vec::len)
+            );
+            if nt_units + target <= 32767 {
+                assert_eq!(raw_guid.unwrap().len(), guid_units + target);
+            } else {
+                assert!(matches!(
+                    raw_guid,
+                    Err(ERROR_BAD_PATHNAME
+                        | ERROR_ARITHMETIC_OVERFLOW
+                        | ERROR_FILENAME_EXCED_RANGE)
+                ));
+            }
+            assert_eq!(volume_device(&file).unwrap(), expected);
+        }
     }
     #[test]
     fn cancelled_io_cannot_register_new_work() {
