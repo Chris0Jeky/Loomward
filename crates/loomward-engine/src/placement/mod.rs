@@ -264,11 +264,18 @@ impl Engine {
             return Err(EngineError::unavailable(Component::Placement));
         }
         let built = build_scenario(input, request, deadline)?;
+        // Retain exclusions (including the candidate projection's empty member): they
+        // explain the historical result and are part of the saved digest format since #350.
         let digest = if request.save {
+            let mut canonical_request = request.clone();
+            let mut overrides = request.overrides.to_vec();
+            overrides.sort_by(|a, b| a.group_id.as_str().cmp(b.group_id.as_str()));
+            canonical_request.overrides =
+                BoundedVec::new(overrides).expect("same bounded overrides");
             Some(
                 Digest::new(
                     format!("sha256:{:x}", Sha256::digest(serde_json::to_vec(&json!({
-                "scenario": built.scenario, "request": request, "candidates": built.candidates,
+                "scenario": built.scenario, "request": canonical_request, "candidates": built.candidates,
                 "pre_rejected": built.pre_rejected, "excluded_volumes": built.excluded_volumes,
                 "assumptions": built.assumptions
             })).expect("serializable input"))),

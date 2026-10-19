@@ -304,6 +304,27 @@ fn invalid_utf8_is_rejected_without_lossy_conversion() {
 }
 
 #[test]
+fn utf16_byte_order_marks_are_named_not_reported_as_generic_json() {
+    // Windows PowerShell 5.1 `>` redirection writes UTF-16 with a byte-order mark (#349). The
+    // refusal names that cause instead of the generic "not valid JSON".
+    let units: Vec<u16> = "[]".encode_utf16().collect();
+    let little: Vec<u8> = [0xff, 0xfe]
+        .into_iter()
+        .chain(units.iter().flat_map(|u| u.to_le_bytes()))
+        .collect();
+    let big: Vec<u8> = [0xfe, 0xff]
+        .into_iter()
+        .chain(units.iter().flat_map(|u| u.to_be_bytes()))
+        .collect();
+    for raw in [little, big] {
+        assert_eq!(
+            normalise_backup_receipt(&raw, &source()),
+            Err(ReceiptError::Utf16Bom)
+        );
+    }
+}
+
+#[test]
 fn traversal_and_windows_ambiguous_names_are_refused() {
     for path in [
         "../escape",

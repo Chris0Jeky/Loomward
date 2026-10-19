@@ -756,7 +756,7 @@ impl PlacementInput for Input<'_> {
                     stream_coverage: Default::default(),
                     unique_objects: None,
                     unique_allocated_bytes: None,
-                    multi_link_entries: Count::ZERO,
+                    multi_link_entries: None,
                 },
                 newest: row.newest,
                 unverified: row.flags & loomward_catalog::IDENTITY_UNVERIFIED != 0,

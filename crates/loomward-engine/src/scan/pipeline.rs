@@ -62,7 +62,8 @@ pub struct ScanReport {
     pub strategy: Strategy,
     /// A finite entry, depth or directory limit was reached.
     pub limit_hit: bool,
-    /// Specific limiting cause when known; generic resource caps retain `limit_hit` only.
+    /// The named cause when one applies (depth, or the directory arena); the entry budget retains
+    /// `limit_hit` only.
     pub limit_reason: Option<ScanLimitReason>,
     /// Entries in each directory's latest listing, including excluded metadata.
     pub examined: u64,
@@ -95,6 +96,23 @@ impl ScanReport {
 }
 /// `discovered` value while a sighted directory's slot is still being created.
 const PENDING: usize = usize::MAX;
+
+#[cfg(test)]
+type PublishHook = Box<dyn FnMut(&str)>;
+#[cfg(test)]
+thread_local! {
+    /// Test hook run on the scan thread where coverage is about to be published.
+    pub(super) static BEFORE_PUBLISH: std::cell::RefCell<Option<PublishHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+#[cfg(test)]
+pub(super) fn before_publish(at: &str) {
+    let taken = BEFORE_PUBLISH.with_borrow_mut(Option::take);
+    if let Some(mut hook) = taken {
+        hook(at);
+        BEFORE_PUBLISH.with_borrow_mut(|slot| *slot = slot.take().or(Some(hook)));
+    }
+}
 
 #[cfg(test)]
 #[test]
@@ -145,6 +163,7 @@ fn directory_limit_releases_pending_identity_before_parent_relist() {
         strategy: Mutex::new(Strategy::Portable),
         limit_hit: Default::default(),
         depth_limit_hit: Default::default(),
+        directory_limit_hit: Default::default(),
         excluded: vec![],
         max_dirs: 1,
         held: Default::default(),
@@ -264,6 +283,8 @@ struct Shared<'a, S: DirSource> {
     strategy: Mutex<Strategy>,
     limit_hit: AtomicBool,
     depth_limit_hit: AtomicBool,
+    /// Set only by the directory-slot cap, which names its cause.
+    directory_limit_hit: AtomicBool,
     excluded: Vec<OpenedIdentity>,
     max_dirs: usize,
     /// Child directories sighted by a listing but not yet adopted, across all workers:
@@ -297,11 +318,14 @@ impl<S: DirSource> Shared<'_, S> {
                 + held.1
                 + name_bytes
                 <= self.arena_bytes;
-        fits.then(|| {
-            held.0 += 1;
-            held.1 += name_bytes;
-            Held(&self.held, name_bytes)
-        })
+        if !fits {
+            // Refusing a sighted child is the directory arena's cap, whether by count or bytes.
+            self.directory_limit_hit.store(true, Ordering::Release);
+            return None;
+        }
+        held.0 += 1;
+        held.1 += name_bytes;
+        Some(Held(&self.held, name_bytes))
     }
     fn stopping(&self) -> bool {
         self.cancel.load(Ordering::Acquire) || self.writer_failed.load(Ordering::Acquire)
@@ -750,6 +774,7 @@ impl<S: DirSource> Shared<'_, S> {
                     self.discovered.lock().unwrap().remove(&key);
                 }
                 self.limit_hit.store(true, Ordering::Release);
+                self.directory_limit_hit.store(true, Ordering::Release);
                 return Ok(false);
             }
             let index = arena.len();
@@ -989,26 +1014,31 @@ pub fn run_scan<S: DirSource>(
             .map_err(|_| EngineError::PermissionDenied {
                 message: "root open refused".into(),
             })?;
+    // The basis is part of the identity: the same IDs under another basis no longer bind what
+    // the grant bound (a verified root reading unverified, or the reverse), docs/41 admission.
     if root.expected.is_some_and(|e| {
         e.id != identity.id
             || e.volume_serial != identity.volume_serial
             || e.volume_guid != identity.volume_guid
+            || e.basis != identity.basis
     }) {
         sink.root_identity_changed(root.root_id());
         return Err(EngineError::PermissionDenied {
             message: "root_identity_changed".into(),
         });
     }
+    // A state path that cannot be opened or carries no ID fails closed: excluding nothing would
+    // count Loomward's own state as data and still call the coverage complete.
     let excluded = match &options.excluded_path {
-        Some(path) if path.exists() => vec![
-            source
-                .open_root(path)
-                .map_err(|_| EngineError::PermissionDenied {
-                    message: "state exclusion identity unavailable".into(),
-                })?
-                .1,
-        ],
-        _ => Vec::new(),
+        Some(path) => vec![source
+            .open_root(path)
+            .ok()
+            .map(|(_, state)| state)
+            .filter(|state| state.id.is_some())
+            .ok_or_else(|| EngineError::PermissionDenied {
+                message: "state exclusion identity unavailable".into(),
+            })?],
+        None => Vec::new(),
     };
     if excluded
         .iter()
@@ -1064,6 +1094,7 @@ pub fn run_scan<S: DirSource>(
         strategy: Mutex::new(source.strategy()),
         limit_hit: AtomicBool::new(false),
         depth_limit_hit: AtomicBool::new(false),
+        directory_limit_hit: AtomicBool::new(false),
         excluded,
         max_dirs,
         held: Mutex::new((0, 0)),
@@ -1185,6 +1216,7 @@ pub fn run_scan<S: DirSource>(
                             > shared.arena_bytes
                         {
                             shared.limit_hit.store(true, Ordering::Release);
+                            shared.directory_limit_hit.store(true, Ordering::Release);
                             slot.listed = false;
                             continue;
                         }
@@ -1269,6 +1301,8 @@ pub fn run_scan<S: DirSource>(
         && worker_result.is_ok()
         && writer_result.is_ok();
     let complete = slot.complete && settled;
+    #[cfg(test)]
+    before_publish("run_scan");
     let aggregation = Instant::now();
     let finish = sink.finish_traversal(root.root_id(), run, &options.scope, complete, settled);
     aggregation_seconds += aggregation.elapsed().as_secs_f64();
@@ -1297,10 +1331,14 @@ pub fn run_scan<S: DirSource>(
         complete,
         strategy,
         limit_hit: shared.limit_hit.load(Ordering::Acquire),
-        limit_reason: shared
-            .depth_limit_hit
-            .load(Ordering::Acquire)
-            .then_some(ScanLimitReason::DepthLimit),
+        // Depth is the more specific cause when both caps were reached.
+        limit_reason: if shared.depth_limit_hit.load(Ordering::Acquire) {
+            Some(ScanLimitReason::DepthLimit)
+        } else if shared.directory_limit_hit.load(Ordering::Acquire) {
+            Some(ScanLimitReason::DirectoryLimit)
+        } else {
+            None
+        },
         examined: counts[0],
         enumeration_attempts: shared
             .attempted

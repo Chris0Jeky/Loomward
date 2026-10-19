@@ -947,21 +947,28 @@ pub(crate) fn volume_guid(file: &File) -> Result<u128, SourceError> {
 /// The `\\?\Volume{GUID}` device path of the volume `file` lives on, NUL-terminated and without the root
 /// separator: a handle opened on it is the volume device itself, not the volume's root directory.
 pub(crate) fn volume_device(file: &File) -> Result<Vec<u16>, SourceError> {
-    let mut path = vec![0u16; 32768];
-    let n = unsafe {
-        GetFinalPathNameByHandleW(
-            file.as_raw_handle(),
-            path.as_mut_ptr(),
-            path.len() as u32,
-            FILE_NAME_NORMALIZED | VOLUME_NAME_GUID,
-        )
-    } as usize;
-    if n == 0 {
-        return Err(last_error());
-    }
-    if n >= path.len() {
-        return Err(SourceError::Io(ERROR_FILENAME_EXCED_RANGE as i32));
-    }
+    let mut path = vec![0u16; 256];
+    let n = loop {
+        let n = unsafe {
+            GetFinalPathNameByHandleW(
+                file.as_raw_handle(),
+                path.as_mut_ptr(),
+                path.len() as u32,
+                FILE_NAME_NORMALIZED | VOLUME_NAME_GUID,
+            )
+        } as usize;
+        if n == 0 {
+            return Err(last_error());
+        }
+        if n < path.len() {
+            break n;
+        }
+        // A GUID spelling can exceed the native path limit by its longer prefix.
+        if n > 65536 {
+            return Err(SourceError::Io(ERROR_FILENAME_EXCED_RANGE as i32));
+        }
+        path.resize(n + 1, 0);
+    };
     // `\\?\Volume{GUID}\rest`: the device name ends at the first separator after the GUID.
     let end = (4..n)
         .find(|&i| path[i] == u16::from(b'\\'))
@@ -1486,6 +1493,38 @@ impl NativeSource {
 #[cfg(test)]
 mod cancellation_tests {
     use super::*;
+    #[test]
+    fn volume_binding_handles_guid_path_longer_than_initial_buffer() {
+        use std::{fs::OpenOptions, os::windows::fs::OpenOptionsExt};
+        if running_elevated() {
+            eprintln!("SKIP: native enumeration requires a non-elevated token");
+            return;
+        }
+        let tree = super::super::tests::canonical_tempdir();
+        let open = |path: &Path| {
+            OpenOptions::new()
+                .read(true)
+                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_NO_RECALL)
+                .open(path)
+                .unwrap()
+        };
+        let file = open(tree.path());
+        let expected = volume_device(&file).unwrap();
+        let mut path = tree.path().to_owned();
+        // The GUID prefix is longer than the DOS and NT prefixes. Keep those below
+        // the native path limit while the GUID spelling needs more than 32768 units.
+        while path.as_os_str().encode_wide().count() < 32740 {
+            let remaining = 32740 - path.as_os_str().encode_wide().count();
+            if remaining < 2 {
+                break;
+            }
+            path.push("x".repeat((remaining - 1).min(240)));
+            std::fs::create_dir(&path).unwrap();
+        }
+        let file = open(&path);
+        assert!(normalized_path(&file).unwrap().len() < 32768);
+        assert_eq!(volume_device(&file).unwrap(), expected);
+    }
     #[test]
     fn cancelled_io_cannot_register_new_work() {
         let cancel = IoCancellation::default();
