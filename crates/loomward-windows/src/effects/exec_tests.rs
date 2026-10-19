@@ -2140,6 +2140,151 @@ fn a_stuck_create_does_not_block_the_fence_or_status() {
     assert!(!lab.dest().join("top").exists(), "never published");
 }
 
+/// #738: the fence times out inside the rename step, before it can be journaled.
+#[test]
+fn a_pending_fence_during_rename_commits_annotated() {
+    use std::sync::mpsc::channel;
+    let Some(mut lab) = Lab::new() else { return };
+    tree_fixture(&lab.src());
+    let before = source_snapshot(&lab.src());
+    let op = lab.start(&["top"]);
+    let (reached, parked) = channel();
+    let (go, resume) = channel();
+    let resume = Mutex::new(resume);
+    let control = Control::new(false).with_hook(move |p, _| {
+        if p == Point::CheckedPublish {
+            reached.send(()).unwrap();
+            resume.lock().unwrap().recv().unwrap();
+        }
+        Flow::Continue
+    });
+    std::thread::scope(|s| {
+        let worker = s.spawn(|| run(&lab.store, op, &control));
+        parked.recv_timeout(Duration::from_secs(30)).unwrap();
+        let ack = fence_waiting(
+            &lab.store,
+            op,
+            &control,
+            loomward_operations::FenceCause::GrantRevoked,
+            Duration::ZERO,
+        );
+        go.send(()).unwrap();
+        assert_eq!(ack.unwrap(), Ack::PendingInFlightStep);
+        let outcome = worker.join().unwrap().unwrap();
+        assert_eq!(outcome.state, OpState::Committed, "{outcome:?}");
+        assert_eq!(outcome.refusal, Some((Refusal::GrantRevoked, None)));
+    });
+    let kinds = journal_kinds(&lab, op);
+    let fenced = kinds.iter().position(|k| k == "fenced").unwrap();
+    assert_eq!(&kinds[fenced + 1..], &["committed"]);
+    assert!(tree::compare(&c1(&lab.src().join("top")), &c1(&lab.dest().join("top"))).equal());
+    assert_eq!(source_snapshot(&lab.src()), before);
+    lab.reopen();
+    let durable = status(&lab.store, op).unwrap();
+    assert_eq!(durable.state, OpState::Committed);
+    assert_eq!(durable.refusal, Some((Refusal::GrantRevoked, None)));
+}
+
+/// A real process exit loses the pending in-memory fence, without running `finish`.
+#[test]
+fn a_process_dying_with_a_pending_fence_reopens_without_effects() {
+    const CHILD: &str = "LOOMWARD_PENDING_FENCE_CHILD";
+    if let Some(dir) = std::env::var_os(CHILD) {
+        assert!(!enumerate::running_elevated());
+        let store = std::sync::Arc::new(Mutex::new(
+            Store::open(&PathBuf::from(dir).join("state/state.db")).unwrap(),
+        ));
+        let op = store.lock().unwrap().operations().unwrap()[0];
+        let child_store = store.clone();
+        let control = Control::new(false).with_hook(move |p, control| {
+            if p == Point::CheckedPublish {
+                assert_eq!(
+                    fence_waiting(
+                        &child_store,
+                        op,
+                        control,
+                        loomward_operations::FenceCause::GrantRevoked,
+                        Duration::ZERO,
+                    )
+                    .unwrap(),
+                    Ack::PendingInFlightStep
+                );
+                std::process::exit(86);
+            }
+            Flow::Continue
+        });
+        run(&store, op, &control).unwrap();
+        panic!("child never reached the pending fence");
+    }
+    let Some(mut lab) = Lab::new() else { return };
+    tree_fixture(&lab.src());
+    let before = source_snapshot(&lab.src());
+    let op = lab.start(&["top"]);
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "effects::exec::tests::a_process_dying_with_a_pending_fence_reopens_without_effects",
+            "--exact",
+            "--nocapture",
+        ])
+        .env(CHILD, lab.tmp.path())
+        .spawn()
+        .unwrap();
+    let started = std::time::Instant::now();
+    let exit = loop {
+        if let Some(exit) = child.try_wait().unwrap() {
+            break exit;
+        }
+        if started.elapsed() > Duration::from_secs(60) {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("pending-fence child timed out");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(exit.code(), Some(86));
+    lab.reopen();
+    let dest = source_snapshot(&lab.dest());
+    assert!(!lab.dest().join("top").exists());
+    assert!(
+        !replay(&lab.store, op).unwrap().fenced,
+        "pending is not durable"
+    );
+    let control = Control::new(false);
+    let recovered = recover(&lab.store, op, &control).unwrap();
+    assert_eq!(
+        recovered.state,
+        OpState::Publishing,
+        "waiting for the owner"
+    );
+    assert_eq!(recovered.refusal, None, "no durable fence was acknowledged");
+    assert!(matches!(
+        run(&lab.store, op, &control),
+        Err(Fault::Journal(_))
+    ));
+    assert_eq!(
+        source_snapshot(&lab.dest()),
+        dest,
+        "reopen never resumes effects"
+    );
+    // Retrying the durable grant revocation fences the fresh control before any step.
+    assert_eq!(
+        fence(
+            &lab.store,
+            op,
+            &control,
+            loomward_operations::FenceCause::GrantRevoked
+        )
+        .unwrap(),
+        Ack::StoppedBeforePublish
+    );
+    assert!(matches!(control.admit(), Err(Stop::Cancel)));
+    let recovered = recover(&lab.store, op, &control).unwrap();
+    assert_eq!(recovered.state, OpState::Cancelled);
+    assert_eq!(recovered.refusal, Some((Refusal::GrantRevoked, None)));
+    assert_eq!(source_snapshot(&lab.dest()), dest);
+    assert_eq!(source_snapshot(&lab.src()), before);
+}
+
 fn journal_kinds(lab: &Lab, op: u64) -> Vec<String> {
     lab.store
         .lock()

@@ -767,6 +767,22 @@ impl Journal<'_> {
         crash::record("after", &after);
         Ok(())
     }
+
+    fn commit(&self, control: &Control) -> Result<(), Stop> {
+        #[cfg(test)]
+        crash::record("before", &Record::Committed);
+        let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+        // Serialize the pending annotation with commit so a fence cannot slip between them.
+        journal_fence_locked(&mut store, self.op, control)
+            .map_err(|e| Stop::Journal(format!("{e:?}")))?;
+        store
+            .append(self.op, self.epoch, Record::Committed)
+            .map_err(|e| Stop::Journal(format!("{e:?}")))?;
+        drop(store);
+        #[cfg(test)]
+        crash::record("after", &Record::Committed);
+        Ok(())
+    }
     fn replay(&self) -> Result<Replay, Stop> {
         replay(self.store, self.op).map_err(|e| Stop::Journal(format!("{e:?}")))
     }
@@ -1495,7 +1511,7 @@ impl Runner<'_, '_> {
         // unchanged; named streams were released for the rename and are re-hashed now; tree shape and
         // preserved metadata are rechecked (write-attributes access is not denied by a hold).
         self.recheck(true)?;
-        self.journal.log(Record::Committed)?;
+        self.journal.commit(self.control)?;
         self.holds.clear();
         self.stream_holds.clear();
         Ok(())
@@ -1698,6 +1714,10 @@ fn fence_waiting(
 /// append: no record slips between them. Returns the replay read before the append.
 fn journal_fence(store: &Mutex<Store>, op: u64, control: &Control) -> Result<Replay, Fault> {
     let mut s = store.lock().unwrap_or_else(|e| e.into_inner());
+    journal_fence_locked(&mut s, op, control)
+}
+
+fn journal_fence_locked(s: &mut Store, op: u64, control: &Control) -> Result<Replay, Fault> {
     let mut unjournaled = control
         .unjournaled
         .lock()
