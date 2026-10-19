@@ -109,6 +109,13 @@ const ms = (iso: string | null): number | null => {
   return Number.isNaN(t) ? null : t;
 };
 
+/** Headline for a scan that stopped at a cap. An absent reason is the entry budget, which names no cause. */
+function stopReason(reason: ScanProgress['limit_reason']): string {
+  if (reason === 'depth_limit') return 'Stopped at its directory depth limit';
+  if (reason === 'directory_limit') return 'Stopped at its directory limit';
+  return 'Stopped at its entry budget';
+}
+
 function countsText(p: ScanProgress | null): string {
   if (!p) return 'Counts were not reported.';
   const unread = p.failed > 0 ? `, ${formatCount(p.failed)} could not be read` : '';
@@ -138,7 +145,7 @@ export function viewOf(job: Job, nowMs: number): ScanView {
       if (job.coverage === 'complete' && !stopped && !gaps) {
         return { activity: 'completed', active: false, headline: 'Finished, complete coverage', detail: countsText(p), elapsedMs: final };
       }
-      const why = stopped ? p?.limit_reason === 'depth_limit' ? 'Stopped at its directory depth limit' : 'Stopped at its entry budget' : job.coverage === null ? 'Finished, coverage not reported' : 'Finished, partial coverage';
+      const why = stopped ? stopReason(p?.limit_reason) : job.coverage === null ? 'Finished, coverage not reported' : 'Finished, partial coverage';
       return { activity: 'partial', active: false, headline: why, detail: `${countsText(p)} Totals are lower bounds, not the whole root.`, elapsedMs: final };
     }
   }

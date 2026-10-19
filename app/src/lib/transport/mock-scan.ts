@@ -146,7 +146,7 @@ export function createScanMock(o: ScanMockOptions): ScanMock {
     const totals: SubtreeTotals | null = !last ? null : {
       files: s.files, dirs: s.dirs, logical_bytes: s.bytes.toString(), allocated_bytes: ((s.bytes * 21n) / 20n).toString(), allocation_unknown_files: 0,
       skipped: 0, failed: s.unreadable, complete: s.coverage === 'complete', stream_coverage: 'default_stream_only',
-      unique_objects: null, unique_allocated_bytes: null, multi_link_entries: 0, // the schema's Count has no null: this 0 is a placeholder, the mock has no native file IDs to count
+      unique_objects: null, unique_allocated_bytes: null, multi_link_entries: null, // the mock has no native file IDs to count
     };
     if (running) return { scan: { state: 'scanning', last_job_id: null, generation: last ? String(generation) : null, finished_at: last?.job.finished_at ?? null, coverage: 'partial' }, totals };
     if (!last) {

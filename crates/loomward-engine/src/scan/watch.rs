@@ -433,6 +433,8 @@ fn reconcile<S: DirSource>(
         }
         if state.clean() && settled {
             // finish_run owns the repair rollup and only now may finalise absence/generation.
+            #[cfg(test)]
+            super::pipeline::before_publish("reconcile");
             sink.begin_run(root.root_id(), run, &RunScope::FullRoot)?;
             sink.finish_run(root.root_id(), run, &RunScope::FullRoot, true)?;
             drop(state);
@@ -520,6 +522,28 @@ mod tests {
     use std::{collections::HashMap, path::PathBuf};
     type DirectoryRows = BTreeMap<Vec<u16>, (Option<FileIdObs>, u32, u64)>;
     type Rows = HashMap<FileIdObs, DirectoryRows>;
+    /// h2-scan finding 1 on the watched path: the window between reconcile's last cancel check
+    /// and its final publication.
+    #[test]
+    fn revocation_before_watched_publication_ends_the_job_cancelled() {
+        use super::super::tests::{revoke_at_publication, Tree};
+        revoke_at_publication("reconcile", |root, sink, cancel| {
+            reconcile(
+                &Tree,
+                root,
+                1,
+                sink,
+                Arc::new(ByteBudget::new(crate::budgets::SCAN_BYTES)),
+                cancel,
+                ScanOptions {
+                    workers: 1,
+                    ..Default::default()
+                },
+                &Mutex::new(Dirty::default()),
+                || true,
+            )
+        });
+    }
     #[test]
     fn repair_reparent_does_not_hide_an_obsolete_run_or_unrelated_ticket() {
         use super::super::tests::{root, Tree};
@@ -1477,6 +1501,7 @@ mod native_tests {
         let path = parent.join("root");
         std::fs::create_dir_all(&path).unwrap();
         std::fs::create_dir(parent.join("sibling")).unwrap();
+        std::fs::create_dir(tree.path().join("state")).unwrap();
         std::fs::write(path.join("before"), b"before").unwrap();
         let Some(root) = grant(&path) else { return };
         let engine = Engine::open(crate::EngineConfig::new(

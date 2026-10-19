@@ -168,7 +168,7 @@ fn windows_engine_fields_have_structural_truths_without_assuming_token_rights() 
     let subscription = lease(&e, None, 1000);
     let first = latest(&e);
     let system = first.system.unwrap();
-    assert!(system.cpu.logical_cpus.get() > 0);
+    assert!(system.cpu.logical_cpus.unwrap().get() > 0);
     assert!(system.memory.total_bytes.unwrap().get() > 0);
     assert!(system.memory.available_bytes.unwrap() <= system.memory.total_bytes.unwrap());
     let own = first.engine.unwrap();

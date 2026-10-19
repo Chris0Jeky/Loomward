@@ -86,7 +86,7 @@ impl FolderProvider for WindowsFolders {
 mod native {
     use super::*;
     use std::{ffi::OsString, os::windows::ffi::OsStringExt, ptr};
-    use windows_sys::Win32::{System::Com::CoTaskMemFree, UI::Shell::*};
+    use windows_sys::Win32::{Globalization::lstrlenW, System::Com::CoTaskMemFree, UI::Shell::*};
 
     pub(super) fn path(folder: Folder, default: bool) -> Result<PathBuf, String> {
         let id = match folder {
@@ -108,13 +108,13 @@ mod native {
             }
             return Err(format!("known folder provider HRESULT {result:#010x}"));
         }
-        let value = (0..32768)
-            .find(|i| unsafe { *out.add(*i) == 0 })
-            .map(|len| {
-                PathBuf::from(OsString::from_wide(unsafe {
-                    std::slice::from_raw_parts(out, len)
-                }))
-            });
+        // SHGetKnownFolderPath guarantees a NUL-terminated allocation, not a 32768-unit buffer.
+        let len = unsafe { lstrlenW(out) } as usize;
+        let value = (len < 32768).then(|| {
+            PathBuf::from(OsString::from_wide(unsafe {
+                std::slice::from_raw_parts(out, len)
+            }))
+        });
         unsafe { CoTaskMemFree(out.cast()) };
         match value {
             Some(path) if path.is_absolute() => Ok(path),
