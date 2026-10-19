@@ -11,6 +11,7 @@
 //! `cargo test -p loomward-catalog --features test-hooks --test crash_sweep` samples the row
 //! boundaries (every commit, checkpoint, VACUUM, backup and rename boundary is always swept);
 //! `LOOMWARD_CRASH_SWEEP=full` sweeps every boundary of every scenario.
+mod fault_vfs;
 use loomward_catalog::*;
 use rusqlite::Connection;
 use std::{
@@ -53,48 +54,63 @@ fn ident(name: &str, id: u8, size: u64) -> Observation {
     o.extension = name.rsplit('.').next().map(str::to_owned);
     o
 }
-fn row_id(store: &Path, sql: &str) -> i64 {
-    Connection::open(store.join("catalog.db"))
-        .unwrap()
-        .query_row(sql, [], |r| r.get(0))
-        .unwrap()
+/// A lifecycle step's failure: the writer's typed error, or one from a test-side connection.
+#[derive(Debug)]
+enum Failed {
+    Catalog(Error),
+    Sql(rusqlite::Error),
 }
-fn register(w: &Writer, name: &str, path: &str, id: u8) -> (i64, i64) {
-    match w
-        .call(WriteCommand::RegisterRoot(RootObservation {
-            volume_guid: None,
-            volume_key: "vol".into(),
-            display_name: name.into(),
-            display_path: path.into(),
-            root_file_id: Some([id; 16].to_vec()),
-            filesystem: Some("NTFS".into()),
-            origin: "fixture".into(),
-            granted_via: "fixture".into(),
-            observed_at_ns: 1,
-        }))
-        .unwrap()
-    {
+impl From<Error> for Failed {
+    fn from(e: Error) -> Self {
+        Self::Catalog(e)
+    }
+}
+impl From<rusqlite::Error> for Failed {
+    fn from(e: rusqlite::Error) -> Self {
+        Self::Sql(e)
+    }
+}
+type Step<T = ()> = std::result::Result<T, Failed>;
+
+fn row_id(store: &Path, sql: &str) -> Step<i64> {
+    Ok(Connection::open(store.join("catalog.db"))?.query_row(sql, [], |r| r.get(0))?)
+}
+fn register(w: &Writer, name: &str, path: &str, id: u8) -> Step<(i64, i64)> {
+    match w.call(WriteCommand::RegisterRoot(RootObservation {
+        volume_guid: None,
+        volume_key: "vol".into(),
+        display_name: name.into(),
+        display_path: path.into(),
+        root_file_id: Some([id; 16].to_vec()),
+        filesystem: Some("NTFS".into()),
+        origin: "fixture".into(),
+        granted_via: "fixture".into(),
+        observed_at_ns: 1,
+    }))? {
         WriteReply::Root {
             grant_id, dir_id, ..
-        } => (grant_id, dir_id),
+        } => Ok((grant_id, dir_id)),
         other => panic!("{other:?}"),
     }
 }
-fn begin(w: &Writer, grant: i64, mode: &str) -> i64 {
-    match w
-        .call(WriteCommand::BeginRun {
-            grant_id: grant,
-            mode: mode.into(),
-            strategy: "fixture".into(),
-            started_at_ns: 2,
-        })
-        .unwrap()
-    {
-        WriteReply::Run(run) => run,
+fn begin(w: &Writer, grant: i64, mode: &str) -> Step<i64> {
+    match w.call(WriteCommand::BeginRun {
+        grant_id: grant,
+        mode: mode.into(),
+        strategy: "fixture".into(),
+        started_at_ns: 2,
+    })? {
+        WriteReply::Run(run) => Ok(run),
         other => panic!("{other:?}"),
     }
 }
-fn listing(w: &Writer, run: i64, dir: i64, files: Vec<Observation>, dirs: Vec<Observation>) {
+fn listing(
+    w: &Writer,
+    run: i64,
+    dir: i64,
+    files: Vec<Observation>,
+    dirs: Vec<Observation>,
+) -> Step {
     w.call(WriteCommand::DirListing(DirListing {
         run_id: run,
         dir_id: dir,
@@ -103,35 +119,34 @@ fn listing(w: &Writer, run: i64, dir: i64, files: Vec<Observation>, dirs: Vec<Ob
         state: "complete".into(),
         skipped: 0,
         errors: 0,
-    }))
-    .unwrap();
+    }))?;
+    Ok(())
 }
 /// A listing as the service publishes it (`sink.rs`): a staged chunk, then `ListingDone`.
-fn staged(w: &Writer, run: i64, dir: i64, files: Vec<Observation>, dirs: Vec<Observation>) {
+fn staged(w: &Writer, run: i64, dir: i64, files: Vec<Observation>, dirs: Vec<Observation>) -> Step {
     w.call(WriteCommand::StageChunk {
         run_id: run,
         dir_id: dir,
         seq: 0,
         files,
         dirs,
-    })
-    .unwrap();
+    })?;
     w.call(WriteCommand::ListingDone {
         run_id: run,
         dir_id: dir,
         outcome: ListingOutcome::Complete,
         skipped: 0,
         errors: 0,
-    })
-    .unwrap();
+    })?;
+    Ok(())
 }
-fn end(w: &Writer, run: i64) {
+fn end(w: &Writer, run: i64) -> Step {
     w.call(WriteCommand::EndRun {
         run_id: run,
         state: "completed".into(),
         finished_at_ns: 3,
-    })
-    .unwrap();
+    })?;
+    Ok(())
 }
 
 struct Ack(PathBuf);
@@ -150,13 +165,13 @@ impl Ack {
 
 /// open, scan A (staged chunks, the form the service publishes: a root listing plus a sub directory),
 /// durable reference and labels, bulk first scan of B (one-shot listing), rescan of A (one file gone, one new), revoke A, forget A.
-fn lifecycle(store: &Path, ack: &Ack) {
-    let c = Catalog::open_with(store, "synthetic", &ranked()).unwrap();
+fn lifecycle(store: &Path, ack: &Ack) -> Step {
+    let c = Catalog::open_with(store, "synthetic", &ranked())?;
     ack.log("open");
     let w = c.writer();
-    let (ga, da) = register(w, A_NAME, A_PATH, 1);
+    let (ga, da) = register(w, A_NAME, A_PATH, 1)?;
     ack.log(&format!("register-a {ga} {da}"));
-    let run = begin(w, ga, "full");
+    let run = begin(w, ga, "full")?;
     staged(
         w,
         run,
@@ -166,78 +181,115 @@ fn lifecycle(store: &Path, ack: &Ack) {
             ident(A_ROOT_FILES[1], 12, 200),
         ],
         vec![ident(A_SUB, 13, 0)],
-    );
-    let sub = row_id(store, &format!("SELECT id FROM dir WHERE name='{A_SUB}'"));
-    staged(w, run, sub, vec![ident(A_DEEP, 14, 4096)], vec![]);
-    end(w, run);
+    )?;
+    let sub = row_id(store, &format!("SELECT id FROM dir WHERE name='{A_SUB}'"))?;
+    staged(w, run, sub, vec![ident(A_DEEP, 14, 4096)], vec![])?;
+    end(w, run)?;
     ack.log("end-a");
-    let deep = row_id(store, &format!("SELECT id FROM file WHERE name='{A_DEEP}'"));
-    let WriteReply::Reference(reference) = w
-        .call(WriteCommand::ObjectReference {
-            node: NodeKey::File(deep),
-            observed_at_ns: 5,
-        })
-        .unwrap()
+    let deep = row_id(store, &format!("SELECT id FROM file WHERE name='{A_DEEP}'"))?;
+    let WriteReply::Reference(reference) = w.call(WriteCommand::ObjectReference {
+        node: NodeKey::File(deep),
+        observed_at_ns: 5,
+    })?
     else {
         panic!()
     };
     ack.log(&format!("ref-a {reference}"));
     {
-        let st = Connection::open(store.join("state.db")).unwrap();
+        let st = Connection::open(store.join("state.db"))?;
         st.execute_batch(
             "INSERT INTO taxonomy VALUES(1,'[]',0);
              INSERT INTO collection(name,kind,created_at_ns) VALUES('mixed','human',0);",
-        )
-        .unwrap();
+        )?;
         st.execute(
             "INSERT INTO human_feedback(event_id,client_event_id,content_digest,object_ref_id,revision,label,retracted,taxonomy_version,features_json,recorded_at_ns) VALUES ('fe0','ce0','d',?1,1,'Documents',0,1,?2,0)",
             rusqlite::params![reference, format!("{{\"name\":\"crashfeatA {A_DEEP}\"}}")],
-        )
-        .unwrap();
-        st.execute("INSERT INTO collection_member VALUES (1,?1,0)", [reference])
-            .unwrap();
+        )?;
+        st.execute("INSERT INTO collection_member VALUES (1,?1,0)", [reference])?;
     }
     ack.log("labels-a");
-    let (gb, db) = register(w, B_NAME, r"C:\Synthetic\KeepPathBeta", 2);
+    let (gb, db) = register(w, B_NAME, r"C:\Synthetic\KeepPathBeta", 2)?;
     ack.log(&format!("register-b {gb} {db}"));
     w.set_bulk_first_scan(true);
-    let rb = begin(w, gb, "full");
+    let rb = begin(w, gb, "full")?;
     listing(
         w,
         rb,
         db,
         vec![ident(B_FILES[0], 21, 50), ident(B_FILES[1], 22, 60)],
         vec![],
-    );
-    end(w, rb);
+    )?;
+    end(w, rb)?;
     w.set_bulk_first_scan(false);
     ack.log("end-b");
-    let run = begin(w, ga, "refresh");
+    let run = begin(w, ga, "refresh")?;
     staged(
         w,
         run,
         da,
         vec![ident(A_ROOT_FILES[0], 11, 100), ident(A_NEW, 15, 300)],
         vec![ident(A_SUB, 13, 0)],
-    );
-    staged(w, run, sub, vec![ident(A_DEEP, 14, 4096)], vec![]);
-    end(w, run);
+    )?;
+    staged(w, run, sub, vec![ident(A_DEEP, 14, 4096)], vec![])?;
+    end(w, run)?;
     ack.log("end-a2");
     w.call(WriteCommand::RevokeGrant {
         grant_id: ga,
         revoked_at_ns: 10,
-    })
-    .unwrap();
+    })?;
     ack.log("revoke-a");
     w.call(WriteCommand::ForgetGrant {
         grant_id: ga,
         forgotten_at_ns: 20,
         expected_state_rev: None,
-    })
-    .unwrap();
+    })?;
     ack.log("forget-a");
     drop(c);
     ack.log("closed");
+    Ok(())
+}
+
+/// The lifecycle under the faulting VFS (`LOOMWARD_FAULT`, or counting only). After the first
+/// failed step the fault clears and the same process reopens the store and takes a write, as a
+/// service that keeps running would. `report` gets the call counts, whether the fault fired, the
+/// lifecycle's result and the probe's.
+fn fault_child(store: &Path, ack: &Ack, report: &Path) {
+    fault_vfs::install();
+    let result = lifecycle(store, ack);
+    let counts = fault_vfs::counts();
+    let fired = fault_vfs::fired();
+    fault_vfs::clear();
+    let probe = Catalog::open_with(store, "synthetic", &ranked())
+        .map_err(Failed::from)
+        .and_then(|c| register(c.writer(), "FaultProbe", r"C:\Synthetic\FaultProbe", 3));
+    let line = |r: Step<()>| match r {
+        Ok(()) => "ok".to_owned(),
+        Err(e) => format!("{} {e:?}", failure_code(&e)),
+    };
+    std::fs::write(
+        report,
+        format!(
+            "{}\n{fired}\n{}\n{}\n",
+            counts.map(|n| n.to_string()).join(" "),
+            line(result),
+            line(probe.map(drop)),
+        ),
+    )
+    .unwrap();
+}
+/// The SQLite primary code of a failure, or the writer's error variant.
+fn failure_code(e: &Failed) -> String {
+    match e {
+        Failed::Catalog(Error::Sql(e)) | Failed::Sql(e) => match e.sqlite_error_code() {
+            Some(code) => format!("{code:?}"),
+            None => "non-sqlite".into(),
+        },
+        Failed::Catalog(other) => format!("{other:?}")
+            .split(['(', ' '])
+            .next()
+            .unwrap()
+            .to_owned(),
+    }
 }
 
 /// Entry point of the killed process; a no-op in a normal test run.
@@ -250,12 +302,13 @@ fn crash_child() {
     let store = work.join("store");
     let ack = Ack(work.join("acks.log"));
     match scenario.as_str() {
-        "lifecycle" => lifecycle(&store, &ack),
+        "lifecycle" => lifecycle(&store, &ack).unwrap(),
         // A migration, or the recovery of a store a killed process left behind.
         "migrate" | "recover" => {
             drop(Catalog::open_with(&store, "synthetic", &ranked()).unwrap());
             ack.log("opened");
         }
+        "faults" => fault_child(&store, &ack, &work.join("fault.txt")),
         other => panic!("scenario {other}"),
     }
 }
@@ -267,6 +320,7 @@ struct Outcome {
     boundaries: u64,
     acks: Vec<String>,
     trace: BTreeMap<u64, String>,
+    stderr: String,
 }
 
 fn prepare(scenario: &str, work: &Path) {
@@ -276,7 +330,7 @@ fn prepare(scenario: &str, work: &Path) {
     }
     // A synthetic v4-shaped store: a seeded active grant, no v6/v7 tables or later grant evidence columns.
     let c = Catalog::open_with(&store, "synthetic", &ranked()).unwrap();
-    register(c.writer(), A_NAME, A_PATH, 1);
+    register(c.writer(), A_NAME, A_PATH, 1).unwrap();
     drop(c);
     Connection::open(store.join("state.db"))
         .unwrap()
@@ -295,6 +349,10 @@ fn prepare(scenario: &str, work: &Path) {
 
 /// Run the scenario in a fresh directory, killing it at boundary `at` (None: run to the end).
 fn run_child(scenario: &str, work: &Path, at: Option<u64>) -> Outcome {
+    run_child_with(scenario, work, at, None)
+}
+/// `fault`: the `LOOMWARD_FAULT` plan of a `faults` child (`fault_vfs`).
+fn run_child_with(scenario: &str, work: &Path, at: Option<u64>, fault: Option<&str>) -> Outcome {
     std::fs::create_dir_all(work).unwrap();
     prepare(scenario, work);
     let trace_path = work.join("trace.tsv");
@@ -303,7 +361,11 @@ fn run_child(scenario: &str, work: &Path, at: Option<u64>) -> Outcome {
         .env("LOOMWARD_CRASH_CHILD", scenario)
         .env("LOOMWARD_CRASH_WORK", work)
         .env_remove("LOOMWARD_CRASH_AT")
-        .env_remove("LOOMWARD_CRASH_TRACE");
+        .env_remove("LOOMWARD_CRASH_TRACE")
+        .env_remove("LOOMWARD_FAULT");
+    if let Some(plan) = fault {
+        cmd.env("LOOMWARD_FAULT", plan);
+    }
     match at {
         Some(n) => cmd.env("LOOMWARD_CRASH_AT", n.to_string()),
         None => cmd.env("LOOMWARD_CRASH_TRACE", &trace_path),
@@ -341,6 +403,7 @@ fn run_child(scenario: &str, work: &Path, at: Option<u64>) -> Outcome {
         boundaries,
         acks,
         trace,
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
     }
 }
 
@@ -659,15 +722,16 @@ fn verify(store: &Path, acks: &[String], scenario: &str) -> Vec<String> {
             continue;
         };
         let probe = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let run = begin(c.writer(), grant, "full");
+            let run = begin(c.writer(), grant, "full").unwrap();
             listing(
                 c.writer(),
                 run,
                 dir,
                 vec![ident("probe.zzqx", 99, 1)],
                 vec![],
-            );
-            end(c.writer(), run);
+            )
+            .unwrap();
+            end(c.writer(), run).unwrap();
         }));
         if probe.is_err() {
             bad.push(format!("write probe on grant {grant} failed"));
@@ -848,6 +912,174 @@ fn every_write_of_a_schema_migration_recovers() {
     sweep("migrate", 1);
 }
 
+// ---- I/O faults below SQLite (docs/45 row 5) ------------------------------------------------
+
+struct FaultRun {
+    counts: [u64; 4],
+    fired: bool,
+    /// `ok`, or the failure code and the error the lifecycle returned.
+    result: String,
+    /// The same process's reopen and write once the fault cleared.
+    probe: String,
+}
+fn run_fault(work: &Path, plan: Option<&str>) -> (Outcome, FaultRun) {
+    let out = run_child_with("faults", work, None, plan);
+    let text = std::fs::read_to_string(work.join("fault.txt")).unwrap();
+    let mut lines = text.lines().map(str::to_owned);
+    let counts: Vec<u64> = lines
+        .next()
+        .unwrap()
+        .split(' ')
+        .map(|n| n.parse().unwrap())
+        .collect();
+    let run = FaultRun {
+        counts: counts.try_into().unwrap(),
+        fired: lines.next().unwrap() == "true",
+        result: lines.next().unwrap(),
+        probe: lines.next().unwrap(),
+    };
+    (out, run)
+}
+/// An honest failure names what the disk did: a full disk is `SQLITE_FULL`, any other OS
+/// failure an `SQLITE_IOERR`. Never corruption, a busy store, success, or a closed writer.
+fn honest(kind: &str, code: &str) -> bool {
+    match kind {
+        "full" | "short-write" => code == "DiskFull",
+        _ => code == "SystemIoFailure",
+    }
+}
+/// Calls to fault, out of `total`: all of them in `full` mode, else `per` spread evenly.
+fn fault_targets(total: u64, per: u64) -> Vec<u64> {
+    if sweep_all() || total <= per {
+        return (1..=total).collect();
+    }
+    let mut out: Vec<u64> = (0..per).map(|i| 1 + i * (total - 1) / (per - 1)).collect();
+    out.dedup();
+    out
+}
+
+/// Every fault kind at sampled calls of its class (every call in `full` mode): each must end the
+/// lifecycle with an honest typed error or be absorbed with the clean run's store, lose no
+/// acknowledged step, leave a store that recovers to every crash-sweep invariant, and let the
+/// same process write again once the fault clears. Returns the faults that break that.
+fn fault_sweep(kinds: &[(&'static str, fault_vfs::Class)], per: u64) -> Vec<String> {
+    let root = tempfile::tempdir().unwrap();
+    let clean_work = root.path().join("clean");
+    let (base, clean) = run_fault(&clean_work, None);
+    assert!(
+        !clean.fired && clean.result == "ok" && clean.probe == "ok",
+        "clean run: {} / {}",
+        clean.result,
+        clean.probe
+    );
+    let clean_store = clean_work.join("store");
+    let clean_rows = snapshot(&clean_store);
+    let bad = verify(&clean_store, &base.acks, "lifecycle");
+    assert!(bad.is_empty(), "the clean run violates {bad:#?}");
+    let mut tasks = Vec::new();
+    for &(kind, class) in kinds {
+        let total = clean.counts[class as usize];
+        assert!(total > 0, "the lifecycle makes no {class:?} call");
+        tasks.extend(fault_targets(total, per).into_iter().map(|n| (kind, n)));
+    }
+    eprintln!(
+        "fault sweep: {:?} calls (read, write, sync, truncate), {} faults",
+        clean.counts,
+        tasks.len()
+    );
+    let failures = Mutex::new(Vec::<String>::new());
+    let matrix = Mutex::new(BTreeMap::<(&str, String), u64>::new());
+    parallel(tasks, |(kind, n)| {
+        let work = root.path().join(format!("{kind}-{n}"));
+        let store = work.join("store");
+        let (out, run) = run_fault(&work, Some(&format!("{kind}:{n}")));
+        let mut bad = Vec::new();
+        if !run.fired {
+            bad.push("the fault was never injected".to_owned());
+        }
+        if out.stderr.contains("panicked") {
+            bad.push(format!("a thread panicked:\n{}", out.stderr));
+        }
+        let outcome = if run.result == "ok" {
+            // Absorbed by SQLite or the writer: then nothing may differ from the clean run.
+            if snapshot(&store) != clean_rows {
+                bad.push(format!(
+                    "succeeded with a store unlike the clean run's: {:?} vs {clean_rows:?}",
+                    snapshot(&store)
+                ));
+            }
+            "absorbed".to_owned()
+        } else {
+            let code = run.result.split(' ').next().unwrap_or_default().to_owned();
+            if !honest(kind, &code) {
+                bad.push(format!("not an honest error: {}", run.result));
+            }
+            format!("error {code}")
+        };
+        if run.probe != "ok" {
+            bad.push(format!("no write after the fault cleared: {}", run.probe));
+        }
+        bad.extend(verify(&store, &out.acks, "lifecycle"));
+        *matrix.lock().unwrap().entry((kind, outcome)).or_default() += 1;
+        if !bad.is_empty() {
+            failures.lock().unwrap().push(format!(
+                "{kind}:{n} (last ack {:?}; {}): {bad:#?}
+  repro: cargo test -p loomward-catalog --features test-hooks --test crash_sweep -- fault_at {kind}:{n}",
+                out.acks.last(),
+                run.result
+            ));
+        }
+        let _ = std::fs::remove_dir_all(&work);
+    });
+    for ((kind, outcome), count) in matrix.into_inner().unwrap() {
+        eprintln!("fault matrix: {kind:<12} {outcome:<24} {count}");
+    }
+    let mut failures = failures.into_inner().unwrap();
+    failures.sort();
+    failures
+}
+
+#[test]
+fn every_io_fault_below_sqlite_fails_honestly_and_recovers() {
+    let failures = fault_sweep(&fault_vfs::KINDS, 12);
+    assert!(
+        failures.is_empty(),
+        "{} injected faults break the store\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+/// The fault checker must be able to fail: a disk that acknowledges writes it never makes loses
+/// acknowledged steps, and the sweep has to say so.
+#[test]
+fn a_disk_that_drops_writes_fails_the_fault_sweep() {
+    let failures = fault_sweep(&[fault_vfs::LOST_WRITE], 12);
+    eprintln!("lost-write: {} of 12 caught", failures.len());
+    assert!(!failures.is_empty(), "a lying disk passed the fault sweep");
+}
+
+/// One fault, for reproducing a failure: `-- fault_at full:40`.
+#[test]
+fn fault_at() {
+    let Some(plan) = std::env::args().next_back().filter(|a| {
+        a.split_once(':').is_some_and(|(kind, n)| {
+            fault_vfs::KINDS.iter().any(|(k, _)| *k == kind) && n.parse::<u64>().is_ok()
+        })
+    }) else {
+        return;
+    };
+    let root = tempfile::tempdir().unwrap();
+    let work = root.path().join("one");
+    let (out, run) = run_fault(&work, Some(&plan));
+    eprintln!(
+        "{plan}: fired={} result={} probe={}\n{}",
+        run.fired, run.result, run.probe, out.stderr
+    );
+    let bad = verify(&work.join("store"), &out.acks, "lifecycle");
+    assert!(bad.is_empty(), "{plan}: {bad:#?}");
+}
+
 /// A single boundary, for reproducing a failure: `-- lifecycle_at 123`.
 #[test]
 fn lifecycle_at() {
@@ -913,8 +1145,8 @@ fn forget_leaves_no_staged_listing_names() {
     let dir = tempfile::tempdir().unwrap();
     let c = Catalog::open_with(dir.path(), "synthetic", &ranked()).unwrap();
     let w = c.writer();
-    let (grant, root) = register(w, A_NAME, A_PATH, 1);
-    let run = begin(w, grant, "full");
+    let (grant, root) = register(w, A_NAME, A_PATH, 1).unwrap();
+    let run = begin(w, grant, "full").unwrap();
     w.call(WriteCommand::StageChunk {
         run_id: run,
         dir_id: root,
@@ -931,7 +1163,7 @@ fn forget_leaves_no_staged_listing_names() {
         errors: 0,
     })
     .unwrap();
-    end(w, run);
+    end(w, run).unwrap();
     w.call(WriteCommand::RevokeGrant {
         grant_id: grant,
         revoked_at_ns: 10,
