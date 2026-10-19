@@ -35,6 +35,11 @@ enum Reach {
     Unresolved,
 }
 
+/// NTFS's root directory is MFT record 5 (any sequence number), the only self-parented directory.
+fn is_volume_root(id: &[u8]) -> bool {
+    id.len() == 16 && id[..6] == [5, 0, 0, 0, 0, 0] && id[8..].iter().all(|b| *b == 0)
+}
+
 fn canonical(id: &[u8]) -> Vec<u8> {
     let mut id = id.to_vec();
     if id.len() == 8 {
@@ -167,6 +172,9 @@ impl<'a> Volume<'a> {
             let Some(parent) = (self.parent_of)(&node).map(|p| canonical(&p)) else {
                 return false;
             };
+            if parent == node && !is_volume_root(&node) {
+                return false; // A self-parented object that is not the root proves nothing.
+            }
             let top = parent == node;
             chain.push(node);
             if top {
@@ -369,7 +377,15 @@ mod tests {
     fn unresolved_parent_is_outside_only_on_an_unmoved_current_chain_that_misses_the_root() {
         // Volume: 5 is the self-parented volume root; 1 (catalogue row 1) is the granted root.
         // 30 -> 20 -> 5 lies outside; 40 -> 1 lies inside under an unidentifiable directory.
-        let parents = BTreeMap::from([(5u64, 5u64), (20, 5), (30, 20), (40, 1), (1, 20)]);
+        let parents = BTreeMap::from([
+            (5u64, 5u64),
+            (20, 5),
+            (30, 20),
+            (40, 1),
+            (1, 20),
+            (50, 50),
+            (60, 50),
+        ]);
         let run = |records: &[Record], gap: bool, root: Option<u64>| {
             let conn = super::super::tests::catalogue(4);
             let mut opens = 0;
@@ -410,6 +426,11 @@ mod tests {
             run(&[record(99, 41, false)], true, Some(1)).0,
             None,
             "unopenable"
+        );
+        assert_eq!(
+            run(&[record(99, 60, false)], true, Some(1)).0,
+            None,
+            "a self-parented non-root object is not the volume root"
         );
         let moved = [record(99, 30, false), record(20, 5, true)];
         assert_eq!(
