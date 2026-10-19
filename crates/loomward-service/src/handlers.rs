@@ -1464,7 +1464,25 @@ impl Inner {
                 .entry(hit.root_id)
                 .or_insert_with(|| self.hit_freshness(hit.root_id));
         }
-        let stale_scope = page.roots.iter().any(|r| self.freshness.stale(r.root_id));
+        let mut stale_roots = std::collections::BTreeSet::new();
+        for r in &page.roots {
+            if r.scan_state == "never_scanned" || !self.freshness.stale(r.root_id) {
+                continue;
+            }
+            // Before the first publication there is no old index for the watch to mark stale.
+            if r.scan_state == "scanning" {
+                let indexed: bool = self.db().query_row(
+                    "SELECT EXISTS(SELECT 1 FROM main.scan_run WHERE root_id=?1 AND state='completed')",
+                    [r.root_id],
+                    |row| row.get(0),
+                ).map_err(sql_error)?;
+                if !indexed {
+                    continue;
+                }
+            }
+            stale_roots.insert(r.root_id);
+        }
+        let stale_scope = !stale_roots.is_empty();
         let hits = page
             .hits
             .iter()
@@ -1486,8 +1504,8 @@ impl Inner {
             .map(|r| {
                 json!({
                     "root_id": self.root_id(r.root_id),
-                    "scan_state": if self.freshness.stale(r.root_id) { "stale" } else if r.scan_state == "repairing" { "partial" } else { r.scan_state.as_str() },
-                    "coverage": if self.freshness.stale(r.root_id) { "stale" } else { r.coverage.as_str() },
+                    "scan_state": if stale_roots.contains(&r.root_id) { "stale" } else if r.scan_state == "repairing" { "partial" } else { r.scan_state.as_str() },
+                    "coverage": if stale_roots.contains(&r.root_id) { "stale" } else { r.coverage.as_str() },
                 })
             })
             .collect();

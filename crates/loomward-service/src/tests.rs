@@ -4119,6 +4119,84 @@ fn scan_start_publishes_a_lab_tree_matching_an_independent_walk_with_live_events
 }
 
 #[cfg(windows)]
+fn search_freshness_page(lab: &Lab) -> Value {
+    let (page, _) = ok(
+        "search.query",
+        call(
+            &lab.svc,
+            "search.query",
+            json!({"root_id":lab.root,"text":"bin","extension":null,"min_bytes":null,"max_bytes":null,"modified_after":null,"modified_before":null,"kind":"file","limit":100,"cursor":null}),
+        ),
+    );
+    Value::Object(page)
+}
+
+#[cfg(windows)]
+#[test]
+fn search_freshness_preserves_never_scanned_coverage() {
+    let Some(lab) = lab() else { return };
+    lab.svc.inner.freshness.pause_pump();
+    let page = search_freshness_page(&lab);
+    assert_eq!(page["roots"][0]["scan_state"], "never_scanned", "{page:?}");
+    assert_eq!(page["roots"][0]["coverage"], "unscanned", "{page:?}");
+    assert_eq!(page["index_state"], "current", "{page:?}");
+    assert_eq!(page["partial"], true);
+}
+
+#[cfg(windows)]
+#[test]
+fn search_freshness_first_scan_builds_then_becomes_current() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    svc.inner.freshness.pause_pump();
+    svc.inner.scan.gate.arm();
+    let job = start(svc, &lab.root, "full");
+    svc.inner.scan.gate.wait_reached();
+    let during = search_freshness_page(&lab);
+    // Always release the writer before asserting, including on the unfixed implementation.
+    svc.inner.scan.gate.release();
+    assert_eq!(settle(svc, &job)["state"], "completed");
+    let after = search_freshness_page(&lab);
+    assert_eq!(during["index_state"], "building", "{during:?}");
+    assert_eq!(during["roots"][0]["scan_state"], "scanning");
+    assert_eq!(during["roots"][0]["coverage"], "partial");
+    assert_eq!(during["partial"], true);
+    assert_eq!(after["index_state"], "current", "{after:?}");
+    assert_eq!(after["roots"][0]["scan_state"], "complete");
+    assert_eq!(after["roots"][0]["coverage"], "complete");
+    assert_eq!(after["partial"], false);
+}
+
+#[cfg(windows)]
+#[test]
+fn search_freshness_rescan_keeps_existing_index_stale() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    settle(svc, &start(svc, &lab.root, "full"));
+    f3_wait_live(svc);
+    svc.inner.freshness.pause_pump();
+    svc.inner
+        .freshness
+        .record(1, vec![loomward_windows::watch::Change::RootDirty]);
+    let before = search_freshness_page(&lab);
+    svc.inner.scan.gate.arm();
+    let job = start(svc, &lab.root, "full");
+    svc.inner.scan.gate.wait_reached();
+    let during = search_freshness_page(&lab);
+    svc.inner.scan.gate.release();
+    assert_eq!(settle(svc, &job)["state"], "completed");
+    let after = search_freshness_page(&lab);
+    for page in [&before, &during] {
+        assert_eq!(page["index_state"], "stale", "{page:?}");
+        assert_eq!(page["roots"][0]["scan_state"], "stale");
+        assert_eq!(page["roots"][0]["coverage"], "stale");
+        assert_eq!(page["partial"], true);
+    }
+    assert_eq!(after["index_state"], "current", "{after:?}");
+    assert_eq!(after["partial"], false);
+}
+
+#[cfg(windows)]
 #[test]
 fn f3_search_reports_freshness_without_enabling_federated_search() {
     let Some(lab) = lab() else { return };
