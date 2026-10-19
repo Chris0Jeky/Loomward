@@ -143,8 +143,54 @@ reopen, the remaining roots are written, and the closed and reopened store equal
 successful writes (every table row for row with its rowid, and the public `Reader` children pages).
 The test lives in the writer's test module rather than `crash_sweep.rs`.
 
-**Gap.** No read-error, access-denied-mid-scan or short-write injection below SQLite. A disk that fills below SQLite
-(an OS write failure, not the page limit) is not exercised; the page limit drives only SQLite's own `SQLITE_FULL`.
+I/O faults below SQLite (2026-10-19): `crates/loomward-catalog/tests/fault_vfs/mod.rs` is a test-only VFS that wraps
+the platform one (`win32`) inside a sweep child and fails the Nth read, write, fsync or truncate of the process with
+the code `os_win.c` returns for the Win32 failure: `read` (a failed ReadFile, `SQLITE_IOERR_READ`), `short-read`
+(`ERROR_HANDLE_EOF` mid-buffer: half the bytes, the rest zeroed, `SQLITE_IOERR_SHORT_READ`), `write`
+(`SQLITE_IOERR_WRITE`), `full` (`ERROR_DISK_FULL`: `SQLITE_FULL`, nothing written, every later write fails until the
+space is freed), `short-write` (the disk fills inside one WriteFile: half the bytes land, then `SQLITE_FULL`, sticky
+like `full`), `sync` (`SQLITE_IOERR_FSYNC`) and `truncate` (`SQLITE_IOERR_TRUNCATE`). The child drives the crash
+sweep's own lifecycle (scan through staged chunks, durable reference and labels, bulk first scan, rescan, revoke,
+forget) through the real writer; `every_io_fault_below_sqlite_fails_honestly_and_recovers` in `tests/crash_sweep.rs`
+enumerates the calls in a clean run (356 reads, 1,172 writes, 47 fsyncs, 12 truncates) and injects each kind at 12
+evenly spread calls of its class, every call with `LOOMWARD_CRASH_SWEEP=full`. Each fault must: fire (an unreached
+fault fails); end the lifecycle with an honest typed error (`SQLITE_FULL` for the full-disk kinds, `SQLITE_IOERR` for
+the others; never corruption, busy, `Closed` or success), or be absorbed with a store row-for-row-count equal to the
+clean run's; leave no panicking thread; let the same process reopen the store and take a write once the fault clears;
+and pass the crash sweep's `verify` unchanged (both recoveries, integrity and foreign-key checks on both files, no
+running run or staged residue, rollups agree with rows, every acknowledged step durable, forget all-or-nothing, a
+write probe). The checker can fail: `a_disk_that_drops_writes_fails_the_fault_sweep` injects a lying disk that
+acknowledges writes it never makes, and the same checks catch 9 of its 12 points. No injected fault exposed a
+defect; the matrix is in the run record.
+
+Access denied mid-scan (2026-10-19): `listing_denied_mid_scan_is_partial_and_flagged`
+(`crates/loomward-engine/src/scan/followups.rs`) generates the `DeniedDirectory` fixture, lifts its ACE
+(`GeneratedTree::allow_listing`) and wraps the native source so the real deny ACE is applied again
+(`GeneratedTree::deny_listing`) the moment the root's own listing reports `denied`, after the scan has opened and
+started listing the root and before that child is opened. The child's open is refused, the run is partial
+(`complete` and `coverage_complete` false, one failed open), the root's entry for the child carries `AccessDenied`
+(what the service's catalogue sink stores as `ACCESS_DENIED`, flag 64), no directory final is complete, the root
+counts only the visible file, and once listing is allowed again the next scan is complete with both files.
+
+**Gap.** Faults are one per run and one-shot (except the sticky full disk), on the catalogue writer's lifecycle only:
+the service's own connections (collections, labels, learning, job state, backup import) are not faulted, as in row 1.
+Not faulted: the `-shm` mapping, locking, file size, and the VFS-level open, delete and access calls (an
+`ERROR_ACCESS_DENIED` opening the log, for one). The full disk is the VFS's word, not a real full volume: no run fills
+an actual NTFS volume (a small VHD would). A short read mid-file is absorbed by SQLite's own rule (it zero-fills and
+carries on); every sampled one recovered clean, which is evidence about these call sites, not a guarantee. The
+mid-scan denial runs through the engine with the in-memory sink; the catalogue's mapping of that entry to its
+flag and the slice's `denied` coverage are proven by the pre-scan `real_acl_denied_directory_stays_visible_and_partial`
+through the service, not by one mid-scan run end to end. A deny on a directory whose handle is already open, and a deny
+on the root itself mid-scan, are not exercised.
+
+**Prove.**
+
+```powershell
+cargo test -p loomward-catalog --features test-hooks --test crash_sweep -- io_fault drops_writes   # sampled, about 50 s
+$env:LOOMWARD_CRASH_SWEEP='full'; cargo test -p loomward-catalog --features test-hooks --test crash_sweep -- every_io_fault
+cargo test -p loomward-catalog --features test-hooks --test crash_sweep -- fault_at full:40   # one fault
+cargo test -p loomward-engine --lib listing_denied_mid_scan
+```
 
 ## 6. Fuzzing every parser and contract: PARTIAL
 
