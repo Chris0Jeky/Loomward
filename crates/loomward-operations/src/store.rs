@@ -383,7 +383,9 @@ impl Store {
     /// operation from then on, whatever its cached replay says (a middle-row fault is seen only by a
     /// full `replay`, so a hot cache can still pass it).
     pub fn tail_refused(&self, op: u64) -> rusqlite::Result<bool> {
-        Ok(checked_tail(&self.conn, op)?.is_err())
+        // One snapshot: an append on another connection between the two reads would look torn.
+        let tx = self.conn.unchecked_transaction()?;
+        Ok(checked_tail(&tx, op)?.is_err())
     }
 
     pub fn recover(&self, op: u64, disk: &impl Disk) -> rusqlite::Result<Recovery> {
