@@ -207,11 +207,15 @@ impl RootWatch {
         if self.stop.load(Ordering::Acquire) {
             return false;
         }
-        if self.native.checkpoint().is_err() {
-            let mut state = self.dirty.lock().unwrap();
-            state.record(vec![Change::RootDirty]);
-            state.failed = true;
-            return false;
+        match self.native.checkpoint() {
+            Ok(()) => (),
+            Err(SourceError::Busy) => return false,
+            Err(_) => {
+                let mut state = self.dirty.lock().unwrap();
+                state.record(vec![Change::RootDirty]);
+                state.failed = true;
+                return false;
+            }
         }
         let (reply, ack) = mpsc::sync_channel(1);
         let mut work = Work::Barrier(reply);
@@ -223,15 +227,20 @@ impl RootWatch {
                     work = item;
                     std::thread::sleep(Duration::from_millis(2));
                 }
+                Err(mpsc::TrySendError::Full(_)) => return false,
                 _ => {
                     self.dirty.lock().unwrap().failed = true;
                     return false;
                 }
             }
         }
-        if ack.recv_timeout(Duration::from_secs(2)).is_err() {
-            self.dirty.lock().unwrap().failed = true;
-            return false;
+        match ack.recv_timeout(Duration::from_secs(2)) {
+            Ok(()) => (),
+            Err(mpsc::RecvTimeoutError::Timeout) => return false,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                self.dirty.lock().unwrap().failed = true;
+                return false;
+            }
         }
         true
     }
@@ -259,6 +268,10 @@ impl RootWatch {
 #[cfg(windows)]
 fn watch_error(error: SourceError) -> EngineError {
     match error {
+        SourceError::Busy => EngineError::Busy {
+            message: "watch_busy".into(),
+            detail: None,
+        },
         SourceError::Io(code) => EngineError::Internal {
             message: format!("watch_io_error_{code}"),
             detail: None,
@@ -395,6 +408,20 @@ fn reconcile<S: DirSource>(
     checkpoint: impl Fn() -> bool,
 ) -> EngineResult<ScanReport> {
     let start = std::time::Instant::now();
+    let drain = || {
+        if !checkpoint() {
+            let state = dirty.lock().unwrap();
+            if !state.failed && !state.stopped && !cancel.load(Ordering::Acquire) {
+                drop(state);
+                sink.watch_dirty(root.root_id())?;
+                return Err(EngineError::Busy {
+                    message: "watch checkpoint pending; retry reconciliation".into(),
+                    detail: None,
+                });
+            }
+        }
+        Ok(())
+    };
     let repair = Arc::new(RepairSink {
         inner: sink.clone(),
         valid: Mutex::new(true),
@@ -402,7 +429,7 @@ fn reconcile<S: DirSource>(
     });
     // Every scan needs a full baseline: no watcher history survives between scans.
     options.scope = RunScope::FullRoot;
-    checkpoint();
+    drain()?;
     let mut covered = dirty.lock().unwrap().epoch;
     let mut report = run_scan(
         source,
@@ -420,7 +447,7 @@ fn reconcile<S: DirSource>(
     let mut settled = report.complete;
     let mut attempted = report.enumeration_attempts;
     for attempt in 0..=MAX_RELISTS {
-        checkpoint();
+        drain()?;
         let mut state = dirty.lock().unwrap();
         if repair.reparented.swap(false, Ordering::AcqRel) {
             state.record(vec![Change::RootDirty]);
@@ -438,7 +465,7 @@ fn reconcile<S: DirSource>(
             sink.begin_run(root.root_id(), run, &RunScope::FullRoot)?;
             sink.finish_run(root.root_id(), run, &RunScope::FullRoot, true)?;
             drop(state);
-            checkpoint();
+            drain()?;
             state = dirty.lock().unwrap();
             if state.clean() && !cancel.load(Ordering::Acquire) {
                 report.complete = true;
@@ -522,6 +549,42 @@ mod tests {
     use std::{collections::HashMap, path::PathBuf};
     type DirectoryRows = BTreeMap<Vec<u16>, (Option<FileIdObs>, u32, u64)>;
     type Rows = HashMap<FileIdObs, DirectoryRows>;
+    #[test]
+    fn busy_checkpoint_defers_reconciliation_without_lost_coverage_or_relist() {
+        use super::super::tests::{root, Tree};
+        for busy_at in 0..3 {
+            let root = root();
+            let sink = Arc::new(MemorySink::default());
+            let dirty = Mutex::new(Dirty::default());
+            let calls = std::cell::Cell::new(0);
+            let result = reconcile(
+                &Tree,
+                &root,
+                1,
+                sink.clone(),
+                Arc::new(ByteBudget::new(crate::budgets::SCAN_BYTES)),
+                Arc::new(AtomicBool::new(false)),
+                ScanOptions::default(),
+                &dirty,
+                || {
+                    let call = calls.get();
+                    calls.set(call + 1);
+                    call != busy_at
+                },
+            );
+            assert!(
+                matches!(result, Err(EngineError::Busy { .. })),
+                "{result:?}"
+            );
+            let state = dirty.lock().unwrap();
+            assert!(!state.failed && state.root.is_none() && state.dirs.is_empty());
+            assert_eq!(calls.get(), busy_at + 1, "must defer, not relist");
+            if busy_at == 2 {
+                assert!(sink.is_repairing(root.root_id()));
+            }
+        }
+    }
+
     /// h2-scan finding 1 on the watched path: the window between reconcile's last cancel check
     /// and its final publication.
     #[test]
@@ -1542,7 +1605,10 @@ mod native_tests {
             std::fs::rename(&parent, &renamed).unwrap();
             std::fs::rename(&renamed, &parent).unwrap();
             assert!(watch.dirty.lock().unwrap().stopped);
-            assert!(watch.native.checkpoint().is_err());
+            assert!(!matches!(
+                watch.native.checkpoint(),
+                Ok(()) | Err(loomward_windows::enumerate::SourceError::Busy)
+            ));
             if !refresh {
                 std::fs::remove_dir(parent.join("sibling")).unwrap();
                 let epoch = watch.dirty.lock().unwrap().epoch;
@@ -1611,7 +1677,13 @@ mod native_tests {
                 assert_eq!(result.unwrap().complete, outcome == "complete");
             }
             assert!(watch.dirty.lock().unwrap().stopped, "{outcome}");
-            assert!(watch.native.checkpoint().is_err(), "{outcome}");
+            assert!(
+                !matches!(
+                    watch.native.checkpoint(),
+                    Ok(()) | Err(loomward_windows::enumerate::SourceError::Busy)
+                ),
+                "{outcome}"
+            );
             std::fs::rename(parent, tree.path().join("renamed")).unwrap();
         }
     }
@@ -1635,7 +1707,10 @@ mod native_tests {
             .insert(root.root_id().clone(), watch.clone());
         drop(engine);
         assert!(watch.dirty.lock().unwrap().stopped);
-        assert!(watch.native.checkpoint().is_err());
+        assert!(!matches!(
+            watch.native.checkpoint(),
+            Ok(()) | Err(loomward_windows::enumerate::SourceError::Busy)
+        ));
         let moved = tree.path().with_extension("moved-fixture");
         std::fs::rename(tree.path(), &moved).unwrap();
         std::fs::rename(&moved, tree.path()).unwrap();
@@ -1825,7 +1900,10 @@ mod native_tests {
         assert_eq!(cancelled[0].state, JobState::CancelRequested);
         assert!(engine.scan_watches.lock().unwrap().is_empty());
         assert!(watch.dirty.lock().unwrap().stopped);
-        assert!(watch.native.checkpoint().is_err());
+        assert!(!matches!(
+            watch.native.checkpoint(),
+            Ok(()) | Err(loomward_windows::enumerate::SourceError::Busy)
+        ));
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
             let status = engine.job_status(&job.job_id).unwrap();
@@ -1906,7 +1984,10 @@ mod native_tests {
             assert_eq!(cancelled[0].job_id, winner.job_id);
             assert!(engine.scan_watches.lock().unwrap().is_empty());
             assert!(watch.dirty.lock().unwrap().stopped);
-            assert!(watch.native.checkpoint().is_err());
+            assert!(!matches!(
+                watch.native.checkpoint(),
+                Ok(()) | Err(loomward_windows::enumerate::SourceError::Busy)
+            ));
         });
     }
 
@@ -1926,11 +2007,11 @@ mod native_tests {
         let sink = Arc::new(RecordingSink::default());
         let (entered, entry) = mpsc::sync_channel(1);
         let (release, released) = mpsc::sync_channel(1);
-        let first = AtomicBool::new(true);
+        let calls = std::sync::atomic::AtomicUsize::new(0);
         *sink.watch_probe.lock().unwrap() = Some(Box::new(move || {
-            if first.swap(false, Ordering::AcqRel) {
+            if calls.fetch_add(1, Ordering::AcqRel) == 1 {
                 entered.send(()).unwrap();
-                released.recv_timeout(Duration::from_secs(2)).unwrap();
+                released.recv_timeout(Duration::from_secs(30)).unwrap();
             }
         }));
         engine.set_scan_sink(sink).unwrap();
@@ -1944,35 +2025,25 @@ mod native_tests {
             )
             .unwrap();
         let (results, result) = mpsc::channel();
-        let gate_released = AtomicBool::new(false);
-        let (cancelling, cancel_started) = mpsc::sync_channel(1);
         std::thread::scope(|threads| {
             let start = threads.spawn(|| engine.scan_start(&root, None));
-            entry.recv_timeout(Duration::from_secs(2)).unwrap();
-            threads.spawn(|| {
-                cancelling.send(()).unwrap();
-                let cancelled = engine.scan_cancel_root(root.key(), root.root_id());
-                let returned_after_release = gate_released.load(Ordering::Acquire);
-                results.send((cancelled, returned_after_release)).unwrap()
-            });
-            cancel_started.recv_timeout(Duration::from_secs(2)).unwrap();
-            gate_released.store(true, Ordering::Release);
-            release.send(()).unwrap();
-            let winner = start.join().unwrap().unwrap();
-            let (cancelled, returned_after_release) =
-                result.recv_timeout(Duration::from_secs(2)).unwrap();
-            let cancelled = cancelled.unwrap();
-            assert!(
-                returned_after_release,
-                "revocation must block on the start gate and return only after release"
-            );
-            assert_eq!(
-                cancelled.len(),
-                1,
-                "revocation must observe the reserved submission"
-            );
-            assert_eq!(cancelled[0].job_id, winner.job_id);
+            entry.recv_timeout(Duration::from_secs(30)).unwrap();
             assert!(engine.scan_watches.lock().unwrap().is_empty());
+            threads.spawn(|| {
+                results
+                    .send(engine.scan_cancel_root(root.key(), root.root_id()))
+                    .unwrap();
+            });
+            let early = result.recv_timeout(Duration::from_secs(1));
+            release.send(()).unwrap();
+            let started = start.join().unwrap();
+            assert!(early
+                .expect("cancel waited for the slow watch start")
+                .unwrap()
+                .is_empty());
+            assert!(matches!(started, Err(EngineError::PermissionDenied { .. })));
+            assert!(engine.scan_watches.lock().unwrap().is_empty());
+            assert!(engine.jobs.root_jobs(root.root_id()).is_empty());
             assert!(matches!(
                 engine.scan_refresh(&root, None),
                 Err(EngineError::PermissionDenied { .. })
@@ -2227,7 +2298,10 @@ mod native_tests {
             let epoch = watch.dirty.lock().unwrap().epoch;
             std::fs::write(tree.path().join("a/idle-change"), b"idle").unwrap();
             assert!(watch.dirty.lock().unwrap().stopped);
-            assert!(watch.native.checkpoint().is_err());
+            assert!(!matches!(
+                watch.native.checkpoint(),
+                Ok(()) | Err(loomward_windows::enumerate::SourceError::Busy)
+            ));
             assert_eq!(watch.dirty.lock().unwrap().epoch, epoch);
             assert!(!sink.memory.is_repairing(root.root_id()));
             assert!(sink.memory.sweep_allowed(root.root_id()));
@@ -2266,7 +2340,10 @@ mod native_tests {
         std::thread::sleep(Duration::from_millis(30));
         assert_eq!(watch.dirty.lock().unwrap().epoch, epoch);
         assert!(watch.dirty.lock().unwrap().stopped);
-        assert!(watch.native.checkpoint().is_err());
+        assert!(!matches!(
+            watch.native.checkpoint(),
+            Ok(()) | Err(loomward_windows::enumerate::SourceError::Busy)
+        ));
         assert!(engine.scan_watches.lock().unwrap().is_empty());
         // The watcher released its root/ancestor pins before the revoke acknowledgement.
         let moved = tree.path().with_extension("moved-fixture");

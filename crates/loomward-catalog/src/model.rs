@@ -380,6 +380,9 @@ pub struct SearchRootState {
     pub root_id: i64,
     pub scan_state: String,
     pub coverage: String,
+    /// Prior publication observed in the same read transaction as this root's scan state.
+    #[serde(skip)]
+    pub has_completed_scan: bool,
 }
 #[derive(Clone, Debug)]
 pub struct SearchPage {

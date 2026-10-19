@@ -53,6 +53,8 @@ pub(crate) struct Hooks {
     pub skew: Mutex<Duration>,
     /// How far ahead of the wall clock a read's receiver reads time once it starts waiting.
     pub read_ahead: Mutex<Duration>,
+    /// #758: a manually advanced service read clock; None keeps production timing.
+    pub read_clock: Mutex<Option<Instant>>,
     /// (profile, profiles directory) for the scan-time fence instead of the OS folders (#312).
     pub profile: Mutex<Option<(std::path::PathBuf, std::path::PathBuf)>>,
     /// #219: the filesystem name grant-time probes observe instead of the volume's.
@@ -69,10 +71,15 @@ pub(crate) struct Hooks {
     pub fail_explicit_retry: std::sync::atomic::AtomicBool,
     #[cfg(windows)]
     pub fail_automatic_start: std::sync::atomic::AtomicBool,
+    /// One-shot: the next automatic start is refused by the resource budget (refunded, not failed).
+    #[cfg(windows)]
+    pub refuse_automatic_budget: std::sync::atomic::AtomicBool,
     #[cfg(windows)]
     pub fail_watch_start: std::sync::atomic::AtomicBool,
     #[cfg(windows)]
     pub fail_freshness_checkpoint: std::sync::atomic::AtomicBool,
+    #[cfg(windows)]
+    pub busy_freshness_checkpoint: std::sync::atomic::AtomicBool,
     #[cfg(windows)]
     pub before_freshness_finish: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
@@ -107,6 +114,28 @@ impl SpaceFake {
 }
 
 impl Hooks {
+    pub fn receive_read<T>(
+        &self,
+        rx: &std::sync::mpsc::Receiver<T>,
+        deadline: Instant,
+        now: Instant,
+    ) -> Result<T, std::sync::mpsc::RecvTimeoutError> {
+        if self.read_clock.lock().unwrap().is_none() {
+            return rx.recv_timeout(deadline.saturating_duration_since(now));
+        }
+        let safety = Instant::now() + Duration::from_secs(60);
+        loop {
+            let now = self.read_clock.lock().unwrap().expect("read clock removed");
+            let left = deadline.saturating_duration_since(now);
+            match rx.recv_timeout(left.min(Duration::from_millis(10))) {
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) if !left.is_zero() => {
+                    assert!(Instant::now() < safety, "read worker never answered");
+                }
+                reply => return reply,
+            }
+        }
+    }
+
     pub fn before(&self, c: Command) {
         *self.runs.lock().unwrap().entry(c).or_default() += 1;
         let delay = *self.delay.lock().unwrap();
@@ -119,15 +148,22 @@ impl Hooks {
     }
 
     pub fn gate(&self, c: Command, at: &'static str) {
-        self.arrived.lock().unwrap().push((c, at));
-        let mut closed = self.closed.lock().unwrap();
+        // These gates also run from Drop: preserve the first test panic after poisoning.
+        self.arrived
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((c, at));
+        let mut closed = self.closed.lock().unwrap_or_else(|e| e.into_inner());
         while closed.contains(&(c, at)) {
-            closed = self.opened.wait(closed).unwrap();
+            closed = self.opened.wait(closed).unwrap_or_else(|e| e.into_inner());
         }
     }
 
     pub fn open(&self, c: Command, at: &'static str) {
-        self.closed.lock().unwrap().retain(|g| *g != (c, at));
+        self.closed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|g| *g != (c, at));
         self.opened.notify_all();
     }
 
@@ -285,6 +321,82 @@ fn corrupt_catalogue_is_refused_at_static_start_without_rewriting() {
 
 pub(crate) fn temp_root() -> tempfile::TempDir {
     tempfile::tempdir_in(crate::paths::test_roots_base()).unwrap()
+}
+
+#[test]
+fn an_injected_read_clock_expires_the_receiver_and_catalogue_open() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    *svc.inner.hooks.read_clock.lock().unwrap() = Some(deadline + Duration::from_secs(1));
+    let (_tx, rx) = std::sync::mpsc::channel::<()>();
+    assert_eq!(
+        svc.inner.hooks.receive_read(&rx, deadline, Instant::now()),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+    );
+    let work = crate::ReadWork {
+        deadline,
+        interrupt: Mutex::new(None),
+    };
+    assert_eq!(
+        svc.inner.read_reader(Some(&work)).err().unwrap().code,
+        ErrorCode::DeadlineExceeded
+    );
+}
+
+/// #730: a failed assertion holding a test gate must not panic again during cleanup.
+#[test]
+fn poisoned_test_gates_preserve_the_original_panic() {
+    const CHILD: &str = "LOOMWARD_730_POISONED_GATE";
+    if let Some(gate) = std::env::var_os(CHILD) {
+        let tmp = temp_root();
+        let svc = open(tmp.path(), DatasetClass::Synthetic);
+        struct Release(Arc<Hooks>);
+        impl Drop for Release {
+            fn drop(&mut self) {
+                self.0.open(Command::VolumesList, "space_read");
+            }
+        }
+        let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let svc = svc;
+            let _release = Release(svc.inner.hooks.clone());
+            let _lock = if gate == "arrived" {
+                svc.inner.hooks.arrived.lock().unwrap()
+            } else {
+                svc.inner.hooks.closed.lock().unwrap()
+            };
+            panic!("original test failure");
+        }));
+        let payload = failure.expect_err("the original panic must still be reported");
+        assert_eq!(
+            payload.downcast_ref::<&str>(),
+            Some(&"original test failure")
+        );
+        return;
+    }
+    for gate in ["arrived", "closed"] {
+        // A second panic aborts the process, so catch_unwind alone cannot test this regression.
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::poisoned_test_gates_preserve_the_original_panic",
+                "--nocapture",
+            ])
+            .env(CHILD, gate)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{gate}: cleanup aborted: {}\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        // A renamed test would match nothing and exit 0 while proving nothing.
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+            "{gate}: the child ran no test"
+        );
+    }
 }
 
 /// Fixtures stay outside the source tree and inside the profile fence wherever the checkout is
@@ -1013,7 +1125,12 @@ fn volumes_list_observes_space_through_a_second_root_when_the_first_is_unobserva
     // The second grant lives on the same real volume, so its identity matches the volume key.
     let second = tmp.path().join("second-folder");
     std::fs::create_dir_all(&second).unwrap();
-    svc.inner
+    let (second_volume_key, second_file_id) = crate::lab::identity(&second).unwrap();
+    assert_eq!(second_volume_key, volume_key);
+    let WriteReply::Root {
+        grant_id, root_id, ..
+    } = svc
+        .inner
         .catalog
         .writer()
         .call(WriteCommand::RegisterRoot(RootObservation {
@@ -1021,13 +1138,29 @@ fn volumes_list_observes_space_through_a_second_root_when_the_first_is_unobserva
             volume_key,
             display_name: "Second".into(),
             display_path: second.canonicalize().unwrap().display().to_string(),
-            root_file_id: Some(vec![3; 16]),
+            root_file_id: Some(second_file_id),
             filesystem: Some("NTFS".into()),
             origin: "owner_granted".into(),
             granted_via: "cli_flag".into(),
             observed_at_ns: 0,
         }))
-        .unwrap();
+        .unwrap()
+    else {
+        panic!("expected registered root");
+    };
+    // #796: force the identity check that the background pump may otherwise reach only under
+    // load. A made-up file ID retires this grant before the space reader can try the second root.
+    svc.inner
+        .engine
+        .granted_root(
+            RootId::new(svc.inner.root_id(root_id)).unwrap(),
+            grant_id,
+            &loomward_engine::scan::CatalogRootIdentity {
+                row: root_id,
+                instance: svc.inner.instance.clone(),
+            },
+        )
+        .expect("the second root must remain valid when the freshness pump checks its identity");
     // The first (lowest-id) root is now unobservable; the second must still answer.
     std::fs::remove_dir(&folder).unwrap();
     let (volumes, _) = ok("volumes.list", call(&svc, "volumes.list", json!({})));
@@ -3970,11 +4103,15 @@ pub(crate) struct Lab {
 
 #[cfg(windows)]
 pub(crate) fn lab() -> Option<Lab> {
+    lab_in(temp_root())
+}
+
+#[cfg(windows)]
+pub(crate) fn lab_in(tmp: tempfile::TempDir) -> Option<Lab> {
     if loomward_windows::enumerate::running_elevated() {
         eprintln!("skipped: elevated token; the native scan refuses elevation (invariant 2)");
         return None;
     }
-    let tmp = temp_root();
     let state = tmp.path().join("state");
     let path = tmp.path().join("lab-scan");
     crate::lab::register(
@@ -4389,6 +4526,148 @@ fn scan_start_publishes_a_lab_tree_matching_an_independent_walk_with_live_events
 }
 
 #[cfg(windows)]
+fn search_freshness_page(lab: &Lab) -> Value {
+    let (page, _) = ok(
+        "search.query",
+        call(
+            &lab.svc,
+            "search.query",
+            json!({"root_id":lab.root,"text":"bin","extension":null,"min_bytes":null,"max_bytes":null,"modified_after":null,"modified_before":null,"kind":"file","limit":100,"cursor":null}),
+        ),
+    );
+    Value::Object(page)
+}
+
+#[cfg(windows)]
+#[test]
+fn search_freshness_preserves_never_scanned_coverage() {
+    let Some(lab) = lab() else { return };
+    lab.svc.inner.freshness.pause_pump();
+    let page = search_freshness_page(&lab);
+    assert_eq!(page["roots"][0]["scan_state"], "never_scanned", "{page:?}");
+    assert_eq!(page["roots"][0]["coverage"], "unscanned", "{page:?}");
+    assert_eq!(page["index_state"], "current", "{page:?}");
+    assert_eq!(page["partial"], true);
+}
+
+#[cfg(windows)]
+#[test]
+fn search_freshness_first_scan_builds_then_becomes_current() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    svc.inner.freshness.pause_pump();
+    svc.inner.scan.gate.arm();
+    let job = start(svc, &lab.root, "full");
+    svc.inner.scan.gate.wait_reached();
+    let during = search_freshness_page(&lab);
+    // Always release the writer before asserting, including on the unfixed implementation.
+    svc.inner.scan.gate.release();
+    assert_eq!(settle(svc, &job)["state"], "completed");
+    let after = search_freshness_page(&lab);
+    assert_eq!(during["index_state"], "building", "{during:?}");
+    assert_eq!(during["roots"][0]["scan_state"], "scanning");
+    assert_eq!(during["roots"][0]["coverage"], "partial");
+    assert_eq!(during["partial"], true);
+    assert_eq!(after["index_state"], "current", "{after:?}");
+    assert_eq!(after["roots"][0]["scan_state"], "complete");
+    assert_eq!(after["roots"][0]["coverage"], "complete");
+    assert_eq!(after["partial"], false);
+}
+
+#[cfg(windows)]
+#[test]
+fn search_freshness_rescan_keeps_existing_index_stale() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    settle(svc, &start(svc, &lab.root, "full"));
+    f3_wait_live(svc);
+    svc.inner.freshness.pause_pump();
+    svc.inner
+        .freshness
+        .record(1, vec![loomward_windows::watch::Change::RootDirty]);
+    let before = search_freshness_page(&lab);
+    svc.inner.scan.gate.arm();
+    let job = start(svc, &lab.root, "full");
+    svc.inner.scan.gate.wait_reached();
+    let during = search_freshness_page(&lab);
+    svc.inner.scan.gate.release();
+    assert_eq!(settle(svc, &job)["state"], "completed");
+    let after = search_freshness_page(&lab);
+    for page in [&before, &during] {
+        assert_eq!(page["index_state"], "stale", "{page:?}");
+        assert_eq!(page["roots"][0]["scan_state"], "stale");
+        assert_eq!(page["roots"][0]["coverage"], "stale");
+        assert_eq!(page["partial"], true);
+    }
+    assert_eq!(after["index_state"], "current", "{after:?}");
+    assert_eq!(after["partial"], false);
+}
+
+#[cfg(windows)]
+#[test]
+fn search_freshness_uses_prior_scan_state_from_its_page_snapshot() {
+    const SEARCH: (Command, &str) = (Command::SearchQuery, "search_page_captured");
+    const PUBLISHED: (Command, &str) = (Command::ScanStart, "full_catalogue_published");
+    // Release both workers before scoped-thread cleanup, including after a failed assertion.
+    struct Release<'a>(&'a Service);
+    impl Drop for Release<'_> {
+        fn drop(&mut self) {
+            self.0.inner.scan.gate.release();
+            self.0.inner.hooks.open(SEARCH.0, SEARCH.1);
+            self.0.inner.hooks.open(PUBLISHED.0, PUBLISHED.1);
+        }
+    }
+    for rescan in [false, true] {
+        let Some(lab) = lab() else { return };
+        let svc = &lab.svc;
+        if rescan {
+            settle(svc, &start(svc, &lab.root, "full"));
+            f3_wait_live(svc);
+        }
+        svc.inner.freshness.pause_pump();
+        svc.inner.hooks.arrived.lock().unwrap().clear();
+        svc.inner
+            .hooks
+            .closed
+            .lock()
+            .unwrap()
+            .extend([SEARCH, PUBLISHED]);
+        svc.inner.scan.gate.arm();
+        let job = start(svc, &lab.root, "full");
+        let during = std::thread::scope(|scope| {
+            let _release = Release(svc);
+            svc.inner.scan.gate.wait_reached();
+            let searching = scope.spawn(|| search_freshness_page(&lab));
+            svc.inner
+                .hooks
+                .until("search page captured while scanning", |h| {
+                    h.arrived.lock().unwrap().contains(&SEARCH)
+                });
+            svc.inner.scan.gate.release();
+            svc.inner
+                .hooks
+                .until("EndRun committed before freshness finish", |h| {
+                    h.arrived.lock().unwrap().contains(&PUBLISHED)
+                });
+            assert!(svc.inner.freshness.stale(1));
+            svc.inner.hooks.open(SEARCH.0, SEARCH.1);
+            searching.join().unwrap()
+        });
+        assert_eq!(settle(svc, &job)["state"], "completed");
+        assert_eq!(
+            during["index_state"],
+            if rescan { "stale" } else { "building" },
+            "rescan={rescan}: {during:?}"
+        );
+        assert_eq!(
+            during["roots"][0]["scan_state"],
+            if rescan { "stale" } else { "scanning" }
+        );
+        assert_eq!(during["partial"], true);
+    }
+}
+
+#[cfg(windows)]
 #[test]
 fn f3_search_reports_freshness_without_enabling_federated_search() {
     let Some(lab) = lab() else { return };
@@ -4449,6 +4728,7 @@ pub(crate) fn f3_wait_live(svc: &Service) -> Value {
         });
         if !svc.inner.freshness.stale(1)
             && settled
+            && page["index_state"] == "current"
             && page["hits"]
                 .as_array()
                 .unwrap()
@@ -4900,18 +5180,17 @@ fn f3_revoke_fences_a_watch_still_being_armed() {
             .unwrap()
     });
     // Release the test gate before asserting, so a red regression cannot strand a native thread.
-    let early = ack.try_recv().ok();
+    let early = ack.recv_timeout(Duration::from_secs(1)).ok();
     svc.inner.hooks.open(phase.0, phase.1);
     if early.is_none() {
         ack.recv_timeout(Duration::from_secs(10)).unwrap().unwrap();
     }
     let opened = opening.join();
     revoking.join().unwrap();
-    assert!(
-        early.is_none(),
-        "revoke acknowledged before the in-flight watch was stopped"
-    );
+    assert!(early.is_some(), "revoke waited for the slow watch arm");
+    early.unwrap().unwrap();
     opened.unwrap();
+    assert!(svc.inner.freshness.debug(1).is_empty());
     svc.inner
         .freshness
         .record(1, vec![loomward_windows::watch::Change::RootDirty]);
@@ -5015,6 +5294,18 @@ fn f3_completed_foreground_job_does_not_mean_background_catalogue_is_quiescent()
     let foreground = start(&lab.svc, &lab.root, "full");
     assert_eq!(settle(&lab.svc, &foreground)["coverage"], "complete");
     f3_wait_live(&lab.svc);
+    let full_runs = || -> i64 {
+        lab.svc
+            .inner
+            .db()
+            .query_row(
+                "SELECT count(*) FROM main.scan_run WHERE mode!='targeted'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    let before = full_runs();
     let phase = (Command::ScanStart, "targeted_catalogue_published");
     lab.svc.inner.hooks.closed.lock().unwrap().push(phase);
     lab.svc.inner.freshness.record(
@@ -5065,9 +5356,12 @@ fn f3_completed_foreground_job_does_not_mean_background_catalogue_is_quiescent()
         .unwrap()
         .iter()
         .all(|hit| hit["freshness"]["state"] == "stale"));
-    f3_wait_live(&lab.svc);
+    let current = f3_wait_live(&lab.svc);
+    assert_eq!(current["index_state"], "current");
+    assert_eq!(current["partial"], true);
+    assert_eq!(full_runs(), before, "settled hints started a full fallback");
     assert!(
-        lab.svc
+        !lab.svc
             .inner
             .db()
             .query_row(
@@ -5076,7 +5370,7 @@ fn f3_completed_foreground_job_does_not_mean_background_catalogue_is_quiescent()
                 |r| r.get::<_, bool>(0),
             )
             .unwrap(),
-        "freshness/idle signal preceded full-root fallback"
+        "targeted freshness must not establish complete root coverage"
     );
 }
 
@@ -5232,6 +5526,114 @@ fn f3_issue617_completed_catchup_retries_its_checkpoint() {
 
 #[cfg(windows)]
 #[test]
+fn issue776_default_scan_shares_workers_with_an_owner_scan_and_freshness() {
+    if loomward_windows::enumerate::running_elevated() {
+        eprintln!("skipped: elevated token; native scans refuse elevation");
+        return;
+    }
+    for threads in [1, 32] {
+        let tmp = temp_root();
+        let state = tmp.path().join("state");
+        let mut paths = Vec::new();
+        for name in ["lab-first", "lab-second", "lab-refresh"] {
+            let path = tmp.path().join(name);
+            crate::lab::register(
+                &state,
+                &path,
+                name,
+                "S",
+                "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            )
+            .unwrap();
+            std::fs::write(path.join("synthetic.bin"), b"synthetic").unwrap();
+            paths.push(path.canonicalize().unwrap());
+        }
+        let svc = Service::open(Config {
+            state_dir: state,
+            dataset: DatasetClass::Synthetic,
+            allow_personal: false,
+            allow_identity_unverified: false,
+            grant_roots: paths,
+        })
+        .unwrap();
+        svc.inner.freshness.pause_pump();
+        let rows = crate::db::roots(&svc.inner.db(), None).unwrap();
+        let roots: Vec<_> = rows.iter().map(|r| svc.inner.root_id(r.root)).collect();
+        for root in &roots {
+            assert_eq!(
+                settle(&svc, &start(&svc, root, "full"))["coverage"],
+                "complete"
+            );
+        }
+        let held = (Command::ScanStart, "full_catalogue_published");
+        svc.inner
+            .hooks
+            .arrived
+            .lock()
+            .unwrap()
+            .retain(|at| *at != held);
+        svc.inner.hooks.closed.lock().unwrap().push(held);
+        let first = start(&svc, &roots[0], "full");
+        svc.inner.hooks.until("first scan holds its workers", |h| {
+            h.arrived.lock().unwrap().contains(&held)
+        });
+        let second = call(
+            &svc,
+            "scan.start",
+            json!({"root_id":roots[1],"mode":"full","budget":{"threads":threads}}),
+        );
+        let third = if threads == 1 {
+            svc.inner.freshness.record(
+                rows[2].root,
+                vec![loomward_windows::watch::Change::RootDirty],
+            );
+            svc.inner.freshness.ready_targeted_hint(rows[2].root);
+            crate::freshness::refresh(&svc.inner);
+            None
+        } else {
+            Some(call(
+                &svc,
+                "scan.start",
+                json!({"root_id":roots[2],"mode":"full"}),
+            ))
+        };
+        let auto = svc.inner.freshness.explicit(rows[2].root).auto.clone();
+        let workers = svc.inner.engine.budgets_get().unwrap().pools[0]
+            .current_workers
+            .get();
+        let first_state = svc
+            .inner
+            .engine
+            .job_status(&JobId::new(&first).unwrap())
+            .unwrap()
+            .state;
+        // Always unblock before asserting: a red regression must not strand a worker on drop.
+        svc.inner.hooks.open(held.0, held.1);
+        assert_eq!(settle(&svc, &first)["coverage"], "complete");
+        let (second, _) = ok("scan.start", second);
+        let second = settle(&svc, second["job"]["job_id"].as_str().unwrap());
+        assert_eq!(second["coverage"], "complete", "{second:?}");
+        assert_eq!(first_state, JobState::Running);
+        assert_eq!(workers, 8, "all three jobs share the bounded pool");
+        if let Some(third) = third {
+            let refused = err(third);
+            assert_eq!((refused.code, refused.retryable), (ErrorCode::Busy, true));
+            assert!(refused.message.contains("retry"));
+            assert!(auto.is_none());
+        } else {
+            let auto = auto.expect("another root refreshes before the owner scans finish");
+            assert_eq!(settle(&svc, auto.as_str())["coverage"], "complete");
+        }
+        // With the pool released, another root can start normally.
+        assert_eq!(
+            settle(&svc, &start(&svc, &roots[2], "full"))["coverage"],
+            "complete"
+        );
+    }
+}
+
+#[cfg(windows)]
+#[test]
 fn f3_issue617_explicit_scan_preempts_another_roots_pool() {
     if loomward_windows::enumerate::running_elevated() {
         return;
@@ -5262,6 +5664,13 @@ fn f3_issue617_explicit_scan_preempts_another_roots_pool() {
     })
     .unwrap();
     svc.inner.freshness.pause_pump();
+    // Exercise actual pool exhaustion even though default scans now leave headroom.
+    svc.inner
+        .engine
+        .budgets_set(
+            &serde_json::from_value(json!({"pool":"scan_enumerate","max_workers":1})).unwrap(),
+        )
+        .unwrap();
     let rows = crate::db::roots(&svc.inner.db(), None).unwrap();
     let first = svc.inner.root_id(rows[0].root);
     let second = svc.inner.root_id(rows[1].root);
@@ -5627,13 +6036,7 @@ fn f3_duplicates_leave_refresh_running_when_a_worker_is_available() {
     crate::freshness::refresh(&svc.inner);
     svc.inner.scan.gate.wait_reached();
     let auto = svc.inner.freshness.explicit(1).auto.clone().unwrap();
-    // The running refresh keeps its eight workers; raising the cap leaves one for hashing.
-    svc.inner
-        .engine
-        .budgets_set(
-            &serde_json::from_value(json!({"pool":"scan_enumerate","max_workers":9})).unwrap(),
-        )
-        .unwrap();
+    // A default refresh already leaves headroom for hashing at the unchanged pool cap.
     let (answer, state) = std::thread::scope(|s| {
         let asking = s.spawn(|| {
             call(
@@ -5759,6 +6162,13 @@ fn f3_explicit_scan_preempts_a_running_watcher_refresh() {
 fn f3_duplicates_preempt_a_running_watcher_refresh() {
     let Some(lab) = lab() else { return };
     let svc = &lab.svc;
+    // Exercise actual pool exhaustion even though default scans now leave headroom.
+    svc.inner
+        .engine
+        .budgets_set(
+            &serde_json::from_value(json!({"pool":"scan_enumerate","max_workers":1})).unwrap(),
+        )
+        .unwrap();
     for name in ["copy.bin", "other.bin"] {
         std::fs::write(lab.path.join(name), b"same").unwrap();
     }
@@ -5880,6 +6290,13 @@ fn f3_duplicates_claim_fences_candidate_selection() {
 fn f3_duplicates_expired_request_releases_the_refresh_fence() {
     let Some(lab) = lab() else { return };
     let svc = &lab.svc;
+    // Exercise actual pool exhaustion even though default scans now leave headroom.
+    svc.inner
+        .engine
+        .budgets_set(
+            &serde_json::from_value(json!({"pool":"scan_enumerate","max_workers":1})).unwrap(),
+        )
+        .unwrap();
     settle(svc, &start(svc, &lab.root, "full"));
     f3_wait_live(svc);
     svc.inner.scan.gate.arm();
@@ -6245,6 +6662,28 @@ fn a_junction_replacing_a_directory_stays_visible_as_excluded() {
         settle(svc, &start(svc, &lab.root, "refresh"))["state"],
         "completed"
     );
+    // Reproduce a late watcher refresh overlapping the read after the foreground scan.
+    svc.inner.scan.gate.arm();
+    svc.inner.freshness.record(
+        1,
+        vec![loomward_windows::watch::Change::Name {
+            action: 1,
+            name: "a/new.bin"
+                .replace('/', std::path::MAIN_SEPARATOR_STR)
+                .encode_utf16()
+                .collect(),
+        }],
+    );
+    svc.inner.freshness.ready_targeted_hint(1);
+    svc.inner.scan.gate.wait_reached();
+    let overlapping = call(
+        svc,
+        "tree.slice",
+        json!({"anchor": {"kind": "root", "root_id": lab.root}, "depth": 3, "max_nodes": 256, "min_share": 0.0, "basis": "logical", "include_files": true}),
+    );
+    svc.inner.scan.gate.release();
+    assert_eq!(err(overlapping).code, ErrorCode::PartialCoverage);
+    f3_wait_live(svc);
     let again = lab_slice(svc, &lab.root);
     assert_eq!(child_named(&again, "b"), Some(kept));
     assert_eq!(slice_totals(&again), (5, 2, 165));

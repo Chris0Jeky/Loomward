@@ -18,7 +18,7 @@ time = { version = "0.3.55", features = ["formatting", "parsing"] }
 
 [dev-dependencies]
 # Statement counting in the publication-cost test (#646); a test-only feature, no new crate.
-rusqlite = { version = "0.38.0", features = ["trace"] }
+rusqlite = { version = "0.39.0", features = ["trace"] }
 tempfile = "3.27.0"
 jsonschema = { version = "0.58.6", default-features = false }
 

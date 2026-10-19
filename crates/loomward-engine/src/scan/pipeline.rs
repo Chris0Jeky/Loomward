@@ -1,5 +1,8 @@
 use super::{sink::*, source::*, GrantedRoot};
 #[cfg(test)]
+#[path = "targeted_tests.rs"]
+mod targeted_tests;
+#[cfg(test)]
 #[path = "w2_tests.rs"]
 mod w2_tests;
 use crate::{
@@ -171,6 +174,7 @@ fn directory_limit_releases_pending_identity_before_parent_relist() {
         node_bytes: 1,
         handle_bytes: 1,
         handles: AtomicUsize::new(1),
+        bounded: None,
     };
     std::thread::scope(|threads| {
         let writer = threads.spawn(move || {
@@ -294,6 +298,9 @@ struct Shared<'a, S: DirSource> {
     node_bytes: usize,
     handle_bytes: usize,
     handles: AtomicUsize,
+    /// A bounded targeted run (#782): its sink, root and named directories. Children outside the
+    /// named set are listed only when the catalogue holds no complete listing of them.
+    bounded: Option<(&'a dyn ScanSink, &'a RootId, HashSet<u64>)>,
 }
 /// One held child's share of [`Shared::held`], returned when the child is adopted or dropped.
 struct Held<'a>(&'a Mutex<(usize, usize)>, usize);
@@ -626,6 +633,13 @@ impl<S: DirSource> Shared<'_, S> {
                             && arena[index].seen != listing
                         {
                             arena[index].seen = listing;
+                        } else if self.bounded.is_some()
+                            && index != PENDING
+                            && index != 0
+                            && arena[index].parent.is_none()
+                        {
+                            // A named directory listed on its own: this aggregate cannot claim it.
+                            complete = false;
                         } else {
                             // Already sighted under another parent: it moved during the run,
                             // and this listing's aggregate cannot attribute it.
@@ -659,7 +673,9 @@ impl<S: DirSource> Shared<'_, S> {
             return Err(e);
         }
         let mut outcome = stopped.map_or(outcome, ListOutcome::Incomplete);
+        // A bounded run lists only named directories and children it verified as unlisted.
         if outcome == ListOutcome::Complete
+            && self.bounded.is_none()
             && matches!(&self.options.scope,RunScope::Targeted(dirs) if !dirs.contains(&ticket.dir))
         {
             outcome = ListOutcome::Incomplete(IncompleteReason::OutsideScope);
@@ -768,6 +784,17 @@ impl<S: DirSource> Shared<'_, S> {
                     self.ready.notify_one();
                 }
                 return Ok(claimed);
+            }
+            if let Some((sink, root, named)) = &self.bounded {
+                if !named.contains(&child_ticket.dir)
+                    && !sink.needs_listing(root, self.run, child_ticket.dir)
+                {
+                    // Kept unchanged by the published parent listing; never claimed as covered.
+                    if let Some(key) = key {
+                        self.discovered.lock().unwrap().remove(&key);
+                    }
+                    return Ok(false);
+                }
             }
             if arena.len() >= self.max_dirs {
                 if let Some(key) = key {
@@ -1086,14 +1113,64 @@ pub fn run_scan<S: DirSource>(
             return Err(e);
         }
     };
+    let dir = Arc::new(dir);
+    // #782: a targeted run lists only its named directories when every one of them can be
+    // reopened below the pinned root, or is verified by a named parent's listing. Otherwise it
+    // traverses the whole root as before.
+    let mut targets = Vec::new();
+    let mut named = HashSet::new();
+    if let RunScope::Targeted(dirs) = &options.scope {
+        named.extend(dirs.iter().copied());
+        let mut bounded = identity.volume_serial.is_some();
+        for &target in named.iter().filter(|&&d| d != ticket.dir) {
+            // The root plus every retained target is a slot and a held handle: the same
+            // node-plus-handle reservation normal traversal checks before holding a child.
+            let slots = targets.len() + 2;
+            if !bounded || slots > max_dirs || slots * (node_bytes + handle_bytes) > arena_bytes {
+                bounded = false;
+                break;
+            }
+            let reserved = match sink.prepare_target(root.root_id(), run, target) {
+                Ok(t) => t,
+                Err(e) => {
+                    let _ = sink.finish_run(root.root_id(), run, &options.scope, false);
+                    return Err(e);
+                }
+            };
+            let Some(t) = reserved else {
+                bounded = false;
+                break;
+            };
+            let expected = reopen_identity((identity.volume_serial.unwrap(), t.id));
+            match source.reopen(&dir, identity, expected) {
+                Ok((handle, opened))
+                    if opened.id == expected.id
+                        && opened.volume_serial == expected.volume_serial =>
+                {
+                    targets.push((t, handle, opened));
+                }
+                // Gone or unreachable: a named parent's complete listing settles it.
+                _ if t.parent.is_some_and(|p| named.contains(&p)) => {}
+                _ => bounded = false,
+            }
+        }
+        if !bounded {
+            targets.clear();
+            named.clear();
+        }
+    }
+    let bounded = !named.is_empty();
+    // Parents before children, so the bottom-up finalisation sees every child first.
+    targets.sort_by_key(|(t, _, _)| t.depth);
     let (tx, rx) = mpsc::sync_channel(32);
     let mut queue = VecDeque::with_capacity(max_dirs);
-    let dir = Arc::new(dir);
-    queue.push_back(Task {
-        dir: dir.clone(),
-        slot: 0,
-        depth: 0,
-    });
+    if !bounded || named.contains(&ticket.dir) {
+        queue.push_back(Task {
+            dir: dir.clone(),
+            slot: 0,
+            depth: 0,
+        });
+    }
     let shared = Shared {
         root_identity: identity,
         round: AtomicU32::new(1),
@@ -1132,6 +1209,7 @@ pub fn run_scan<S: DirSource>(
         node_bytes,
         handle_bytes,
         handles: AtomicUsize::new(1),
+        bounded: bounded.then(|| (sink.as_ref(), root.root_id(), named)),
     };
     shared.arena.lock().unwrap().push(Slot {
         parent: None,
@@ -1148,6 +1226,42 @@ pub fn run_scan<S: DirSource>(
         complete: false,
         ticket,
     });
+    {
+        let mut arena = shared.arena.lock().unwrap();
+        let mut catalog_dirs = shared.catalog_dirs.lock().unwrap();
+        let mut discovered = shared.discovered.lock().unwrap();
+        let mut tasks = shared.tasks.lock().unwrap();
+        for (t, handle, opened) in targets {
+            let index = arena.len();
+            let handle = Arc::new(handle);
+            arena.push(Slot {
+                // Linked only to an earlier slot: an unlisted root, or a named parent.
+                parent: t.parent.and_then(|p| catalog_dirs.get(&p).copied()),
+                listings: 0,
+                seen: 0,
+                dir: Some(handle.clone()),
+                identity: reopen_key(opened),
+                round: 1,
+                counts: [0; 3],
+                depth: t.depth,
+                own: Sums::ZERO,
+                listed: false,
+                sums: Sums::ZERO,
+                complete: false,
+                ticket: t.ticket,
+            });
+            catalog_dirs.insert(t.ticket.dir, index);
+            if let Some(key) = directory_key(opened) {
+                discovered.insert(key, index);
+            }
+            shared.handles.fetch_add(1, Ordering::Relaxed);
+            tasks.queue.push_back(Task {
+                dir: handle,
+                slot: index,
+                depth: t.depth,
+            });
+        }
+    }
     let mut enumeration_wall_seconds = 0.;
     let mut aggregation_seconds = 0.;
     let (worker_result, writer_result, reconciled) = std::thread::scope(|scope| {
@@ -1325,6 +1439,9 @@ pub fn run_scan<S: DirSource>(
         totals
     });
     let settled = reconciled
+        // Targeted freshness needs every visited listing, not full-root aggregate coverage.
+        && (!matches!(options.scope, RunScope::Targeted(_))
+            || (bounded && counts[1] == 0 && counts[2] == 0))
         && shared.duplicate_identity.load(Ordering::Relaxed) == 0
         && !shared.limit_hit.load(Ordering::Acquire)
         && !cancel.load(Ordering::Acquire)
@@ -1356,8 +1473,15 @@ pub fn run_scan<S: DirSource>(
             })
         );
     }
+    let mut totals = slot.sums;
+    for other in arena.iter().skip(1).filter(|s| s.parent.is_none()) {
+        totals = totals.checked_add(other.sums.checked_add(Sums {
+            dirs: 1,
+            ..Sums::ZERO
+        })?)?;
+    }
     Ok(ScanReport {
-        totals: slot.sums,
+        totals,
         complete,
         strategy,
         limit_hit: shared.limit_hit.load(Ordering::Acquire),

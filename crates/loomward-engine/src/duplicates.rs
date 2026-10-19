@@ -478,7 +478,7 @@ mod tests {
             started.recv_timeout(Duration::from_secs(2)).unwrap();
             if !revoke && !after_read {
                 // A live inspection is `busy` with its job ID even when the worker pool is full.
-                let _full = engine.budgets.reserve_scan_workers(None).unwrap();
+                let _full = engine.budgets.reserve_scan_workers(Some(8)).unwrap();
                 let again = serde_json::from_value(
                     serde_json::json!({"max_candidates":200,"max_bytes":"100","max_ms":1000}),
                 )

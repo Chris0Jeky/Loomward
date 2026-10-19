@@ -139,6 +139,8 @@ pub struct OpenedIdentity {
 /// Why a directory could not be opened or validated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceError {
+    /// A live worker has not drained within its wait budget; retry without assuming coverage loss.
+    Busy,
     /// Reparse point, offline or recall-on-access: refused, never listed or hydrated.
     Refused,
     /// The listed and post-open IDs disagree; the directory is recorded `partial`.
@@ -333,7 +335,7 @@ pub(crate) use native::open_journal_root;
 pub use native::read_capped_regular_file;
 #[cfg(all(test, windows))]
 pub(crate) use native::record_open_accesses;
-#[cfg(all(windows, feature = "copy-primitives"))]
+#[cfg(windows)]
 pub(crate) use native::volume_device;
 #[cfg(all(windows, any(feature = "content-read", test)))]
 pub(crate) use native::volume_guid;

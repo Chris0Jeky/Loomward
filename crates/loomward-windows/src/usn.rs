@@ -70,28 +70,122 @@ pub fn decode(bytes: &[u8]) -> Result<(i64, Vec<Record>), SourceError> {
 #[cfg(windows)]
 mod native {
     use super::*;
-    use crate::enumerate::{expected_identity_matches, open_journal_root, OpenedIdentity};
+    use crate::enumerate::{
+        expected_identity_matches, open_journal_root, volume_device, OpenedIdentity,
+    };
     use std::{
+        cell::OnceCell,
         fs::File,
         mem::{size_of, zeroed},
-        os::windows::io::AsRawHandle,
+        os::windows::io::{AsRawHandle, FromRawHandle},
         path::Path,
-        ptr::null_mut,
+        ptr::{null, null_mut},
     };
     use windows_sys::Win32::{
-        Foundation::GetLastError,
+        Foundation::{GetLastError, INVALID_HANDLE_VALUE},
+        Storage::FileSystem::*,
         System::{Ioctl::*, IO::DeviceIoControl},
     };
 
     pub struct Journal {
         _pins: Vec<File>,
         file: File,
+        volume: OnceCell<Option<File>>,
     }
     impl Journal {
         pub fn open(path: &Path, expected: OpenedIdentity) -> Result<Self, SourceError> {
             let (pins, file, actual) = open_journal_root(path)?;
             expected_identity_matches(actual, expected)?;
-            Ok(Self { _pins: pins, file })
+            Ok(Self {
+                _pins: pins,
+                file,
+                volume: OnceCell::new(),
+            })
+        }
+        /// The current parent identity of `id` on the journal's volume, from the object's own USN
+        /// metadata. A zero-access open by ID never follows reparse points or recalls cloud
+        /// content, and the name in the returned record is never read. `None` is "unknown".
+        pub fn parent_of(&self, id: &[u8]) -> Option<Vec<u8>> {
+            const SHARE: u32 = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+            // A directory hint is refused on this host; a zero-access volume handle is not raw IO.
+            let volume = self
+                .volume
+                .get_or_init(|| {
+                    let path = volume_device(&self.file).ok()?;
+                    let handle = unsafe {
+                        CreateFileW(
+                            path.as_ptr(),
+                            0,
+                            SHARE,
+                            null(),
+                            OPEN_EXISTING,
+                            0,
+                            null_mut(),
+                        )
+                    };
+                    (handle != INVALID_HANDLE_VALUE)
+                        .then(|| unsafe { File::from_raw_handle(handle) })
+                })
+                .as_ref()?;
+            let descriptor = match id.len() {
+                8 => FILE_ID_DESCRIPTOR_0 {
+                    FileId: i64::from_le_bytes(id.try_into().ok()?),
+                },
+                16 if id[8..] == [0; 8] => FILE_ID_DESCRIPTOR_0 {
+                    FileId: i64::from_le_bytes(id[..8].try_into().ok()?),
+                },
+                16 => FILE_ID_DESCRIPTOR_0 {
+                    ExtendedFileId: FILE_ID_128 {
+                        Identifier: id.try_into().ok()?,
+                    },
+                },
+                _ => return None,
+            };
+            let wide = id.len() == 16 && id[8..] != [0; 8];
+            let descriptor = FILE_ID_DESCRIPTOR {
+                dwSize: size_of::<FILE_ID_DESCRIPTOR>() as u32,
+                Type: if wide { ExtendedFileIdType } else { FileIdType },
+                Anonymous: descriptor,
+            };
+            let handle = unsafe {
+                OpenFileById(
+                    volume.as_raw_handle(),
+                    &descriptor,
+                    0,
+                    SHARE,
+                    null(),
+                    crate::win::metadata_open_flags(),
+                )
+            };
+            if handle == INVALID_HANDLE_VALUE {
+                return None;
+            }
+            let object = unsafe { File::from_raw_handle(handle) };
+            let input = READ_FILE_USN_DATA {
+                MinMajorVersion: 2,
+                MaxMajorVersion: 3,
+            };
+            // Header plus a 255-unit name fits in 1 KiB.
+            let mut buffer = [0u64; 128];
+            let mut returned = 0;
+            if unsafe {
+                DeviceIoControl(
+                    object.as_raw_handle(),
+                    FSCTL_READ_FILE_USN_DATA,
+                    (&input as *const READ_FILE_USN_DATA).cast(),
+                    size_of::<READ_FILE_USN_DATA>() as u32,
+                    buffer.as_mut_ptr().cast(),
+                    (buffer.len() * 8) as u32,
+                    &mut returned,
+                    null_mut(),
+                )
+            } == 0
+            {
+                return None;
+            }
+            let bytes: &[u8] =
+                unsafe { std::slice::from_raw_parts(buffer.as_ptr().cast(), returned as usize) };
+            parent_from_record(bytes, id)
         }
         pub fn head(&self) -> Result<(Bookmark, i64), SourceError> {
             let mut data: USN_JOURNAL_DATA_V1 = unsafe { zeroed() };
@@ -187,6 +281,25 @@ mod native {
 #[cfg(windows)]
 pub use native::Journal;
 
+/// The parent in one FSCTL_READ_FILE_USN_DATA record, only when the record is for `id`.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn parent_from_record(bytes: &[u8], id: &[u8]) -> Option<Vec<u8>> {
+    let width = match u16::from_le_bytes(bytes.get(4..6)?.try_into().ok()?) {
+        2 => 8,
+        3 => 16,
+        _ => return None,
+    };
+    let wide = |id: &[u8]| {
+        let mut id = id.to_vec();
+        if id.len() == 8 {
+            id.resize(16, 0);
+        }
+        id
+    };
+    let parent = bytes.get(8 + width..8 + 2 * width)?;
+    (id.len() >= 8 && wide(&bytes[8..8 + width]) == wide(id)).then(|| parent.to_vec())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -223,6 +336,84 @@ mod tests {
                 );
             }
         }
+    }
+    #[cfg(windows)]
+    #[test]
+    fn parent_of_walks_current_ancestry_to_the_self_parented_volume_root() {
+        use std::os::windows::fs::OpenOptionsExt;
+        if crate::enumerate::running_elevated() {
+            return;
+        }
+        let base = std::env::current_dir()
+            .unwrap()
+            .join("target/test-fixtures");
+        std::fs::create_dir_all(&base).unwrap();
+        let temp = tempfile::tempdir_in(base).unwrap();
+        let child = temp.path().join("synthetic-a").join("synthetic-b");
+        std::fs::create_dir_all(&child).unwrap();
+        let id = |path: &std::path::Path| {
+            let file = std::fs::OpenOptions::new()
+                .access_mode(0)
+                .custom_flags(crate::win::metadata_open_flags())
+                .open(path)
+                .unwrap();
+            crate::identity::from_file(&file)
+                .unwrap()
+                .object
+                .file_id
+                .to_vec()
+        };
+        let wide = |mut id: Vec<u8>| {
+            if id.len() == 8 {
+                id.resize(16, 0);
+            }
+            id
+        };
+        let (_, _, opened) = crate::enumerate::open_journal_root(temp.path()).unwrap();
+        let journal = Journal::open(temp.path(), opened).unwrap();
+        let mut node = id(&child);
+        let mut chain = vec![node.clone()];
+        for _ in 0..64 {
+            let parent = wide(journal.parent_of(&node).expect("parent by id"));
+            if parent == node {
+                break;
+            }
+            chain.push(parent.clone());
+            node = parent;
+        }
+        assert_eq!(chain[1], id(child.parent().unwrap()));
+        assert!(chain.contains(&id(temp.path())), "ancestry passes the base");
+        assert_eq!(
+            wide(journal.parent_of(&node).unwrap()),
+            node,
+            "volume root is its own parent"
+        );
+        assert_eq!(journal.parent_of(&[0xff; 16]), None);
+    }
+    #[test]
+    fn file_usn_data_parent_requires_the_requested_identity() {
+        let mut v2 = vec![0; 64];
+        v2[4..6].copy_from_slice(&2u16.to_le_bytes());
+        v2[8..16].copy_from_slice(&5u64.to_le_bytes());
+        v2[16..24].copy_from_slice(&6u64.to_le_bytes());
+        let mut wide5 = 5u64.to_le_bytes().to_vec();
+        wide5.resize(16, 0);
+        for id in [&5u64.to_le_bytes()[..], &wide5] {
+            assert_eq!(
+                parent_from_record(&v2, id),
+                Some(6u64.to_le_bytes().to_vec())
+            );
+        }
+        assert_eq!(parent_from_record(&v2, &7u64.to_le_bytes()), None);
+        assert_eq!(parent_from_record(&v2, &[]), None);
+        assert_eq!(parent_from_record(&v2[..20], &5u64.to_le_bytes()), None);
+        let mut v3 = vec![0; 80];
+        v3[4..6].copy_from_slice(&3u16.to_le_bytes());
+        v3[8..24].fill(1);
+        v3[24..40].fill(2);
+        assert_eq!(parent_from_record(&v3, &[1; 16]), Some(vec![2; 16]));
+        v3[4..6].copy_from_slice(&4u16.to_le_bytes());
+        assert_eq!(parent_from_record(&v3, &[1; 16]), None);
     }
     #[test]
     fn decoder_keeps_v2_width_and_directory_bit() {

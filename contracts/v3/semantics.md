@@ -84,6 +84,17 @@ re-send as stated.
 | `budgets.set` | Yes | `request_id`, 10 min | `budgets.get` | Loomward's own pools reset at restart. After cache expiry set a value only if the owner confirms it against the value read |
 | `telemetry.subscribe`, `telemetry.unsubscribe` | Yes | `subscription_id` | Unknown or expired IDs are `not_found` | Re-subscribe with a fresh lease |
 
+`scan.start` shares the `scan_enumerate` worker cap across roots and duplicate inspection.
+`budget.threads` (1..32) is a ceiling, not a reservation guarantee: admission clamps it to the
+workers currently free. Without it, scans (including automatic freshness refreshes) request at most
+half the configured cap, rounded up (four with the default cap of eight; one with a cap of one).
+`budgets.get` reports this ceiling as `default_workers`. A job retains its admitted workers until
+it finishes; there is no queue for worker exhaustion. If no workers are free, `scan.start` returns
+retryable `busy` with guidance to wait or cancel a running scan, then retry. Explicit owner scans
+still pre-empt automatic refreshes on their own root, or on other roots when those refreshes fill
+the pool; automatic refreshes never pre-empt owner work. Lowering the cap affects subsequent
+admission and does not interrupt existing jobs.
+
 Learning is local and human-only in both dataset classes. Personal sessions opened it under
 HUMAN_TODO q-11: `feedback.record`, `learning.queue`, `learning.refit` and `threads.meaning` work on
 nodes of the session's active owner grants, with features read from those roots on this machine;

@@ -198,13 +198,35 @@ fixes buffer capacity for that handle's lifetime; resizing needs a new handle. N
 over 64 KiB are rejected [S1]. A larger local buffer is a later measured tuning choice, not part
 of the required correctness design.
 
+Checkpoint waits use a two-second budget per attempt. A full checkpoint queue or a wait timeout
+on a live worker returns retryable `SourceError::Busy`, without invalidating coverage. Startup
+allows 30 seconds to arm its first read and also returns Busy on a live-worker timeout; no watch
+is published before arming. Disconnection, an exited worker, invalid handles and lost root identity
+remain failures. Engine reconciliation defers with Busy when its native or dispatcher barrier is
+pending; search reports stale with reason `watch_busy` without scheduling a repair scan. The soak
+retries Busy for a 30-second retry budget (plus the in-flight native wait), then reports a timeout
+with coverage unknown, separately from a failed watch.
+
+Arming runs outside the freshness setup lock and engine root gate. A per-root reservation
+excludes competing starts; publication under the lock rechecks the active grant, cancellation
+and reservation identity. Revocation can acknowledge during a slow arm, and that arm's result
+is discarded. Retired freshness callbacks cannot dirty a replacement reservation.
+
+Eight consecutive Busy checkpoints spanning at least a minute make a live worker eligible for the existing bounded
+restart/backoff path; a successful checkpoint resets the count. Search stays stale with
+`watch_busy` while that worker awaits replacement. Stopping this wedged worker sets its stop
+flag and retires its join handle without waiting: the worker retains its native handles and
+I/O buffers until it returns and drains cancellation. This can retain a stalled thread and root
+pins; it does not terminate the thread or cancel another process. Normal watchers still join.
+
 For **LW-007**, treat unprivileged USN as an optional dirty-ID accelerator. Establish a valid
 bookmark before the baseline scan, persist `(native volume identity, journal ID, next USN)`
 alongside the catalogue state it covers, and replay up to a captured head before declaring
 catch-up complete. Never advance the durable cursor before publishing the corresponding dirty
 state. Requery to detect truncation or ID changes during catch-up. Redacted names mean new,
 deleted and renamed objects still require parent-directory relists; unknown IDs/parents require
-a conservative root relist. Preserve 128-bit IDs for V3 and reject unsupported/malformed formats.
+a conservative root relist, unless the bounded identity-only parent walk in docs/46 section 7 (#550)
+proves the record outside the root. Preserve 128-bit IDs for V3 and reject unsupported/malformed formats.
 The spike's high-half-zero restriction is deliberately lab-only.
 
 On startup/gap/error, show stale/repairing coverage, validate the active grant, re-establish the

@@ -3,7 +3,7 @@
     {
       "pool": "scan_enumerate",
       "max_workers": 8,
-      "default_workers": 8,
+      "default_workers": 4,
       "current_workers": 4,
       "queue_capacity": 4096,
       "scope": "loomward_own_threads"

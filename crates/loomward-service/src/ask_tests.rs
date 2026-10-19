@@ -471,6 +471,11 @@ fn an_unreachable_model_fails_the_turn_honestly_and_one_turn_runs_at_a_time() {
 fn a_failed_ask_turn_keeps_successful_and_refused_lookups() {
     let tmp = temp_root();
     let (svc, rt) = configured(tmp.path());
+    // Reproduce a read worker starved beyond search.query's three-second deadline.
+    // This test checks the retained tool log, so only the injected read clock advances it.
+    *svc.inner.hooks.read_clock.lock().unwrap() = Some(Instant::now());
+    *svc.inner.hooks.delay.lock().unwrap() =
+        Some((Command::SearchQuery, Duration::from_millis(3100)));
     ok(owner(
         &svc,
         "ask.grant",
@@ -490,7 +495,7 @@ fn a_failed_ask_turn_keeps_successful_and_refused_lookups() {
     assert_eq!(t["state"], "failed");
     assert_eq!(t["tool_calls_total"], 2);
     assert_eq!(t["tool_calls"][0]["name"], "find");
-    assert_eq!(t["tool_calls"][0]["ok"], true);
+    assert_eq!(t["tool_calls"][0]["ok"], true, "{t:?}");
     assert_eq!(t["tool_calls"][1]["name"], "delete");
     assert_eq!(t["tool_calls"][1]["ok"], false);
 }

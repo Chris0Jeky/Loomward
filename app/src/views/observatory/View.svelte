@@ -355,7 +355,7 @@
   .help { margin: 8px 0 0; font-size: 0.8rem; color: var(--faint); }
   kbd { font: 0.75rem var(--font-mono); padding: 0 4px; border: 1px solid var(--line-strong); border-radius: 3px; color: var(--muted); }
   .side { display: grid; gap: 22px; align-content: start; min-width: 0; }
-  .res-top { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+  .res-top { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 10px; }
   .res-top h2 { margin: 0; }
   .res-note { margin: 0; font-size: 0.8rem; color: var(--muted); display: inline-flex; gap: 6px; align-items: center; }
   .seq { color: var(--faint); }

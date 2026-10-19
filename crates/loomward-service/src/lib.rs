@@ -704,6 +704,14 @@ impl ViewService for Service {
         {
             self.mutate(request, command, ctx.clone(), started, deadline)
         } else {
+            #[cfg(test)]
+            let deadline = self
+                .inner
+                .hooks
+                .read_clock
+                .lock()
+                .unwrap()
+                .map_or(deadline, |now| now + Duration::from_millis(wait));
             let permit = match ReadPermit::acquire(self.inner.clone()) {
                 Some(p) => p,
                 None => {
@@ -759,7 +767,11 @@ impl ViewService for Service {
             };
             #[cfg(not(test))]
             let now = Instant::now();
-            match rx.recv_timeout(deadline.saturating_duration_since(now)) {
+            #[cfg(test)]
+            let reply = self.inner.hooks.receive_read(&rx, deadline, now);
+            #[cfg(not(test))]
+            let reply = rx.recv_timeout(deadline.saturating_duration_since(now));
+            match reply {
                 Ok(mut r) => {
                     if let ResponseEnvelope::Ok(ref mut response) = r {
                         if let Some(position) = metadata_cursor

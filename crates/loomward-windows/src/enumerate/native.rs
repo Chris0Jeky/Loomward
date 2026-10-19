@@ -18,8 +18,8 @@ use windows_sys::{
     Wdk::{
         Foundation::OBJECT_ATTRIBUTES,
         Storage::FileSystem::{
-            NtCreateFile, FILE_OPEN, FILE_OPEN_NO_RECALL, FILE_OPEN_REPARSE_POINT,
-            FILE_SYNCHRONOUS_IO_NONALERT,
+            FileVolumeNameInformation, NtCreateFile, NtQueryInformationFile, FILE_OPEN,
+            FILE_OPEN_NO_RECALL, FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
         },
     },
     Win32::{
@@ -947,6 +947,20 @@ pub(crate) fn volume_guid(file: &File) -> Result<u128, SourceError> {
 /// The `\\?\Volume{GUID}` device path of the volume `file` lives on, NUL-terminated and without the root
 /// separator: a handle opened on it is the volume device itself, not the volume's root directory.
 pub(crate) fn volume_device(file: &File) -> Result<Vec<u16>, SourceError> {
+    match volume_device_path(file) {
+        Err(SourceError::Io(code))
+            if matches!(
+                code as u32,
+                ERROR_ARITHMETIC_OVERFLOW | ERROR_BAD_PATHNAME | ERROR_FILENAME_EXCED_RANGE
+            ) =>
+        {
+            volume_device_from_root(file)
+        }
+        result => result,
+    }
+}
+
+fn volume_device_path(file: &File) -> Result<Vec<u16>, SourceError> {
     let mut path = vec![0u16; 256];
     let n = loop {
         let n = unsafe {
@@ -978,11 +992,76 @@ pub(crate) fn volume_device(file: &File) -> Result<Vec<u16>, SourceError> {
     Ok(path)
 }
 
+fn volume_device_from_root(file: &File) -> Result<Vec<u16>, SourceError> {
+    // Query only the pinned handle's volume device: a full descendant NT name may
+    // exceed UNICODE_STRING even when its DOS spelling can still be opened.
+    // FileVolumeNameInformation is available on our Windows 10+ baseline.
+    let mut buffer = vec![0u32; 16384];
+    let mut status: IO_STATUS_BLOCK = unsafe { zeroed() };
+    let code = unsafe {
+        NtQueryInformationFile(
+            file.as_raw_handle(),
+            &mut status,
+            buffer.as_mut_ptr().cast(),
+            (buffer.len() * size_of::<u32>()) as u32,
+            FileVolumeNameInformation,
+        )
+    };
+    if code < 0 {
+        return Err(SourceError::Io(code));
+    }
+    let bytes = buffer[0] as usize;
+    if bytes == 0 || bytes % 2 != 0 || bytes > (buffer.len() - 1) * size_of::<u32>() {
+        return Err(SourceError::IdentityUnverified);
+    }
+    // FILE_VOLUME_NAME_INFORMATION has a u32 byte count followed by UTF-16.
+    let device =
+        unsafe { std::slice::from_raw_parts(buffer.as_ptr().add(1).cast::<u16>(), bytes / 2) };
+    if !device.starts_with(&r"\Device\".encode_utf16().collect::<Vec<_>>()) || device.contains(&0) {
+        return Err(SourceError::IdentityUnverified);
+    }
+    let mut path: Vec<_> = r"\\?\GLOBALROOT".encode_utf16().collect();
+    path.extend_from_slice(device);
+    path.extend([u16::from(b'\\'), 0]);
+    // Resolve the GUID from this device's root, never from a drive letter or a
+    // serial-number search (serials need not be unique across volumes).
+    let root = open_volume_root(&path)?;
+    // The name was read, then reopened: refuse if the device now names another volume.
+    if volume_serial(&root)? != volume_serial(file)? {
+        return Err(SourceError::IdentityUnverified);
+    }
+    volume_device_path(&root)
+}
+
+fn volume_serial(file: &File) -> Result<u32, SourceError> {
+    let mut serial = 0u32;
+    if unsafe {
+        GetVolumeInformationByHandleW(
+            file.as_raw_handle(),
+            null_mut(),
+            0,
+            &mut serial,
+            null_mut(),
+            null_mut(),
+            null_mut(),
+            0,
+        )
+    } == 0
+    {
+        return Err(last_error());
+    }
+    Ok(serial)
+}
+
 /// A metadata handle on the root directory of the volume `file` lives on, by volume GUID.
 fn volume_root(file: &File) -> Result<File, SourceError> {
     let mut path = volume_device(file)?;
     path.pop();
     path.extend([u16::from(b'\\'), 0]);
+    open_volume_root(&path)
+}
+
+fn open_volume_root(path: &[u16]) -> Result<File, SourceError> {
     let handle = unsafe {
         CreateFileW(
             path.as_ptr(),
@@ -1253,6 +1332,7 @@ mod containment_tests {
 }
 fn incomplete(error: SourceError) -> ListOutcome {
     ListOutcome::Incomplete(match error {
+        SourceError::Busy => IncompleteReason::Io(ERROR_BUSY as i32),
         SourceError::Refused => IncompleteReason::Refused,
         SourceError::IdentityUnverified => IncompleteReason::IdentityUnverified,
         SourceError::AccessDenied => IncompleteReason::AccessDenied,
@@ -1510,20 +1590,171 @@ mod cancellation_tests {
         };
         let file = open(tree.path());
         let expected = volume_device(&file).unwrap();
-        let mut path = tree.path().to_owned();
-        // The GUID prefix is longer than the DOS and NT prefixes. Keep those below
-        // the native path limit while the GUID spelling needs more than 32768 units.
-        while path.as_os_str().encode_wide().count() < 32740 {
-            let remaining = 32740 - path.as_os_str().encode_wide().count();
-            if remaining < 2 {
-                break;
+        assert_eq!(volume_device_from_root(&file).unwrap(), expected);
+        // Measure both spellings at the actual temp base; no host prefix assumption.
+        let query = |file: &File, flags| {
+            let mut buffer = vec![0u16; 65536];
+            let n = unsafe {
+                GetFinalPathNameByHandleW(
+                    file.as_raw_handle(),
+                    buffer.as_mut_ptr(),
+                    buffer.len() as u32,
+                    flags,
+                )
+            } as usize;
+            if n == 0 {
+                return Err(unsafe { GetLastError() });
             }
-            path.push("x".repeat((remaining - 1).min(240)));
-            std::fs::create_dir(&path).unwrap();
+            assert!(n < buffer.len());
+            buffer.truncate(n);
+            Ok(buffer)
+        };
+        let guid_units = query(&file, VOLUME_NAME_GUID).unwrap().len();
+        let nt_units = query(&file, VOLUME_NAME_NT).unwrap().len();
+        let relative_units = query(&file, VOLUME_NAME_NONE).unwrap().len();
+        eprintln!(
+            "base: NT={nt_units}, GUID={guid_units}, volume-relative={relative_units}, temp_units={}",
+            std::env::temp_dir().as_os_str().encode_wide().count()
+        );
+        let targets = [
+            32766 - guid_units,
+            32767 - guid_units,
+            32768 - guid_units,
+            32766 - nt_units,
+            32767 - nt_units,
+            32768 - nt_units,
+            // Probe construction's own limit as well as the query limit.
+            32768 - relative_units,
+        ];
+        // Create synthetic children relative to handles, so fixture construction
+        // does not hit CreateDirectoryW's separate full-path limit (#770).
+        let create = |parent: &File, name: &str| {
+            use windows_sys::Wdk::Storage::FileSystem::{FILE_CREATE, FILE_DIRECTORY_FILE};
+            let mut name: Vec<_> = name.encode_utf16().collect();
+            assert!(!name.is_empty() && name.len() <= 255);
+            let unicode = UNICODE_STRING {
+                Length: (name.len() * 2) as u16,
+                MaximumLength: (name.len() * 2) as u16,
+                Buffer: name.as_mut_ptr(),
+            };
+            let attributes = OBJECT_ATTRIBUTES {
+                Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
+                RootDirectory: parent.as_raw_handle(),
+                ObjectName: &unicode as *const _ as *mut _,
+                Attributes: 0,
+                SecurityDescriptor: null_mut(),
+                SecurityQualityOfService: null_mut(),
+            };
+            let mut status: IO_STATUS_BLOCK = unsafe { zeroed() };
+            let mut handle = null_mut();
+            let code = unsafe {
+                NtCreateFile(
+                    &mut handle,
+                    FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                    &attributes,
+                    &mut status,
+                    null(),
+                    0,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    FILE_CREATE,
+                    FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+                    null(),
+                    0,
+                )
+            };
+            if code < 0 {
+                Err(code)
+            } else {
+                Ok(unsafe { File::from_raw_handle(handle) })
+            }
+        };
+        // All child names are short synthetic ASCII. At these full-path sizes,
+        // filesystems can reject name construction before the query is possible.
+        let construction_limit = |code| {
+            matches!(
+                code,
+                STATUS_INTEGER_OVERFLOW
+                    | STATUS_NAME_TOO_LONG
+                    | STATUS_OBJECT_NAME_INVALID
+                    | STATUS_BUFFER_TOO_SMALL
+            )
+        };
+        let trunk_limit = *targets.iter().min().unwrap() - 2;
+        let mut appended = 0;
+        let mut parent = file;
+        while appended + 128 <= trunk_limit {
+            parent = match create(&parent, &"x".repeat(127)) {
+                Ok(file) => file,
+                Err(code) if construction_limit(code) => {
+                    eprintln!(
+                        "SKIP: boundary trunk not constructible at NT={}, GUID={}: \
+                         NtCreateFile NTSTATUS {code:#x}; direct root fallback verified, \
+                         no end-to-end boundary cases exercised",
+                        nt_units + appended + 128,
+                        guid_units + appended + 128
+                    );
+                    return;
+                }
+                Err(code) => panic!("synthetic trunk creation: NtCreateFile NTSTATUS {code:#x}"),
+            };
+            appended += 128;
         }
-        let file = open(&path);
-        assert!(normalized_path(&file).unwrap().len() < 32768);
-        assert_eq!(volume_device(&file).unwrap(), expected);
+        let mut checked = 0;
+        let mut fallback_checked = 0;
+        let mut skipped = 0;
+        for target in targets {
+            let file = match create(&parent, &"z".repeat(target - appended - 1)) {
+                Ok(file) => file,
+                Err(code) if construction_limit(code) => {
+                    eprintln!(
+                        "SKIP: target not constructible: NT={}, GUID={}, volume-relative={}: \
+                         NtCreateFile NTSTATUS {code:#x}",
+                        nt_units + target,
+                        guid_units + target,
+                        relative_units + target
+                    );
+                    skipped += 1;
+                    continue;
+                }
+                Err(code) => panic!(
+                    "synthetic target creation: NT={}, GUID={}: NtCreateFile NTSTATUS {code:#x}",
+                    nt_units + target,
+                    guid_units + target
+                ),
+            };
+            let raw_guid = query(&file, VOLUME_NAME_GUID);
+            let uses_fallback = raw_guid.is_err();
+            eprintln!(
+                "NT={}, GUID={}, raw={:?}",
+                nt_units + target,
+                guid_units + target,
+                raw_guid.as_ref().map(Vec::len)
+            );
+            // Where the raw spelling stops working differs by host, so pin only its shape:
+            // a full spelling, or one of the errors the fallback handles.
+            match &raw_guid {
+                Ok(raw) => assert_eq!(raw.len(), guid_units + target),
+                Err(code) => assert!(
+                    matches!(
+                        *code,
+                        ERROR_BAD_PATHNAME | ERROR_ARITHMETIC_OVERFLOW | ERROR_FILENAME_EXCED_RANGE
+                    ),
+                    "raw GUID query failed outside the fallback's errors: {code}"
+                ),
+            }
+            assert_eq!(volume_device(&file).unwrap(), expected);
+            checked += 1;
+            if uses_fallback {
+                fallback_checked += 1;
+            }
+        }
+        eprintln!(
+            "boundary coverage: {checked} bound, {fallback_checked} end-to-end fallbacks, \
+             {skipped} not constructible; direct root fallback verified"
+        );
+        if fallback_checked == 0 {
+            eprintln!("SKIP: no constructible target exercised the end-to-end path-error fallback");
+        }
     }
     #[test]
     fn cancelled_io_cannot_register_new_work() {

@@ -975,3 +975,32 @@ hour-long real-clock retry soak. The hourly cap is tested with the injected mono
 **Residual risk:** shared-host deadline, repair-state and SQLite-contention failures remain
 visible in the broad run, despite isolated passes. Retry history is intentionally in-memory
 and resets when the service or root grant is recreated, as specified in docs/46.
+
+## Issue #550 item 2: unplaced parents proved outside by current, unmoved ancestry (2026-10-19)
+
+KRASPYON / Windows 11 Home, non-elevated, lane `fix/550-gap-check-cost`. Synthetic fixtures only.
+
+The 2026-10-17 objection stands for a bare parent open: a current location does not prove where an
+earlier event happened. The proof added here closes that gap with the window itself. To have been
+inside the root at an event and outside now, some directory on the parent's chain must have changed
+its parent, and that directory is still on the current chain (the part below it did not move). A
+re-parent writes a journal record on the moved object's own identity, so if no node of the current
+chain is the `file_id` of any record in the window, the chain stood still for the whole window.
+
+Only then is an Unresolved record dropped: its parent's current chain, read node by node with a
+zero-access `OpenFileById` (reparse points not followed, no cloud recall) and `FSCTL_READ_FILE_USN_DATA`
+(parent reference only; the name is never read), must reach the self-parented volume root without
+meeting the granted root's identity. Unknown, unopenable, moved, in-root, over depth 64, over 4096
+opens per replay or past the 5 s deadline all keep the existing full-refresh fallback. The proof is
+offered only when the root has no file identity gaps (`sub_noid=0`): then a hard link inside the root
+is caught by the existing catalogued-file lookup, whatever parent its record names. A move after the
+captured head lands in the next window, where its own record targets or stales the root.
+
+Reach: these opens touch objects outside the grant, by identity only, metadata only, non-elevated,
+bounded, with outside chains memoised per replay. No path, name or content is read or stored.
+
+Verification: `cargo test -p loomward-service --lib freshness` 23 passed; with the proof stubbed to
+false the two new regressions fail (21 passed, 2 failed). `cargo test -p loomward-windows --all-features`
+240 passed, 2 ignored, including a native walk from a synthetic temp directory to the self-parented
+volume root. Item 1 re-measured on this head (1M directories): gap probe 317.1 ms / 7,000,016 VM steps
+before, 11.2 us / 36 VM steps after.
