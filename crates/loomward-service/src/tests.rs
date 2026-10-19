@@ -70,6 +70,8 @@ pub(crate) struct Hooks {
     pub fail_watch_start: std::sync::atomic::AtomicBool,
     #[cfg(windows)]
     pub fail_freshness_checkpoint: std::sync::atomic::AtomicBool,
+    #[cfg(windows)]
+    pub before_freshness_finish: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 /// What a personal space read answers in tests: wait on an explicit gate, or report fixed space.
@@ -802,6 +804,9 @@ fn a_stalled_personal_volume_shares_one_reader_across_distinct_grant_roots() {
     let Some((svc, _folder)) = personal_grant_session(&tmp) else {
         return;
     };
+    // The grants below name folders whose native identity differs from the stored one; automatic
+    // watch setup would rightly retire them as identity_changed (#669), so it stays off here.
+    svc.inner.freshness.stop();
     // The stalled volume gets a key of its own, so its injected stall cannot hold up other tests
     // that read the real volume of this disk.
     svc.inner
@@ -3508,6 +3513,37 @@ fn roots_list_keeps_active_roots_past_64_revoked_rows() {
     }
 }
 
+#[test]
+fn grants_list_caps_retained_and_forgotten_rows_without_negative_limit() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    // More historical roots than either listing cap, plus a forgotten audit record.
+    svc.inner.db().execute_batch(
+        "WITH RECURSIVE n(id) AS (VALUES(1) UNION ALL SELECT id+1 FROM n WHERE id<301)
+         INSERT INTO st.root_grant(id,volume_key,root_file_id,display_path,origin,granted_via,state,granted_at_ns,revoked_at_ns)
+         SELECT id,'fixture',zeroblob(16),'Synthetic history','fixture','fixture','revoked',0,1 FROM n;
+         INSERT INTO main.root(id,grant_id,state) SELECT id,id,'never_scanned' FROM st.root_grant;
+         INSERT INTO st.root_forgotten(grant_id,root_number,forgotten_at_ns) VALUES(1,1,2);"
+    ).unwrap();
+    assert_eq!(crate::db::grant_rows(&svc.inner.db()).unwrap().len(), 256);
+    assert!(crate::db::forgotten_grants(&svc.inner.db(), -1)
+        .unwrap()
+        .is_empty());
+    let (list, _) = ok("grants.list", call(&svc, "grants.list", json!({})));
+    assert_eq!(list["grants"].as_array().unwrap().len(), 256);
+    // Once fewer retained rows remain, only the remaining slots go to forgotten records.
+    svc.inner
+        .db()
+        .execute("DELETE FROM main.root WHERE id>255", [])
+        .unwrap();
+    let (list, _) = ok("grants.list", call(&svc, "grants.list", json!({})));
+    assert_eq!(list["grants"].as_array().unwrap().len(), 255);
+    assert_eq!(
+        list["grants"][254]["forgotten_at"],
+        crate::ts_ns(2).as_str()
+    );
+}
+
 /// #185 item 3: the contract lists at most 64 roots, so a 65th active grant is refused by name;
 /// re-granting an active root and granting after a revocation still work.
 #[test]
@@ -3748,6 +3784,211 @@ fn service_minted_root_id_round_trips_through_the_engine() {
     assert_eq!(root.dataset_class(), DatasetClass::Synthetic);
 }
 
+#[cfg(windows)]
+#[test]
+fn scan_start_refuses_a_grant_revoked_after_root_mint() {
+    for cancel_fence in [false, true] {
+        let Some(lab) = lab() else { return };
+        let inner = &lab.svc.inner;
+        inner.freshness.pause_pump();
+        let row = inner.root_row(&lab.root).unwrap();
+        let stored = crate::db::roots(&inner.db(), Some(row)).unwrap().remove(0);
+        let id = RootId::new(&lab.root).unwrap();
+        inner.scan.bind(&id, stored.grant, stored.dir.unwrap());
+        let root = inner
+            .engine
+            .granted_root(
+                id,
+                stored.grant,
+                &loomward_engine::scan::CatalogRootIdentity {
+                    row,
+                    instance: inner.instance.clone(),
+                },
+            )
+            .unwrap();
+        if cancel_fence {
+            inner.revoke(stored.grant).unwrap();
+        } else {
+            // Pause revocation after its durable commit, before the engine cancellation fence.
+            inner
+                .catalog
+                .writer()
+                .call(WriteCommand::RevokeGrant {
+                    grant_id: stored.grant,
+                    revoked_at_ns: crate::now_ns(),
+                })
+                .unwrap();
+        }
+        for refresh in [false, true] {
+            let answer = if refresh {
+                inner.engine.scan_refresh(&root, None)
+            } else {
+                inner.engine.scan_start(&root, None)
+            };
+            if let Ok(job) = &answer {
+                settle(&lab.svc, job.job_id.as_str());
+            }
+            assert!(
+                matches!(
+                    answer,
+                    Err(loomward_engine::EngineError::PermissionDenied { .. })
+                ),
+                "revoked mint admitted native work (cancel fence={cancel_fence}, refresh={refresh}): {answer:?}"
+            );
+        }
+    }
+}
+
+/// #731: a revoke that commits while a full scan is held mid-walk is refused by the durable
+/// writer at the scan's final EndRun, on a real catalogue. The job ends cancelled or failed, its
+/// coverage is never complete, and no sweep publishes: the root's generation and the count of
+/// completed runs stay where the baseline scan left them.
+#[cfg(windows)]
+#[test]
+fn revocation_before_the_final_end_run_is_refused_by_the_durable_writer() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    let inner = &svc.inner;
+    // A completed baseline scan fixes the generation and run count a refused sweep must not move.
+    settle(svc, &start(svc, &lab.root, "full"));
+    f3_wait_live(svc);
+    let root_row = inner.root_row(&lab.root).unwrap();
+    let grant = crate::db::roots(&inner.db(), Some(root_row))
+        .unwrap()
+        .remove(0)
+        .grant;
+    let scalar =
+        |sql: &str| -> i64 { inner.db().query_row(sql, [root_row], |r| r.get(0)).unwrap() };
+    let generation = scalar("SELECT generation FROM main.root WHERE id=?1");
+    let completed =
+        scalar("SELECT count(*) FROM main.scan_run WHERE root_id=?1 AND state='completed'");
+    inner.scan.gate.arm();
+    let job = start(svc, &lab.root, "full");
+    inner.scan.gate.wait_reached();
+    // The durable revoke commits while the walk is held: the run's remaining writer commands,
+    // including its final EndRun, now meet a revoked grant.
+    let revoked = inner.catalog.writer().call(WriteCommand::RevokeGrant {
+        grant_id: grant,
+        revoked_at_ns: crate::now_ns(),
+    });
+    inner.scan.gate.release();
+    assert!(revoked.is_ok(), "{revoked:?}");
+    let done = settle(svc, &job);
+    assert!(
+        matches!(
+            done.get("state").and_then(|v| v.as_str()),
+            Some("cancelled" | "failed")
+        ),
+        "{done:?}"
+    );
+    assert_ne!(
+        done.get("coverage").and_then(|v| v.as_str()),
+        Some("complete"),
+        "{done:?}"
+    );
+    assert_eq!(
+        scalar("SELECT count(*) FROM main.scan_run WHERE root_id=?1 AND state='completed'"),
+        completed,
+        "a refused EndRun must not publish a completed run"
+    );
+    assert_eq!(
+        scalar("SELECT generation FROM main.root WHERE id=?1"),
+        generation,
+        "a refused EndRun must not publish a sweep"
+    );
+    f3_wait_live(svc);
+}
+
+/// #731: a half-applied revoke, whose durable grant commit landed but whose catalogue apply failed
+/// (the live cancel of the run was refused), leaves the run running and claiming its root. The
+/// run's final EndRun must still be refused by the grant-state guard in `active_run`: no completed
+/// run and no sweep.
+#[cfg(windows)]
+#[test]
+fn a_half_applied_revoke_still_refuses_the_final_end_run() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    let inner = &svc.inner;
+    settle(svc, &start(svc, &lab.root, "full"));
+    f3_wait_live(svc);
+    let root_row = inner.root_row(&lab.root).unwrap();
+    let grant = crate::db::roots(&inner.db(), Some(root_row))
+        .unwrap()
+        .remove(0)
+        .grant;
+    let scalar =
+        |sql: &str| -> i64 { inner.db().query_row(sql, [root_row], |r| r.get(0)).unwrap() };
+    let generation = scalar("SELECT generation FROM main.root WHERE id=?1");
+    let completed =
+        scalar("SELECT count(*) FROM main.scan_run WHERE root_id=?1 AND state='completed'");
+    inner.scan.gate.arm();
+    let job = start(svc, &lab.root, "full");
+    inner.scan.gate.wait_reached();
+    // Test-local: the trigger lives on this lab's own catalogue and is dropped right after the
+    // revoke, so it only fails the revoke's own cancel of the run.
+    inner
+        .db()
+        .execute_batch(
+            "CREATE TRIGGER main.half_applied_cancel_refusal BEFORE UPDATE OF state ON scan_run
+             WHEN NEW.state='cancelled' BEGIN SELECT RAISE(ABORT,'injected'); END;",
+        )
+        .unwrap();
+    let revoked = inner.catalog.writer().call(WriteCommand::RevokeGrant {
+        grant_id: grant,
+        revoked_at_ns: crate::now_ns(),
+    });
+    inner
+        .db()
+        .execute_batch("DROP TRIGGER main.half_applied_cancel_refusal")
+        .unwrap();
+    // The half-applied state: the grant is revoked durably, the run and its root claim are not.
+    assert!(
+        revoked.is_err(),
+        "the injected cancel must fail the revoke: {revoked:?}"
+    );
+    let grant_state: String = inner
+        .db()
+        .query_row(
+            "SELECT state FROM st.root_grant WHERE id=?1",
+            [grant],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(grant_state, "revoked");
+    assert_eq!(
+        scalar("SELECT count(*) FROM main.scan_run WHERE root_id=?1 AND state='running'"),
+        1
+    );
+    assert_eq!(
+        scalar("SELECT count(*) FROM main.root WHERE id=?1 AND active_run IS NOT NULL"),
+        1
+    );
+    inner.scan.gate.release();
+    let done = settle(svc, &job);
+    assert!(
+        matches!(
+            done.get("state").and_then(|v| v.as_str()),
+            Some("cancelled" | "failed")
+        ),
+        "{done:?}"
+    );
+    assert_ne!(
+        done.get("coverage").and_then(|v| v.as_str()),
+        Some("complete"),
+        "{done:?}"
+    );
+    assert_eq!(
+        scalar("SELECT count(*) FROM main.scan_run WHERE root_id=?1 AND state='completed'"),
+        completed,
+        "a refused EndRun must not publish a completed run"
+    );
+    assert_eq!(
+        scalar("SELECT generation FROM main.root WHERE id=?1"),
+        generation,
+        "a refused EndRun must not publish a sweep"
+    );
+}
+
 /// Independent walk: (files, dirs below the root, logical bytes); reparse points are neither
 /// followed nor counted, as the scan's exclusion rule says.
 #[cfg(windows)]
@@ -3839,6 +4080,7 @@ fn scan_start_publishes_a_lab_tree_matching_an_independent_walk_with_live_events
     assert_eq!(slice["aggregate_state"], "consistent", "{slice:?}");
     let (roots, _) = ok("roots.list", call(svc, "roots.list", json!({})));
     assert_eq!(roots["roots"][0]["scan"]["coverage"], "complete");
+    assert_eq!(roots["roots"][0]["scan"]["last_job_id"], json!(job));
     // Events: catalogue revisions arrive before the job's terminal state, each after its commit.
     let mut seen = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -4041,6 +4283,33 @@ fn f3_watch_survives_scan_completion_and_reconciles() {
     assert!(
         !f3_names(&live).iter().any(|n| n.ends_with("3.bin")),
         "{live:?}"
+    );
+}
+
+/// #717: NTFS reports the scan's own directory listing (a last-access update) as MODIFIED, which
+/// dirtied the root and started a second, automatic scan about a second after the pressed one.
+#[cfg(windows)]
+#[test]
+fn f3_issue717_a_scan_does_not_dirty_its_own_root_through_reads() {
+    let Some(lab) = lab() else { return };
+    // The fixture's ChangeTimes must precede the scan by more than the clock-tick slack.
+    std::thread::sleep(Duration::from_millis(400));
+    settle(&lab.svc, &start(&lab.svc, &lab.root, "full"));
+    // Lazily flushed notifications arrive within about a second; the pump runs every 200 ms.
+    std::thread::sleep(Duration::from_millis(2500));
+    let (jobs, _) = ok(
+        "jobs.list",
+        call(
+            &lab.svc,
+            "jobs.list",
+            json!({"kinds": ["scan"], "limit": 50}),
+        ),
+    );
+    assert_eq!(jobs["jobs"].as_array().unwrap().len(), 1, "{jobs:?}");
+    assert!(
+        !lab.svc.inner.freshness.stale(1),
+        "tracker={}",
+        lab.svc.inner.freshness.debug(1)
     );
 }
 
@@ -4713,6 +4982,59 @@ fn f3_search_and_scan_completion_serialize_watch_checkpoints() {
         "search and completion can overfill the native checkpoint queue"
     );
     assert!(!svc.inner.freshness.stale(1));
+}
+
+#[cfg(windows)]
+fn search_checkpoint_failure_during_full_scan(new_hint: bool) {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    settle(svc, &start(svc, &lab.root, "full"));
+    f3_wait_live(svc);
+    svc.inner.freshness.pause_pump();
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    let (arrived, waiting) = std::sync::mpsc::sync_channel(1);
+    let worker = barrier.clone();
+    *svc.inner.hooks.before_freshness_finish.lock().unwrap() = Some(Box::new(move || {
+        arrived.send(()).unwrap();
+        worker.wait();
+    }));
+    let job = start(svc, &lab.root, "full");
+    waiting.recv_timeout(Duration::from_secs(30)).unwrap();
+    let mut pages = Vec::new();
+    for _ in 0..3 {
+        svc.inner
+            .hooks
+            .fail_freshness_checkpoint
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        pages.push(f3_hits(svc));
+    }
+    if new_hint {
+        svc.inner
+            .freshness
+            .record(1, vec![loomward_windows::watch::Change::RootDirty]);
+    }
+    barrier.wait();
+    assert_eq!(settle(svc, &job)["coverage"], "complete");
+    for page in pages {
+        assert_eq!(page["hits"][0]["freshness"]["state"], "stale");
+    }
+    assert_eq!(
+        svc.inner.freshness.stale(1),
+        new_hint,
+        "only a real change may invalidate the completed scan"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn f3_search_checkpoint_failure_does_not_burn_completed_scan_epoch() {
+    search_checkpoint_failure_during_full_scan(false);
+}
+
+#[cfg(windows)]
+#[test]
+fn f3_search_checkpoint_failure_preserves_real_generation_change() {
+    search_checkpoint_failure_during_full_scan(true);
 }
 
 #[cfg(windows)]
@@ -5538,6 +5860,65 @@ fn a_replaced_root_records_identity_changed_and_emits_roots_changed() {
         json!({"root_id": lab.root, "mode": "full"}),
     ));
     assert_eq!(again.code, ErrorCode::PermissionDenied);
+}
+
+/// #669 item 4: a root replaced while Loomward was stopped is found by automatic watch setup at
+/// the next start, and the durable grant ends `identity_changed` (docs/41 section 7 step 1), so
+/// search and inspect stop disclosing its retained catalogue.
+#[cfg(windows)]
+#[test]
+fn freshness_setup_records_a_root_replaced_while_stopped() {
+    let Some(lab) = lab() else { return };
+    let Lab {
+        _tmp, path, svc, ..
+    } = lab;
+    drop(svc);
+    std::fs::rename(&path, path.with_file_name("lab-moved")).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    // No CLI grants: only the durable grant and automatic freshness setup see the root.
+    let svc = open(&_tmp.path().join("state"), DatasetClass::Synthetic);
+    let state: String = svc
+        .inner
+        .db()
+        .query_row("SELECT state FROM st.root_grant", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(state, "identity_changed");
+}
+
+/// #669 item 5: re-granting a verified root at a new path is fresh consent for that path, never
+/// a reuse of the grant that still names the old path; the old grant's folder was renamed, so it
+/// ends `identity_changed` (docs/41 section 16, "Root renamed").
+#[cfg(windows)]
+#[test]
+fn regranting_a_renamed_root_mints_a_grant_for_its_new_path() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    let old = svc.inner.root_row(&lab.root).unwrap();
+    let moved = lab.path.with_file_name("lab-renamed");
+    std::fs::rename(&lab.path, &moved).unwrap();
+    let moved = moved.canonicalize().unwrap();
+    let (root, fresh) = svc.inner.grant(&moved, "cli_flag", false).unwrap();
+    assert!(fresh, "a moved root needs a new grant");
+    assert_ne!(root, old);
+    let rows: Vec<(String, String)> = svc
+        .inner
+        .db()
+        .prepare("SELECT display_path,state FROM st.root_grant ORDER BY id")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    let text = moved.to_string_lossy();
+    let new_path = text.strip_prefix(r"\\?\").unwrap_or(&text).to_string();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].1, "identity_changed");
+    assert_eq!(rows[1], (new_path, "active".into()));
+    // Granting the same path again reuses the new grant.
+    assert_eq!(
+        svc.inner.grant(&moved, "cli_flag", false).unwrap(),
+        (root, false)
+    );
 }
 
 /// #378: duplicate inspection that finds the root replaced records `identity_changed` and emits
