@@ -431,7 +431,8 @@ pub enum SuggestionReason {
 #[serde(deny_unknown_fields)]
 pub struct Suggestion {
     pub node_id: NodeId,
-    pub model_id: ModelId,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub model_id: Option<ModelId>,
     pub ranked: BoundedVec<SuggestionRanked, 0, 32>,
     pub abstain: bool,
     pub reasons: UniqueVec<SuggestionReason, 0, 5>,
