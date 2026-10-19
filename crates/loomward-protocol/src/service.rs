@@ -151,6 +151,13 @@ pub enum RecvOutcome {
 /// ([`EVENT_QUEUE_CAPACITY`]); a slow reader gets `stream.lagged`, never an unbounded backlog.
 pub trait EventStream: Send {
     fn epoch(&self) -> &str;
+    /// In-process privacy admission for owned events waiting in an adapter. Capture a stamp before
+    /// receiving and check it at the final handoff. Sources that redact retained payloads must
+    /// return the same shared policy and invalidate it when they redact. Fixture-only streams
+    /// without redaction can use the default policy. This adds no wire field or stream reason.
+    fn delivery_policy(&self) -> crate::EventDeliveryPolicy {
+        crate::EventDeliveryPolicy::default()
+    }
     /// Blocks up to `timeout`. The first item is always `stream.hello`; replay or `stream.lagged`
     /// follow per `semantics.md` section 7, and `stream.hello` repeats after 15 s of silence.
     fn recv_timeout(&mut self, timeout: Duration) -> RecvOutcome;

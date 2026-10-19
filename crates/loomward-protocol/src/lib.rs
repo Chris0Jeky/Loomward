@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 
 pub mod command;
+mod delivery;
 pub mod dto;
 pub mod envelope;
 pub mod error;
@@ -17,6 +18,7 @@ pub mod service;
 pub mod types;
 
 pub use command::Command;
+pub use delivery::{EventDeliveryPolicy, EventDeliveryStamp, EventDeliverySuspension};
 pub use dto::*;
 pub use envelope::{
     decode_exact, Payload, Rejected, RequestEnvelope, ResponseEnvelope, ResponseError,

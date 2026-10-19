@@ -328,6 +328,15 @@ Rules:
   (the app shell, PR #114) and MUST treat a repeated `stream.hello` as liveness plus an epoch check: same epoch,
   nothing to do; different epoch, resync as for `epoch_changed`.
 - The service keeps a replay buffer of the last 1,024 events or 60 seconds, whichever is smaller.
+- Forget privacy also covers an event already copied into an adapter's pending queue. The adapters
+  suspend admission while `roots.forget` can commit, and retained `roots.changed` events remove a
+  root whose durable forgotten marker exists even if its later catalogue purge fails. Fresh root
+  snapshots also exclude that marker. A pending event invalidated by redaction ends its adapter
+  stream; the existing reconnect rules below recover from the last applied sequence.
+  Admission is the final synchronous privacy check immediately before yielding an HTTP frame or
+  passing an envelope to the native sink, with no intervening await. Bytes already admitted to the
+  transport, its buffers or a client cannot be recalled. Admission stamps are internal Rust state;
+  they add no envelope field, sequence number, stream reason or forgotten-root history.
 - Reconnecting: HTTP sends `Last-Event-ID: <epoch>.<seq>`; Tauri passes `lastEpoch` and `lastSeq`.
   - Same epoch and `seq + 1 >= oldest_replayable_seq`: the service replays from `seq + 1` in order, then
     continues live.
