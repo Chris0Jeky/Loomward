@@ -25,6 +25,18 @@ pub struct ListingTicket {
     /// Previous parent if identity reconciliation moved this directory.
     pub old_parent: Option<u64>,
 }
+/// A targeted run's named directory, reserved for listing and reopenable by its catalogue identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TargetDirectory {
+    /// The reserved listing.
+    pub ticket: ListingTicket,
+    /// Catalogue parent; `None` only for the root directory.
+    pub parent: Option<u64>,
+    /// Verified native identity on the root's volume, used to reopen it below the pinned root.
+    pub id: FileIdObs,
+    /// Directory chain length below the root.
+    pub depth: usize,
+}
 /// Owned compact metadata entry. No content, path reconstruction or operation capability.
 #[derive(Debug, Clone)]
 pub struct Entry {
@@ -178,6 +190,22 @@ pub trait ScanSink: Send + Sync {
         run: u64,
         ticket: ListingTicket,
     ) -> EngineResult<ListingTicket>;
+    /// Targeted runs (#782): reserve a listing for a named directory and say how to reopen it.
+    /// `Ok(None)` (the default) means this run cannot be bounded: it traverses the whole root and
+    /// publishes only the named directories as complete, as before.
+    fn prepare_target(
+        &self,
+        _root: &RootId,
+        _run: u64,
+        _dir: u64,
+    ) -> EngineResult<Option<TargetDirectory>> {
+        Ok(None)
+    }
+    /// Bounded targeted runs: whether a child kept by its parent's published listing must be listed
+    /// too, because the catalogue holds no complete listing of it (new, replaced or revealed).
+    fn needs_listing(&self, _root: &RootId, _run: u64, _dir: u64) -> bool {
+        true
+    }
     /// Stage/publish/finalize a message, rejecting obsolete runs and revisions.
     fn consume(&self, root: &RootId, message: ScanMessage) -> EngineResult<()>;
     /// Finish: only full-root plus complete permits global absence reconciliation.

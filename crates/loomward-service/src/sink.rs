@@ -35,7 +35,9 @@ use loomward_catalog::{
 use loomward_engine::scan::source::{
     FileIdObs, IdBasis, IncompleteReason, ListOutcome, OpenedIdentity,
 };
-use loomward_engine::scan::{Entry, ListingTicket, RunScope, ScanMessage, ScanSink};
+use loomward_engine::scan::{
+    Entry, ListingTicket, RunScope, ScanMessage, ScanSink, TargetDirectory,
+};
 use loomward_engine::{EngineError, EngineResult};
 use loomward_protocol::{EventName, RootId};
 use rusqlite::{params, OptionalExtension};
@@ -580,6 +582,87 @@ impl ScanSink for CatalogScanSink {
             old_parent: None,
             ..ticket
         })
+    }
+
+    /// #782: a named directory of this root with a verified identity the engine can reopen.
+    /// Anything else (an identity-unverified root, a pending absence, no usable ID) leaves the
+    /// run unbounded.
+    fn prepare_target(
+        &self,
+        root: &RootId,
+        run: u64,
+        dir: u64,
+    ) -> EngineResult<Option<TargetDirectory>> {
+        let (root_dir, unverified) = {
+            let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let r = Self::active(&mut s, root, run)?;
+            (r.root_dir, r.unverified)
+        };
+        if unverified {
+            return Ok(None);
+        }
+        let row = self
+            .reader
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .query_row(
+                "SELECT parent_id,file_id,depth FROM main.dir WHERE id=?1 AND parent_id IS NOT NULL
+                 AND root_id=(SELECT root_id FROM main.dir WHERE id=?2)
+                 AND id_basis IN ('listed','post_open') AND file_id IS NOT NULL
+                 AND listing_state NOT IN ('absent_pending','excluded')",
+                params![dir as i64, root_dir],
+                |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, Vec<u8>>(1)?,
+                        r.get::<_, i64>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|_| internal("catalogue read failed"))?;
+        let Some((parent, id, depth)) = row else {
+            return Ok(None);
+        };
+        let id = match id.len() {
+            16 => FileIdObs::Id128(id.try_into().unwrap()),
+            8 => FileIdObs::Id64(u64::from_le_bytes(id.try_into().unwrap())),
+            _ => return Ok(None),
+        };
+        let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        s.next_revision += 1;
+        let revision = s.next_revision;
+        Self::active(&mut s, root, run)?.dirs.insert(
+            dir,
+            Listing {
+                revision,
+                ..Listing::default()
+            },
+        );
+        Ok(Some(TargetDirectory {
+            ticket: ListingTicket {
+                dir,
+                input_revision: revision,
+                old_parent: None,
+            },
+            parent: Some(parent as u64),
+            id,
+            depth: depth as usize,
+        }))
+    }
+
+    /// Only a directory whose last listing was complete may be skipped by a bounded run.
+    fn needs_listing(&self, _root: &RootId, _run: u64, dir: u64) -> bool {
+        !self
+            .reader
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .query_row(
+                "SELECT listing_state='complete' FROM main.dir WHERE id=?1",
+                [dir as i64],
+                |r| r.get::<_, bool>(0),
+            )
+            .unwrap_or(false)
     }
 
     fn consume(&self, root: &RootId, message: ScanMessage) -> EngineResult<()> {

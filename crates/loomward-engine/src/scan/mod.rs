@@ -11,7 +11,9 @@ pub mod watch;
 use crate::{Component, Engine, EngineError, EngineResult};
 use loomward_protocol::{DatasetClass, Job, JobId, JobKind, RootId, ScanBudget};
 pub use pipeline::{run_scan, ScanOptions, ScanReport};
-pub use sink::{Entry, ListingTicket, MemorySink, RunScope, ScanMessage, ScanSink, Sums};
+pub use sink::{
+    Entry, ListingTicket, MemorySink, RunScope, ScanMessage, ScanSink, Sums, TargetDirectory,
+};
 use std::{
     path::{Path, PathBuf},
     sync::{
