@@ -212,11 +212,6 @@ fn token_list(walk: &mut Walk, conn: &Connection, qtokens: &[String], k: usize) 
     Ok(out)
 }
 
-/// Does `q` start a token of `tokens` or occur inside the folded `name`?
-fn covers(q: &str, tokens: &[String], folded: &str) -> bool {
-    tokens.iter().any(|t| t.starts_with(q)) || folded.contains(q)
-}
-
 /// Candidates for the context list: entries directly in folders whose own name or parent name
 /// starts a query token, kept when every token is covered by the entry's name, its folder's name
 /// or its folder's parent's name (the two nearest ancestors). Anchor folders come from the token
@@ -240,32 +235,22 @@ fn context_list(walk: &mut Walk, conn: &Connection, qtokens: &[String], k: usize
         return Ok(Vec::new());
     }
     let anchor_ids = ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
-    // Each folder's context: its own name and its parent's.
+    // SQLite already matched the anchors; retain its folding for context coverage too.
     let mut stmt = conn.prepare(&format!(
-        "SELECT x.id,x.name,p.name FROM dir x LEFT JOIN dir p ON p.id=x.parent_id WHERE x.id IN ({anchor_ids}) OR x.parent_id IN ({anchor_ids}) LIMIT {CONTEXT_DIRS}"
+        "SELECT x.id,x.parent_id,x.name,p.name FROM dir x LEFT JOIN dir p ON p.id=x.parent_id WHERE x.id IN ({anchor_ids}) OR x.parent_id IN ({anchor_ids}) LIMIT {CONTEXT_DIRS}"
     ))?;
-    let mut folders: HashMap<i64, Vec<String>> = HashMap::new();
-    let found = stmt
+    let folders: HashMap<i64, (Option<i64>, Vec<String>)> = stmt
         .query_map([], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, Option<String>>(2)?,
-            ))
+            let name: String = r.get(2)?;
+            let parent: Option<String> = r.get(3)?;
+            // Root names are not indexed, but remain part of the existing context checks.
+            let have = tokens(&name)
+                .into_iter()
+                .chain(parent.iter().flat_map(|p| tokens(p)))
+                .collect();
+            Ok((r.get::<_, i64>(0)?, (r.get::<_, Option<i64>>(1)?, have)))
         })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    for (id, name, parent) in found {
-        let have: Vec<String> = tokens(&name)
-            .into_iter()
-            .chain(parent.iter().flat_map(|p| tokens(p)))
-            .collect();
-        if qtokens
-            .iter()
-            .any(|q| have.iter().any(|t| t.starts_with(q.as_str())))
-        {
-            folders.insert(id, have);
-        }
-    }
+        .collect::<rusqlite::Result<_>>()?;
     if folders.is_empty() {
         return Ok(Vec::new());
     }
@@ -275,6 +260,13 @@ fn context_list(walk: &mut Walk, conn: &Connection, qtokens: &[String], k: usize
         .collect::<Vec<_>>()
         .join(",");
     let mut out = Vec::new();
+    let expressions: Vec<_> = qtokens
+        .iter()
+        .map(|q| fts(std::slice::from_ref(q)))
+        .collect();
+    let mut coverage = conn.prepare_cached(
+        "SELECT EXISTS(SELECT 1 FROM search_token WHERE search_token MATCH ?1 AND rowid IN (?2,?3,?4))",
+    )?;
     for files in [true, false] {
         if (files && walk.req.kind == "dir") || (!files && walk.req.kind == "file") {
             continue;
@@ -301,11 +293,21 @@ fn context_list(walk: &mut Walk, conn: &Connection, qtokens: &[String], k: usize
             let key: i64 = row.get(24)?;
             let hit = raw(row)?;
             let around = hit.parent.and_then(|p| folders.get(&p));
+            let grandparent = around.and_then(|(parent, _)| *parent);
             let folded = hit.name.to_lowercase();
-            let name = tokens(&hit.name);
-            let covered = qtokens
-                .iter()
-                .all(|q| covers(q, &name, &folded) || around.is_some_and(|a| covers(q, a, "")));
+            let mut covered = true;
+            for (q, expr) in qtokens.iter().zip(&expressions) {
+                if !folded.contains(q.as_str())
+                    && !around.is_some_and(|(_, have)| have.iter().any(|t| t.starts_with(q)))
+                    && !coverage
+                        .query_row(rusqlite::params![expr, key, hit.parent, grandparent], |r| {
+                            r.get::<_, bool>(0)
+                        })?
+                {
+                    covered = false;
+                    break;
+                }
+            }
             if covered {
                 if let Some(h) = walk.keep(conn, hit, key)? {
                     out.push(h);
