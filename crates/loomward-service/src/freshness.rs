@@ -928,7 +928,18 @@ pub(crate) fn refresh(inner: &Inner) {
             .swap(false, Ordering::SeqCst);
         #[cfg(not(test))]
         let failed = false;
-        let job = if failed {
+        #[cfg(test)]
+        let refused = inner
+            .hooks
+            .refuse_automatic_budget
+            .swap(false, Ordering::SeqCst);
+        #[cfg(not(test))]
+        let refused = false;
+        let job = if refused {
+            Err(loomward_engine::EngineError::ResourceBudget {
+                message: "synthetic automatic budget".into(),
+            })
+        } else if failed {
             Err(loomward_engine::EngineError::Internal {
                 message: "synthetic automatic failure".into(),
                 detail: None,
@@ -1331,6 +1342,10 @@ mod tests {
         assert_eq!(after, Some(expected));
     }
 }
+
+#[cfg(all(test, windows))]
+#[path = "freshness_gate_tests.rs"]
+mod freshness_gate_tests;
 
 #[cfg(all(test, windows))]
 mod restart_tests {

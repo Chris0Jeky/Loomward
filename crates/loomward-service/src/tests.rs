@@ -66,6 +66,9 @@ pub(crate) struct Hooks {
     pub fail_explicit_retry: std::sync::atomic::AtomicBool,
     #[cfg(windows)]
     pub fail_automatic_start: std::sync::atomic::AtomicBool,
+    /// One-shot: the next automatic start is refused by the resource budget (refunded, not failed).
+    #[cfg(windows)]
+    pub refuse_automatic_budget: std::sync::atomic::AtomicBool,
     #[cfg(windows)]
     pub fail_watch_start: std::sync::atomic::AtomicBool,
     #[cfg(windows)]
