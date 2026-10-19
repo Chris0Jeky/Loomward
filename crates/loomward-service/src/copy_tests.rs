@@ -1245,11 +1245,12 @@ mod lab_copy {
         assert_eq!(settle_copy(svc, &op)["state"], "cancelled");
     }
 
-    /// #636 item 3: a stored operation whose journal no longer replays can take no further effect
-    /// (every step and append re-validates it), so it must not hold every revoke retry for the grant
-    /// at `copy_fence_pending` forever. It stays for the owner: its status still refuses to replay.
+    /// #636 item 3: only a journal whose head no longer matches its tail (refused by every writer and
+    /// reader, cached or not) is skipped by revocation instead of holding it at `copy_fence_pending`.
+    /// A tampered middle row is caught only by a full replay, while a detached worker's hot cache can
+    /// still pass its checks: that stays a pending, retryable fence (review of #771).
     #[test]
-    fn an_unreplayable_journal_does_not_hold_revocation_pending() {
+    fn only_a_refused_journal_tail_releases_a_pending_revocation() {
         let Some((lab, a, b)) = scanned() else { return };
         let svc = &lab.svc;
         let p = preview(svc, &a, &b);
@@ -1267,13 +1268,17 @@ mod lab_copy {
         let journal = loomward_catalog::sqlite_dir(&lab.path.parent().unwrap().join("state"))
             .join("state.db");
         let raw = rusqlite::Connection::open(journal).unwrap();
-        // Tampering through a dropped trigger is caught by the chain on every full replay.
         raw.execute_batch(
             "DROP TRIGGER op_journal_no_update;              UPDATE op_journal SET body=replace(body,'staging','stagin9') WHERE seq=2",
         )
         .unwrap();
-        drop(raw);
         let request = json!({"root_id": lab.root, "purge_catalog": false});
+        for _ in 0..2 {
+            let e = err(call(svc, "roots.revoke", request.clone()));
+            assert_eq!(reason(&e), Some("copy_fence_pending"), "{e:?}");
+        }
+        raw.execute("DELETE FROM op_journal_head", []).unwrap();
+        drop(raw);
         ok("roots.revoke", call(svc, "roots.revoke", request));
         let e = err(call(svc, "copy.status", json!({"operation_id": op})));
         assert_eq!(e.code, ErrorCode::InternalError, "{e:?}");

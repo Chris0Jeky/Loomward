@@ -319,6 +319,12 @@ then fences later messages. The copy run follows the same pattern, with one addi
 
    If a step does not return within 30 s (stuck I/O), the revocation is reported as `pending_in_flight_step`, not
    acknowledged. It is acknowledged when the step returns (assumption: 30 s, measured in C2).
+
+   One exception (#636 item 3): an operation whose journal head no longer matches its tail is skipped, and the
+   revocation succeeds without it. Every store refuses such a journal on each append and effect step, so it can take
+   no further effect, but it is neither stopped (no fence is journaled) nor settled; only `copy.status`, which answers
+   that the journal does not replay, shows it. A journal fault seen only by a full replay (a middle row) is not
+   skipped: a store with a cached replay could still pass it, so the revocation stays `copy_fence_pending`.
 4. **Before publish.** Up to and including the rename step's epoch read, a moved epoch means:
    - no further create, write, metadata change or rename;
    - close the source handles, journal `revoked`, and go to `cancelling`;

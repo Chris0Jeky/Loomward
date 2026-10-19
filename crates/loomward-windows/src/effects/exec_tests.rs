@@ -2437,3 +2437,40 @@ fn live_status_never_reports_transient_attention() {
         "{seen:?}"
     );
 }
+
+/// #636 item 3, review of #771: a refused journal tail (every reader and writer, cached or not,
+/// checks it) acknowledges `Unreplayable` without writing a fence, and nothing can append or act
+/// after it. A tampered middle row (seen only by a full replay) is a failed, retryable fence.
+#[test]
+fn only_a_refused_journal_tail_is_an_unreplayable_fence() {
+    let Some(lab) = Lab::new() else { return };
+    fs::write(lab.src().join("f.bin"), b"payload").unwrap();
+    let op = lab.start(&["f.bin"]);
+    let raw = rusqlite::Connection::open(lab.tmp.path().join("state/state.db")).unwrap();
+    raw.execute_batch(
+        "DROP TRIGGER op_journal_no_update; \
+         UPDATE op_journal SET body=replace(body,'\"','\"') || ' ' WHERE seq=1",
+    )
+    .unwrap();
+    let cause = loomward_operations::FenceCause::GrantRevoked;
+    assert!(
+        fence(&lab.store, op, &Control::new(false), cause).is_err(),
+        "a mid-journal tamper is not acknowledged"
+    );
+    raw.execute("DELETE FROM op_journal_head WHERE op_id=?1", [op as i64])
+        .unwrap();
+    let rows = lab.store.lock().unwrap().rows(op).unwrap().len();
+    let control = Control::new(false);
+    assert_eq!(
+        fence(&lab.store, op, &control, cause).unwrap(),
+        Ack::Unreplayable
+    );
+    assert!(control.fenced(), "the in-memory fence still lands");
+    let mut s = lab.store.lock().unwrap();
+    assert_eq!(s.rows(op).unwrap().len(), rows, "no fence row written");
+    assert!(s.append(op, 9, Record::Fenced { cause }).is_err());
+    assert!(s
+        .while_current(op, OpState::Preparing, 1, || ())
+        .unwrap()
+        .is_err());
+}

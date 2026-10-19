@@ -379,6 +379,13 @@ impl Store {
         Ok(replay)
     }
 
+    /// The journal head does not match its tail: every append and `while_current` refuses the
+    /// operation from then on, whatever its cached replay says (a middle-row fault is seen only by a
+    /// full `replay`, so a hot cache can still pass it).
+    pub fn tail_refused(&self, op: u64) -> rusqlite::Result<bool> {
+        Ok(checked_tail(&self.conn, op)?.is_err())
+    }
+
     pub fn recover(&self, op: u64, disk: &impl Disk) -> rusqlite::Result<Recovery> {
         Ok(from_replay(op, self.replay(op)?, disk))
     }

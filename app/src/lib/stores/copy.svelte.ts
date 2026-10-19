@@ -14,7 +14,7 @@ const REASONS: Record<CopyRefusalCode, string> = {
   too_many_streams: 'An item exceeds the limit of 64 named data streams.',
   special_file: 'This item is not an ordinary disk file.',
   source_changed: 'The source changed. Abandon this operation and make a new preview.',
-  staging_name_taken: 'An entry Loomward did not record occupies a staging name. It is left untouched; remove it outside Loomward, then resume or make a new preview.',
+  staging_name_taken: 'An entry Loomward did not record occupies a staging name. It is left untouched; remove it outside Loomward. A run that needs attention can then resume; a refused one needs a new preview.',
   staging_in_use: 'Another program has a staged file open for writing. Close it before resuming.',
   changed_after_verification: 'The published copy changed after verification. It is kept, but is not verified.',
   source_in_use: 'Another program is writing to the source. Close it before resuming.',

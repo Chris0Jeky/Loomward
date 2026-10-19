@@ -460,9 +460,11 @@ pub enum Ack {
     /// The run had a publish intent and the destination could not be observed after the fence, so
     /// which side of the rename it ended on is unknown (invariant 4). The fence is durable; retry.
     PublishUnobserved,
-    /// The stored journal does not replay (#636 item 3), so nothing could be appended. Not a pending
-    /// fence: every effect step and every append re-validates the journal and refuses, so the run can
-    /// take no further effect, and retrying cannot change the answer. It stays for the owner.
+    /// The stored journal's head no longer matches its tail (#636 item 3), so nothing could be
+    /// appended. Not a pending fence: every effect step and every append, on any store and whatever
+    /// its cached replay, checks the tail and refuses, so the run can take no further effect and a
+    /// retry cannot change the answer. It stays for the owner. A fault only a full replay sees (a
+    /// middle row) is not this: it fails the fence, retryable.
     Unreplayable,
 }
 
@@ -1629,8 +1631,16 @@ pub fn fence(
         // One store lock across the read and the append: no record slips between them.
         let mut s = store.lock().unwrap_or_else(|e| e.into_inner());
         control.fenced.store(true, Ordering::SeqCst);
-        let Ok(r) = s.replay(op).map_err(|e| Fault::Journal(e.to_string()))? else {
-            return Ok(Ack::Unreplayable);
+        let r = match s.replay(op).map_err(|e| Fault::Journal(e.to_string()))? {
+            Ok(r) => r,
+            // Only a refused tail is inert for every store; a middle-row fault stays retryable.
+            Err(_)
+                if s.tail_refused(op)
+                    .map_err(|e| Fault::Journal(e.to_string()))? =>
+            {
+                return Ok(Ack::Unreplayable)
+            }
+            Err(e) => return Err(Fault::Journal(format!("{e:?}"))),
         };
         if r.state.is_terminal() {
             return Ok(Ack::Settled);
