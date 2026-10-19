@@ -207,6 +207,11 @@ fn poisoned_test_gates_preserve_the_original_panic() {
             output.status,
             String::from_utf8_lossy(&output.stderr)
         );
+        // A renamed test would match nothing and exit 0 while proving nothing.
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+            "{gate}: the child ran no test"
+        );
     }
 }
 
