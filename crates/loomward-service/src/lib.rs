@@ -1175,6 +1175,27 @@ impl Inner {
         }
     }
 
+    fn identity_triple(
+        identity: &loomward_windows::enumerate::OpenedIdentity,
+    ) -> Result<(String, Vec<u8>, String), Refusal> {
+        let file_id = match identity.id {
+            Some(loomward_windows::enumerate::FileIdObs::Id128(id)) => id.to_vec(),
+            Some(loomward_windows::enumerate::FileIdObs::Id64(id)) => id.to_le_bytes().to_vec(),
+            None => return Err(Refusal::IdentityUnavailable),
+        };
+        Ok((
+            format!(
+                "vsn_{}",
+                identity.volume_serial.ok_or(Refusal::IdentityUnavailable)?
+            ),
+            file_id,
+            format!(
+                "{:032x}",
+                identity.volume_guid.ok_or(Refusal::IdentityUnavailable)?
+            ),
+        ))
+    }
+
     /// Grants one already path-checked root under the session's provenance policy. A synthetic
     /// session accepts only a registered lab root whose native identity matches the registry; a
     /// personal session accepts an owner folder. Re-granting an active root returns it.
@@ -1185,19 +1206,7 @@ impl Inner {
         confirmed_unverified: bool,
     ) -> Result<(i64, bool), Refused> {
         let (filesystem, identity) = self.root_observation(root)?;
-        let volume_key = format!(
-            "vsn_{}",
-            identity.volume_serial.ok_or(Refusal::IdentityUnavailable)?
-        );
-        let file_id = match identity.id {
-            Some(loomward_windows::enumerate::FileIdObs::Id128(id)) => id.to_vec(),
-            Some(loomward_windows::enumerate::FileIdObs::Id64(id)) => id.to_le_bytes().to_vec(),
-            None => return Err(Refusal::IdentityUnavailable.into()),
-        };
-        let volume_guid = format!(
-            "{:032x}",
-            identity.volume_guid.ok_or(Refusal::IdentityUnavailable)?
-        );
+        let (volume_key, file_id, volume_guid) = Self::identity_triple(&identity)?;
         // #219: a personal root on a volume that cannot verify identity needs the owner's
         // explicit confirmation; a synthetic lab root may list unverified freely.
         let unverified = !loomward_windows::enumerate::verifies_identity(&filesystem);
@@ -1209,8 +1218,23 @@ impl Inner {
         // and the grant still naming its old path ends identity_changed.
         let existing = db::active_grant(&conn, &volume_key, &file_id, &display_path, &volume_guid)
             .map_err(|_| Refusal::IdentityUnavailable)?;
-        let renamed = db::renamed_grants(&conn, &volume_key, &file_id, &display_path, &volume_guid)
-            .map_err(|_| Refusal::IdentityUnavailable)?;
+        // An identity-unverified ID is weak and recyclable, so its grant retires only once the old
+        // path no longer answers with this identity; a verified one retires on the ID alone.
+        let renamed: Vec<i64> =
+            db::renamed_grants(&conn, &volume_key, &file_id, &display_path, &volume_guid)
+                .map_err(|_| Refusal::IdentityUnavailable)?
+                .into_iter()
+                .filter(|(_, unverified, old)| {
+                    !*unverified
+                        || self
+                            .root_observation(Path::new(old))
+                            .and_then(|(_, seen)| Self::identity_triple(&seen))
+                            .map_or(true, |seen| {
+                                seen != (volume_key.clone(), file_id.clone(), volume_guid.clone())
+                            })
+                })
+                .map(|(id, ..)| id)
+                .collect();
         if unverified
             && self.dataset == DatasetClass::Personal
             && !confirmed_unverified

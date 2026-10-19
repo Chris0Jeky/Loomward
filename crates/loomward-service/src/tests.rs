@@ -5709,6 +5709,45 @@ fn regranting_a_renamed_root_mints_a_grant_for_its_new_path() {
     );
 }
 
+/// Retro review (w12): an identity-unverified grant whose folder was renamed ends
+/// `identity_changed` too, once its old path no longer answers; the weak ID alone retires nothing.
+#[cfg(windows)]
+#[test]
+fn regranting_a_renamed_unverified_root_retires_the_grant_naming_the_old_path() {
+    if loomward_windows::enumerate::running_elevated() {
+        return;
+    }
+    let tmp = temp_root();
+    let folder = tmp.path().join("fat-folder");
+    std::fs::create_dir(&folder).unwrap();
+    let folder = folder.canonicalize().unwrap();
+    let svc = open(&tmp.path().join("state"), DatasetClass::Personal);
+    *svc.inner.hooks.filesystem.lock().unwrap() = Some("exFAT");
+    let (old, _) = svc.inner.grant(&folder, "cli_flag", true).unwrap();
+    let moved = tmp.path().join("fat-folder-renamed");
+    std::fs::rename(&folder, &moved).unwrap();
+    let moved = moved.canonicalize().unwrap();
+    let (root, fresh) = svc.inner.grant(&moved, "cli_flag", true).unwrap();
+    assert!(fresh && root != old);
+    let states: Vec<(String, String)> = svc
+        .inner
+        .db()
+        .prepare("SELECT identity_mode,state FROM st.root_grant ORDER BY id")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        states,
+        [
+            ("unverified".into(), "identity_changed".into()),
+            ("unverified".into(), "active".into())
+        ],
+        "one active grant per native folder"
+    );
+}
+
 /// #378: duplicate inspection that finds the root replaced records `identity_changed` and emits
 /// `roots.changed` exactly as scan start does, so the UI stops offering an inspection that fails.
 #[cfg(windows)]
