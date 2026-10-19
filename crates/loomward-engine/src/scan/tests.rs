@@ -1298,6 +1298,74 @@ fn directory_limit_does_not_hide_child_io_errors() {
     assert_eq!(report.failed, 1);
     assert!(!sink.sweep_allowed(root.root_id()));
 }
+/// The directory-slot cap names itself (`directory_limit`), so a client never reads a capped scan
+/// as a generic stop with no cause.
+#[test]
+fn directory_cap_names_its_limit() {
+    let root = root();
+    let sink = Arc::new(MemorySink::default());
+    let report = run_scan(
+        &Tree,
+        &root,
+        1,
+        sink.clone(),
+        Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES)),
+        Arc::new(AtomicBool::new(false)),
+        ScanOptions {
+            max_dirs: 1,
+            ..ScanOptions::default()
+        },
+    )
+    .unwrap();
+    assert!(report.limit_hit);
+    assert!(!report.complete);
+    assert_eq!(
+        report.limit_reason,
+        Some(loomward_protocol::ScanLimitReason::DirectoryLimit)
+    );
+}
+
+/// A directory whose open is refused is catalogued by name but never indexed, so it is not counted
+/// in the scan's indexed directories (`ScanProgress.indexed_dirs`).
+#[test]
+fn denied_directory_is_not_an_indexed_directory() {
+    struct DeniedChildren;
+    impl DirSource for DeniedChildren {
+        type Dir = u64;
+        fn strategy(&self) -> Strategy {
+            Strategy::Portable
+        }
+        fn open_root(&self, path: &std::path::Path) -> Result<(u64, OpenedIdentity), SourceError> {
+            Tree.open_root(path)
+        }
+        fn open_child(
+            &self,
+            _: &u64,
+            _: &RawEntry<'_>,
+        ) -> Result<(u64, OpenedIdentity), SourceError> {
+            Err(SourceError::AccessDenied)
+        }
+        fn list(&self, dir: &u64, sink: &mut dyn FnMut(RawEntry<'_>) -> Flow) -> ListOutcome {
+            Tree.list(dir, sink)
+        }
+    }
+    let root = root();
+    let sink = Arc::new(MemorySink::default());
+    let report = run_scan(
+        &DeniedChildren,
+        &root,
+        1,
+        sink.clone(),
+        Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES)),
+        Arc::new(AtomicBool::new(false)),
+        ScanOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(report.failed, 1);
+    assert!(!report.complete);
+    assert_eq!(report.totals.dirs, 0);
+}
+
 #[test]
 fn fence_rejects_late_staging_and_final() {
     let sink = MemorySink::default();

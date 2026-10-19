@@ -109,6 +109,13 @@ const ms = (iso: string | null): number | null => {
   return Number.isNaN(t) ? null : t;
 };
 
+/** Headline for a scan that stopped at a cap. An absent reason is the entry budget, which names no cause. */
+function stopReason(reason: ScanProgress['limit_reason']): string {
+  if (reason === 'depth_limit') return 'Stopped at its directory depth limit';
+  if (reason === 'directory_limit') return 'Stopped at its directory limit';
+  return 'Stopped at its entry budget';
+}
+
 function countsText(p: ScanProgress | null): string {
   if (!p) return 'Counts were not reported.';
   const unread = p.failed > 0 ? `, ${formatCount(p.failed)} could not be read` : '';
@@ -138,7 +145,7 @@ export function viewOf(job: Job, nowMs: number): ScanView {
       if (job.coverage === 'complete' && !stopped && !gaps) {
         return { activity: 'completed', active: false, headline: 'Finished, complete coverage', detail: countsText(p), elapsedMs: final };
       }
-      const why = stopped ? p?.limit_reason === 'depth_limit' ? 'Stopped at its directory depth limit' : 'Stopped at its entry budget' : job.coverage === null ? 'Finished, coverage not reported' : 'Finished, partial coverage';
+      const why = stopped ? stopReason(p?.limit_reason) : job.coverage === null ? 'Finished, coverage not reported' : 'Finished, partial coverage';
       return { activity: 'partial', active: false, headline: why, detail: `${countsText(p)} Totals are lower bounds, not the whole root.`, elapsedMs: final };
     }
   }
@@ -149,6 +156,9 @@ export const announcement = (v: ScanView): string => `${v.headline}${v.detail ? 
 
 const reasonOf = (detail: Record<string, unknown> | null): string | null =>
   typeof detail?.reason === 'string' ? detail.reason : null;
+
+/** The notice for a start that met a running scan; it is only true while that scan runs. */
+export const ALREADY_RUNNING = 'A scan of this root is already running.';
 
 /** Plain-language refusal for a failed `scan.start`. The service decides; this only words it. */
 export function refusalText(code: ErrorCode, detail: Record<string, unknown> | null, message: string): string {
@@ -162,7 +172,7 @@ export function refusalText(code: ErrorCode, detail: Record<string, unknown> | n
     // `busy` is also the service's answer for a root that is starting or being revoked, a busy writer and too many
     // pending mutations: only a named running job (`job_id`) means this root is already being scanned.
     case 'busy':
-      return typeof detail?.job_id === 'string' ? 'A scan of this root is already running.' : `The service is busy and did not start the scan${message ? `: ${message}` : ''}. Try again shortly.`;
+      return typeof detail?.job_id === 'string' ? ALREADY_RUNNING : `The service is busy and did not start the scan${message ? `: ${message}` : ''}. Try again shortly.`;
     case 'permission_denied': return "This root's grant is not active, so Loomward may not scan it.";
     case 'not_found': return 'The service no longer knows this root. Reload this page and try again.';
     default: return message || 'The service refused the scan without giving a reason.';

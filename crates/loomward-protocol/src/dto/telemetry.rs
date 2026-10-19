@@ -109,7 +109,8 @@ pub struct SystemSampleMemory {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SystemSampleCpu {
-    pub logical_cpus: Count,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub logical_cpus: Option<Count>,
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub busy_fraction: Option<Fraction>,
 }

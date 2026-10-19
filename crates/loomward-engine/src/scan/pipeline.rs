@@ -62,7 +62,8 @@ pub struct ScanReport {
     pub strategy: Strategy,
     /// A finite entry, depth or directory limit was reached.
     pub limit_hit: bool,
-    /// Specific limiting cause when known; generic resource caps retain `limit_hit` only.
+    /// The named cause when one applies (depth, or the directory arena); the entry budget retains
+    /// `limit_hit` only.
     pub limit_reason: Option<ScanLimitReason>,
     /// Entries in each directory's latest listing, including excluded metadata.
     pub examined: u64,
@@ -162,6 +163,7 @@ fn directory_limit_releases_pending_identity_before_parent_relist() {
         strategy: Mutex::new(Strategy::Portable),
         limit_hit: Default::default(),
         depth_limit_hit: Default::default(),
+        directory_limit_hit: Default::default(),
         excluded: vec![],
         max_dirs: 1,
         held: Default::default(),
@@ -281,6 +283,8 @@ struct Shared<'a, S: DirSource> {
     strategy: Mutex<Strategy>,
     limit_hit: AtomicBool,
     depth_limit_hit: AtomicBool,
+    /// Set only by the directory-slot cap, which names its cause.
+    directory_limit_hit: AtomicBool,
     excluded: Vec<OpenedIdentity>,
     max_dirs: usize,
     /// Child directories sighted by a listing but not yet adopted, across all workers:
@@ -314,11 +318,14 @@ impl<S: DirSource> Shared<'_, S> {
                 + held.1
                 + name_bytes
                 <= self.arena_bytes;
-        fits.then(|| {
-            held.0 += 1;
-            held.1 += name_bytes;
-            Held(&self.held, name_bytes)
-        })
+        if !fits {
+            // Refusing a sighted child is the directory arena's cap, whether by count or bytes.
+            self.directory_limit_hit.store(true, Ordering::Release);
+            return None;
+        }
+        held.0 += 1;
+        held.1 += name_bytes;
+        Some(Held(&self.held, name_bytes))
     }
     fn stopping(&self) -> bool {
         self.cancel.load(Ordering::Acquire) || self.writer_failed.load(Ordering::Acquire)
@@ -767,6 +774,7 @@ impl<S: DirSource> Shared<'_, S> {
                     self.discovered.lock().unwrap().remove(&key);
                 }
                 self.limit_hit.store(true, Ordering::Release);
+                self.directory_limit_hit.store(true, Ordering::Release);
                 return Ok(false);
             }
             let index = arena.len();
@@ -1086,6 +1094,7 @@ pub fn run_scan<S: DirSource>(
         strategy: Mutex::new(source.strategy()),
         limit_hit: AtomicBool::new(false),
         depth_limit_hit: AtomicBool::new(false),
+        directory_limit_hit: AtomicBool::new(false),
         excluded,
         max_dirs,
         held: Mutex::new((0, 0)),
@@ -1207,6 +1216,7 @@ pub fn run_scan<S: DirSource>(
                             > shared.arena_bytes
                         {
                             shared.limit_hit.store(true, Ordering::Release);
+                            shared.directory_limit_hit.store(true, Ordering::Release);
                             slot.listed = false;
                             continue;
                         }
@@ -1318,10 +1328,14 @@ pub fn run_scan<S: DirSource>(
         complete,
         strategy,
         limit_hit: shared.limit_hit.load(Ordering::Acquire),
-        limit_reason: shared
-            .depth_limit_hit
-            .load(Ordering::Acquire)
-            .then_some(ScanLimitReason::DepthLimit),
+        // Depth is the more specific cause when both caps were reached.
+        limit_reason: if shared.depth_limit_hit.load(Ordering::Acquire) {
+            Some(ScanLimitReason::DepthLimit)
+        } else if shared.directory_limit_hit.load(Ordering::Acquire) {
+            Some(ScanLimitReason::DirectoryLimit)
+        } else {
+            None
+        },
         examined: counts[0],
         enumeration_attempts: shared
             .attempted
