@@ -333,7 +333,7 @@ pub(crate) use native::open_journal_root;
 pub use native::read_capped_regular_file;
 #[cfg(all(test, windows))]
 pub(crate) use native::record_open_accesses;
-#[cfg(all(windows, feature = "copy-primitives"))]
+#[cfg(windows)]
 pub(crate) use native::volume_device;
 #[cfg(all(windows, any(feature = "content-read", test)))]
 pub(crate) use native::volume_guid;

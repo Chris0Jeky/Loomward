@@ -7,6 +7,8 @@ use std::{
 };
 
 const BATCH: usize = 128;
+const DEPTH: usize = 64;
+const OPENS: usize = 4096;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Directory {
@@ -125,15 +127,69 @@ pub(super) fn lookup(
     Ok(found)
 }
 
+/// Current volume ancestry for records the catalogue cannot place. Only built when every file has
+/// an identity: a hard link inside the root is then found by `previous`, whatever parent it names.
+pub(super) struct Volume<'a> {
+    root: Vec<u8>,
+    parent_of: &'a mut dyn FnMut(&[u8]) -> Option<Vec<u8>>,
+    outside: BTreeSet<Vec<u8>>,
+    opens: usize,
+}
+
+impl<'a> Volume<'a> {
+    pub(super) fn new(root: &[u8], parent_of: &'a mut dyn FnMut(&[u8]) -> Option<Vec<u8>>) -> Self {
+        Self {
+            root: canonical(root),
+            parent_of,
+            outside: BTreeSet::new(),
+            opens: 0,
+        }
+    }
+
+    /// True only when `node`'s current chain reaches the self-parented volume root without
+    /// meeting the granted root, and no link in it has a record in the window. Leaving the root
+    /// changes some link's parent, and that link is still on the current chain, so an unmoved
+    /// chain was outside for the whole window. Anything unknown or over budget stays false.
+    fn outside(&mut self, mut node: Vec<u8>, moved: &BTreeSet<Vec<u8>>, deadline: Instant) -> bool {
+        let mut chain = Vec::new();
+        for _ in 0..DEPTH {
+            if node == self.root || moved.contains(&node) {
+                return false;
+            }
+            if self.outside.contains(&node) {
+                self.outside.extend(chain);
+                return true;
+            }
+            if self.opens >= OPENS || Instant::now() >= deadline {
+                return false;
+            }
+            self.opens += 1;
+            let Some(parent) = (self.parent_of)(&node).map(|p| canonical(&p)) else {
+                return false;
+            };
+            let top = parent == node;
+            chain.push(node);
+            if top {
+                self.outside.extend(chain);
+                return true;
+            }
+            node = parent;
+        }
+        false
+    }
+}
+
 /// The caller takes/releases the DB mutex for each lookup, never across native journal IO.
 pub(super) fn targets(
     records: &[Record],
     deadline: Instant,
     missing_identity: bool,
+    mut volume: Option<Volume>,
     mut lookup_batch: impl FnMut(&BTreeSet<Vec<u8>>) -> rusqlite::Result<BTreeMap<Vec<u8>, Identity>>,
 ) -> Option<BTreeSet<u64>> {
     let mut targets = BTreeSet::new();
     let mut new_dirs = BTreeMap::new();
+    let moved: BTreeSet<_> = records.iter().map(|r| canonical(&r.file_id)).collect();
     for batch in records.chunks(BATCH) {
         if Instant::now() >= deadline {
             return None;
@@ -167,7 +223,14 @@ pub(super) fn targets(
                     }
                 }
                 Reach::PreviousCataloguedParent(previous) => targets.extend(previous),
-                Reach::Unresolved if missing_identity => return None,
+                Reach::Unresolved
+                    if missing_identity
+                        && !volume.as_mut().is_some_and(|v| {
+                            v.outside(canonical(&record.parent_id), &moved, deadline)
+                        }) =>
+                {
+                    return None
+                }
                 Reach::Outside | Reach::Unresolved => {}
             }
             if new_dirs.len() > 100_000 || targets.len() > 1024 {
@@ -255,6 +318,7 @@ mod tests {
             &records,
             Instant::now() + Duration::from_secs(1),
             false,
+            None,
             |_| {
                 Ok(BTreeMap::from([(
                     canonical(&1u64.to_le_bytes()),
@@ -276,6 +340,7 @@ mod tests {
             &records,
             Instant::now() + Duration::from_secs(5),
             false,
+            None,
             |ids| lookup(&conn, 1, ids),
         );
         assert_eq!(targets, Some(BTreeSet::from([1, 2, 3])));
@@ -293,6 +358,7 @@ mod tests {
                 &records,
                 Instant::now() + Duration::from_secs(5),
                 true,
+                None,
                 |ids| lookup(&conn, 1, ids)
             ),
             Some(BTreeSet::from([1, 4]))
@@ -300,10 +366,86 @@ mod tests {
     }
 
     #[test]
+    fn unresolved_parent_is_outside_only_on_an_unmoved_current_chain_that_misses_the_root() {
+        // Volume: 5 is the self-parented volume root; 1 (catalogue row 1) is the granted root.
+        // 30 -> 20 -> 5 lies outside; 40 -> 1 lies inside under an unidentifiable directory.
+        let parents = BTreeMap::from([(5u64, 5u64), (20, 5), (30, 20), (40, 1), (1, 20)]);
+        let run = |records: &[Record], gap: bool, root: Option<u64>| {
+            let conn = super::super::tests::catalogue(4);
+            let mut opens = 0;
+            let mut parent_of = |id: &[u8]| {
+                opens += 1;
+                let id = u64::from_le_bytes(id[..8].try_into().unwrap());
+                parents.get(&id).map(|p| p.to_le_bytes().to_vec())
+            };
+            let root = root.map(|r| r.to_le_bytes());
+            let volume = root.as_ref().map(|r| Volume::new(r, &mut parent_of));
+            let found = targets(
+                records,
+                Instant::now() + Duration::from_secs(5),
+                gap,
+                volume,
+                |ids| lookup(&conn, 1, ids),
+            );
+            (found, opens)
+        };
+        let outside = [
+            record(99, 30, false),
+            record(98, 30, false),
+            record(97, 20, false),
+        ];
+        // Two lookups prove 30 -> 20 -> 5; the memo answers the rest without reopening.
+        assert_eq!(run(&outside, true, Some(1)), (Some(BTreeSet::new()), 3));
+        assert_eq!(
+            run(&outside, true, None).0,
+            None,
+            "no proof without a resolver"
+        );
+        assert_eq!(
+            run(&[record(99, 40, false)], true, Some(1)).0,
+            None,
+            "inside"
+        );
+        assert_eq!(
+            run(&[record(99, 41, false)], true, Some(1)).0,
+            None,
+            "unopenable"
+        );
+        let moved = [record(99, 30, false), record(20, 5, true)];
+        assert_eq!(
+            run(&moved, true, Some(1)).0,
+            None,
+            "a moved link is not a proof"
+        );
+        // An identified catalogue row is never resolved against the volume.
+        assert_eq!(
+            run(&[record(99, 2, false)], true, Some(1)),
+            (Some(BTreeSet::from([2])), 0)
+        );
+        let mut deep: BTreeMap<u64, u64> = (100..200).map(|i| (i, i + 1)).collect();
+        deep.insert(200, 5);
+        let mut parent_of = |id: &[u8]| {
+            deep.get(&u64::from_le_bytes(id[..8].try_into().unwrap()))
+                .map(|p| p.to_le_bytes().to_vec())
+        };
+        assert_eq!(
+            targets(
+                &[record(99, 100, false)],
+                Instant::now() + Duration::from_secs(5),
+                true,
+                Some(Volume::new(&1u64.to_le_bytes(), &mut parent_of)),
+                |_| Ok(BTreeMap::new())
+            ),
+            None,
+            "depth is bounded"
+        );
+    }
+
+    #[test]
     fn expired_batch_deadlines_and_lookup_failures_are_not_empty_success() {
         let records = [record(2, 1, false)];
         assert_eq!(
-            targets(&records, Instant::now(), false, |_| panic!(
+            targets(&records, Instant::now(), false, None, |_| panic!(
                 "expired before lookup"
             )),
             None
@@ -313,13 +455,14 @@ mod tests {
                 &records,
                 Instant::now() + Duration::from_secs(1),
                 false,
+                None,
                 |_| Err(rusqlite::Error::InvalidQuery)
             ),
             None
         );
         let deadline = Instant::now() + Duration::from_millis(5);
         assert_eq!(
-            targets(&records, deadline, false, |_| {
+            targets(&records, deadline, false, None, |_| {
                 std::thread::sleep(Duration::from_millis(10));
                 Ok(BTreeMap::new())
             }),

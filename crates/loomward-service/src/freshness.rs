@@ -13,9 +13,10 @@ use std::sync::Arc;
 mod reach;
 #[cfg(windows)]
 // sub_noid is the current root aggregate for files; the partial index covers directory gaps.
+// Columns: any gap, a file gap, and the root's own identity for the volume ancestry proof.
 const GAP_SQL: &str = "SELECT sub_noid>0 OR EXISTS(
     SELECT 1 FROM main.dir INDEXED BY dir_missing_identity
-    WHERE root_id=?1 AND file_id IS NULL AND listing_state!='absent_pending')
+    WHERE root_id=?1 AND file_id IS NULL AND listing_state!='absent_pending'), sub_noid>0, file_id
     FROM main.dir WHERE id=?2 AND root_id=?1 AND parent_id IS NULL";
 #[cfg(windows)]
 use std::{
@@ -765,10 +766,20 @@ fn catch_up(inner: &Inner, row: &db::RootRow, epoch: u64) {
         },
         |record| records.push(record),
     );
-    replay(inner, row, epoch, at, deadline, result, &records);
+    replay(
+        inner,
+        row,
+        epoch,
+        at,
+        deadline,
+        result,
+        &records,
+        &mut |id| journal.parent_of(id),
+    );
 }
 
 #[cfg(windows)]
+#[allow(clippy::too_many_arguments)]
 fn replay(
     inner: &Inner,
     row: &db::RootRow,
@@ -777,13 +788,20 @@ fn replay(
     deadline: Instant,
     result: Result<Bookmark, loomward_windows::enumerate::SourceError>,
     records: &[loomward_windows::usn::Record],
+    parent_of: &mut dyn FnMut(&[u8]) -> Option<Vec<u8>>,
 ) {
     let targets = result.as_ref().ok().and_then(|_| {
-        let missing_identity = inner
+        let (missing_identity, file_gap, root_id): (bool, bool, Option<Vec<u8>>) = inner
             .db()
-            .query_row(GAP_SQL, params![row.root, row.dir?], |r| r.get(0))
+            .query_row(GAP_SQL, params![row.root, row.dir?], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
             .ok()?;
-        reach::targets(records, deadline, missing_identity, |ids| {
+        // With only directory gaps, an unplaced parent may still be proved outside the root.
+        let volume = root_id
+            .filter(|_| !file_gap)
+            .map(|root| reach::Volume::new(&root, parent_of));
+        reach::targets(records, deadline, missing_identity, volume, |ids| {
             if !inner
                 .freshness
                 .roots
@@ -1068,8 +1086,11 @@ mod tests {
             reason: 0x100,
             is_directory: false,
         }];
-        // Also retain the identified-root control and the conservative sub_noid guard.
-        for missing in ["directory", "none", "sub_noid"] {
+        // Also retain the identified-root control and the conservative sub_noid guard. "outside"
+        // proves the unplaced parent's current, unmoved chain misses the root (#550 item 2); a
+        // file gap must still refuse that proof, since a hard link could name an outside parent.
+        let volume = BTreeMap::from([(999u64, 5u64), (5, 5)]);
+        for missing in ["directory", "outside", "none", "sub_noid"] {
             if missing == "none" {
                 svc.inner
                     .db()
@@ -1117,6 +1138,13 @@ mod tests {
                     next_usn: 2,
                 }),
                 &records,
+                &mut |id| {
+                    let id = u64::from_le_bytes(id[..8].try_into().unwrap());
+                    (missing != "directory")
+                        .then(|| volume.get(&id))
+                        .flatten()
+                        .map(|p| p.to_le_bytes().to_vec())
+                },
             );
             let (caught_up, stale, full) = {
                 let roots = svc.inner.freshness.roots.lock().unwrap();
@@ -1127,8 +1155,8 @@ mod tests {
                     tracked.full,
                 )
             };
-            if missing == "none" {
-                assert!(caught_up && !stale);
+            if matches!(missing, "none" | "outside") {
+                assert!(caught_up && !stale, "{missing}: provably outside change");
             } else {
                 assert!(stale, "{missing}: unresolved change falsely caught up");
                 assert!(
@@ -1272,10 +1300,13 @@ mod tests {
                 let missing = stmt
                     .query_row(rusqlite::params_from_iter(args), |r| r.get(0))
                     .unwrap();
-                let targets =
-                    reach::targets(&records, began + Duration::from_secs(30), missing, |ids| {
-                        reach::lookup(&conn, 1, ids)
-                    });
+                let targets = reach::targets(
+                    &records,
+                    began + Duration::from_secs(30),
+                    missing,
+                    None,
+                    |ids| reach::lookup(&conn, 1, ids),
+                );
                 let elapsed = began.elapsed();
                 conn.progress_handler(0, None::<fn() -> bool>).unwrap();
                 eprintln!("F3 catch-up {label}: {dirs} directories, step-counted={counted}, {elapsed:?}, {} VM steps", steps.load(Ordering::Relaxed));
@@ -1321,9 +1352,13 @@ mod tests {
             assert_eq!(before, expected);
         }
         let began = Instant::now();
-        let after = reach::targets(&records, began + Duration::from_secs(5), false, |ids| {
-            reach::lookup(&conn, 1, ids)
-        });
+        let after = reach::targets(
+            &records,
+            began + Duration::from_secs(5),
+            false,
+            None,
+            |ids| reach::lookup(&conn, 1, ids),
+        );
         eprintln!(
             "F3 after: 100000 directories, 128 decoded records: {:?}",
             began.elapsed()
