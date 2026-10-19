@@ -11,6 +11,9 @@ use rusqlite::{params, OptionalExtension};
 use std::sync::Arc;
 #[cfg(windows)]
 mod reach;
+#[cfg(all(test, windows))]
+#[path = "freshness_targeted_tests.rs"]
+mod targeted_tests;
 #[cfg(windows)]
 // sub_noid is the current root aggregate for files; the partial index covers directory gaps.
 const GAP_SQL: &str = "SELECT sub_noid>0 OR EXISTS(
