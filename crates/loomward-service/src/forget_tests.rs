@@ -1139,3 +1139,40 @@ fn another_forget_cannot_clear_an_earlier_unknown_copy_obligation() {
     assert!(svc.inner.backup_scrub_pending().unwrap().is_none());
     assert!(!holders(dir.path(), PATH_A).contains(&"state.before-v1.db".into()));
 }
+
+/// #391: the `roots.changed` the revoke published still names the root in the event replay
+/// buffer. After the forget, neither a reader that had not drained it yet nor a client resuming
+/// from the start of the epoch may receive that name.
+#[test]
+fn forget_redacts_the_root_from_retained_roots_events() {
+    let dir = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    let (root, grant) = named(&svc, 1, NAME_A, PATH_A);
+    named(&svc, 2, "KeptRoot", PATH_B);
+    let mut slow = svc.subscribe(None);
+    let RecvOutcome::Event(hello) = slow.recv_timeout(Duration::from_secs(5)) else {
+        panic!("expected hello")
+    };
+    let epoch = hello.data["epoch"].as_str().unwrap().to_string();
+    svc.inner.revoke(grant).unwrap();
+    ok("roots.forget", forget(&svc, root, None));
+    for mut stream in [slow, svc.subscribe(Some((epoch, 0)))] {
+        let mut roots_events = 0;
+        while let RecvOutcome::Event(e) = stream.recv_timeout(Duration::from_millis(300)) {
+            let text = serde_json::to_string(&e).unwrap();
+            assert!(
+                !text.contains(PATH_A),
+                "a retained event names the forgotten root"
+            );
+            if e.event == EventName::RootsChanged {
+                e.validate().unwrap();
+                assert!(text.contains(PATH_B), "the kept root stays in the event");
+                roots_events += 1;
+            }
+        }
+        assert!(
+            roots_events >= 2,
+            "both the revoke and the forget events replay"
+        );
+    }
+}

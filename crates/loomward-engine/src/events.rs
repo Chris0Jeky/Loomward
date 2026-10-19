@@ -201,6 +201,22 @@ impl Bus {
             }
         }
     }
+    /// #391: a forgotten root leaves every retained `roots.changed`, so neither a replay nor a
+    /// reader that has not drained the buffer yet receives its name after the forget.
+    pub(crate) fn redact_root(&self, root_id: &str) {
+        for retained in &mut self.state.lock().unwrap().replay {
+            if retained.event.event == EventName::RootsChanged {
+                if let Some(roots) = retained
+                    .event
+                    .data
+                    .get_mut("roots")
+                    .and_then(|v| v.as_array_mut())
+                {
+                    roots.retain(|r| r.get("root_id").and_then(|v| v.as_str()) != Some(root_id));
+                }
+            }
+        }
+    }
     fn subscribe(self: &Arc<Self>, resume: Option<EventResume>) -> Subscription {
         let state = self.state.lock().unwrap();
         let mut initial = VecDeque::from([self.hello(&state)]);
@@ -307,6 +323,10 @@ impl Engine {
         state_rev: Option<Generation>,
     ) -> EngineResult<()> {
         self.events.publish(name, data, catalog_rev, state_rev)
+    }
+    /// Drop a forgotten root from the retained `roots.changed` events (#391).
+    pub fn redact_root_events(&self, root_id: &str) {
+        self.events.redact_root(root_id);
     }
 }
 #[cfg(test)]
