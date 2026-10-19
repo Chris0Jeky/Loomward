@@ -690,6 +690,17 @@ impl ScanSink for CatalogScanSink {
         scope: &RunScope,
         complete: bool,
     ) -> EngineResult<()> {
+        self.finish_traversal(root, run, scope, complete, complete)
+    }
+
+    fn finish_traversal(
+        &self,
+        root: &RootId,
+        run: u64,
+        scope: &RunScope,
+        complete: bool,
+        settled: bool,
+    ) -> EngineResult<()> {
         let catalog_run = {
             let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
             let r = Self::active(&mut s, root, run)?;
@@ -729,13 +740,13 @@ impl ScanSink for CatalogScanSink {
                 );
             }
             #[cfg(test)]
-            if complete && matches!(scope, RunScope::FullRoot) {
+            if settled && matches!(scope, RunScope::FullRoot) {
                 inner.hooks.gate(
                     loomward_protocol::Command::ScanStart,
                     "full_catalogue_published",
                 );
             }
-            inner.freshness_finish(grant, scope, complete);
+            inner.freshness_finish(grant, scope, settled);
         }
         self.invalidated(root, true);
         if std::env::var_os("LOOMWARD_SCAN_PROFILE").is_some() {
