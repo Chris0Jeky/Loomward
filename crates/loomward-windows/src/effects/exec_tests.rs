@@ -2121,6 +2121,205 @@ fn fenced_at(lab: &Lab, op: u64, at: fn(Point) -> bool) -> (Outcome, Ack) {
     })
 }
 
+/// #672 item 3: a create stuck in the OS (the hook parks inside the step, after its durable stop
+/// check) must not hold the store. A same-service fence answers `PendingInFlightStep` within its
+/// wait and status still answers; once the step returns, the run journals the fence and cancels.
+#[test]
+fn a_stuck_create_does_not_block_the_fence_or_status() {
+    use std::sync::mpsc::channel;
+    let Some(lab) = Lab::new() else { return };
+    tree_fixture(&lab.src());
+    let op = lab.start(&["top"]);
+    let (reached, parked) = channel::<()>();
+    let (go, resume) = channel::<()>();
+    let resume = Mutex::new(resume);
+    let fired = AtomicBool::new(false);
+    let control = Control::new(false).with_hook(move |p, _| {
+        if matches!(p, Point::Checked(_)) && !fired.swap(true, Ordering::SeqCst) {
+            reached.send(()).unwrap();
+            resume.lock().unwrap().recv().unwrap();
+        }
+        Flow::Continue
+    });
+    std::thread::scope(|s| {
+        let worker = s.spawn(|| run(&lab.store, op, &control));
+        parked.recv().unwrap();
+        let (answer, answered) = channel();
+        let (store, revoked) = (&lab.store, &control);
+        s.spawn(move || {
+            let cause = loomward_operations::FenceCause::GrantRevoked;
+            let ack = fence_waiting(store, op, revoked, cause, Duration::from_millis(200));
+            let state = status(store, op).map(|o| o.state);
+            answer.send((ack, state)).unwrap();
+        });
+        let answered = answered.recv_timeout(Duration::from_secs(20));
+        go.send(()).unwrap();
+        let (ack, state) = answered.expect("a stuck create blocked the fence or status");
+        assert_eq!(ack.unwrap(), Ack::PendingInFlightStep);
+        assert!(!state.unwrap().is_terminal());
+        let outcome = worker.join().unwrap().unwrap();
+        assert_eq!(outcome.state, OpState::Cancelled, "{outcome:?}");
+        assert_eq!(outcome.refusal, Some((Refusal::GrantRevoked, None)));
+    });
+    let kinds = journal_kinds(&lab, op);
+    let fenced = kinds
+        .iter()
+        .position(|k| k == "fenced")
+        .expect("fence journaled");
+    assert!(
+        kinds[fenced + 1..]
+            .iter()
+            .all(|k| matches!(k.as_str(), "transition" | "staging_left")),
+        "{kinds:?}"
+    );
+    assert!(!lab.dest().join("top").exists(), "never published");
+}
+
+/// #738: the fence times out inside the rename step, before it can be journaled.
+#[test]
+fn a_pending_fence_during_rename_commits_annotated() {
+    use std::sync::mpsc::channel;
+    let Some(mut lab) = Lab::new() else { return };
+    tree_fixture(&lab.src());
+    let before = source_snapshot(&lab.src());
+    let op = lab.start(&["top"]);
+    let (reached, parked) = channel();
+    let (go, resume) = channel();
+    let resume = Mutex::new(resume);
+    let control = Control::new(false).with_hook(move |p, _| {
+        if p == Point::CheckedPublish {
+            reached.send(()).unwrap();
+            resume.lock().unwrap().recv().unwrap();
+        }
+        Flow::Continue
+    });
+    std::thread::scope(|s| {
+        let worker = s.spawn(|| run(&lab.store, op, &control));
+        parked.recv_timeout(Duration::from_secs(30)).unwrap();
+        let ack = fence_waiting(
+            &lab.store,
+            op,
+            &control,
+            loomward_operations::FenceCause::GrantRevoked,
+            Duration::ZERO,
+        );
+        go.send(()).unwrap();
+        assert_eq!(ack.unwrap(), Ack::PendingInFlightStep);
+        let outcome = worker.join().unwrap().unwrap();
+        assert_eq!(outcome.state, OpState::Committed, "{outcome:?}");
+        assert_eq!(outcome.refusal, Some((Refusal::GrantRevoked, None)));
+    });
+    let kinds = journal_kinds(&lab, op);
+    let fenced = kinds.iter().position(|k| k == "fenced").unwrap();
+    assert_eq!(&kinds[fenced + 1..], &["committed"]);
+    assert!(tree::compare(&c1(&lab.src().join("top")), &c1(&lab.dest().join("top"))).equal());
+    assert_eq!(source_snapshot(&lab.src()), before);
+    lab.reopen();
+    let durable = status(&lab.store, op).unwrap();
+    assert_eq!(durable.state, OpState::Committed);
+    assert_eq!(durable.refusal, Some((Refusal::GrantRevoked, None)));
+}
+
+/// A real process exit loses the pending in-memory fence, without running `finish`.
+#[test]
+fn a_process_dying_with_a_pending_fence_reopens_without_effects() {
+    const CHILD: &str = "LOOMWARD_PENDING_FENCE_CHILD";
+    if let Some(dir) = std::env::var_os(CHILD) {
+        assert!(!enumerate::running_elevated());
+        let store = std::sync::Arc::new(Mutex::new(
+            Store::open(&PathBuf::from(dir).join("state/state.db")).unwrap(),
+        ));
+        let op = store.lock().unwrap().operations().unwrap()[0];
+        let child_store = store.clone();
+        let control = Control::new(false).with_hook(move |p, control| {
+            if p == Point::CheckedPublish {
+                assert_eq!(
+                    fence_waiting(
+                        &child_store,
+                        op,
+                        control,
+                        loomward_operations::FenceCause::GrantRevoked,
+                        Duration::ZERO,
+                    )
+                    .unwrap(),
+                    Ack::PendingInFlightStep
+                );
+                std::process::exit(86);
+            }
+            Flow::Continue
+        });
+        run(&store, op, &control).unwrap();
+        panic!("child never reached the pending fence");
+    }
+    let Some(mut lab) = Lab::new() else { return };
+    tree_fixture(&lab.src());
+    let before = source_snapshot(&lab.src());
+    let op = lab.start(&["top"]);
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "effects::exec::tests::a_process_dying_with_a_pending_fence_reopens_without_effects",
+            "--exact",
+            "--nocapture",
+        ])
+        .env(CHILD, lab.tmp.path())
+        .spawn()
+        .unwrap();
+    let started = std::time::Instant::now();
+    let exit = loop {
+        if let Some(exit) = child.try_wait().unwrap() {
+            break exit;
+        }
+        if started.elapsed() > Duration::from_secs(60) {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("pending-fence child timed out");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(exit.code(), Some(86));
+    lab.reopen();
+    let dest = source_snapshot(&lab.dest());
+    assert!(!lab.dest().join("top").exists());
+    assert!(
+        !replay(&lab.store, op).unwrap().fenced,
+        "pending is not durable"
+    );
+    let control = Control::new(false);
+    let recovered = recover(&lab.store, op, &control).unwrap();
+    assert_eq!(
+        recovered.state,
+        OpState::Publishing,
+        "waiting for the owner"
+    );
+    assert_eq!(recovered.refusal, None, "no durable fence was acknowledged");
+    assert!(matches!(
+        run(&lab.store, op, &control),
+        Err(Fault::Journal(_))
+    ));
+    assert_eq!(
+        source_snapshot(&lab.dest()),
+        dest,
+        "reopen never resumes effects"
+    );
+    // Retrying the durable grant revocation fences the fresh control before any step.
+    assert_eq!(
+        fence(
+            &lab.store,
+            op,
+            &control,
+            loomward_operations::FenceCause::GrantRevoked
+        )
+        .unwrap(),
+        Ack::StoppedBeforePublish
+    );
+    assert!(matches!(control.admit(), Err(Stop::Cancel)));
+    let recovered = recover(&lab.store, op, &control).unwrap();
+    assert_eq!(recovered.state, OpState::Cancelled);
+    assert_eq!(recovered.refusal, Some((Refusal::GrantRevoked, None)));
+    assert_eq!(source_snapshot(&lab.dest()), dest);
+    assert_eq!(source_snapshot(&lab.src()), before);
+}
+
 fn journal_kinds(lab: &Lab, op: u64) -> Vec<String> {
     lab.store
         .lock()
@@ -2492,4 +2691,233 @@ fn a_transient_lock_after_the_rename_is_retried_not_a_change() {
             b"kept"
         );
     }
+}
+
+/// #526: a staging folder name already taken in the destination parent (an entry Loomward did not
+/// create) refuses the run with the stable `staging_name_taken` code, not a null cause, and the entry
+/// is left untouched.
+#[test]
+fn a_taken_staging_folder_name_refuses_with_its_code() {
+    let Some(lab) = Lab::new() else { return };
+    fs::write(lab.src().join("f.bin"), b"payload").unwrap();
+    let op = lab.start(&["f.bin"]);
+    let db = lab.tmp.path().join("state/state.db");
+    let dest = lab.dest();
+    let control = Control::new(false).with_hook(move |p, _| {
+        if p == Point::CheckedStaging {
+            // The worker holds the write lock here; a separate read connection still sees the intent.
+            let raw = rusqlite::Connection::open(&db).unwrap();
+            let body: String = raw
+                .query_row(
+                    "SELECT body FROM op_journal WHERE op_id=?1 ORDER BY seq DESC LIMIT 1",
+                    [op as i64],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            let entry: loomward_operations::Entry = serde_json::from_str(&body).unwrap();
+            let Record::StagingIntent { token } = entry.record else {
+                panic!("staging intent is the last record: {entry:?}");
+            };
+            fs::create_dir(dest.join(token)).unwrap();
+        }
+        Flow::Continue
+    });
+    let outcome = run(&lab.store, op, &control).unwrap();
+    assert_eq!(outcome.state, OpState::Refused);
+    assert_eq!(outcome.refusal, Some((Refusal::StagingNameTaken, None)));
+    let token = replay(&lab.store, op)
+        .unwrap()
+        .staging_tokens
+        .pop()
+        .unwrap();
+    assert!(lab.dest().join(&token).is_dir(), "the taken entry is kept");
+    assert_eq!(fs::read_dir(lab.dest().join(token)).unwrap().count(), 0);
+}
+
+/// #639 Sol R1 (pin): `status` read while the worker is live, at every step from staging to after the
+/// publish rename, reports the journal's state and never a transient `needs_attention`.
+#[test]
+fn live_status_never_reports_transient_attention() {
+    let Some(lab) = Lab::new() else { return };
+    fs::write(lab.src().join("f.bin"), b"payload").unwrap();
+    let op = lab.start(&["f.bin"]);
+    let db = lab.tmp.path().join("state/state.db");
+    let seen = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let log = seen.clone();
+    let control = Control::new(false).with_hook(move |p, _| {
+        if matches!(
+            p,
+            Point::CheckedStaging
+                | Point::StagingCreated
+                | Point::Creating(_)
+                | Point::Written(_)
+                | Point::Verified(_)
+                | Point::BeforePublish
+                | Point::AfterPublish
+        ) {
+            let reopened = Mutex::new(Store::open(&db).unwrap());
+            log.lock()
+                .unwrap()
+                .push((p, status(&reopened, op).unwrap().state));
+        }
+        Flow::Continue
+    });
+    assert_eq!(
+        run(&lab.store, op, &control).unwrap().state,
+        OpState::Committed
+    );
+    let seen = seen.lock().unwrap();
+    assert!(seen.len() >= 7, "{seen:?}");
+    assert!(
+        seen.iter().all(|(_, s)| *s != OpState::NeedsAttention),
+        "{seen:?}"
+    );
+}
+
+/// #636 item 3, review of #771: a refused journal tail (every reader and writer, cached or not,
+/// checks it) acknowledges `Unreplayable` without writing a fence, and nothing can append or act
+/// after it. A tampered middle row (seen only by a full replay) is a failed, retryable fence.
+#[test]
+fn only_a_refused_journal_tail_is_an_unreplayable_fence() {
+    let Some(lab) = Lab::new() else { return };
+    fs::write(lab.src().join("f.bin"), b"payload").unwrap();
+    let op = lab.start(&["f.bin"]);
+    let raw = rusqlite::Connection::open(lab.tmp.path().join("state/state.db")).unwrap();
+    raw.execute_batch(
+        "DROP TRIGGER op_journal_no_update; \
+         UPDATE op_journal SET body=replace(body,'\"','\"') || ' ' WHERE seq=1",
+    )
+    .unwrap();
+    let cause = loomward_operations::FenceCause::GrantRevoked;
+    assert!(
+        fence(&lab.store, op, &Control::new(false), cause).is_err(),
+        "a mid-journal tamper is not acknowledged"
+    );
+    raw.execute("DELETE FROM op_journal_head WHERE op_id=?1", [op as i64])
+        .unwrap();
+    let rows = lab.store.lock().unwrap().rows(op).unwrap().len();
+    let control = Control::new(false);
+    assert_eq!(
+        fence(&lab.store, op, &control, cause).unwrap(),
+        Ack::Unreplayable
+    );
+    assert!(control.fenced(), "the in-memory fence still lands");
+    let mut s = lab.store.lock().unwrap();
+    assert_eq!(s.rows(op).unwrap().len(), rows, "no fence row written");
+    assert!(s.append(op, 9, Record::Fenced { cause }).is_err());
+    assert!(s
+        .while_current(op, OpState::Preparing, 1, || ())
+        .unwrap()
+        .is_err());
+}
+
+/// #771: a refused tail prevents the next step, but cannot retract an already admitted call.
+/// Acknowledgement waits for that step outside the Store lock, even though no fence can be logged.
+#[test]
+fn an_unreplayable_fence_waits_for_the_admitted_step_without_holding_store() {
+    use std::sync::mpsc::{channel, RecvTimeoutError, Sender};
+    struct ReleaseStep(Sender<()>);
+    impl Drop for ReleaseStep {
+        fn drop(&mut self) {
+            let _ = self.0.send(());
+        }
+    }
+    let Some(lab) = Lab::new() else { return };
+    fs::write(lab.src().join("f.bin"), b"payload").unwrap();
+    let op = lab.start(&["f.bin"]);
+    let raw = rusqlite::Connection::open(lab.tmp.path().join("state/state.db")).unwrap();
+    let control = Control::new(false);
+    let store = &lab.store;
+    let control = &control;
+    let marker = lab.dest().join("admitted-step.bin");
+    let (entered, ready) = channel();
+    let (release, released) = channel();
+    let (answer, received) = channel();
+    std::thread::scope(|scope| {
+        // Release even on a failed handoff assertion, before the scope joins its parked worker.
+        let release = ReleaseStep(release);
+        let effect_marker = marker.clone();
+        let worker = scope.spawn(move || {
+            let _step = control.admit().unwrap_or_else(|_| panic!("step refused"));
+            entered.send(()).unwrap();
+            released.recv().unwrap();
+            // A worker may need the Store before it can leave the admitted step. Probe without
+            // blocking so a lock-order regression fails this test without deadlocking its threads.
+            let store_free = store.try_lock().is_ok();
+            fs::write(effect_marker, b"completed").unwrap();
+            store_free
+        });
+        ready.recv_timeout(Duration::from_secs(5)).unwrap();
+        raw.execute("DELETE FROM op_journal_head WHERE op_id=?1", [op as i64])
+            .unwrap();
+        scope.spawn(|| {
+            answer
+                .send(fence_waiting(
+                    store,
+                    op,
+                    control,
+                    loomward_operations::FenceCause::GrantRevoked,
+                    Duration::from_secs(5),
+                ))
+                .unwrap();
+        });
+        let until = std::time::Instant::now() + Duration::from_secs(5);
+        // `fenced` precedes replay and tail classification. Observe Store's release explicitly:
+        // an elapsed delay after the flag says nothing about whether those reads have finished.
+        let store_released = loop {
+            if control.fenced() && store.try_lock().is_ok() {
+                break true;
+            }
+            if std::time::Instant::now() >= until {
+                break false;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        let early = received.recv_timeout(Duration::from_millis(50));
+        // Always release the worker before checking the answer, including on the old early-ack bug.
+        drop(release);
+        let store_free = worker.join().unwrap();
+        assert!(
+            store_released,
+            "the fence did not release Store within the fixture deadline"
+        );
+        assert!(store_free, "fence waited while holding Store");
+        assert!(
+            matches!(early, Err(RecvTimeoutError::Timeout)),
+            "revocation acknowledged before its admitted step ended: {early:?}"
+        );
+        assert_eq!(
+            received
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap()
+                .unwrap(),
+            Ack::Unreplayable
+        );
+    });
+    assert_eq!(fs::read(marker).unwrap(), b"completed");
+    assert!(matches!(control.admit(), Err(Stop::Cancel)));
+}
+
+#[test]
+fn an_unreplayable_fence_stays_pending_until_the_admitted_step_ends() {
+    let Some(lab) = Lab::new() else { return };
+    fs::write(lab.src().join("f.bin"), b"payload").unwrap();
+    let op = lab.start(&["f.bin"]);
+    let control = Control::new(false);
+    let step = control.admit().unwrap_or_else(|_| panic!("step refused"));
+    let raw = rusqlite::Connection::open(lab.tmp.path().join("state/state.db")).unwrap();
+    raw.execute("DELETE FROM op_journal_head WHERE op_id=?1", [op as i64])
+        .unwrap();
+    let cause = loomward_operations::FenceCause::GrantRevoked;
+    assert_eq!(
+        fence_waiting(&lab.store, op, &control, cause, Duration::from_millis(20)).unwrap(),
+        Ack::PendingInFlightStep
+    );
+    assert!(control.fenced());
+    drop(step);
+    assert_eq!(
+        fence(&lab.store, op, &control, cause).unwrap(),
+        Ack::Unreplayable
+    );
+    assert!(matches!(control.admit(), Err(Stop::Cancel)));
 }

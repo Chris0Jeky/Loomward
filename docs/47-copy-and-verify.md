@@ -306,10 +306,14 @@ then fences later messages. The copy run follows the same pattern, with one addi
    each chunk, before each identity or `verified` commit, the publish intent, and the rename itself. The rename
    step's epoch read is therefore the pre-rename check (HIGH fix (d)).
 2. **Revocation.** Revoking a source grant, or pressing emergency stop, runs in this order:
-   1. commit the revocation and bump the run's fence epoch in `state.db`, marking the approval unusable;
-   2. acquire the run's admission lock, which waits for at most one in-flight step;
-   3. read and journal the run's position (`stopped_before_publish`, or `published`);
-   4. release the lock and return the acknowledgement.
+   1. for a grant revocation, first commit it in `state.db`, making the approval unusable;
+   2. under the Store mutex, record the pending cause on the run's Control and raise its in-memory fence,
+      closing admission to later effect steps;
+   3. release the Store mutex and wait for the admitted step to return; a worker may need Store before it
+      can release its admission lock;
+   4. once the step has returned, journal `Fenced` with a new run epoch, determine the run's position
+      (`stopped_before_publish`, or `published`), and return the acknowledgement. The fencer or the worker
+      can journal the pending cause first; the same Store mutex serialises them.
 3. **Acknowledgement semantics.** An acknowledged revocation means four things:
    1. the revocation is durable;
    2. no effect step of the run starts after the acknowledgement, because every later step reads the new epoch under
@@ -319,6 +323,13 @@ then fences later messages. The copy run follows the same pattern, with one addi
 
    If a step does not return within 30 s (stuck I/O), the revocation is reported as `pending_in_flight_step`, not
    acknowledged. It is acknowledged when the step returns (assumption: 30 s, measured in C2).
+
+   One exception (#636 item 3): once the resident run's admitted step has returned, an operation whose journal head
+   no longer matches its tail is skipped, and the revocation succeeds without it. A step still in flight keeps the
+   revocation pending, with the same 30 s wait above. Every store refuses such a journal on each append and effect step, so it can take
+   no further effect, but it is neither stopped (no fence is journaled) nor settled; only `copy.status`, which answers
+   that the journal does not replay, shows it. A journal fault seen only by a full replay (a middle row) is not
+   skipped: a store with a cached replay could still pass it, so the revocation stays `copy_fence_pending`.
 4. **Before publish.** Up to and including the rename step's epoch read, a moved epoch means:
    - no further create, write, metadata change or rename;
    - close the source handles, journal `revoked`, and go to `cancelling`;
@@ -451,7 +462,7 @@ Checked at preview (P), at start or resume (S) and per item at open (I). "Resuma
 | `unsupported_attribute`, `extended_attributes`, `alternate_streams_unsupported`, `too_many_streams` | section 6 | P, I | no; at I the run goes to `needs_attention`, staging kept |
 | `special_file` | handle is not a disk file (`duplicate_reader/native.rs:196-198`) | I | no; the run goes to `needs_attention`, staging kept |
 | `source_changed` | signature differs from the manifest, or the name no longer reaches the object | S, I | no; at I the run goes to `needs_attention`, staging kept; only exit Abandon, then a new preview |
-| `staging_name_taken` | `FILE_CREATE` of an item fails on create or resume because the name is taken in staging (an unjournaled leftover or someone else's entry) [W1] | I | after the owner removes the entry: the run goes to `needs_attention`, then `copying` on confirmation |
+| `staging_name_taken` | `FILE_CREATE` of an item fails on create or resume because the name is taken in staging (an unjournaled leftover or someone else's entry) [W1]; also the run's first create, the staging folder, when its token name is taken in the destination parent | I | for the staging folder no: `preparing -> refused`, the entry untouched; for an item, after the owner removes the entry: the run goes to `needs_attention`, then `copying` on confirmation |
 | `staging_in_use` | a staged file is open for write elsewhere when the final check takes its deny-write hold (section 4), or the pre-publish tree check still meets a sharing or lock error after the publish retries | I | yes |
 | `changed_after_verification` | the post-publish confirmation finds a change (section 4) | publish | no; the run goes to `needs_attention`, outcome `published_unverified`, copy kept |
 | `source_in_use` | sharing violation on the deny-write open | I | yes |
@@ -467,6 +478,9 @@ Checked at preview (P), at start or resume (S) and per item at open (I). "Resuma
 | `verification_mismatch` | hash or metadata differs twice | I | no: `needs_attention` |
 | `grant_revoked` | a source grant revoked, or emergency stop (section 5) | P, S, then every cooperative boundary | no: cancels the run |
 | `elevated`, `approval_expired`, `digest_mismatch`, `manifest_limit` | authority checks; limit 200,000 entries per operation (assumption) | P, S | no |
+
+A `refused` status with a null `refusal` means the engine could not classify the cause (for
+example an unrecognised OS error creating the staging folder). It is reported as unknown, never as a guessed code.
 
 **Preflight versus runtime refusals.** A refusal raised at P or S comes before the operation's first effect, so no
 write handle exists. That covers every code with a P or S entry, including the first check of codes that are checked
