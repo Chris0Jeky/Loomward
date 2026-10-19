@@ -946,10 +946,11 @@ impl Inner {
                 ),
                 e => catalog_error(e),
             })?;
+        // Redact as soon as the forget commits, before any later step can return early.
+        self.engine.redact_root_events(r.root_id.as_str());
         self.db()
             .execute("DELETE FROM st.root_freshness WHERE grant_id=?1", [grant])
             .map_err(sql_error)?;
-        self.engine.redact_root_events(r.root_id.as_str());
         let backups = self.scrub_backups(Some(&path));
         let revs = self.revisions()?;
         if let Ok(list) = self.root_list(None) {
