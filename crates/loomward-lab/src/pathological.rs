@@ -40,16 +40,68 @@ fn checked(command: &mut Command) -> io::Result<()> {
     }
 }
 
+impl GeneratedTree {
+    /// Denies the current user listing `directory` (a deny ACE for `RD`), as `DeniedDirectory`
+    /// does at generation; lifted by `allow_listing` or on drop. A test applies it after a scan has
+    /// started (docs/45 row 5). One denied directory per tree.
+    pub fn deny_listing(&mut self, directory: &Path) -> io::Result<()> {
+        if self.denied.is_some() {
+            return Err(crate::invalid("the fixture already denies a directory"));
+        }
+        let identity = Command::new("whoami.exe")
+            .args(["/user", "/fo", "csv", "/nh"])
+            .output()?;
+        if !identity.status.success() {
+            return Err(io::Error::other("cannot resolve fixture user SID"));
+        }
+        let output =
+            String::from_utf8(identity.stdout).map_err(|_| crate::invalid("invalid SID output"))?;
+        let sid = output
+            .trim()
+            .split(',')
+            .next_back()
+            .unwrap_or("")
+            .trim_matches('"');
+        if !sid.starts_with("S-1-")
+            || !sid
+                .bytes()
+                .all(|b| b.is_ascii_digit() || b == b'-' || b == b'S')
+        {
+            return Err(crate::invalid("invalid fixture SID"));
+        }
+        let sid = format!("*{sid}");
+        self.denied = Some((directory.to_path_buf(), sid.clone()));
+        checked(Command::new("icacls.exe").arg(directory).args([
+            "/deny",
+            &format!("{sid}:(RD)"),
+            "/q",
+        ]))
+    }
+
+    /// Removes the deny ACE, if any, and returns the directory it applied to.
+    pub fn allow_listing(&mut self) -> io::Result<Option<PathBuf>> {
+        let Some((path, sid)) = self.denied.take() else {
+            return Ok(None);
+        };
+        if let Err(error) =
+            checked(
+                Command::new("icacls.exe")
+                    .arg(&path)
+                    .args(["/remove:d", &sid, "/q"]),
+            )
+        {
+            // Still denied: keep it for the drop's retry and its loud failure.
+            self.denied = Some((path, sid));
+            return Err(error);
+        }
+        Ok(Some(path))
+    }
+}
+
 impl Drop for GeneratedTree {
     fn drop(&mut self) {
-        if let Some((path, sid)) = &self.denied {
-            let result =
-                checked(
-                    Command::new("icacls.exe")
-                        .arg(path)
-                        .args(["/remove:d", sid, "/q"]),
-                );
-            if let Err(error) = result {
+        if self.denied.is_some() {
+            if let Err(error) = self.allow_listing() {
                 // Do not silently leave an inaccessible fixture behind, including on assertion failure.
                 eprintln!("UNVERIFIED: fixture deny ACE cleanup failed: {error}");
                 if !std::thread::panicking() {
@@ -157,34 +209,7 @@ pub fn generate(root: &Path, profile: Profile) -> io::Result<GeneratedTree> {
             fs::create_dir(&denied)?;
             tree.leaf = denied.join("hidden.bin");
             fs::write(&tree.leaf, b"hidden")?;
-            let identity = Command::new("whoami.exe")
-                .args(["/user", "/fo", "csv", "/nh"])
-                .output()?;
-            if !identity.status.success() {
-                return Err(io::Error::other("cannot resolve fixture user SID"));
-            }
-            let output = String::from_utf8(identity.stdout)
-                .map_err(|_| crate::invalid("invalid SID output"))?;
-            let sid = output
-                .trim()
-                .split(',')
-                .next_back()
-                .unwrap_or("")
-                .trim_matches('"');
-            if !sid.starts_with("S-1-")
-                || !sid
-                    .bytes()
-                    .all(|b| b.is_ascii_digit() || b == b'-' || b == b'S')
-            {
-                return Err(crate::invalid("invalid fixture SID"));
-            }
-            let sid = format!("*{sid}");
-            tree.denied = Some((denied.clone(), sid.clone()));
-            checked(Command::new("icacls.exe").arg(&denied).args([
-                "/deny",
-                &format!("{sid}:(RD)"),
-                "/q",
-            ]))?;
+            tree.deny_listing(&denied)?;
         }
         Profile::Churn { files } => {
             for bucket in 0..files.div_ceil(100) {
