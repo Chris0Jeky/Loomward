@@ -373,6 +373,12 @@ struct Context {
     /// Runs building into the bulk tables, with their root.
     bulk: HashMap<i64, i64>,
     bulk_enabled: Arc<AtomicBool>,
+    /// Runs proven active in this transaction, with their root (#646). Listing commands change no
+    /// run, root or grant row, and the transaction reads one snapshot, so the proof holds until it ends.
+    active: HashMap<i64, i64>,
+    /// The ID sequences are shared and no row has been inserted since outside a bulk publication
+    /// (#646), so the next bulk publication need not share them again before it inserts.
+    sequences_shared: bool,
 }
 impl Context {
     fn tables(&self, run: i64) -> Tables {
@@ -563,6 +569,13 @@ fn listing_command(command: &WriteCommand) -> bool {
             | WriteCommand::ListingDone { .. }
     )
 }
+/// The run a listing command publishes into.
+fn listing_run(command: &WriteCommand) -> Option<i64> {
+    match command {
+        WriteCommand::DirListing(l) => Some(l.run_id),
+        c => staged_run(c),
+    }
+}
 fn staged_run(command: &WriteCommand) -> Option<i64> {
     match command {
         WriteCommand::StageChunk { run_id, .. } | WriteCommand::ListingDone { run_id, .. } => {
@@ -610,6 +623,8 @@ fn serve(
         fenced_listings: HashSet::new(),
         bulk: HashMap::new(),
         bulk_enabled,
+        active: HashMap::new(),
+        sequences_shared: false,
     };
     // The state rewrite and WAL cut after a forget, when a lock outlasted the first try: retried between commands.
     // A forget that committed its state half but whose rewrite and log cut never finished (a crash,
@@ -678,6 +693,9 @@ fn serve(
         let mut batchable = false;
         let mut prepared = None;
         let mut full = false;
+        // Intents are staged only before the catalogue transaction begins, so with none pending
+        // at its start every command's witness write is a no-op (#646).
+        let mut witness = true;
         // The transaction borrows the connection only until the batch is applied.
         {
             // Precious writes commit before the catalogue transaction, which writes main only.
@@ -721,6 +739,7 @@ fn serve(
                     .and_then(|mut s| s.query_row([], |r| r.get::<_, bool>(0)));
                 // Sticky across a re-stage, so NORMAL is always restored after the batch.
                 full |= matches!(durability, Ok(true));
+                witness = !matches!(durability, Ok(false));
                 // The publication must survive power loss before FULL state confirmation can retire it.
                 let tx = match durability.and_then(|pending| {
                     if pending {
@@ -757,6 +776,8 @@ fn serve(
             match opened {
                 Ok(mut tx) => {
                     let transaction_start = Instant::now();
+                    context.active.clear();
+                    context.sequences_shared = false;
                     let mut bytes = 0;
                     loop {
                         let p = batch.last_mut().expect("transaction command");
@@ -772,20 +793,24 @@ fn serve(
                         .then(|| context.bulk.clone());
                         results.push(ready.and_then(|prepared| {
                         let save = tx.savepoint()?;
-                        save.prepare_cached("UPDATE revision SET catalog_rev=catalog_rev+1 WHERE id=1").and_then(|mut s| s.execute([],))?;
-                        context.revision =
-                            save.prepare_cached("SELECT catalog_rev FROM revision").and_then(|mut s| s.query_row([], |r| r.get(0)))?;
+                        context.revision = save.prepare_cached("UPDATE revision SET catalog_rev=catalog_rev+1 WHERE id=1 RETURNING catalog_rev").and_then(|mut s| s.query_row([], |r| r.get(0)))?;
                         let dirty_start = context.dirty.len();
+                        // A bulk build's listing writes no table the token index follows (#646).
+                        let indexed = listing_run(&p.command).is_none_or(|run| !context.bulk.contains_key(&run));
                         let result = apply(&save, &p.command, &mut context, prepared)
                             .and_then(|reply| {
                                 context.check_chains(&save, dirty_start)?;
                                 // Names changed by this command reach the token index with it.
-                                crate::search::drain_tokens(&save)?;
+                                if indexed {
+                                    crate::search::drain_tokens(&save)?;
+                                }
                                 Ok(reply)
                             });
                         // The witness commits atomically with the catalogue publication.
                         let result = result.and_then(|reply| {
-                            save.prepare_cached("INSERT INTO meta(key,value) SELECT 'reference_publication',publication_token FROM st.pending_reference LIMIT 1 ON CONFLICT(key) DO UPDATE SET value=excluded.value").and_then(|mut s| s.execute([]))?;
+                            if witness {
+                                save.prepare_cached("INSERT INTO meta(key,value) SELECT 'reference_publication',publication_token FROM st.pending_reference LIMIT 1 ON CONFLICT(key) DO UPDATE SET value=excluded.value").and_then(|mut s| s.execute([]))?;
+                            }
                             Ok(reply)
                         });
                         match result {
@@ -795,6 +820,8 @@ fn serve(
                                     context.dirty.truncate(dirty_start);
                                     context.extensions.clear();
                                     context.parents.clear();
+                                    context.active.clear();
+                                    context.sequences_shared = false;
                                     Err(Error::Sql(e))
                                 }
                             },
@@ -803,6 +830,8 @@ fn serve(
                                 context.dirty.truncate(dirty_start);
                                 context.extensions.clear();
                                 context.parents.clear();
+                                context.active.clear();
+                                context.sequences_shared = false;
                                 Err(e)
                             }
                         }
@@ -1093,6 +1122,15 @@ fn active_run(conn: &Connection, t: Tables, run: i64, dir: Option<i64>) -> Resul
     if let Some(dir) = dir {
         if !conn.prepare_cached(&format!("SELECT EXISTS(SELECT 1 FROM {} WHERE id=?1 AND root_id=?2 AND listing_state!='absent_pending')",t.dir))?.query_row(params![dir,root],|r|r.get::<_,bool>(0))?{return Err(Error::NotFound);}
     }
+    Ok(root)
+}
+/// `active_run` without a directory, remembered for the rest of the transaction (#646).
+fn active_root(conn: &Connection, active: &mut HashMap<i64, i64>, run: i64) -> Result<i64> {
+    if let Some(root) = active.get(&run) {
+        return Ok(*root);
+    }
+    let root = active_run(conn, LIVE, run, None)?;
+    active.insert(run, root);
     Ok(root)
 }
 fn state_revision(conn: &Connection) -> Result<()> {
@@ -1638,6 +1676,12 @@ fn apply(
     ctx: &mut Context,
     prepared: Option<Prepared>,
 ) -> Result<WriteReply> {
+    // Staging inserts no catalogue row; a bulk publication shares the sequences again itself.
+    if !matches!(c, WriteCommand::StageChunk { .. })
+        && !listing_run(c).is_some_and(|run| ctx.bulk.contains_key(&run))
+    {
+        ctx.sequences_shared = false;
+    }
     match c {
         WriteCommand::RegisterRoot(o) | WriteCommand::RefreshRoot { observation: o, .. } => {
             let grant = match prepared {
@@ -1725,6 +1769,7 @@ fn apply(
                 *seq,
                 files,
                 dirs,
+                &mut ctx.active,
             )?;
             ctx.timings.lock().expect("timing lock").staging_calls += 1;
             ctx.timings.lock().expect("timing lock").staging_seconds +=
@@ -1895,8 +1940,10 @@ fn stage(
     seq: i64,
     files: &Vec<Observation>,
     dirs: &Vec<Observation>,
+    active: &mut HashMap<i64, i64>,
 ) -> Result<()> {
-    active_run(conn, t, run, Some(dir))?;
+    let root = active_root(conn, active, run)?;
+    if !conn.prepare_cached(&format!("SELECT EXISTS(SELECT 1 FROM {} WHERE id=?1 AND root_id=?2 AND listing_state!='absent_pending')",t.dir))?.query_row(params![dir,root],|r|r.get::<_,bool>(0))?{return Err(Error::NotFound);}
     let previous:Option<(i64,i64)>=conn.prepare_cached("SELECT seq,entry_count_total FROM stage_entry WHERE run_id=?1 AND dir_id=?2 ORDER BY seq DESC LIMIT 1").and_then(|mut s| s.query_row(params![run,dir],|r|Ok((r.get(0)?,r.get(1)?)))).optional()?;
     let (next, count) = previous.map_or((0, 0), |(seq, count)| (seq + 1, count));
     if seq != next {
@@ -1971,26 +2018,36 @@ fn publish(
     let mut names_seconds = 0.0;
     let t = ctx.tables(run);
     let d = t.dir;
-    let root = active_run(conn, t, run, Some(dir))?;
-    if t == BULK {
+    let root = active_root(conn, &mut ctx.active, run)?;
+    if t == BULK && !ctx.sequences_shared {
         share_sequences(conn)?;
     }
-    let (depth,fs):(i64,Option<String>)=conn.prepare_cached(&format!("SELECT d.depth,v.filesystem FROM {d} d JOIN root r ON r.id=d.root_id LEFT JOIN volume v ON v.id=r.volume_id WHERE d.id=?1")).and_then(|mut s| s.query_row([dir],|r|Ok((r.get(0)?,r.get(1)?))))?;
+    // One read proves the directory is the run's and listable (`active_run`), and finds its
+    // depth, filesystem, staged chunk count and whether it holds files from an earlier listing.
+    let (depth,fs,chunks,earlier):(i64,Option<String>,i64,bool)=conn.prepare_cached(&format!("SELECT d.depth,v.filesystem,(SELECT count(*) FROM stage_entry WHERE run_id=?2 AND dir_id=?1),EXISTS(SELECT 1 FROM {} WHERE dir_id=?1) FROM {d} d JOIN root r ON r.id=d.root_id LEFT JOIN volume v ON v.id=r.volume_id WHERE d.id=?1 AND d.root_id=?3 AND d.listing_state!='absent_pending'", t.file)).and_then(|mut s| s.query_row(params![dir,run,root],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional())?.ok_or(Error::NotFound)?;
     let complete = matches!(outcome, ListingOutcome::Complete);
     let coverage = outcome.coverage()?;
     // Every payload is validated alone when sent, files and directories together: a direct
     // listing, or one staged chunk, cannot repeat a name. Only several payloads need the guard.
-    let chunks: i64 = conn
-        .prepare_cached("SELECT count(*) FROM stage_entry WHERE run_id=?1 AND dir_id=?2")?
-        .query_row(params![run, dir], |r| r.get(0))?;
     let is_direct = chunks + i64::from(direct.is_some()) <= 1;
+    // Without earlier files there is nothing to match or retire, and `old_file` (possibly
+    // another listing's) is never read.
     let has_old = if prepared {
         conn.prepare_cached("SELECT EXISTS(SELECT 1 FROM old_file)")
             .and_then(|mut s| s.query_row([], |r| r.get(0)))?
     } else {
-        old_files(conn, t, dir)?
+        earlier && old_files(conn, t, dir)?
     };
-    scratch(conn, &["CREATE TEMP TABLE IF NOT EXISTS listing_seen(kind INTEGER,id INTEGER,PRIMARY KEY(kind,id))", "DELETE FROM listing_seen", "CREATE TEMP TABLE IF NOT EXISTS listing_names(name TEXT,raw BLOB,kind INTEGER)", "DELETE FROM listing_names"])?;
+    scratch(conn, &["CREATE TEMP TABLE IF NOT EXISTS listing_seen(kind INTEGER,id INTEGER,PRIMARY KEY(kind,id))", "DELETE FROM listing_seen"])?;
+    if !is_direct {
+        scratch(
+            conn,
+            &[
+                "CREATE TEMP TABLE IF NOT EXISTS listing_names(name TEXT,raw BLOB,kind INTEGER)",
+                "DELETE FROM listing_names",
+            ],
+        )?;
+    }
     let mut own = Totals {
         complete,
         ..Totals::default()
@@ -2212,21 +2269,25 @@ fn publish(
             "duplicate listing name or directory identity",
         ));
     }
-    members_changed |= conn
-        .prepare_cached(&format!(
-            "DELETE FROM {} WHERE id IN (SELECT id FROM old_file WHERE used=-1)",
-            t.file
-        ))
-        .and_then(|mut s| s.execute([]))?
-        > 0;
-    if complete {
+    if has_old {
         members_changed |= conn
             .prepare_cached(&format!(
-                "DELETE FROM {} WHERE id IN (SELECT id FROM old_file WHERE used=0)",
+                "DELETE FROM {} WHERE id IN (SELECT id FROM old_file WHERE used=-1)",
                 t.file
             ))
             .and_then(|mut s| s.execute([]))?
             > 0;
+    }
+    if complete {
+        if has_old {
+            members_changed |= conn
+                .prepare_cached(&format!(
+                    "DELETE FROM {} WHERE id IN (SELECT id FROM old_file WHERE used=0)",
+                    t.file
+                ))
+                .and_then(|mut s| s.execute([]))?
+                > 0;
+        }
         let missing=conn.prepare_cached(&format!("UPDATE {d} SET listing_state='absent_pending' WHERE parent_id=?1 AND listing_state!='absent_pending' AND id NOT IN (SELECT id FROM listing_seen WHERE kind=0)")).and_then(|mut s| s.execute([dir]))?;
         members_changed |= missing > 0;
     } else {
@@ -2256,6 +2317,7 @@ fn publish(
         .and_then(|mut s| s.execute(params![run, dir]))?;
     if t == BULK {
         share_sequences(conn)?;
+        ctx.sequences_shared = true;
     }
     {
         let mut timing = ctx.timings.lock().expect("timing lock");
@@ -2304,9 +2366,8 @@ fn checked(a: u64, b: u64) -> Result<u64> {
 /// lone first scan gets exactly the IDs the incremental path would give it.
 fn share_sequences(conn: &Connection) -> Result<()> {
     conn.prepare_cached("INSERT INTO sqlite_sequence(name,seq) SELECT n.name,0 FROM (SELECT 'dir' AS name UNION ALL SELECT 'file' UNION ALL SELECT 'bulk_dir' UNION ALL SELECT 'bulk_file') n WHERE NOT EXISTS(SELECT 1 FROM sqlite_sequence s WHERE s.name=n.name)")?.execute([])?;
-    for pair in ["('dir','bulk_dir')", "('file','bulk_file')"] {
-        conn.prepare_cached(&format!("UPDATE sqlite_sequence SET seq=(SELECT max(seq) FROM sqlite_sequence WHERE name IN {pair}) WHERE name IN {pair}"))?.execute([])?;
-    }
+    // Each name takes its pair's maximum; max is idempotent, so the row order does not matter.
+    conn.prepare_cached("UPDATE sqlite_sequence SET seq=(SELECT max(s.seq) FROM sqlite_sequence s WHERE s.name IN (sqlite_sequence.name,CASE sqlite_sequence.name WHEN 'dir' THEN 'bulk_dir' WHEN 'bulk_dir' THEN 'dir' WHEN 'file' THEN 'bulk_file' ELSE 'file' END)) WHERE name IN ('dir','bulk_dir','file','bulk_file')")?.execute([])?;
     Ok(())
 }
 /// Publish a bulk build inside the EndRun savepoint: readers see the root before or after, never
