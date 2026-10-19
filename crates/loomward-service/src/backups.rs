@@ -113,7 +113,7 @@ pub(crate) fn read_receipt(path: &Path) -> Result<(Vec<u8>, u64), Why> {
 
 /// `check --json` may print status or error lines before the summary (#349): a document that is
 /// not one JSON value yields its last non-empty line, which the normaliser parses strictly.
-fn summary_document(raw: &[u8]) -> &[u8] {
+pub(crate) fn summary_document(raw: &[u8]) -> &[u8] {
     if serde_json::from_slice::<serde::de::IgnoredAny>(raw).is_ok() {
         return raw;
     }

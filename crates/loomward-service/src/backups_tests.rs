@@ -733,3 +733,6 @@ fn import_and_folder_picker_share_one_dialog_and_cooldown() {
     assert_eq!(err(r).code, ErrorCode::Busy);
     assert_eq!(files.asked.load(Ordering::SeqCst), 1);
 }
+
+#[path = "backups_fuzz.rs"]
+mod fuzz;
