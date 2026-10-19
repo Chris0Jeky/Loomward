@@ -3839,6 +3839,156 @@ fn scan_start_refuses_a_grant_revoked_after_root_mint() {
     }
 }
 
+/// #731: a revoke that commits while a full scan is held mid-walk is refused by the durable
+/// writer at the scan's final EndRun, on a real catalogue. The job ends cancelled or failed, its
+/// coverage is never complete, and no sweep publishes: the root's generation and the count of
+/// completed runs stay where the baseline scan left them.
+#[cfg(windows)]
+#[test]
+fn revocation_before_the_final_end_run_is_refused_by_the_durable_writer() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    let inner = &svc.inner;
+    // A completed baseline scan fixes the generation and run count a refused sweep must not move.
+    settle(svc, &start(svc, &lab.root, "full"));
+    f3_wait_live(svc);
+    let root_row = inner.root_row(&lab.root).unwrap();
+    let grant = crate::db::roots(&inner.db(), Some(root_row))
+        .unwrap()
+        .remove(0)
+        .grant;
+    let scalar =
+        |sql: &str| -> i64 { inner.db().query_row(sql, [root_row], |r| r.get(0)).unwrap() };
+    let generation = scalar("SELECT generation FROM main.root WHERE id=?1");
+    let completed =
+        scalar("SELECT count(*) FROM main.scan_run WHERE root_id=?1 AND state='completed'");
+    inner.scan.gate.arm();
+    let job = start(svc, &lab.root, "full");
+    inner.scan.gate.wait_reached();
+    // The durable revoke commits while the walk is held: the run's remaining writer commands,
+    // including its final EndRun, now meet a revoked grant.
+    let revoked = inner.catalog.writer().call(WriteCommand::RevokeGrant {
+        grant_id: grant,
+        revoked_at_ns: crate::now_ns(),
+    });
+    inner.scan.gate.release();
+    assert!(revoked.is_ok(), "{revoked:?}");
+    let done = settle(svc, &job);
+    assert!(
+        matches!(
+            done.get("state").and_then(|v| v.as_str()),
+            Some("cancelled" | "failed")
+        ),
+        "{done:?}"
+    );
+    assert_ne!(
+        done.get("coverage").and_then(|v| v.as_str()),
+        Some("complete"),
+        "{done:?}"
+    );
+    assert_eq!(
+        scalar("SELECT count(*) FROM main.scan_run WHERE root_id=?1 AND state='completed'"),
+        completed,
+        "a refused EndRun must not publish a completed run"
+    );
+    assert_eq!(
+        scalar("SELECT generation FROM main.root WHERE id=?1"),
+        generation,
+        "a refused EndRun must not publish a sweep"
+    );
+    f3_wait_live(svc);
+}
+
+/// #731: a half-applied revoke, whose durable grant commit landed but whose catalogue apply failed
+/// (the live cancel of the run was refused), leaves the run running and claiming its root. The
+/// run's final EndRun must still be refused by the grant-state guard in `active_run`: no completed
+/// run and no sweep.
+#[cfg(windows)]
+#[test]
+fn a_half_applied_revoke_still_refuses_the_final_end_run() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    let inner = &svc.inner;
+    settle(svc, &start(svc, &lab.root, "full"));
+    f3_wait_live(svc);
+    let root_row = inner.root_row(&lab.root).unwrap();
+    let grant = crate::db::roots(&inner.db(), Some(root_row))
+        .unwrap()
+        .remove(0)
+        .grant;
+    let scalar =
+        |sql: &str| -> i64 { inner.db().query_row(sql, [root_row], |r| r.get(0)).unwrap() };
+    let generation = scalar("SELECT generation FROM main.root WHERE id=?1");
+    let completed =
+        scalar("SELECT count(*) FROM main.scan_run WHERE root_id=?1 AND state='completed'");
+    inner.scan.gate.arm();
+    let job = start(svc, &lab.root, "full");
+    inner.scan.gate.wait_reached();
+    // Test-local: the trigger lives on this lab's own catalogue and is dropped right after the
+    // revoke, so it only fails the revoke's own cancel of the run.
+    inner
+        .db()
+        .execute_batch(
+            "CREATE TRIGGER main.half_applied_cancel_refusal BEFORE UPDATE OF state ON scan_run
+             WHEN NEW.state='cancelled' BEGIN SELECT RAISE(ABORT,'injected'); END;",
+        )
+        .unwrap();
+    let revoked = inner.catalog.writer().call(WriteCommand::RevokeGrant {
+        grant_id: grant,
+        revoked_at_ns: crate::now_ns(),
+    });
+    inner
+        .db()
+        .execute_batch("DROP TRIGGER main.half_applied_cancel_refusal")
+        .unwrap();
+    // The half-applied state: the grant is revoked durably, the run and its root claim are not.
+    assert!(
+        revoked.is_err(),
+        "the injected cancel must fail the revoke: {revoked:?}"
+    );
+    let grant_state: String = inner
+        .db()
+        .query_row(
+            "SELECT state FROM st.root_grant WHERE id=?1",
+            [grant],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(grant_state, "revoked");
+    assert_eq!(
+        scalar("SELECT count(*) FROM main.scan_run WHERE root_id=?1 AND state='running'"),
+        1
+    );
+    assert_eq!(
+        scalar("SELECT count(*) FROM main.root WHERE id=?1 AND active_run IS NOT NULL"),
+        1
+    );
+    inner.scan.gate.release();
+    let done = settle(svc, &job);
+    assert!(
+        matches!(
+            done.get("state").and_then(|v| v.as_str()),
+            Some("cancelled" | "failed")
+        ),
+        "{done:?}"
+    );
+    assert_ne!(
+        done.get("coverage").and_then(|v| v.as_str()),
+        Some("complete"),
+        "{done:?}"
+    );
+    assert_eq!(
+        scalar("SELECT count(*) FROM main.scan_run WHERE root_id=?1 AND state='completed'"),
+        completed,
+        "a refused EndRun must not publish a completed run"
+    );
+    assert_eq!(
+        scalar("SELECT generation FROM main.root WHERE id=?1"),
+        generation,
+        "a refused EndRun must not publish a sweep"
+    );
+}
+
 /// Independent walk: (files, dirs below the root, logical bytes); reparse points are neither
 /// followed nor counted, as the scan's exclusion rule says.
 #[cfg(windows)]
