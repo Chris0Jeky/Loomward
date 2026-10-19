@@ -49,6 +49,24 @@ describe('mock tiers and placement', () => {
     expect((await sim(c)).result.excluded_volumes).toEqual(observationExclusions);
   });
 
+  it('keeps observed pressure when only a grant excludes a volume from placement', async () => {
+    const { result } = await client().call('tiers.model', {});
+    const volume = result.volumes.find(v => v.volume_id === 'vo_no_active_grant')!;
+    expect(volume.capacity_bytes).not.toBeNull();
+    expect(volume.free_bytes).not.toBeNull();
+    expect(volume.free_fraction).toBeCloseTo(0.58, 12);
+    expect(volume.pressure).toBe('ok');
+    expect(volume.source_eligible).toBe(false);
+  });
+
+  it.each(['offline', 'capacity_unknown', 'physics_unusable'])('keeps pressure unknown for unusable observations: %s', async reason => {
+    const { result } = await client().call('tiers.model', {});
+    const volume = result.volumes.find(v => v.volume_id === `vo_${reason}`)!;
+    expect(volume.free_fraction).toBeNull();
+    expect(volume.pressure).toBe('unknown');
+    expect(volume.source_eligible).toBe(false);
+  });
+
   it('never makes a simulation executable or a filesystem change', async () => {
     const c = client();
     for (const heat_policy of ['unknown_is_ineligible', 'mtime_proxy_whatif', 'assumed_only'] as const) {

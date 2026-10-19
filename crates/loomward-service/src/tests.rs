@@ -53,6 +53,8 @@ pub(crate) struct Hooks {
     pub skew: Mutex<Duration>,
     /// How far ahead of the wall clock a read's receiver reads time once it starts waiting.
     pub read_ahead: Mutex<Duration>,
+    /// #758: a manually advanced service read clock; None keeps production timing.
+    pub read_clock: Mutex<Option<Instant>>,
     /// (profile, profiles directory) for the scan-time fence instead of the OS folders (#312).
     pub profile: Mutex<Option<(std::path::PathBuf, std::path::PathBuf)>>,
     /// #219: the filesystem name grant-time probes observe instead of the volume's.
@@ -69,10 +71,15 @@ pub(crate) struct Hooks {
     pub fail_explicit_retry: std::sync::atomic::AtomicBool,
     #[cfg(windows)]
     pub fail_automatic_start: std::sync::atomic::AtomicBool,
+    /// One-shot: the next automatic start is refused by the resource budget (refunded, not failed).
+    #[cfg(windows)]
+    pub refuse_automatic_budget: std::sync::atomic::AtomicBool,
     #[cfg(windows)]
     pub fail_watch_start: std::sync::atomic::AtomicBool,
     #[cfg(windows)]
     pub fail_freshness_checkpoint: std::sync::atomic::AtomicBool,
+    #[cfg(windows)]
+    pub busy_freshness_checkpoint: std::sync::atomic::AtomicBool,
     #[cfg(windows)]
     pub before_freshness_finish: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
@@ -107,6 +114,28 @@ impl SpaceFake {
 }
 
 impl Hooks {
+    pub fn receive_read<T>(
+        &self,
+        rx: &std::sync::mpsc::Receiver<T>,
+        deadline: Instant,
+        now: Instant,
+    ) -> Result<T, std::sync::mpsc::RecvTimeoutError> {
+        if self.read_clock.lock().unwrap().is_none() {
+            return rx.recv_timeout(deadline.saturating_duration_since(now));
+        }
+        let safety = Instant::now() + Duration::from_secs(60);
+        loop {
+            let now = self.read_clock.lock().unwrap().expect("read clock removed");
+            let left = deadline.saturating_duration_since(now);
+            match rx.recv_timeout(left.min(Duration::from_millis(10))) {
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) if !left.is_zero() => {
+                    assert!(Instant::now() < safety, "read worker never answered");
+                }
+                reply => return reply,
+            }
+        }
+    }
+
     pub fn before(&self, c: Command) {
         *self.runs.lock().unwrap().entry(c).or_default() += 1;
         let delay = *self.delay.lock().unwrap();
@@ -119,15 +148,22 @@ impl Hooks {
     }
 
     pub fn gate(&self, c: Command, at: &'static str) {
-        self.arrived.lock().unwrap().push((c, at));
-        let mut closed = self.closed.lock().unwrap();
+        // These gates also run from Drop: preserve the first test panic after poisoning.
+        self.arrived
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((c, at));
+        let mut closed = self.closed.lock().unwrap_or_else(|e| e.into_inner());
         while closed.contains(&(c, at)) {
-            closed = self.opened.wait(closed).unwrap();
+            closed = self.opened.wait(closed).unwrap_or_else(|e| e.into_inner());
         }
     }
 
     pub fn open(&self, c: Command, at: &'static str) {
-        self.closed.lock().unwrap().retain(|g| *g != (c, at));
+        self.closed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|g| *g != (c, at));
         self.opened.notify_all();
     }
 
@@ -152,8 +188,215 @@ fn open(dir: &Path, dataset: DatasetClass) -> Service {
     .unwrap()
 }
 
+#[test]
+fn normal_start_checks_each_database_once() {
+    let dir = temp_root();
+    let dist = dir.path().join("dist");
+    std::fs::create_dir(&dist).unwrap();
+    for dataset in [DatasetClass::Synthetic, DatasetClass::Personal] {
+        let state = dir.path().join(format!("{dataset:?}"));
+        drop(open(&state, dataset));
+        for static_dir in [None, Some(dist.as_path())] {
+            loomward_catalog::take_integrity_checks();
+            let service = Service::open_with_static(
+                Config {
+                    state_dir: state.clone(),
+                    dataset,
+                    allow_personal: true,
+                    allow_identity_unverified: false,
+                    grant_roots: vec![],
+                },
+                static_dir,
+            )
+            .unwrap();
+            let checks = loomward_catalog::take_integrity_checks();
+            for name in ["catalog.db", "state.db"] {
+                assert_eq!(
+                    checks.iter().filter(|path| path.ends_with(name)).count(),
+                    1,
+                    "{dataset:?}: {name}: {checks:?}"
+                );
+            }
+            drop(service);
+        }
+    }
+}
+
+fn damage_data_page(path: &Path) -> Vec<u8> {
+    // Leave the header and schema readable: only the full integrity check sees this damage.
+    let conn = rusqlite::Connection::open(path).unwrap();
+    conn.execute_batch("CREATE TABLE integrity_probe(value TEXT); INSERT INTO integrity_probe VALUES('synthetic'); PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE").unwrap();
+    let page: u32 = conn
+        .query_row(
+            "SELECT rootpage FROM sqlite_schema WHERE name='integrity_probe'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let page_size: u32 = conn
+        .pragma_query_value(None, "page_size", |r| r.get(0))
+        .unwrap();
+    drop(conn);
+    let mut corrupt = std::fs::read(path).unwrap();
+    corrupt[((page - 1) * page_size) as usize] = 0;
+    std::fs::write(path, &corrupt).unwrap();
+    corrupt
+}
+
+#[test]
+fn corrupt_catalogue_is_preserved_and_rebuilt_at_normal_start() {
+    let dir = temp_root();
+    drop(open(dir.path(), DatasetClass::Synthetic));
+    let corrupt = damage_data_page(&dir.path().join("catalog.db"));
+    loomward_catalog::take_integrity_checks();
+    drop(open(dir.path(), DatasetClass::Synthetic));
+    assert_eq!(
+        loomward_catalog::take_integrity_checks()
+            .iter()
+            .filter(|path| path.ends_with("catalog.db"))
+            .count(),
+        1
+    );
+    let preserved = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("catalog.corrupt-")
+        })
+        .expect("corrupt derived catalogue must be preserved");
+    assert_eq!(std::fs::read(preserved).unwrap(), corrupt);
+}
+
+#[test]
+fn state_integrity_failure_still_precedes_static_overlap() {
+    let dir = temp_root();
+    drop(open(dir.path(), DatasetClass::Synthetic));
+    let corrupt = damage_data_page(&dir.path().join("state.db"));
+    let error = Service::open_with_static(
+        Config {
+            state_dir: dir.path().to_path_buf(),
+            dataset: DatasetClass::Synthetic,
+            allow_personal: false,
+            allow_identity_unverified: false,
+            grant_roots: vec![],
+        },
+        Some(dir.path()),
+    )
+    .err()
+    .expect("corruption must refuse startup");
+    assert_eq!(error, "state store: CorruptDatabase");
+    assert_eq!(std::fs::read(dir.path().join("state.db")).unwrap(), corrupt);
+}
+
+#[test]
+fn corrupt_catalogue_is_refused_at_static_start_without_rewriting() {
+    let dir = temp_root();
+    let state = dir.path().join("state");
+    drop(open(&state, DatasetClass::Synthetic));
+    let corrupt = b"synthetic corrupt catalogue";
+    std::fs::write(state.join("catalog.db"), corrupt).unwrap();
+    let dist = dir.path().join("dist");
+    std::fs::create_dir(&dist).unwrap();
+    let error = Service::open_with_static(
+        Config {
+            state_dir: state.clone(),
+            dataset: DatasetClass::Synthetic,
+            allow_personal: false,
+            allow_identity_unverified: false,
+            grant_roots: vec![],
+        },
+        Some(&dist),
+    )
+    .err()
+    .expect("corrupt catalogue must refuse startup");
+    assert_eq!(
+        error,
+        "cannot inspect stored grants: catalogue version unavailable"
+    );
+    assert_eq!(std::fs::read(state.join("catalog.db")).unwrap(), corrupt);
+}
+
 pub(crate) fn temp_root() -> tempfile::TempDir {
     tempfile::tempdir_in(crate::paths::test_roots_base()).unwrap()
+}
+
+#[test]
+fn an_injected_read_clock_expires_the_receiver_and_catalogue_open() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    *svc.inner.hooks.read_clock.lock().unwrap() = Some(deadline + Duration::from_secs(1));
+    let (_tx, rx) = std::sync::mpsc::channel::<()>();
+    assert_eq!(
+        svc.inner.hooks.receive_read(&rx, deadline, Instant::now()),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+    );
+    let work = crate::ReadWork {
+        deadline,
+        interrupt: Mutex::new(None),
+    };
+    assert_eq!(
+        svc.inner.read_reader(Some(&work)).err().unwrap().code,
+        ErrorCode::DeadlineExceeded
+    );
+}
+
+/// #730: a failed assertion holding a test gate must not panic again during cleanup.
+#[test]
+fn poisoned_test_gates_preserve_the_original_panic() {
+    const CHILD: &str = "LOOMWARD_730_POISONED_GATE";
+    if let Some(gate) = std::env::var_os(CHILD) {
+        let tmp = temp_root();
+        let svc = open(tmp.path(), DatasetClass::Synthetic);
+        struct Release(Arc<Hooks>);
+        impl Drop for Release {
+            fn drop(&mut self) {
+                self.0.open(Command::VolumesList, "space_read");
+            }
+        }
+        let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let svc = svc;
+            let _release = Release(svc.inner.hooks.clone());
+            let _lock = if gate == "arrived" {
+                svc.inner.hooks.arrived.lock().unwrap()
+            } else {
+                svc.inner.hooks.closed.lock().unwrap()
+            };
+            panic!("original test failure");
+        }));
+        let payload = failure.expect_err("the original panic must still be reported");
+        assert_eq!(
+            payload.downcast_ref::<&str>(),
+            Some(&"original test failure")
+        );
+        return;
+    }
+    for gate in ["arrived", "closed"] {
+        // A second panic aborts the process, so catch_unwind alone cannot test this regression.
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::poisoned_test_gates_preserve_the_original_panic",
+                "--nocapture",
+            ])
+            .env(CHILD, gate)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{gate}: cleanup aborted: {}\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        // A renamed test would match nothing and exit 0 while proving nothing.
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+            "{gate}: the child ran no test"
+        );
+    }
 }
 
 /// Fixtures stay outside the source tree and inside the profile fence wherever the checkout is
@@ -402,6 +645,123 @@ fn roots_list_keeps_a_root_mid_scan_with_unknown_totals() {
     let (roots, _) = ok("roots.list", call(&svc, "roots.list", json!({})));
     assert!(roots["roots"][0]["totals"].is_null());
     assert_eq!(roots["roots"][0]["grant_state"], "active");
+}
+
+/// #722: several large roots cannot push `roots.list` past its deadline. Each root's unique
+/// totals get a share of the budget; a root past its share reports them unknown, the stored
+/// aggregates stay exact, and a small root is still measured exactly.
+#[test]
+fn roots_list_degrades_slow_roots_to_unknown_totals_inside_the_deadline() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let sizes = [200u64, 70_000, 70_000, 70_000];
+    for (i, &files) in sizes.iter().enumerate() {
+        let (root, grant) = register(&svc, i as u8 + 1);
+        let dir: i64 = svc
+            .inner
+            .db()
+            .query_row(
+                "SELECT id FROM main.dir WHERE root_id=?1 AND parent_id IS NULL",
+                [root],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let w = svc.inner.catalog.writer();
+        let WriteReply::Run(run) = w
+            .call(WriteCommand::BeginRun {
+                grant_id: grant,
+                mode: "full".into(),
+                strategy: "fixture".into(),
+                started_at_ns: 0,
+            })
+            .unwrap()
+        else {
+            panic!()
+        };
+        // Listings are capped, so each 1000 files sit in their own subdirectory.
+        let chunks = files.div_ceil(1000);
+        let subdirs = (0..chunks)
+            .map(|d| {
+                let mut o = Observation::file(format!("d{d}"), 0, Some(0));
+                o.attrs = 0x10;
+                o.file_id = Some(vec![0xD0; 15].into_iter().chain([d as u8 + 1]).collect());
+                o.created_ft = Some(1);
+                o
+            })
+            .collect();
+        w.call(WriteCommand::DirListing(DirListing {
+            run_id: run,
+            dir_id: dir,
+            files: vec![],
+            dirs: subdirs,
+            state: "complete".into(),
+            skipped: 0,
+            errors: 0,
+        }))
+        .unwrap();
+        let children: Vec<i64> = svc
+            .inner
+            .db()
+            .prepare("SELECT id FROM (SELECT id,parent_id FROM main.dir UNION ALL SELECT id,parent_id FROM main.bulk_dir) WHERE parent_id=?1 ORDER BY id")
+            .unwrap()
+            .query_map([dir], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        for (d, child) in children.into_iter().enumerate() {
+            let listed = (d as u64 * 1000..files.min((d as u64 + 1) * 1000))
+                .map(|n| {
+                    let mut o = file(&format!("report-{n}.txt"), 1000);
+                    o.file_id = Some(((n + 1) as u128).to_le_bytes().to_vec());
+                    o
+                })
+                .collect();
+            w.call(WriteCommand::DirListing(DirListing {
+                run_id: run,
+                dir_id: child,
+                files: listed,
+                dirs: vec![],
+                state: "complete".into(),
+                skipped: 0,
+                errors: 0,
+            }))
+            .unwrap();
+        }
+        w.call(WriteCommand::EndRun {
+            run_id: run,
+            state: "completed".into(),
+            finished_at_ns: 1,
+        })
+        .unwrap();
+    }
+    // A 5% share of a one-second budget (about 50 ms for all four roots) is far below what the
+    // big roots need on any host, so they are cut deterministically while the small one is not.
+    let work = crate::ReadWork {
+        deadline: Instant::now() + Duration::from_secs(1),
+        interrupt: Mutex::new(None),
+    };
+    let started = Instant::now();
+    let roots = svc.inner.root_list_sharing(Some(&work), 5).unwrap();
+    assert!(started.elapsed() < Duration::from_secs(1));
+    let roots = roots["roots"].as_array().unwrap();
+    assert_eq!(roots.len(), sizes.len());
+    let mut cut = 0;
+    for (root, files) in roots.iter().zip(sizes) {
+        let totals = &root["totals"];
+        assert_eq!(totals["files"], files, "stored aggregates stay exact");
+        match totals["unique_objects"].as_u64() {
+            Some(n) => assert_eq!(n, files),
+            None => {
+                cut += 1;
+                assert!(totals["unique_allocated_bytes"].is_null());
+            }
+        }
+    }
+    assert!(cut >= 1, "at least one large root must exceed its share");
+    assert_eq!(
+        roots[0]["totals"]["unique_objects"], 200,
+        "the small root is exact"
+    );
 }
 
 fn placement_fixture(svc: &Service) -> (i64, i64, String) {
@@ -765,7 +1125,12 @@ fn volumes_list_observes_space_through_a_second_root_when_the_first_is_unobserva
     // The second grant lives on the same real volume, so its identity matches the volume key.
     let second = tmp.path().join("second-folder");
     std::fs::create_dir_all(&second).unwrap();
-    svc.inner
+    let (second_volume_key, second_file_id) = crate::lab::identity(&second).unwrap();
+    assert_eq!(second_volume_key, volume_key);
+    let WriteReply::Root {
+        grant_id, root_id, ..
+    } = svc
+        .inner
         .catalog
         .writer()
         .call(WriteCommand::RegisterRoot(RootObservation {
@@ -773,13 +1138,29 @@ fn volumes_list_observes_space_through_a_second_root_when_the_first_is_unobserva
             volume_key,
             display_name: "Second".into(),
             display_path: second.canonicalize().unwrap().display().to_string(),
-            root_file_id: Some(vec![3; 16]),
+            root_file_id: Some(second_file_id),
             filesystem: Some("NTFS".into()),
             origin: "owner_granted".into(),
             granted_via: "cli_flag".into(),
             observed_at_ns: 0,
         }))
-        .unwrap();
+        .unwrap()
+    else {
+        panic!("expected registered root");
+    };
+    // #796: force the identity check that the background pump may otherwise reach only under
+    // load. A made-up file ID retires this grant before the space reader can try the second root.
+    svc.inner
+        .engine
+        .granted_root(
+            RootId::new(svc.inner.root_id(root_id)).unwrap(),
+            grant_id,
+            &loomward_engine::scan::CatalogRootIdentity {
+                row: root_id,
+                instance: svc.inner.instance.clone(),
+            },
+        )
+        .expect("the second root must remain valid when the freshness pump checks its identity");
     // The first (lowest-id) root is now unobservable; the second must still answer.
     std::fs::remove_dir(&folder).unwrap();
     let (volumes, _) = ok("volumes.list", call(&svc, "volumes.list", json!({})));
@@ -3722,11 +4103,15 @@ pub(crate) struct Lab {
 
 #[cfg(windows)]
 pub(crate) fn lab() -> Option<Lab> {
+    lab_in(temp_root())
+}
+
+#[cfg(windows)]
+pub(crate) fn lab_in(tmp: tempfile::TempDir) -> Option<Lab> {
     if loomward_windows::enumerate::running_elevated() {
         eprintln!("skipped: elevated token; the native scan refuses elevation (invariant 2)");
         return None;
     }
-    let tmp = temp_root();
     let state = tmp.path().join("state");
     let path = tmp.path().join("lab-scan");
     crate::lab::register(
@@ -3905,7 +4290,7 @@ fn revocation_before_the_final_end_run_is_refused_by_the_durable_writer() {
 /// #731: a half-applied revoke, whose durable grant commit landed but whose catalogue apply failed
 /// (the live cancel of the run was refused), leaves the run running and claiming its root. The
 /// run's final EndRun must still be refused by the grant-state guard in `active_run`: no completed
-/// run and no sweep.
+/// run and no sweep. #733: the refused finish must also settle the run and release its root.
 #[cfg(windows)]
 #[test]
 fn a_half_applied_revoke_still_refuses_the_final_end_run() {
@@ -3989,6 +4374,25 @@ fn a_half_applied_revoke_still_refuses_the_final_end_run() {
         scalar("SELECT generation FROM main.root WHERE id=?1"),
         generation,
         "a refused EndRun must not publish a sweep"
+    );
+    assert_eq!(
+        scalar("SELECT count(*) FROM main.scan_run WHERE root_id=?1 AND state='running'"),
+        0,
+        "a refused finish must settle the revoked run"
+    );
+    assert_eq!(
+        scalar("SELECT count(*) FROM main.scan_run WHERE root_id=?1 AND state IN ('cancelled','failed') AND json_extract(error_json,'$.code')='grant_not_active' AND finished_at_ns IS NOT NULL"),
+        1,
+        "the settled run must record why it could not finish"
+    );
+    assert_eq!(
+        scalar("SELECT count(*) FROM main.root WHERE id=?1 AND active_run IS NOT NULL"),
+        0,
+        "a refused finish must release the root without restart"
+    );
+    assert_eq!(
+        scalar("SELECT count(*) FROM main.root WHERE id=?1 AND state='scanning'"),
+        0
     );
 }
 
@@ -4122,6 +4526,148 @@ fn scan_start_publishes_a_lab_tree_matching_an_independent_walk_with_live_events
 }
 
 #[cfg(windows)]
+fn search_freshness_page(lab: &Lab) -> Value {
+    let (page, _) = ok(
+        "search.query",
+        call(
+            &lab.svc,
+            "search.query",
+            json!({"root_id":lab.root,"text":"bin","extension":null,"min_bytes":null,"max_bytes":null,"modified_after":null,"modified_before":null,"kind":"file","limit":100,"cursor":null}),
+        ),
+    );
+    Value::Object(page)
+}
+
+#[cfg(windows)]
+#[test]
+fn search_freshness_preserves_never_scanned_coverage() {
+    let Some(lab) = lab() else { return };
+    lab.svc.inner.freshness.pause_pump();
+    let page = search_freshness_page(&lab);
+    assert_eq!(page["roots"][0]["scan_state"], "never_scanned", "{page:?}");
+    assert_eq!(page["roots"][0]["coverage"], "unscanned", "{page:?}");
+    assert_eq!(page["index_state"], "current", "{page:?}");
+    assert_eq!(page["partial"], true);
+}
+
+#[cfg(windows)]
+#[test]
+fn search_freshness_first_scan_builds_then_becomes_current() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    svc.inner.freshness.pause_pump();
+    svc.inner.scan.gate.arm();
+    let job = start(svc, &lab.root, "full");
+    svc.inner.scan.gate.wait_reached();
+    let during = search_freshness_page(&lab);
+    // Always release the writer before asserting, including on the unfixed implementation.
+    svc.inner.scan.gate.release();
+    assert_eq!(settle(svc, &job)["state"], "completed");
+    let after = search_freshness_page(&lab);
+    assert_eq!(during["index_state"], "building", "{during:?}");
+    assert_eq!(during["roots"][0]["scan_state"], "scanning");
+    assert_eq!(during["roots"][0]["coverage"], "partial");
+    assert_eq!(during["partial"], true);
+    assert_eq!(after["index_state"], "current", "{after:?}");
+    assert_eq!(after["roots"][0]["scan_state"], "complete");
+    assert_eq!(after["roots"][0]["coverage"], "complete");
+    assert_eq!(after["partial"], false);
+}
+
+#[cfg(windows)]
+#[test]
+fn search_freshness_rescan_keeps_existing_index_stale() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    settle(svc, &start(svc, &lab.root, "full"));
+    f3_wait_live(svc);
+    svc.inner.freshness.pause_pump();
+    svc.inner
+        .freshness
+        .record(1, vec![loomward_windows::watch::Change::RootDirty]);
+    let before = search_freshness_page(&lab);
+    svc.inner.scan.gate.arm();
+    let job = start(svc, &lab.root, "full");
+    svc.inner.scan.gate.wait_reached();
+    let during = search_freshness_page(&lab);
+    svc.inner.scan.gate.release();
+    assert_eq!(settle(svc, &job)["state"], "completed");
+    let after = search_freshness_page(&lab);
+    for page in [&before, &during] {
+        assert_eq!(page["index_state"], "stale", "{page:?}");
+        assert_eq!(page["roots"][0]["scan_state"], "stale");
+        assert_eq!(page["roots"][0]["coverage"], "stale");
+        assert_eq!(page["partial"], true);
+    }
+    assert_eq!(after["index_state"], "current", "{after:?}");
+    assert_eq!(after["partial"], false);
+}
+
+#[cfg(windows)]
+#[test]
+fn search_freshness_uses_prior_scan_state_from_its_page_snapshot() {
+    const SEARCH: (Command, &str) = (Command::SearchQuery, "search_page_captured");
+    const PUBLISHED: (Command, &str) = (Command::ScanStart, "full_catalogue_published");
+    // Release both workers before scoped-thread cleanup, including after a failed assertion.
+    struct Release<'a>(&'a Service);
+    impl Drop for Release<'_> {
+        fn drop(&mut self) {
+            self.0.inner.scan.gate.release();
+            self.0.inner.hooks.open(SEARCH.0, SEARCH.1);
+            self.0.inner.hooks.open(PUBLISHED.0, PUBLISHED.1);
+        }
+    }
+    for rescan in [false, true] {
+        let Some(lab) = lab() else { return };
+        let svc = &lab.svc;
+        if rescan {
+            settle(svc, &start(svc, &lab.root, "full"));
+            f3_wait_live(svc);
+        }
+        svc.inner.freshness.pause_pump();
+        svc.inner.hooks.arrived.lock().unwrap().clear();
+        svc.inner
+            .hooks
+            .closed
+            .lock()
+            .unwrap()
+            .extend([SEARCH, PUBLISHED]);
+        svc.inner.scan.gate.arm();
+        let job = start(svc, &lab.root, "full");
+        let during = std::thread::scope(|scope| {
+            let _release = Release(svc);
+            svc.inner.scan.gate.wait_reached();
+            let searching = scope.spawn(|| search_freshness_page(&lab));
+            svc.inner
+                .hooks
+                .until("search page captured while scanning", |h| {
+                    h.arrived.lock().unwrap().contains(&SEARCH)
+                });
+            svc.inner.scan.gate.release();
+            svc.inner
+                .hooks
+                .until("EndRun committed before freshness finish", |h| {
+                    h.arrived.lock().unwrap().contains(&PUBLISHED)
+                });
+            assert!(svc.inner.freshness.stale(1));
+            svc.inner.hooks.open(SEARCH.0, SEARCH.1);
+            searching.join().unwrap()
+        });
+        assert_eq!(settle(svc, &job)["state"], "completed");
+        assert_eq!(
+            during["index_state"],
+            if rescan { "stale" } else { "building" },
+            "rescan={rescan}: {during:?}"
+        );
+        assert_eq!(
+            during["roots"][0]["scan_state"],
+            if rescan { "stale" } else { "scanning" }
+        );
+        assert_eq!(during["partial"], true);
+    }
+}
+
+#[cfg(windows)]
 #[test]
 fn f3_search_reports_freshness_without_enabling_federated_search() {
     let Some(lab) = lab() else { return };
@@ -4182,6 +4728,7 @@ pub(crate) fn f3_wait_live(svc: &Service) -> Value {
         });
         if !svc.inner.freshness.stale(1)
             && settled
+            && page["index_state"] == "current"
             && page["hits"]
                 .as_array()
                 .unwrap()
@@ -4633,18 +5180,17 @@ fn f3_revoke_fences_a_watch_still_being_armed() {
             .unwrap()
     });
     // Release the test gate before asserting, so a red regression cannot strand a native thread.
-    let early = ack.try_recv().ok();
+    let early = ack.recv_timeout(Duration::from_secs(1)).ok();
     svc.inner.hooks.open(phase.0, phase.1);
     if early.is_none() {
         ack.recv_timeout(Duration::from_secs(10)).unwrap().unwrap();
     }
     let opened = opening.join();
     revoking.join().unwrap();
-    assert!(
-        early.is_none(),
-        "revoke acknowledged before the in-flight watch was stopped"
-    );
+    assert!(early.is_some(), "revoke waited for the slow watch arm");
+    early.unwrap().unwrap();
     opened.unwrap();
+    assert!(svc.inner.freshness.debug(1).is_empty());
     svc.inner
         .freshness
         .record(1, vec![loomward_windows::watch::Change::RootDirty]);
@@ -4748,6 +5294,18 @@ fn f3_completed_foreground_job_does_not_mean_background_catalogue_is_quiescent()
     let foreground = start(&lab.svc, &lab.root, "full");
     assert_eq!(settle(&lab.svc, &foreground)["coverage"], "complete");
     f3_wait_live(&lab.svc);
+    let full_runs = || -> i64 {
+        lab.svc
+            .inner
+            .db()
+            .query_row(
+                "SELECT count(*) FROM main.scan_run WHERE mode!='targeted'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    let before = full_runs();
     let phase = (Command::ScanStart, "targeted_catalogue_published");
     lab.svc.inner.hooks.closed.lock().unwrap().push(phase);
     lab.svc.inner.freshness.record(
@@ -4798,9 +5356,12 @@ fn f3_completed_foreground_job_does_not_mean_background_catalogue_is_quiescent()
         .unwrap()
         .iter()
         .all(|hit| hit["freshness"]["state"] == "stale"));
-    f3_wait_live(&lab.svc);
+    let current = f3_wait_live(&lab.svc);
+    assert_eq!(current["index_state"], "current");
+    assert_eq!(current["partial"], true);
+    assert_eq!(full_runs(), before, "settled hints started a full fallback");
     assert!(
-        lab.svc
+        !lab.svc
             .inner
             .db()
             .query_row(
@@ -4809,7 +5370,7 @@ fn f3_completed_foreground_job_does_not_mean_background_catalogue_is_quiescent()
                 |r| r.get::<_, bool>(0),
             )
             .unwrap(),
-        "freshness/idle signal preceded full-root fallback"
+        "targeted freshness must not establish complete root coverage"
     );
 }
 
@@ -4965,6 +5526,114 @@ fn f3_issue617_completed_catchup_retries_its_checkpoint() {
 
 #[cfg(windows)]
 #[test]
+fn issue776_default_scan_shares_workers_with_an_owner_scan_and_freshness() {
+    if loomward_windows::enumerate::running_elevated() {
+        eprintln!("skipped: elevated token; native scans refuse elevation");
+        return;
+    }
+    for threads in [1, 32] {
+        let tmp = temp_root();
+        let state = tmp.path().join("state");
+        let mut paths = Vec::new();
+        for name in ["lab-first", "lab-second", "lab-refresh"] {
+            let path = tmp.path().join(name);
+            crate::lab::register(
+                &state,
+                &path,
+                name,
+                "S",
+                "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            )
+            .unwrap();
+            std::fs::write(path.join("synthetic.bin"), b"synthetic").unwrap();
+            paths.push(path.canonicalize().unwrap());
+        }
+        let svc = Service::open(Config {
+            state_dir: state,
+            dataset: DatasetClass::Synthetic,
+            allow_personal: false,
+            allow_identity_unverified: false,
+            grant_roots: paths,
+        })
+        .unwrap();
+        svc.inner.freshness.pause_pump();
+        let rows = crate::db::roots(&svc.inner.db(), None).unwrap();
+        let roots: Vec<_> = rows.iter().map(|r| svc.inner.root_id(r.root)).collect();
+        for root in &roots {
+            assert_eq!(
+                settle(&svc, &start(&svc, root, "full"))["coverage"],
+                "complete"
+            );
+        }
+        let held = (Command::ScanStart, "full_catalogue_published");
+        svc.inner
+            .hooks
+            .arrived
+            .lock()
+            .unwrap()
+            .retain(|at| *at != held);
+        svc.inner.hooks.closed.lock().unwrap().push(held);
+        let first = start(&svc, &roots[0], "full");
+        svc.inner.hooks.until("first scan holds its workers", |h| {
+            h.arrived.lock().unwrap().contains(&held)
+        });
+        let second = call(
+            &svc,
+            "scan.start",
+            json!({"root_id":roots[1],"mode":"full","budget":{"threads":threads}}),
+        );
+        let third = if threads == 1 {
+            svc.inner.freshness.record(
+                rows[2].root,
+                vec![loomward_windows::watch::Change::RootDirty],
+            );
+            svc.inner.freshness.ready_targeted_hint(rows[2].root);
+            crate::freshness::refresh(&svc.inner);
+            None
+        } else {
+            Some(call(
+                &svc,
+                "scan.start",
+                json!({"root_id":roots[2],"mode":"full"}),
+            ))
+        };
+        let auto = svc.inner.freshness.explicit(rows[2].root).auto.clone();
+        let workers = svc.inner.engine.budgets_get().unwrap().pools[0]
+            .current_workers
+            .get();
+        let first_state = svc
+            .inner
+            .engine
+            .job_status(&JobId::new(&first).unwrap())
+            .unwrap()
+            .state;
+        // Always unblock before asserting: a red regression must not strand a worker on drop.
+        svc.inner.hooks.open(held.0, held.1);
+        assert_eq!(settle(&svc, &first)["coverage"], "complete");
+        let (second, _) = ok("scan.start", second);
+        let second = settle(&svc, second["job"]["job_id"].as_str().unwrap());
+        assert_eq!(second["coverage"], "complete", "{second:?}");
+        assert_eq!(first_state, JobState::Running);
+        assert_eq!(workers, 8, "all three jobs share the bounded pool");
+        if let Some(third) = third {
+            let refused = err(third);
+            assert_eq!((refused.code, refused.retryable), (ErrorCode::Busy, true));
+            assert!(refused.message.contains("retry"));
+            assert!(auto.is_none());
+        } else {
+            let auto = auto.expect("another root refreshes before the owner scans finish");
+            assert_eq!(settle(&svc, auto.as_str())["coverage"], "complete");
+        }
+        // With the pool released, another root can start normally.
+        assert_eq!(
+            settle(&svc, &start(&svc, &roots[2], "full"))["coverage"],
+            "complete"
+        );
+    }
+}
+
+#[cfg(windows)]
+#[test]
 fn f3_issue617_explicit_scan_preempts_another_roots_pool() {
     if loomward_windows::enumerate::running_elevated() {
         return;
@@ -4995,6 +5664,13 @@ fn f3_issue617_explicit_scan_preempts_another_roots_pool() {
     })
     .unwrap();
     svc.inner.freshness.pause_pump();
+    // Exercise actual pool exhaustion even though default scans now leave headroom.
+    svc.inner
+        .engine
+        .budgets_set(
+            &serde_json::from_value(json!({"pool":"scan_enumerate","max_workers":1})).unwrap(),
+        )
+        .unwrap();
     let rows = crate::db::roots(&svc.inner.db(), None).unwrap();
     let first = svc.inner.root_id(rows[0].root);
     let second = svc.inner.root_id(rows[1].root);
@@ -5360,13 +6036,7 @@ fn f3_duplicates_leave_refresh_running_when_a_worker_is_available() {
     crate::freshness::refresh(&svc.inner);
     svc.inner.scan.gate.wait_reached();
     let auto = svc.inner.freshness.explicit(1).auto.clone().unwrap();
-    // The running refresh keeps its eight workers; raising the cap leaves one for hashing.
-    svc.inner
-        .engine
-        .budgets_set(
-            &serde_json::from_value(json!({"pool":"scan_enumerate","max_workers":9})).unwrap(),
-        )
-        .unwrap();
+    // A default refresh already leaves headroom for hashing at the unchanged pool cap.
     let (answer, state) = std::thread::scope(|s| {
         let asking = s.spawn(|| {
             call(
@@ -5492,6 +6162,13 @@ fn f3_explicit_scan_preempts_a_running_watcher_refresh() {
 fn f3_duplicates_preempt_a_running_watcher_refresh() {
     let Some(lab) = lab() else { return };
     let svc = &lab.svc;
+    // Exercise actual pool exhaustion even though default scans now leave headroom.
+    svc.inner
+        .engine
+        .budgets_set(
+            &serde_json::from_value(json!({"pool":"scan_enumerate","max_workers":1})).unwrap(),
+        )
+        .unwrap();
     for name in ["copy.bin", "other.bin"] {
         std::fs::write(lab.path.join(name), b"same").unwrap();
     }
@@ -5613,6 +6290,13 @@ fn f3_duplicates_claim_fences_candidate_selection() {
 fn f3_duplicates_expired_request_releases_the_refresh_fence() {
     let Some(lab) = lab() else { return };
     let svc = &lab.svc;
+    // Exercise actual pool exhaustion even though default scans now leave headroom.
+    svc.inner
+        .engine
+        .budgets_set(
+            &serde_json::from_value(json!({"pool":"scan_enumerate","max_workers":1})).unwrap(),
+        )
+        .unwrap();
     settle(svc, &start(svc, &lab.root, "full"));
     f3_wait_live(svc);
     svc.inner.scan.gate.arm();
@@ -5978,6 +6662,28 @@ fn a_junction_replacing_a_directory_stays_visible_as_excluded() {
         settle(svc, &start(svc, &lab.root, "refresh"))["state"],
         "completed"
     );
+    // Reproduce a late watcher refresh overlapping the read after the foreground scan.
+    svc.inner.scan.gate.arm();
+    svc.inner.freshness.record(
+        1,
+        vec![loomward_windows::watch::Change::Name {
+            action: 1,
+            name: "a/new.bin"
+                .replace('/', std::path::MAIN_SEPARATOR_STR)
+                .encode_utf16()
+                .collect(),
+        }],
+    );
+    svc.inner.freshness.ready_targeted_hint(1);
+    svc.inner.scan.gate.wait_reached();
+    let overlapping = call(
+        svc,
+        "tree.slice",
+        json!({"anchor": {"kind": "root", "root_id": lab.root}, "depth": 3, "max_nodes": 256, "min_share": 0.0, "basis": "logical", "include_files": true}),
+    );
+    svc.inner.scan.gate.release();
+    assert_eq!(err(overlapping).code, ErrorCode::PartialCoverage);
+    f3_wait_live(svc);
     let again = lab_slice(svc, &lab.root);
     assert_eq!(child_named(&again, "b"), Some(kept));
     assert_eq!(slice_totals(&again), (5, 2, 165));
@@ -6739,6 +7445,8 @@ fn obsolete_listing_revisions_are_refused_and_never_complete() {
     assert_eq!(files(), vec!["stale.bin".to_string()]);
     sink.consume(&id, listing(new, &["kept.bin"])).unwrap();
     sink.consume(&id, done(new)).unwrap();
+    // Listing steps commit asynchronously (#148); settling waits for them and finds none obsolete.
+    assert_eq!(sink.settle(&id).unwrap(), Vec::<u64>::new());
     assert_eq!(files(), vec!["kept.bin".to_string()]);
     sink.finish_run(&id, 41, &RunScope::FullRoot, true).unwrap();
     assert_eq!(rows("file"), vec!["kept.bin".to_string()]);
@@ -6751,6 +7459,139 @@ fn obsolete_listing_revisions_are_refused_and_never_complete() {
         ErrorCode::StaleGeneration,
         "an ended run accepts nothing"
     );
+}
+
+/// #763: a send-time refusal never reaches the writer's chunk fence. Even if the caller keeps
+/// sending and claims Complete, keep accepted entries and publish partial without absence.
+#[test]
+fn a_send_time_rejected_chunk_never_publishes_a_complete_listing() {
+    use loomward_engine::scan::source::{IdBasis, ListOutcome, OpenedIdentity};
+    for chunks in [
+        &[false, true][..],
+        &[true, false],
+        &[true, false, true],
+        &[false],
+    ] {
+        let tmp = temp_root();
+        let svc = open(tmp.path(), DatasetClass::Synthetic);
+        let (root, grant) = register(&svc, 7);
+        let dir = crate::db::active_root_dir(&svc.inner.db(), root)
+            .unwrap()
+            .unwrap();
+        let id = RootId::new(svc.inner.root_id(root)).unwrap();
+        let sink = &svc.inner.scan;
+        sink.bind(&id, grant, dir);
+        let identity = OpenedIdentity {
+            id: None,
+            basis: IdBasis::None,
+            volume_guid: None,
+            volume_serial: None,
+            attributes: 0x10,
+            reparse_tag: None,
+        };
+        // Seed an existing row: a partial listing must not establish its absence.
+        sink.begin_run(&id, 40, &RunScope::FullRoot).unwrap();
+        let seed = sink.prepare_listing(&id, 40, None, &[], identity).unwrap();
+        sink.consume(
+            &id,
+            ScanMessage::DirListing {
+                run: 40,
+                ticket: seed,
+                entries: vec![entry("previous.bin", 1, false)],
+            },
+        )
+        .unwrap();
+        sink.consume(
+            &id,
+            ScanMessage::ListingDone {
+                run: 40,
+                ticket: seed,
+                outcome: ListOutcome::Complete,
+            },
+        )
+        .unwrap();
+        sink.finish_run(&id, 40, &RunScope::FullRoot, true).unwrap();
+
+        sink.begin_run(&id, 41, &RunScope::FullRoot).unwrap();
+        let ticket = sink.prepare_listing(&id, 41, None, &[], identity).unwrap();
+        let mut accepted = Vec::new();
+        for (i, valid) in chunks.iter().enumerate() {
+            let entries = if *valid {
+                let name = format!("accepted-{i}.bin");
+                accepted.push(name.clone());
+                vec![entry(&name, 2, false)]
+            } else {
+                vec![
+                    entry("rejected.bin", 3, false),
+                    entry("duplicate.bin", 4, false),
+                    entry("duplicate.bin", 5, false),
+                ]
+            };
+            let result = sink.consume(
+                &id,
+                ScanMessage::DirListing {
+                    run: 41,
+                    ticket,
+                    entries,
+                },
+            );
+            if *valid {
+                result.unwrap();
+            } else {
+                assert!(
+                    matches!(
+                        result,
+                        Err(loomward_engine::EngineError::StaleGeneration { .. })
+                    ),
+                    "duplicate names are refused at send time"
+                );
+            }
+        }
+        sink.consume(
+            &id,
+            ScanMessage::ListingDone {
+                run: 41,
+                ticket,
+                outcome: ListOutcome::Complete,
+            },
+        )
+        .unwrap();
+        sink.settle(&id).unwrap();
+        let conn = svc.inner.db();
+        let names: Vec<String> = conn
+            .prepare("SELECT name FROM main.file ORDER BY name")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert!(
+            !names.iter().any(|n| n == "rejected.bin"),
+            "rejected chunk entries never reached the writer"
+        );
+        for name in &accepted {
+            assert!(names.contains(name), "accepted chunk missing: {names:?}");
+        }
+        let (state, coverage): (String, String) = conn
+            .query_row(
+                "SELECT listing_state,listing_outcome FROM main.dir WHERE id=?1",
+                [dir],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            (state.as_str(), coverage.as_str()),
+            ("incomplete", "partial"),
+            "chunks={chunks:?}, published entries={names:?}"
+        );
+        assert!(
+            names.iter().any(|n| n == "previous.bin"),
+            "partial coverage must preserve unseen entries"
+        );
+        drop(conn);
+        sink.finish_run(&id, 41, &RunScope::FullRoot, false)
+            .unwrap();
+    }
 }
 
 /// Parallel workers over a wider tree: every child ticket follows its parent's publication, so
@@ -7091,6 +7932,8 @@ fn followup_inspect_uses_the_roots_actual_grant() {
     assert_eq!(result["display_path"]["text"], "Synthetic root");
 }
 
+#[path = "crash_sweep_tests.rs"]
+mod crash_sweep_tests;
 #[path = "duplicates_tests.rs"]
 mod duplicates_tests;
 #[path = "forget_tests.rs"]
@@ -7686,6 +8529,41 @@ fn a_live_scanned_ntfs_grant_can_be_labelled_and_collected() {
     label_and_collect_live(&svc, &root, "synthetic-note.txt");
 }
 
+/// #710: a library caller may spell a root with a trailing separator. The grant must store the
+/// canonical spelling, or a later open with the canonical form cannot reuse the verified grant.
+#[cfg(windows)]
+#[test]
+fn open_stores_the_canonical_spelling_of_a_non_canonical_root() {
+    let tmp = temp_root();
+    let folder = tmp.path().join("owner-folder");
+    std::fs::create_dir_all(&folder).unwrap();
+    let canonical = folder.canonicalize().unwrap();
+    let spelled = std::path::PathBuf::from(format!("{}\\", folder.display()));
+    let opened = Service::open(Config {
+        state_dir: tmp.path().join("state"),
+        dataset: DatasetClass::Personal,
+        allow_personal: true,
+        allow_identity_unverified: false,
+        grant_roots: vec![spelled],
+    });
+    if loomward_windows::enumerate::running_elevated() {
+        // Native identity refuses elevated tokens (invariant 2), including hosted Windows CI.
+        let error = opened.err().expect("an elevated grant is refused");
+        assert!(error.contains("identity_unavailable"), "{error}");
+        return;
+    }
+    let svc = opened.unwrap();
+    // Compare text: `PathBuf` equality ignores a trailing separator, which is the very difference.
+    let stored: Vec<String> = crate::db::active_root_paths(&svc.inner.db())
+        .unwrap()
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+    let expected = canonical.to_string_lossy();
+    let expected = expected.strip_prefix(r"\\?\").unwrap_or(&expected);
+    assert_eq!(stored, vec![expected.to_owned()]);
+}
+
 #[cfg(test)]
 #[path = "backups_tests.rs"]
 mod backups_tests;
@@ -7759,4 +8637,194 @@ fn active_grant_matches_guid_and_unverified_path_together() {
         .unwrap(),
         None
     );
+}
+
+/// #148: a listing's chunk and its publication reach the writer without waiting for each receipt,
+/// so one transaction commits both; the next child lookup waits for that commit first.
+#[cfg(windows)]
+#[test]
+fn a_listing_chunk_and_its_publication_share_one_transaction() {
+    use loomward_engine::scan::source::{FileIdObs, IdBasis, ListOutcome, OpenedIdentity};
+    use loomward_engine::scan::Entry;
+    let Some(lab) = lab() else { return };
+    let inner = &lab.svc.inner;
+    inner.freshness.pause_pump();
+    let row = inner.root_row(&lab.root).unwrap();
+    let stored = crate::db::roots(&inner.db(), Some(row)).unwrap().remove(0);
+    let id = RootId::new(&lab.root).unwrap();
+    inner.scan.bind(&id, stored.grant, stored.dir.unwrap());
+    let sink: &dyn ScanSink = &*inner.scan;
+    let identity = |id| OpenedIdentity {
+        id: Some(FileIdObs::Id64(id)),
+        basis: IdBasis::Listed,
+        volume_guid: None,
+        volume_serial: Some(42),
+        attributes: 0x10,
+        reparse_tag: None,
+    };
+    let entry = |name: &str, id, attributes| Entry {
+        name: name.encode_utf16().collect(),
+        file_id: Some(FileIdObs::Id64(id)),
+        identity_eligible: true,
+        attributes,
+        reparse_tag: None,
+        logical: 10,
+        allocated: Some(4096),
+        creation: Some(1),
+        last_write: Some(1),
+        change: Some(1),
+        last_access: Some(1),
+        excluded: false,
+        traversal_error: None,
+    };
+    sink.begin_run(&id, 7, &RunScope::FullRoot).unwrap();
+    let ticket = sink
+        .prepare_listing(&id, 7, None, &[], identity(1))
+        .unwrap();
+    let writer = inner.catalog.writer();
+    let before = writer.timings().transactions;
+    // The writer holds its first listing command; a waiting sink could not send the second.
+    writer.publication_window().arm();
+    let (sent, returned) = std::sync::mpsc::channel();
+    let outcome = std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let entries = vec![entry("a.bin", 2, 0x20), entry("sub", 3, 0x10)];
+            sink.consume(
+                &id,
+                ScanMessage::DirListing {
+                    run: 7,
+                    ticket,
+                    entries,
+                },
+            )
+            .unwrap();
+            let outcome = ListOutcome::Complete;
+            sink.consume(
+                &id,
+                ScanMessage::ListingDone {
+                    run: 7,
+                    ticket,
+                    outcome,
+                },
+            )
+            .unwrap();
+            sent.send(()).unwrap();
+        });
+        let pipelined = returned.recv_timeout(Duration::from_secs(10)).is_ok();
+        // The child lookup starts while the writer still holds the publication: it must wait.
+        let (looked_up, child) = std::sync::mpsc::channel();
+        let id = &id;
+        scope.spawn(move || {
+            let name: Vec<u16> = "sub".encode_utf16().collect();
+            let found = sink.prepare_listing(id, 7, Some(ticket.dir), &name, identity(3));
+            looked_up.send(found).unwrap();
+        });
+        let early = child.recv_timeout(Duration::from_millis(200));
+        writer.publication_window().release();
+        let late = child.recv_timeout(Duration::from_secs(10));
+        (pipelined, early, late)
+    });
+    let (pipelined, early, late) = outcome;
+    assert!(pipelined, "consume waited for a receipt");
+    assert!(
+        matches!(early, Err(std::sync::mpsc::RecvTimeoutError::Timeout)),
+        "the child lookup answered before its parent's publication committed"
+    );
+    late.expect("the child lookup finishes once the writer commits")
+        .expect("the child lookup waits for its parent's publication");
+    assert_eq!(writer.timings().transactions - before, 1);
+    sink.finish_run(&id, 7, &RunScope::FullRoot, false).unwrap();
+}
+
+/// Run 42 on a fresh root whose listing the writer will refuse after `consume` returned: each
+/// chunk is valid alone, but the publication names one entry twice.
+fn stage_deferred_refusal(svc: &Service) -> (RootId, u64) {
+    use loomward_engine::scan::source::{IdBasis, ListOutcome, OpenedIdentity};
+    let (root, grant) = register(svc, 7);
+    let dir = crate::db::active_root_dir(&svc.inner.db(), root)
+        .unwrap()
+        .unwrap();
+    let id = RootId::new(svc.inner.root_id(root)).unwrap();
+    let sink = &svc.inner.scan;
+    sink.bind(&id, grant, dir);
+    sink.begin_run(&id, 42, &RunScope::FullRoot).unwrap();
+    let identity = OpenedIdentity {
+        id: None,
+        basis: IdBasis::None,
+        volume_guid: None,
+        volume_serial: None,
+        attributes: 0x10,
+        reparse_tag: None,
+    };
+    let ticket = sink.prepare_listing(&id, 42, None, &[], identity).unwrap();
+    for n in 1..=2 {
+        let entries = vec![entry("dup.bin", n, false)];
+        sink.consume(
+            &id,
+            ScanMessage::DirListing {
+                run: 42,
+                ticket,
+                entries,
+            },
+        )
+        .unwrap();
+    }
+    let outcome = ListOutcome::Complete;
+    sink.consume(
+        &id,
+        ScanMessage::ListingDone {
+            run: 42,
+            ticket,
+            outcome,
+        },
+    )
+    .unwrap();
+    (id, ticket.dir)
+}
+
+/// #148: a chunk the writer refuses after `consume` returned is still relisted: settling names its
+/// directory, and its listing published partial, never complete.
+#[test]
+fn a_deferred_refusal_settles_as_a_relist_and_never_completes() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let (id, dir) = stage_deferred_refusal(&svc);
+    let sink = &svc.inner.scan;
+    assert_eq!(sink.settle(&id).unwrap(), vec![dir]);
+    assert_eq!(sink.settle(&id).unwrap(), Vec::<u64>::new(), "settled once");
+    let state: String = svc
+        .inner
+        .db()
+        .query_row(
+            "SELECT listing_state FROM main.bulk_dir WHERE id=?1 UNION ALL SELECT listing_state FROM main.dir WHERE id=?1 LIMIT 1",
+            [dir as i64],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_ne!(state, "complete");
+    sink.finish_run(&id, 42, &RunScope::FullRoot, false)
+        .unwrap();
+}
+
+/// #148, invariant 4: an engine that claims completeness while a deferred refusal is still
+/// unsettled cannot end the run completed; `finish_run` settles it itself and downgrades.
+#[test]
+fn an_unsettled_deferred_refusal_cannot_end_the_run_completed() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let (id, _) = stage_deferred_refusal(&svc);
+    svc.inner
+        .scan
+        .finish_run(&id, 42, &RunScope::FullRoot, true)
+        .unwrap();
+    let state: String = svc
+        .inner
+        .db()
+        .query_row(
+            "SELECT state FROM main.scan_run ORDER BY id DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(state, "cancelled", "the run must not end completed");
 }

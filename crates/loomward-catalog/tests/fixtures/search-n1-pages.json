@@ -1,0 +1,569 @@
+[
+  {
+    "extension": null,
+    "kind": "any",
+    "pages": [
+      {
+        "budget_hit": false,
+        "generation": null,
+        "hits": [
+          {
+            "highlights": [
+              [
+                0,
+                6
+              ]
+            ],
+            "match_kind": "exact",
+            "path": {
+              "text": "level-3\\level-4\\level-5\\level-6\\level-7\\level-8\\level-9\\level-10\\level-11\\level-12\\level-13\\level-14\\level-15\\level-16\\level-17\\level-18\\level-19\\level-20\\level-21\\level-22\\common.txt",
+              "truncated": false
+            },
+            "root_id": 2,
+            "row": {
+              "allocated_bytes": "100",
+              "attributes": [],
+              "coverage": "complete",
+              "dirs": 0,
+              "ext_family": "data",
+              "extension": "txt",
+              "files": 1,
+              "flags": [],
+              "kind": "file",
+              "location_hint": {
+                "text": "Synthetic 1\\level-3\\level-4\\level-5\\level-6\\level-7\\level-8\\level-9\\level-10\\level-11\\level-12\\level-13\\level-14\\level-15\\level-16\\level-17\\level-18\\level-19\\level-20\\level-21\\level-22",
+                "truncated": false
+              },
+              "logical_bytes": "100",
+              "modified_at": null,
+              "name": "common.txt",
+              "node_id": "nd_file_513"
+            }
+          },
+          {
+            "highlights": [
+              [
+                0,
+                6
+              ]
+            ],
+            "match_kind": "exact",
+            "path": {
+              "text": "level-3\\level-4\\level-5\\level-6\\level-7\\level-8\\level-9\\level-10\\level-11\\level-12\\level-13\\level-14\\level-15\\level-16\\level-17\\level-18\\level-19\\level-20\\level-21\\level-22\\Common",
+              "truncated": false
+            },
+            "root_id": 2,
+            "row": {
+              "allocated_bytes": "99",
+              "attributes": [],
+              "coverage": "complete",
+              "dirs": 0,
+              "ext_family": "data",
+              "extension": "txt",
+              "files": 1,
+              "flags": [],
+              "kind": "file",
+              "location_hint": {
+                "text": "Synthetic 1\\level-3\\level-4\\level-5\\level-6\\level-7\\level-8\\level-9\\level-10\\level-11\\level-12\\level-13\\level-14\\level-15\\level-16\\level-17\\level-18\\level-19\\level-20\\level-21\\level-22",
+                "truncated": false
+              },
+              "logical_bytes": "99",
+              "modified_at": null,
+              "name": "Common",
+              "node_id": "nd_file_514"
+            }
+          }
+        ],
+        "index_state": "current",
+        "next_cursor": {
+          "catalog_instance": "synthetic-search-reference",
+          "filters": "(None, \"common\", None, None, None, None, None, \"any\", Some([2]))",
+          "last_key": 281474976711170,
+          "last_size": null,
+          "pass": 0,
+          "revision": null
+        },
+        "partial": true,
+        "roots": [
+          {
+            "coverage": "unscanned",
+            "root_id": 2,
+            "scan_state": "never_scanned"
+          }
+        ],
+        "substring_searched": true
+      },
+      {
+        "budget_hit": false,
+        "generation": null,
+        "hits": [
+          {
+            "highlights": [
+              [
+                0,
+                6
+              ]
+            ],
+            "match_kind": "prefix",
+            "path": {
+              "text": "level-3\\level-4\\level-5\\level-6\\level-7\\level-8\\level-9\\level-10\\level-11\\level-12\\level-13\\level-14\\level-15\\level-16\\level-17\\level-18\\level-19\\level-20\\level-21\\level-22\\common-folder",
+              "truncated": false
+            },
+            "root_id": 2,
+            "row": {
+              "allocated_bytes": "0",
+              "attributes": [],
+              "coverage": "partial",
+              "dirs": 0,
+              "ext_family": null,
+              "extension": null,
+              "files": 0,
+              "flags": [],
+              "kind": "dir",
+              "location_hint": {
+                "text": "Synthetic 1\\level-3\\level-4\\level-5\\level-6\\level-7\\level-8\\level-9\\level-10\\level-11\\level-12\\level-13\\level-14\\level-15\\level-16\\level-17\\level-18\\level-19\\level-20\\level-21\\level-22",
+                "truncated": false
+              },
+              "logical_bytes": "0",
+              "modified_at": null,
+              "name": "common-folder",
+              "node_id": "nd_dir_23"
+            }
+          },
+          {
+            "highlights": [
+              [
+                0,
+                6
+              ]
+            ],
+            "match_kind": "prefix",
+            "path": {
+              "text": "level-3\\level-4\\level-5\\level-6\\level-7\\level-8\\level-9\\level-10\\level-11\\level-12\\level-13\\level-14\\level-15\\level-16\\level-17\\level-18\\level-19\\level-20\\level-21\\level-22\\common-prefix.txt",
+              "truncated": false
+            },
+            "root_id": 2,
+            "row": {
+              "allocated_bytes": "98",
+              "attributes": [],
+              "coverage": "complete",
+              "dirs": 0,
+              "ext_family": "data",
+              "extension": "txt",
+              "files": 1,
+              "flags": [],
+              "kind": "file",
+              "location_hint": {
+                "text": "Synthetic 1\\level-3\\level-4\\level-5\\level-6\\level-7\\level-8\\level-9\\level-10\\level-11\\level-12\\level-13\\level-14\\level-15\\level-16\\level-17\\level-18\\level-19\\level-20\\level-21\\level-22",
+                "truncated": false
+              },
+              "logical_bytes": "98",
+              "modified_at": null,
+              "name": "common-prefix.txt",
+              "node_id": "nd_file_515"
+            }
+          }
+        ],
+        "index_state": "current",
+        "next_cursor": {
+          "catalog_instance": "synthetic-search-reference",
+          "filters": "(None, \"common\", None, None, None, None, None, \"any\", Some([2]))",
+          "last_key": 281474976711171,
+          "last_size": null,
+          "pass": 1,
+          "revision": null
+        },
+        "partial": true,
+        "roots": [
+          {
+            "coverage": "unscanned",
+            "root_id": 2,
+            "scan_state": "never_scanned"
+          }
+        ],
+        "substring_searched": true
+      },
+      {
+        "budget_hit": false,
+        "generation": null,
+        "hits": [
+          {
+            "highlights": [
+              [
+                6,
+                12
+              ]
+            ],
+            "match_kind": "token",
+            "path": {
+              "text": "level-3\\level-4\\level-5\\level-6\\level-7\\level-8\\level-9\\level-10\\level-11\\level-12\\level-13\\level-14\\level-15\\level-16\\level-17\\level-18\\level-19\\level-20\\level-21\\level-22\\draft common.txt",
+              "truncated": false
+            },
+            "root_id": 2,
+            "row": {
+              "allocated_bytes": "97",
+              "attributes": [],
+              "coverage": "complete",
+              "dirs": 0,
+              "ext_family": "data",
+              "extension": "txt",
+              "files": 1,
+              "flags": [],
+              "kind": "file",
+              "location_hint": {
+                "text": "Synthetic 1\\level-3\\level-4\\level-5\\level-6\\level-7\\level-8\\level-9\\level-10\\level-11\\level-12\\level-13\\level-14\\level-15\\level-16\\level-17\\level-18\\level-19\\level-20\\level-21\\level-22",
+                "truncated": false
+              },
+              "logical_bytes": "97",
+              "modified_at": null,
+              "name": "draft common.txt",
+              "node_id": "nd_file_516"
+            }
+          },
+          {
+            "highlights": [
+              [
+                2,
+                8
+              ]
+            ],
+            "match_kind": "substring",
+            "path": {
+              "text": "level-3\\level-4\\level-5\\level-6\\level-7\\level-8\\level-9\\level-10\\level-11\\level-12\\level-13\\level-14\\level-15\\level-16\\level-17\\level-18\\level-19\\level-20\\level-21\\level-22\\uncommon.txt",
+              "truncated": false
+            },
+            "root_id": 2,
+            "row": {
+              "allocated_bytes": "96",
+              "attributes": [],
+              "coverage": "complete",
+              "dirs": 0,
+              "ext_family": "data",
+              "extension": "txt",
+              "files": 1,
+              "flags": [],
+              "kind": "file",
+              "location_hint": {
+                "text": "Synthetic 1\\level-3\\level-4\\level-5\\level-6\\level-7\\level-8\\level-9\\level-10\\level-11\\level-12\\level-13\\level-14\\level-15\\level-16\\level-17\\level-18\\level-19\\level-20\\level-21\\level-22",
+                "truncated": false
+              },
+              "logical_bytes": "96",
+              "modified_at": null,
+              "name": "uncommon.txt",
+              "node_id": "nd_file_517"
+            }
+          }
+        ],
+        "index_state": "current",
+        "next_cursor": null,
+        "partial": true,
+        "roots": [
+          {
+            "coverage": "unscanned",
+            "root_id": 2,
+            "scan_state": "never_scanned"
+          }
+        ],
+        "substring_searched": true
+      }
+    ],
+    "text": "common"
+  },
+  {
+    "extension": null,
+    "kind": "file",
+    "pages": [
+      {
+        "budget_hit": false,
+        "generation": null,
+        "hits": [
+          {
+            "highlights": [
+              [
+                0,
+                4
+              ]
+            ],
+            "match_kind": "prefix",
+            "path": {
+              "text": "level-3\\level-4\\level-5\\level-6\\level-7\\level-8\\level-9\\level-10\\level-11\\level-12\\level-13\\level-14\\level-15\\level-16\\level-17\\level-18\\level-19\\level-20\\level-21\\level-22\\rare-😀.txt",
+              "truncated": false
+            },
+            "root_id": 2,
+            "row": {
+              "allocated_bytes": "95",
+              "attributes": [],
+              "coverage": "complete",
+              "dirs": 0,
+              "ext_family": "data",
+              "extension": "txt",
+              "files": 1,
+              "flags": [],
+              "kind": "file",
+              "location_hint": {
+                "text": "Synthetic 1\\level-3\\level-4\\level-5\\level-6\\level-7\\level-8\\level-9\\level-10\\level-11\\level-12\\level-13\\level-14\\level-15\\level-16\\level-17\\level-18\\level-19\\level-20\\level-21\\level-22",
+                "truncated": false
+              },
+              "logical_bytes": "95",
+              "modified_at": null,
+              "name": "rare-😀.txt",
+              "node_id": "nd_file_518"
+            }
+          }
+        ],
+        "index_state": "current",
+        "next_cursor": null,
+        "partial": true,
+        "roots": [
+          {
+            "coverage": "unscanned",
+            "root_id": 2,
+            "scan_state": "never_scanned"
+          }
+        ],
+        "substring_searched": true
+      }
+    ],
+    "text": "rare"
+  },
+  {
+    "extension": "txt",
+    "kind": "file",
+    "pages": [
+      {
+        "budget_hit": false,
+        "generation": null,
+        "hits": [
+          {
+            "highlights": [],
+            "match_kind": "filter",
+            "path": {
+              "text": "level-3\\level-4\\level-5\\level-6\\level-7\\level-8\\level-9\\level-10\\level-11\\level-12\\level-13\\level-14\\level-15\\level-16\\level-17\\level-18\\level-19\\level-20\\level-21\\level-22\\common.txt",
+              "truncated": false
+            },
+            "root_id": 2,
+            "row": {
+              "allocated_bytes": "100",
+              "attributes": [],
+              "coverage": "complete",
+              "dirs": 0,
+              "ext_family": "data",
+              "extension": "txt",
+              "files": 1,
+              "flags": [],
+              "kind": "file",
+              "location_hint": {
+                "text": "Synthetic 1\\level-3\\level-4\\level-5\\level-6\\level-7\\level-8\\level-9\\level-10\\level-11\\level-12\\level-13\\level-14\\level-15\\level-16\\level-17\\level-18\\level-19\\level-20\\level-21\\level-22",
+                "truncated": false
+              },
+              "logical_bytes": "100",
+              "modified_at": null,
+              "name": "common.txt",
+              "node_id": "nd_file_513"
+            }
+          },
+          {
+            "highlights": [],
+            "match_kind": "filter",
+            "path": {
+              "text": "level-3\\level-4\\level-5\\level-6\\level-7\\level-8\\level-9\\level-10\\level-11\\level-12\\level-13\\level-14\\level-15\\level-16\\level-17\\level-18\\level-19\\level-20\\level-21\\level-22\\Common",
+              "truncated": false
+            },
+            "root_id": 2,
+            "row": {
+              "allocated_bytes": "99",
+              "attributes": [],
+              "coverage": "complete",
+              "dirs": 0,
+              "ext_family": "data",
+              "extension": "txt",
+              "files": 1,
+              "flags": [],
+              "kind": "file",
+              "location_hint": {
+                "text": "Synthetic 1\\level-3\\level-4\\level-5\\level-6\\level-7\\level-8\\level-9\\level-10\\level-11\\level-12\\level-13\\level-14\\level-15\\level-16\\level-17\\level-18\\level-19\\level-20\\level-21\\level-22",
+                "truncated": false
+              },
+              "logical_bytes": "99",
+              "modified_at": null,
+              "name": "Common",
+              "node_id": "nd_file_514"
+            }
+          }
+        ],
+        "index_state": "current",
+        "next_cursor": {
+          "catalog_instance": "synthetic-search-reference",
+          "filters": "(None, \"\", Some(\"txt\"), None, None, None, None, \"file\", Some([2]))",
+          "last_key": 281474976711170,
+          "last_size": 99,
+          "pass": 6,
+          "revision": null
+        },
+        "partial": true,
+        "roots": [
+          {
+            "coverage": "unscanned",
+            "root_id": 2,
+            "scan_state": "never_scanned"
+          }
+        ],
+        "substring_searched": true
+      },
+      {
+        "budget_hit": false,
+        "generation": null,
+        "hits": [
+          {
+            "highlights": [],
+            "match_kind": "filter",
+            "path": {
+              "text": "level-3\\level-4\\level-5\\level-6\\level-7\\level-8\\level-9\\level-10\\level-11\\level-12\\level-13\\level-14\\level-15\\level-16\\level-17\\level-18\\level-19\\level-20\\level-21\\level-22\\common-prefix.txt",
+              "truncated": false
+            },
+            "root_id": 2,
+            "row": {
+              "allocated_bytes": "98",
+              "attributes": [],
+              "coverage": "complete",
+              "dirs": 0,
+              "ext_family": "data",
+              "extension": "txt",
+              "files": 1,
+              "flags": [],
+              "kind": "file",
+              "location_hint": {
+                "text": "Synthetic 1\\level-3\\level-4\\level-5\\level-6\\level-7\\level-8\\level-9\\level-10\\level-11\\level-12\\level-13\\level-14\\level-15\\level-16\\level-17\\level-18\\level-19\\level-20\\level-21\\level-22",
+                "truncated": false
+              },
+              "logical_bytes": "98",
+              "modified_at": null,
+              "name": "common-prefix.txt",
+              "node_id": "nd_file_515"
+            }
+          },
+          {
+            "highlights": [],
+            "match_kind": "filter",
+            "path": {
+              "text": "level-3\\level-4\\level-5\\level-6\\level-7\\level-8\\level-9\\level-10\\level-11\\level-12\\level-13\\level-14\\level-15\\level-16\\level-17\\level-18\\level-19\\level-20\\level-21\\level-22\\draft common.txt",
+              "truncated": false
+            },
+            "root_id": 2,
+            "row": {
+              "allocated_bytes": "97",
+              "attributes": [],
+              "coverage": "complete",
+              "dirs": 0,
+              "ext_family": "data",
+              "extension": "txt",
+              "files": 1,
+              "flags": [],
+              "kind": "file",
+              "location_hint": {
+                "text": "Synthetic 1\\level-3\\level-4\\level-5\\level-6\\level-7\\level-8\\level-9\\level-10\\level-11\\level-12\\level-13\\level-14\\level-15\\level-16\\level-17\\level-18\\level-19\\level-20\\level-21\\level-22",
+                "truncated": false
+              },
+              "logical_bytes": "97",
+              "modified_at": null,
+              "name": "draft common.txt",
+              "node_id": "nd_file_516"
+            }
+          }
+        ],
+        "index_state": "current",
+        "next_cursor": {
+          "catalog_instance": "synthetic-search-reference",
+          "filters": "(None, \"\", Some(\"txt\"), None, None, None, None, \"file\", Some([2]))",
+          "last_key": 281474976711172,
+          "last_size": 97,
+          "pass": 6,
+          "revision": null
+        },
+        "partial": true,
+        "roots": [
+          {
+            "coverage": "unscanned",
+            "root_id": 2,
+            "scan_state": "never_scanned"
+          }
+        ],
+        "substring_searched": true
+      },
+      {
+        "budget_hit": false,
+        "generation": null,
+        "hits": [
+          {
+            "highlights": [],
+            "match_kind": "filter",
+            "path": {
+              "text": "level-3\\level-4\\level-5\\level-6\\level-7\\level-8\\level-9\\level-10\\level-11\\level-12\\level-13\\level-14\\level-15\\level-16\\level-17\\level-18\\level-19\\level-20\\level-21\\level-22\\uncommon.txt",
+              "truncated": false
+            },
+            "root_id": 2,
+            "row": {
+              "allocated_bytes": "96",
+              "attributes": [],
+              "coverage": "complete",
+              "dirs": 0,
+              "ext_family": "data",
+              "extension": "txt",
+              "files": 1,
+              "flags": [],
+              "kind": "file",
+              "location_hint": {
+                "text": "Synthetic 1\\level-3\\level-4\\level-5\\level-6\\level-7\\level-8\\level-9\\level-10\\level-11\\level-12\\level-13\\level-14\\level-15\\level-16\\level-17\\level-18\\level-19\\level-20\\level-21\\level-22",
+                "truncated": false
+              },
+              "logical_bytes": "96",
+              "modified_at": null,
+              "name": "uncommon.txt",
+              "node_id": "nd_file_517"
+            }
+          },
+          {
+            "highlights": [],
+            "match_kind": "filter",
+            "path": {
+              "text": "level-3\\level-4\\level-5\\level-6\\level-7\\level-8\\level-9\\level-10\\level-11\\level-12\\level-13\\level-14\\level-15\\level-16\\level-17\\level-18\\level-19\\level-20\\level-21\\level-22\\rare-😀.txt",
+              "truncated": false
+            },
+            "root_id": 2,
+            "row": {
+              "allocated_bytes": "95",
+              "attributes": [],
+              "coverage": "complete",
+              "dirs": 0,
+              "ext_family": "data",
+              "extension": "txt",
+              "files": 1,
+              "flags": [],
+              "kind": "file",
+              "location_hint": {
+                "text": "Synthetic 1\\level-3\\level-4\\level-5\\level-6\\level-7\\level-8\\level-9\\level-10\\level-11\\level-12\\level-13\\level-14\\level-15\\level-16\\level-17\\level-18\\level-19\\level-20\\level-21\\level-22",
+                "truncated": false
+              },
+              "logical_bytes": "95",
+              "modified_at": null,
+              "name": "rare-😀.txt",
+              "node_id": "nd_file_518"
+            }
+          }
+        ],
+        "index_state": "current",
+        "next_cursor": null,
+        "partial": true,
+        "roots": [
+          {
+            "coverage": "unscanned",
+            "root_id": 2,
+            "scan_state": "never_scanned"
+          }
+        ],
+        "substring_searched": true
+      }
+    ],
+    "text": ""
+  }
+]

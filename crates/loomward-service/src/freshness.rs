@@ -6,16 +6,23 @@ use loomward_protocol::RootId;
 use loomward_protocol::{SearchFreshness, SearchFreshnessState};
 #[cfg(windows)]
 use loomward_windows::usn::Bookmark;
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 use rusqlite::{params, OptionalExtension};
 use std::sync::Arc;
+#[cfg(test)]
+#[path = "freshness_hint_tests.rs"]
+mod hint_tests;
 #[cfg(windows)]
 mod reach;
+#[cfg(all(test, windows))]
+#[path = "freshness_targeted_tests.rs"]
+mod targeted_tests;
 #[cfg(windows)]
 // sub_noid is the current root aggregate for files; the partial index covers directory gaps.
+// Columns: any gap, a file gap, and the root's own identity for the volume ancestry proof.
 const GAP_SQL: &str = "SELECT sub_noid>0 OR EXISTS(
     SELECT 1 FROM main.dir INDEXED BY dir_missing_identity
-    WHERE root_id=?1 AND file_id IS NULL AND listing_state!='absent_pending')
+    WHERE root_id=?1 AND file_id IS NULL AND listing_state!='absent_pending'), sub_noid>0, file_id
     FROM main.dir WHERE id=?2 AND root_id=?1 AND parent_id IS NULL";
 #[cfg(windows)]
 use std::{
@@ -77,14 +84,15 @@ const FILETIME_UNIX_EPOCH: i64 = 116_444_736_000_000_000;
 #[cfg(windows)]
 struct Tracked {
     restart: Restart,
+    opening: bool,
     #[cfg(windows)]
     watch: Option<Arc<loomward_windows::watch::Watcher>>,
     checkpoint: Arc<Mutex<()>>,
     epoch: u64,
     stale_since: Option<i64>,
     at: i64,
-    /// Unix ns of the latest full-root scan's start (or the root's last scan): a hint for a target not
-    /// changed since then is the scan's own read (#717).
+    /// Unix ns of the latest full scan or checkpoint-drained targeted start: directory hints
+    /// older than this boundary are scan reads (#717), not unconsumed modifications.
     since: i64,
     caught_up: bool,
     full: bool,
@@ -95,8 +103,9 @@ struct Tracked {
     retry_after: Option<Instant>,
     changed: Instant,
     job: Option<loomward_protocol::JobId>,
-    started: Option<(u64, Option<Bookmark>)>,
-    completed: Option<(u64, Option<Bookmark>)>,
+    // The final bit witnesses a targeted run that consumed every pending hint without lost coverage.
+    started: Option<(u64, Option<Bookmark>, bool)>,
+    completed: Option<(u64, Option<Bookmark>, bool)>,
 }
 
 /// Retry history survives recovery so a flapping root cannot reset the hourly limit.
@@ -221,9 +230,21 @@ impl Tracker {
         let roots = self.roots.lock().unwrap();
         roots.get(&row).map(|r|format!("epoch={} full={} auto={} attempts={} paths={} targets={} started={:?} failed={}",r.epoch,r.full,r.auto,r.attempts,r.paths.len(),r.targets.len(),r.started.map(|s|s.0),r.watch.as_ref().is_none_or(|w|w.failed()))).unwrap_or_default()
     }
-    #[cfg(windows)]
+    #[cfg(all(test, windows))]
     pub(crate) fn record(&self, row: i64, changes: Vec<loomward_windows::watch::Change>) {
+        self.record_watch(row, None, changes);
+    }
+    #[cfg(windows)]
+    fn record_watch(
+        &self,
+        row: i64,
+        token: Option<&Arc<Mutex<()>>>,
+        changes: Vec<loomward_windows::watch::Change>,
+    ) {
         if let Some(root) = self.roots.lock().unwrap().get_mut(&row) {
+            if token.is_some_and(|token| !Arc::ptr_eq(&root.checkpoint, token)) {
+                return;
+            }
             for change in changes {
                 // Only a new filesystem hint after cooldown grants one retry.
                 if root.attempts >= 3 && root.retry_after.is_some_and(|at| Instant::now() >= at) {
@@ -363,7 +384,11 @@ pub(crate) fn start(inner: &Arc<Inner>) {
 
 impl Inner {
     #[cfg(windows)]
-    fn freshness_checkpoint(&self, row: i64) -> Option<bool> {
+    fn freshness_checkpoint(
+        &self,
+        row: i64,
+    ) -> Option<Result<(), loomward_windows::enumerate::SourceError>> {
+        use loomward_windows::enumerate::SourceError;
         let watched = self
             .freshness
             .roots
@@ -385,24 +410,54 @@ impl Inner {
             .fail_freshness_checkpoint
             .swap(false, Ordering::SeqCst)
         {
-            return Some(false);
+            return Some(Err(SourceError::Refused));
+        }
+        #[cfg(test)]
+        if self
+            .hooks
+            .busy_freshness_checkpoint
+            .swap(false, Ordering::SeqCst)
+        {
+            return Some(Err(SourceError::Busy));
         }
         #[cfg(test)]
         self.hooks.gate(
             loomward_protocol::Command::ScanStart,
             "freshness_checkpoint_claimed",
         );
-        Some(watch.checkpoint().is_ok() && !watch.failed())
+        let result = watch.checkpoint();
+        Some(if result == Err(SourceError::Busy) {
+            result
+        } else if watch.failed() {
+            Err(SourceError::Refused)
+        } else {
+            result
+        })
     }
     pub(crate) fn hit_freshness(&self, row: i64) -> SearchFreshness {
         #[cfg(windows)]
         {
-            if self.freshness_checkpoint(row) == Some(false) {
+            let checkpoint = self.freshness_checkpoint(row);
+            if checkpoint == Some(Err(loomward_windows::enumerate::SourceError::Busy)) {
+                if let Some(root) = self.freshness.roots.lock().unwrap().get(&row) {
+                    return SearchFreshness {
+                        state: SearchFreshnessState::Stale,
+                        at: Some(ts_ns(root.stale_since.unwrap_or(root.at))),
+                        reason: Some(loomward_protocol::UnknownReason::new("watch_busy").unwrap()),
+                    };
+                }
+            } else if matches!(checkpoint, Some(Err(_))) {
                 if let Some(root) = self.freshness.roots.lock().unwrap().get_mut(&row) {
                     // Missing coverage is not a new filesystem hint or a new scan epoch.
                     root.stale_since.get_or_insert(root.at);
                     root.full = true;
                     root.auto = true;
+                    if let Some(started) = root.started.as_mut() {
+                        started.2 = false;
+                    }
+                    if root.completed.as_ref().is_some_and(|witness| witness.2) {
+                        root.completed = None;
+                    }
                 }
             }
         }
@@ -453,13 +508,39 @@ impl Inner {
             } else {
                 None
             };
+            let since = now_ns();
+            // Drain earlier notifications before moving the access-only filter's time boundary.
+            let healthy = matches!(scope, RunScope::FullRoot)
+                || self.freshness_checkpoint(row) == Some(Ok(()));
+            let pending = self.freshness.roots.lock().unwrap().get(&row).map(|r| {
+                (
+                    r.epoch,
+                    r.full || r.restart.recovering,
+                    r.paths.clone(),
+                    r.targets.clone(),
+                )
+            });
+            let targeted = match (scope, pending) {
+                (RunScope::Targeted(dirs), Some((epoch, false, paths, targets)))
+                    if healthy
+                        && !dirs.is_empty()
+                        && dirs.len() <= 1024
+                        && targets.iter().all(|dir| dirs.contains(dir))
+                        && paths.iter().all(|path| hint_covered(self, row, path, dirs)) =>
+                {
+                    Some(epoch)
+                }
+                _ => None,
+            };
             if let Some(root) = self.freshness.roots.lock().unwrap().get_mut(&row) {
-                root.started = Some((root.epoch, bookmark));
-                if matches!(scope, RunScope::FullRoot) {
-                    root.since = now_ns();
+                root.started = Some((root.epoch, bookmark, targeted == Some(root.epoch)));
+                if matches!(scope, RunScope::FullRoot) || targeted == Some(root.epoch) {
+                    root.since = since;
                 }
                 root.completed = None;
                 root.stale_since.get_or_insert(root.at);
+                // Consumed hints need full recovery if admission or publication cannot finish.
+                root.full = true;
                 root.paths.clear();
                 root.targets.clear();
             }
@@ -479,16 +560,18 @@ impl Inner {
                 return;
             };
             // Flush kernel notifications before comparing the scan's start epoch.
-            let healthy = self.freshness_checkpoint(row).unwrap_or(false);
+            let healthy = self.freshness_checkpoint(row) == Some(Ok(()));
             {
                 let mut roots = self.freshness.roots.lock().unwrap();
                 let Some(root) = roots.get_mut(&row) else {
                     return;
                 };
                 let started = root.started.take();
-                // Coverage gaps do not make a settled traversal stale. Keep its witness even
-                // when the checkpoint times out; coverage remains the catalogue's own fact.
-                root.completed = started.filter(|_| settled && matches!(scope, RunScope::FullRoot));
+                // A full traversal retains its witness across checkpoint timeouts; targeted
+                // settlement needs uninterrupted coverage and a healthy checkpoint now.
+                root.completed = started.filter(|(_, _, targeted)| {
+                    settled && (matches!(scope, RunScope::FullRoot) || (*targeted && healthy))
+                });
             }
             if healthy {
                 self.freshness_settle(row, grant);
@@ -505,7 +588,7 @@ impl Inner {
             let Some(root) = roots.get_mut(&row) else {
                 return;
             };
-            let Some((epoch, bookmark)) = root.completed.take() else {
+            let Some((epoch, bookmark, targeted)) = root.completed.take() else {
                 return;
             };
             // A successful scan followed by newer hints is new work, not a failed retry.
@@ -518,7 +601,9 @@ impl Inner {
                 root.full = false;
                 root.auto = false;
                 root.caught_up = false;
-                Some((root.at, bookmark))
+                // Targeted freshness is not a new full-root or journal witness. Retain the
+                // last full scan's persisted bookmark so restart replay cannot skip anything.
+                (!targeted).then_some((root.at, bookmark))
             } else {
                 None
             }
@@ -612,7 +697,7 @@ fn ensure_roots_with_clock(inner: &Arc<Inner>, now: impl Fn() -> Instant) {
         let restarting = {
             let mut roots = inner.freshness.roots.lock().unwrap();
             if let Some(root) = roots.get_mut(&row.root) {
-                if root.watch.as_ref().is_some_and(|w| !w.failed()) {
+                if root.opening || root.watch.as_ref().is_some_and(|w| !w.failed()) {
                     continue;
                 }
                 if root.restart.after.is_none() {
@@ -642,17 +727,13 @@ fn ensure_roots_with_clock(inner: &Arc<Inner>, now: impl Fn() -> Instant) {
         if expected.basis == loomward_windows::enumerate::IdBasis::Unverified {
             continue;
         }
-        #[cfg(test)]
-        inner.hooks.gate(
-            loomward_protocol::Command::ScanStart,
-            "persistent_watch_resolved",
-        );
         // Every event after insertion must invalidate restart continuity, including watch setup.
         if !restarting {
             inner.freshness.roots.lock().unwrap().insert(
                 row.root,
                 Tracked {
                     restart: Restart::default(),
+                    opening: false,
                     watch: None,
                     checkpoint: Arc::default(),
                     epoch: 0,
@@ -673,11 +754,20 @@ fn ensure_roots_with_clock(inner: &Arc<Inner>, now: impl Fn() -> Instant) {
                 },
             );
         }
-        let (epoch, old) = {
+        let (epoch, old, token) = {
             let mut roots = inner.freshness.roots.lock().unwrap();
             let root = roots.get_mut(&row.root).unwrap();
-            (root.epoch, root.watch.take())
+            root.opening = true;
+            root.checkpoint = Arc::default();
+            (root.epoch, root.watch.take(), root.checkpoint.clone())
         };
+        // Reserve under setup, but never wait for native arming while revoke needs that lock.
+        drop(_setup);
+        #[cfg(test)]
+        inner.hooks.gate(
+            loomward_protocol::Command::ScanStart,
+            "persistent_watch_resolved",
+        );
         // Never join while holding roots: the exiting callback records its final dirty hint.
         if let Some(watch) = old {
             watch.stop();
@@ -688,6 +778,7 @@ fn ensure_roots_with_clock(inner: &Arc<Inner>, now: impl Fn() -> Instant) {
             "watch_restart_opening",
         );
         let weak: Weak<Inner> = Arc::downgrade(inner);
+        let callback_token = token.clone();
         let root_row = row.root;
         let root_path = grant.path().to_owned();
         #[cfg(test)]
@@ -708,10 +799,42 @@ fn ensure_roots_with_clock(inner: &Arc<Inner>, now: impl Fn() -> Instant) {
                         ),
                         None => changes,
                     };
-                    inner.freshness.record(root_row, changes);
+                    inner
+                        .freshness
+                        .record_watch(root_row, Some(&callback_token), changes);
                 }
             })
         };
+        let setup = inner.freshness.setup.lock().unwrap();
+        let wanted = !inner.freshness.stopped.load(Ordering::Acquire)
+            && inner
+                .db()
+                .query_row(
+                    "SELECT state='active' FROM st.root_grant WHERE id=?1",
+                    [row.grant],
+                    |r| r.get::<_, bool>(0),
+                )
+                .unwrap_or(false);
+        {
+            let mut roots = inner.freshness.roots.lock().unwrap();
+            let current = roots
+                .get_mut(&row.root)
+                .filter(|root| Arc::ptr_eq(&root.checkpoint, &token));
+            let Some(root) = current else {
+                drop(roots);
+                drop(setup);
+                drop(watch);
+                continue;
+            };
+            root.opening = false;
+            if !wanted {
+                roots.remove(&row.root);
+                drop(roots);
+                drop(setup);
+                drop(watch);
+                continue;
+            }
+        }
         if let Ok(watch) = watch {
             let epoch = {
                 let mut roots = inner.freshness.roots.lock().unwrap();
@@ -725,8 +848,8 @@ fn ensure_roots_with_clock(inner: &Arc<Inner>, now: impl Fn() -> Instant) {
                     epoch
                 }
             };
-            // Setup fences native handle creation only. Revoke must not wait for journal IO.
-            drop(_setup);
+            // Publication is fenced; journal IO also runs outside setup.
+            drop(setup);
             if row.finished_at_ns.is_some() {
                 #[cfg(test)]
                 inner.hooks.gate(
@@ -790,10 +913,20 @@ fn catch_up(inner: &Inner, row: &db::RootRow, epoch: u64) {
         },
         |record| records.push(record),
     );
-    replay(inner, row, epoch, at, deadline, result, &records);
+    replay(
+        inner,
+        row,
+        epoch,
+        at,
+        deadline,
+        result,
+        &records,
+        &mut |id| journal.parent_of(id),
+    );
 }
 
 #[cfg(windows)]
+#[allow(clippy::too_many_arguments)]
 fn replay(
     inner: &Inner,
     row: &db::RootRow,
@@ -802,13 +935,20 @@ fn replay(
     deadline: Instant,
     result: Result<Bookmark, loomward_windows::enumerate::SourceError>,
     records: &[loomward_windows::usn::Record],
+    parent_of: &mut dyn FnMut(&[u8]) -> Option<Vec<u8>>,
 ) {
     let targets = result.as_ref().ok().and_then(|_| {
-        let missing_identity = inner
+        let (missing_identity, file_gap, root_id): (bool, bool, Option<Vec<u8>>) = inner
             .db()
-            .query_row(GAP_SQL, params![row.root, row.dir?], |r| r.get(0))
+            .query_row(GAP_SQL, params![row.root, row.dir?], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
             .ok()?;
-        reach::targets(records, deadline, missing_identity, |ids| {
+        // With only directory gaps, an unplaced parent may still be proved outside the root.
+        let volume = root_id
+            .filter(|_| !file_gap)
+            .map(|root| reach::Volume::new(&root, parent_of));
+        reach::targets(records, deadline, missing_identity, volume, |ids| {
             if !inner
                 .freshness
                 .roots
@@ -869,8 +1009,12 @@ pub(crate) fn refresh(inner: &Inner) {
             .unwrap()
             .get(&row.root)
             .is_some_and(|r| r.completed.is_some());
-        if pending && inner.freshness_checkpoint(row.root) == Some(true) {
-            inner.freshness_settle(row.root, row.grant);
+        if pending {
+            match inner.freshness_checkpoint(row.root) {
+                Some(Ok(())) => inner.freshness_settle(row.root, row.grant),
+                Some(Err(loomward_windows::enumerate::SourceError::Busy)) => continue,
+                _ => (),
+            }
         }
         let action = {
             let mut roots = inner.freshness.roots.lock().unwrap();
@@ -893,9 +1037,6 @@ pub(crate) fn refresh(inner: &Inner) {
                     }
                 }
                 root.job = None;
-                // Targeted scans deliberately leave root coverage partial. One full fallback
-                // establishes a clean baseline before claiming live/caught_up.
-                root.full = true;
             }
             if (root.restart.recovering && root.watch.as_ref().is_none_or(|w| w.failed()))
                 || !root.auto
@@ -929,6 +1070,7 @@ pub(crate) fn refresh(inner: &Inner) {
                 None => full = true,
             }
         }
+        full |= targets.len() > 1024;
         // Start and record under the claim fence, so an explicit request sees every auto job.
         let claimed = inner.freshness.explicit.lock().unwrap();
         if !claimed.is_empty() {
@@ -953,7 +1095,18 @@ pub(crate) fn refresh(inner: &Inner) {
             .swap(false, Ordering::SeqCst);
         #[cfg(not(test))]
         let failed = false;
-        let job = if failed {
+        #[cfg(test)]
+        let refused = inner
+            .hooks
+            .refuse_automatic_budget
+            .swap(false, Ordering::SeqCst);
+        #[cfg(not(test))]
+        let refused = false;
+        let job = if refused {
+            Err(loomward_engine::EngineError::ResourceBudget {
+                message: "synthetic automatic budget".into(),
+            })
+        } else if failed {
             Err(loomward_engine::EngineError::Internal {
                 message: "synthetic automatic failure".into(),
                 detail: None,
@@ -989,11 +1142,42 @@ pub(crate) fn refresh(inner: &Inner) {
     }
 }
 
-#[cfg(windows)]
-const RESOLVE_CHILD_SQL: &str = "SELECT id FROM main.dir WHERE parent_id=?1 AND name=?2 AND listing_state NOT IN ('absent_pending','excluded')";
+#[cfg(any(windows, test))]
+const RESOLVE_CHILD_SQL: &str =
+    "SELECT id,listing_state FROM main.dir WHERE parent_id=?1 AND name=?2
+     ORDER BY listing_state IN ('absent_pending','excluded') LIMIT 1";
 
 #[cfg(windows)]
 fn resolve(inner: &Inner, root: i64, path: &[Vec<u16>]) -> Option<u64> {
+    resolve_hint(inner, root, path).map(|(dir, _)| dir)
+}
+
+/// A targeted start may consume a path hint only if it names the complete directory path.
+/// An ancestor can select useful work while a renamed known descendant retains an old listing.
+#[cfg(any(windows, test))]
+fn hint_covered(inner: &Inner, root: i64, path: &[Vec<u16>], dirs: &[u64]) -> bool {
+    resolve_hint(inner, root, path).is_some_and(|(dir, exact)| exact && dirs.contains(&dir))
+}
+
+/// The second value records whether the complete hinted directory path was already known.
+/// An ancestor substitution selects useful work but cannot prove the hinted directory was listed.
+#[cfg(any(windows, test))]
+fn resolve_hint(inner: &Inner, root: i64, path: &[Vec<u16>]) -> Option<(u64, bool)> {
+    if path.len() >= loomward_catalog::MAX_DIRECTORY_CHAIN_LENGTH {
+        return None;
+    }
+    let names: Vec<String> = path
+        .iter()
+        .map(|name| String::from_utf16(name))
+        .collect::<Result<_, _>>()
+        .ok()?;
+    if names.iter().any(|name| {
+        name.is_empty()
+            || matches!(name.as_str(), "." | "..")
+            || name.contains(['\\', '/', ':', '\0'])
+    }) {
+        return None;
+    }
     let conn = inner.db();
     let mut dir: u64 = conn
         .query_row(
@@ -1003,15 +1187,23 @@ fn resolve(inner: &Inner, root: i64, path: &[Vec<u16>]) -> Option<u64> {
         )
         .ok()?;
     let mut lookup = conn.prepare_cached(RESOLVE_CHILD_SQL).ok()?;
-    for name in path {
-        let text = String::from_utf16(name).ok()?;
-        dir = lookup
-            .query_row(params![dir as i64, text], |r| {
-                r.get::<_, i64>(0).map(|v| v as u64)
+    for name in names {
+        match lookup
+            .query_row(params![dir as i64, name], |r| {
+                Ok((r.get::<_, i64>(0)? as u64, r.get::<_, String>(1)?))
             })
-            .ok()?;
+            .optional()
+            .ok()?
+        {
+            Some((_, state)) if matches!(state.as_str(), "absent_pending" | "excluded") => {
+                return None
+            }
+            Some((child, _)) => dir = child,
+            // Listing this ancestor discovers new children, but may skip a renamed known child.
+            None => return Some((dir, false)),
+        }
     }
-    Some(dir)
+    Some((dir, true))
 }
 
 #[cfg(all(test, windows))]
@@ -1063,6 +1255,15 @@ mod tests {
                 .unwrap();
             assert_eq!(resolve(&svc.inner, root, &path), None);
         }
+        // A replacement may share a name with a retired row; prefer its current identity.
+        let replacement = {
+            let conn = svc.inner.db();
+            conn.execute("INSERT INTO main.dir(root_id,parent_id,name,id_quality,id_basis,depth,attrs,listing_state,born_run,seen_run)
+                SELECT root_id,parent_id,name,id_quality,id_basis,depth,attrs,'complete',0,0 FROM main.dir WHERE id=?1", [leaf - 1]).unwrap();
+            conn.last_insert_rowid() as u64
+        };
+        assert_eq!(resolve(&svc.inner, root, &path[..19]), Some(replacement));
+        assert_eq!(resolve(&svc.inner, root, &path), Some(replacement));
         assert_eq!(resolve(&svc.inner, root, &[vec![0xd800]]), None);
         assert_eq!(resolve(&svc.inner, i64::MAX, &[]), None);
     }
@@ -1093,8 +1294,11 @@ mod tests {
             reason: 0x100,
             is_directory: false,
         }];
-        // Also retain the identified-root control and the conservative sub_noid guard.
-        for missing in ["directory", "none", "sub_noid"] {
+        // Also retain the identified-root control and the conservative sub_noid guard. "outside"
+        // proves the unplaced parent's current, unmoved chain misses the root (#550 item 2); a
+        // file gap must still refuse that proof, since a hard link could name an outside parent.
+        let volume = BTreeMap::from([(999u64, 5u64), (5, 5)]);
+        for missing in ["directory", "outside", "none", "sub_noid"] {
             if missing == "none" {
                 svc.inner
                     .db()
@@ -1113,6 +1317,7 @@ mod tests {
                 root_id,
                 Tracked {
                     restart: Restart::default(),
+                    opening: false,
                     watch: None,
                     checkpoint: Arc::default(),
                     epoch: 0,
@@ -1143,6 +1348,13 @@ mod tests {
                     next_usn: 2,
                 }),
                 &records,
+                &mut |id| {
+                    let id = u64::from_le_bytes(id[..8].try_into().unwrap());
+                    (missing != "directory")
+                        .then(|| volume.get(&id))
+                        .flatten()
+                        .map(|p| p.to_le_bytes().to_vec())
+                },
             );
             let (caught_up, stale, full) = {
                 let roots = svc.inner.freshness.roots.lock().unwrap();
@@ -1153,8 +1365,8 @@ mod tests {
                     tracked.full,
                 )
             };
-            if missing == "none" {
-                assert!(caught_up && !stale);
+            if matches!(missing, "none" | "outside") {
+                assert!(caught_up && !stale, "{missing}: provably outside change");
             } else {
                 assert!(stale, "{missing}: unresolved change falsely caught up");
                 assert!(
@@ -1298,10 +1510,13 @@ mod tests {
                 let missing = stmt
                     .query_row(rusqlite::params_from_iter(args), |r| r.get(0))
                     .unwrap();
-                let targets =
-                    reach::targets(&records, began + Duration::from_secs(30), missing, |ids| {
-                        reach::lookup(&conn, 1, ids)
-                    });
+                let targets = reach::targets(
+                    &records,
+                    began + Duration::from_secs(30),
+                    missing,
+                    None,
+                    |ids| reach::lookup(&conn, 1, ids),
+                );
                 let elapsed = began.elapsed();
                 conn.progress_handler(0, None::<fn() -> bool>).unwrap();
                 eprintln!("F3 catch-up {label}: {dirs} directories, step-counted={counted}, {elapsed:?}, {} VM steps", steps.load(Ordering::Relaxed));
@@ -1347,9 +1562,13 @@ mod tests {
             assert_eq!(before, expected);
         }
         let began = Instant::now();
-        let after = reach::targets(&records, began + Duration::from_secs(5), false, |ids| {
-            reach::lookup(&conn, 1, ids)
-        });
+        let after = reach::targets(
+            &records,
+            began + Duration::from_secs(5),
+            false,
+            None,
+            |ids| reach::lookup(&conn, 1, ids),
+        );
         eprintln!(
             "F3 after: 100000 directories, 128 decoded records: {:?}",
             began.elapsed()
@@ -1359,9 +1578,290 @@ mod tests {
 }
 
 #[cfg(all(test, windows))]
+#[path = "freshness_gate_tests.rs"]
+mod freshness_gate_tests;
+
+#[cfg(all(test, windows))]
+mod refresh_tests {
+    use super::*;
+    use crate::tests::{f3_wait_live, settle, start};
+
+    fn lab() -> Option<crate::tests::Lab> {
+        // The lane's dedicated target directory keeps these roots outside its checkout.
+        let exe = std::env::current_exe().unwrap();
+        crate::tests::lab_in(tempfile::tempdir_in(exe.parent().unwrap()).unwrap())
+    }
+
+    fn automatic(svc: &crate::Service) -> serde_json::Map<String, serde_json::Value> {
+        let previous = svc.inner.freshness.roots.lock().unwrap()[&1].job.clone();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let job = loop {
+            // Expire only the debounce; preserve the job, full flag and pending hints.
+            svc.inner
+                .freshness
+                .roots
+                .lock()
+                .unwrap()
+                .get_mut(&1)
+                .unwrap()
+                .changed = Instant::now() - Duration::from_secs(1);
+            refresh(&svc.inner);
+            let job = svc.inner.freshness.roots.lock().unwrap()[&1].job.clone();
+            if let Some(job) = job.filter(|job| Some(job) != previous.as_ref()) {
+                break job;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "automatic refresh was not scheduled: {}",
+                svc.inner.freshness.debug(1)
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let result = settle(svc, job.as_str());
+        assert_eq!(result["state"], "completed");
+        result
+    }
+
+    #[test]
+    fn f3_issue775_settled_automatic_full_refresh_preserves_targeted_hints() {
+        let Some(lab) = lab() else { return };
+        let svc = &lab.svc;
+        // Keep fixture creation outside the scan-read ChangeTime slack (#717).
+        std::thread::sleep(Duration::from_millis(400));
+        settle(svc, &start(svc, &lab.root, "full"));
+        f3_wait_live(svc);
+        svc.inner.freshness.pause_pump();
+
+        svc.inner
+            .freshness
+            .record(1, vec![loomward_windows::watch::Change::RootDirty]);
+        let full = automatic(svc);
+        refresh(&svc.inner);
+        assert!(!svc.inner.freshness.stale(1));
+        let after_full = svc.inner.freshness.debug(1);
+
+        for size in [7, 9] {
+            std::fs::write(lab.path.join("a/deep/x.bin"), vec![1; size]).unwrap();
+            assert_eq!(
+                svc.inner.hit_freshness(1).state,
+                SearchFreshnessState::Stale
+            );
+            let targeted = automatic(svc);
+            let mode: String = svc
+                .inner
+                .db()
+                .query_row(
+                    "SELECT mode FROM main.scan_run ORDER BY id DESC LIMIT 1",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                mode, "targeted",
+                "after full: {after_full}; job={targeted:?}"
+            );
+            assert_eq!(targeted["coverage"], "partial");
+            // Bounded targeted work keeps partial root coverage even when its exact hints settle.
+            eprintln!(
+                "F3 #775: full examined={}, targeted examined={}",
+                full["progress"]["examined"], targeted["progress"]["examined"]
+            );
+            assert!(
+                !svc.inner.freshness.stale(1),
+                "the exact known-directory hint should settle without a full fallback"
+            );
+            let runs: i64 = svc
+                .inner
+                .db()
+                .query_row("SELECT count(*) FROM main.scan_run", [], |r| r.get(0))
+                .unwrap();
+            refresh(&svc.inner);
+            assert!(!svc.inner.freshness.stale(1));
+            assert!(!svc.inner.freshness.roots.lock().unwrap()[&1].full);
+            let after: i64 = svc
+                .inner
+                .db()
+                .query_row("SELECT count(*) FROM main.scan_run", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(
+                after, runs,
+                "settled exact hints must not start a full scan"
+            );
+        }
+
+        // A real coverage loss still forces a full-root refresh after settling.
+        svc.inner
+            .freshness
+            .record(1, vec![loomward_windows::watch::Change::RootDirty]);
+        let overflow = automatic(svc);
+        assert_eq!(
+            overflow["progress"]["examined"],
+            full["progress"]["examined"]
+        );
+        assert!(!svc.inner.freshness.stale(1));
+    }
+
+    #[test]
+    fn f3_issue775_consumed_hints_require_full_recovery_before_writer_admission() {
+        let Some(lab) = lab() else { return };
+        let svc = &lab.svc;
+        settle(svc, &start(svc, &lab.root, "full"));
+        f3_wait_live(svc);
+        svc.inner.freshness.pause_pump();
+        let hint = || loomward_windows::watch::Change::Name {
+            action: 1,
+            name: "a\\new.bin".encode_utf16().collect(),
+        };
+        svc.inner.freshness.record(1, vec![hint()]);
+        let row = db::roots(&svc.inner.db(), Some(1)).unwrap().remove(0);
+        // The sink consumes hints before BeginRun can return Busy. Model that boundary.
+        svc.inner.freshness_begin(
+            row.grant,
+            &RunScope::Targeted(vec![row.dir.unwrap() as u64]),
+        );
+        let (empty, full) = {
+            let roots = svc.inner.freshness.roots.lock().unwrap();
+            (roots[&1].paths.is_empty(), roots[&1].full)
+        };
+        assert!(empty);
+        assert!(full, "consumed hints lost the full recovery requirement");
+        // A later hint must not narrow away the work lost at admission.
+        svc.inner.freshness.record(1, vec![hint()]);
+        let recovered = automatic(svc);
+        assert_eq!(recovered["coverage"], "complete");
+        assert!(!svc.inner.freshness.stale(1));
+    }
+}
+
+#[cfg(all(test, windows))]
 mod restart_tests {
     use super::*;
     use crate::tests::{f3_wait_live, lab, settle, start};
+
+    #[test]
+    fn f3_busy_checkpoint_is_unknown_without_scheduling_a_rescan() {
+        let Some(lab) = lab() else { return };
+        let svc = &lab.svc;
+        settle(svc, &start(svc, &lab.root, "full"));
+        f3_wait_live(svc);
+        svc.inner.freshness.pause_pump();
+        svc.inner.freshness.ready_targeted_hint(1);
+        let before = svc.inner.freshness.roots.lock().unwrap()[&1].epoch;
+        svc.inner
+            .hooks
+            .busy_freshness_checkpoint
+            .store(true, Ordering::SeqCst);
+        let freshness = svc.inner.hit_freshness(1);
+        assert_eq!(freshness.state, SearchFreshnessState::Stale);
+        assert_eq!(freshness.reason.unwrap().as_str(), "watch_busy");
+        {
+            let roots = svc.inner.freshness.roots.lock().unwrap();
+            let root = &roots[&1];
+            assert_eq!(root.epoch, before);
+            assert!(!root.full && !root.auto && root.stale_since.is_none());
+            assert!(!root.watch.as_ref().unwrap().failed());
+        }
+        refresh(&svc.inner);
+        assert!(svc.inner.freshness.roots.lock().unwrap()[&1].job.is_none());
+        assert_eq!(svc.inner.hit_freshness(1).state, SearchFreshnessState::Live);
+    }
+
+    #[test]
+    fn f3_busy_completed_checkpoint_keeps_witness_and_does_not_rescan() {
+        let Some(lab) = lab() else { return };
+        let svc = &lab.svc;
+        settle(svc, &start(svc, &lab.root, "full"));
+        f3_wait_live(svc);
+        svc.inner.freshness.pause_pump();
+        svc.inner.freshness.ready_targeted_hint(1);
+        {
+            let mut roots = svc.inner.freshness.roots.lock().unwrap();
+            let root = roots.get_mut(&1).unwrap();
+            root.completed = Some((root.epoch, None, false));
+            root.stale_since = Some(root.at);
+            root.auto = true;
+        }
+        svc.inner
+            .hooks
+            .busy_freshness_checkpoint
+            .store(true, Ordering::SeqCst);
+        refresh(&svc.inner);
+        {
+            let roots = svc.inner.freshness.roots.lock().unwrap();
+            let root = &roots[&1];
+            assert!(
+                root.job.is_none(),
+                "busy witness must not trigger a new scan"
+            );
+            assert!(root.completed.is_some());
+            assert_eq!(root.attempts, 0);
+        }
+        refresh(&svc.inner);
+        let roots = svc.inner.freshness.roots.lock().unwrap();
+        let root = &roots[&1];
+        assert!(root.completed.is_none() && root.stale_since.is_none() && root.job.is_none());
+    }
+
+    #[test]
+    fn f3_wedged_live_watch_is_busy_until_backoff_replaces_it() {
+        let Some(lab) = lab() else { return };
+        let inner = &lab.svc.inner;
+        inner.freshness.pause_pump();
+        let (entered, entry) = std::sync::mpsc::channel();
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        let stalled = Arc::new(
+            loomward_windows::watch::Watcher::start(&lab.path, None, move |_| {
+                let _ = entered.send(());
+                let _ = held.recv();
+            })
+            .unwrap(),
+        );
+        // Drop the sender before the watcher on assertion failure as well.
+        let release = release;
+        let old = inner
+            .freshness
+            .roots
+            .lock()
+            .unwrap()
+            .get_mut(&1)
+            .unwrap()
+            .watch
+            .replace(stalled.clone())
+            .unwrap();
+        old.stop();
+        std::fs::write(lab.path.join("wedged-watch.bin"), b"synthetic").unwrap();
+        entry.recv_timeout(Duration::from_secs(30)).unwrap();
+        for _ in 0..8 {
+            let freshness = inner.hit_freshness(1);
+            assert_eq!(freshness.state, SearchFreshnessState::Stale);
+            assert_eq!(
+                serde_json::to_value(freshness).unwrap()["reason"],
+                "watch_busy"
+            );
+        }
+        // Eight quick Busy answers are load; the wedge also needs a minute of Busy.
+        assert!(!stalled.failed());
+        stalled.age_busy(Duration::from_secs(61));
+        assert!(stalled.failed());
+        let now = Instant::now();
+        tick(inner, now);
+        assert!(Arc::ptr_eq(
+            inner.freshness.roots.lock().unwrap()[&1]
+                .watch
+                .as_ref()
+                .unwrap(),
+            &stalled
+        ));
+        tick(inner, now + Duration::from_secs(5));
+        let replacement = inner.freshness.roots.lock().unwrap()[&1]
+            .watch
+            .clone()
+            .unwrap();
+        assert!(!Arc::ptr_eq(&replacement, &stalled));
+        assert!(!replacement.failed());
+        assert_eq!(inner.hit_freshness(1).state, SearchFreshnessState::Stale);
+        drop(release);
+    }
 
     // Force the same lost-coverage state as an exited native thread, without OS timing.
     fn fail_watch(inner: &Inner) {
@@ -1667,7 +2167,7 @@ mod restart_tests {
                 .count()
                 >= 2
         });
-        // Another pump entry cannot spend a second attempt while native open owns setup.
+        // Another pump entry cannot spend a second attempt while this root is opening.
         ensure_roots_at(&svc.inner, now + Duration::from_secs(600));
         assert_eq!(
             svc.inner.freshness.roots.lock().unwrap()[&1]
@@ -1677,13 +2177,18 @@ mod restart_tests {
             1
         );
         let grant = db::roots(&svc.inner.db(), Some(1)).unwrap()[0].grant;
+        let (sent, ack) = std::sync::mpsc::channel();
         let revoking = {
             let inner = svc.inner.clone();
-            std::thread::spawn(move || inner.revoke(grant))
+            std::thread::spawn(move || sent.send(inner.revoke(grant)).unwrap())
         };
+        let early = ack.recv_timeout(Duration::from_secs(1));
         svc.inner.hooks.open(phase.0, phase.1);
         opening.join().unwrap();
-        revoking.join().unwrap().unwrap();
+        revoking.join().unwrap();
+        early
+            .expect("revoke waited for replacement arming")
+            .unwrap();
         assert!(svc.inner.freshness.roots.lock().unwrap().is_empty());
     }
 

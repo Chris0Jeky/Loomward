@@ -473,6 +473,18 @@ directory or an excluded reparse entry). Search uses the existing `index_state: 
 coverage or authorise absence reconciliation. Cancelled, limited or unsettled traversals remain stale,
 as do traversals followed by newer watcher hints or lacking a healthy watcher checkpoint.
 
+A bounded targeted refresh can also make watched hits current when every consumed hint resolves
+exactly to a listed target before the run begins, every visited listing succeeds without skipped
+entries, the start epoch still matches at publication, and watcher coverage was not lost. Unknown
+hints select their nearest catalogued ancestor (within the existing depth and 1,024-target bounds);
+the engine lists new children recursively. An ancestor substitution still requires a following
+full refresh: a renamed or moved directory can keep its complete listing and be skipped, so listing
+its ancestor alone does not prove a nested write was observed. Any failed condition retains the
+full-refresh fallback. This settles hint freshness only: the targeted job and catalogue retain
+their conservative partial root coverage, and the last full traversal's persisted journal witness
+is kept for restart replay. Targeted
+settlement never establishes complete root coverage or permits global absence reconciliation.
+
 ### F3 failed-watcher recovery (#592)
 
 A failed per-root watcher (including a failed initial open) is retried by the existing service
@@ -493,6 +505,16 @@ until catch-up proves continuity or a completed refresh establishes coverage. A 
 or expired timer alone never makes a hit current. Replacement advances the freshness epoch after native I/O is armed, so a
 scan begun during backoff or native open cannot publish a false live state. Existing scan retry limits and owner pre-emption
 continue to apply; automatic scans are deferred while the replacement watcher is unavailable.
+
+An unresolved journal record (its parent is not among the root's catalogued directories) may be
+proved outside the root instead of forcing a refresh (#550). This runs only when the root has no
+file identity gaps. Catch-up then opens the record's parent and its ancestors **by identity only**,
+outside the granted root as well: zero access, no reparse following, no cloud recall. It reads only
+each folder's parent reference, never a name, a listing or content, and stops at the volume root.
+The record counts as outside only when that chain never meets the granted root and no folder on it
+has a record of its own in the replay window. The walk is bounded to depth 64, 4,096 opens per
+replay and the catch-up deadline. Nothing it reads is persisted, logged or sent anywhere. Any failed
+open, limit, deadline or doubt falls back to the full-root refresh.
 
 ## 8. Ask
 

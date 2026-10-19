@@ -48,13 +48,13 @@ pub struct SubtreeTotals {
     pub complete: bool,
     /// Alternate data streams and filesystem metadata are not observed in v0.3.
     pub stream_coverage: SubtreeTotalsStreamCoverage,
-    /// Distinct (volume_key, file_id) objects within this subtree; null when any entry lacks a native ID.
+    /// Distinct (volume_key, file_id) objects within this subtree; null when any entry lacks a native ID or the subtree was too large to count within the query budget (steps or wall clock).
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub unique_objects: Option<Count>,
-    /// Allocation counted once per unique object within this subtree; null when unique_objects is null or allocation is unknown.
+    /// Allocation counted once per unique object within this subtree; null when unique_objects is null (including over budget) or allocation is unknown.
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub unique_allocated_bytes: Option<Bytes>,
-    /// Entries whose object has another observed name anywhere in the dataset or an observed link count above 1; null when the subtree was too large to count within the query budget.
+    /// Entries whose object has another observed name anywhere in the dataset or an observed link count above 1; null when the subtree was too large to count within the query budget, steps or wall clock.
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub multi_link_entries: Option<Count>,
 }

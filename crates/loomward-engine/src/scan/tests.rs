@@ -2089,6 +2089,112 @@ fn relist_without_a_child_directory_marks_the_run_partial() {
         assert!(!sink.sink.sweep_allowed(root.root_id()));
     }
 }
+/// A sink whose `consume` never refuses: the obsolete publication is reported only through
+/// `settle`, as the service sink's deferred writes do (#148).
+struct DeferredObsolete {
+    sink: MemorySink,
+    /// Report the listed directory on every settle, so the refusal persists across relists.
+    always: bool,
+    reported: AtomicBool,
+    listings: std::sync::Mutex<Vec<u64>>,
+}
+impl ScanSink for DeferredObsolete {
+    fn watch_dirty(&self, root: &RootId) -> crate::EngineResult<()> {
+        self.sink.watch_dirty(root)
+    }
+    fn refresh_listing(
+        &self,
+        root: &RootId,
+        run: u64,
+        ticket: ListingTicket,
+    ) -> crate::EngineResult<ListingTicket> {
+        self.sink.refresh_listing(root, run, ticket)
+    }
+    fn recover_interrupted(&self) -> crate::EngineResult<()> {
+        self.sink.recover_interrupted()
+    }
+    fn begin_run(&self, root: &RootId, run: u64, scope: &RunScope) -> crate::EngineResult<()> {
+        self.sink.begin_run(root, run, scope)
+    }
+    fn prepare_listing(
+        &self,
+        root: &RootId,
+        run: u64,
+        parent: Option<u64>,
+        name: &[u16],
+        identity: OpenedIdentity,
+    ) -> crate::EngineResult<ListingTicket> {
+        self.sink.prepare_listing(root, run, parent, name, identity)
+    }
+    fn consume(&self, root: &RootId, message: ScanMessage) -> crate::EngineResult<()> {
+        if let ScanMessage::DirListing { ticket, .. } = &message {
+            self.listings.lock().unwrap().push(ticket.dir);
+        }
+        self.sink.consume(root, message)
+    }
+    fn finish_run(
+        &self,
+        root: &RootId,
+        run: u64,
+        scope: &RunScope,
+        complete: bool,
+    ) -> crate::EngineResult<()> {
+        self.sink.finish_run(root, run, scope, complete)
+    }
+    fn fence_root(&self, root: &RootId) -> crate::EngineResult<()> {
+        self.sink.fence_root(root)
+    }
+    fn settle(&self, _root: &RootId) -> crate::EngineResult<Vec<u64>> {
+        let listed = self.listings.lock().unwrap().first().copied();
+        let first = !self
+            .reported
+            .swap(true, std::sync::atomic::Ordering::AcqRel);
+        Ok(listed
+            .filter(|_| first || self.always)
+            .into_iter()
+            .collect())
+    }
+}
+/// #148: a directory only `settle` reports obsolete is relisted by the engine, and the run stays
+/// incomplete while the refusal persists.
+#[test]
+fn a_directory_settle_reports_obsolete_is_relisted_and_a_persistent_one_stays_partial() {
+    for always in [false, true] {
+        let sink = Arc::new(DeferredObsolete {
+            sink: MemorySink::default(),
+            always,
+            reported: AtomicBool::new(false),
+            listings: Default::default(),
+        });
+        let root = root();
+        let bytes = Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES));
+        let report = run_scan(
+            &Tree,
+            &root,
+            1,
+            sink.clone(),
+            bytes.clone(),
+            Arc::new(AtomicBool::new(false)),
+            ScanOptions {
+                workers: 1,
+                ..ScanOptions::default()
+            },
+        )
+        .unwrap();
+        let listings = sink.listings.lock().unwrap().clone();
+        let first = listings[0];
+        let relists = listings.iter().filter(|d| **d == first).count();
+        assert!(
+            relists >= 2,
+            "the settled directory was relisted: {listings:?}"
+        );
+        assert_eq!(report.complete, !always, "always={always}");
+        if always {
+            assert!(!sink.sink.sweep_allowed(root.root_id()));
+        }
+        assert_eq!(bytes.used(), 0);
+    }
+}
 impl ScanSink for FailedWriter {
     fn refresh_listing(
         &self,

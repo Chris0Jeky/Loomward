@@ -195,10 +195,27 @@ pub fn serve(service: Arc<dyn ViewService>, options: Options) -> io::Result<Hand
             "--allow-origin takes a loopback http origin such as http://localhost:5173, not {bad}"
         )));
     }
+    // The overlap gate compares canonical forms and refuses what it cannot resolve: an unresolved
+    // spelling used to fall back to a text comparison that misses `..` and relative paths.
+    let grants = options
+        .grant_roots
+        .iter()
+        .enumerate()
+        .map(|(i, root)| {
+            root.canonicalize()
+                .map_err(|_| invalid(format!("grant root #{} cannot be resolved", i + 1)))
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    let state = options
+        .state_dir
+        .as_deref()
+        .map(loomward_service::paths::prospective_dir)
+        .transpose()
+        .map_err(invalid)?;
     let static_dir = loomward_service::paths::validate_static_dir(
         options.static_dir.as_deref(),
-        &options.grant_roots,
-        options.state_dir.as_deref(),
+        &grants,
+        state.as_deref(),
     )
     .map_err(invalid)?;
     let mut raw = [0u8; 32];

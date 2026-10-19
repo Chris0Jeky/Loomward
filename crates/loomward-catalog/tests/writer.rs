@@ -2,6 +2,9 @@ use loomward_catalog::*;
 use rusqlite::Connection;
 
 fn setup() -> (tempfile::TempDir, Catalog, i64, i64, i64) {
+    setup_with_bulk(false)
+}
+fn setup_with_bulk(bulk: bool) -> (tempfile::TempDir, Catalog, i64, i64, i64) {
     let temp = tempfile::tempdir().unwrap();
     let c = Catalog::open(temp.path(), "synthetic").unwrap();
     let WriteReply::Root {
@@ -23,6 +26,7 @@ fn setup() -> (tempfile::TempDir, Catalog, i64, i64, i64) {
     else {
         panic!()
     };
+    c.writer().set_bulk_first_scan(bulk);
     let WriteReply::Run(run) = c
         .writer()
         .call(WriteCommand::BeginRun {
@@ -52,6 +56,135 @@ fn identified(name: &str, id: u8, size: u64) -> Observation {
     let mut o = Observation::file(name, size, Some(size));
     o.file_id = Some([id; 16].to_vec());
     o
+}
+
+#[test]
+fn half_applied_revoke_settles_every_refused_end_state_without_publication() {
+    for bulk in [false, true] {
+        for identity_changed in [false, true] {
+            for state in ["completed", "cancelled", "failed"] {
+                let (temp, c, grant_id, dir_id, run) = setup_with_bulk(bulk);
+                let w = c.writer();
+                w.call(listing(
+                    run,
+                    dir_id,
+                    vec![identified("unpublished", 8, 7)],
+                    vec![],
+                ))
+                .unwrap();
+                w.call(WriteCommand::StageChunk {
+                    run_id: run,
+                    dir_id,
+                    seq: 0,
+                    files: vec![identified("staged", 9, 8)],
+                    dirs: vec![],
+                })
+                .unwrap();
+                let db = Connection::open(temp.path().join("catalog.db")).unwrap();
+                db.execute_batch("CREATE TRIGGER half_applied_cancel_refusal BEFORE UPDATE OF state ON scan_run WHEN NEW.state='cancelled' BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
+                let revoke = if identity_changed {
+                    WriteCommand::GrantIdentityChanged { grant_id }
+                } else {
+                    WriteCommand::RevokeGrant {
+                        grant_id,
+                        revoked_at_ns: 6,
+                    }
+                };
+                assert!(w.call(revoke).is_err());
+                db.execute_batch("DROP TRIGGER half_applied_cancel_refusal")
+                    .unwrap();
+                assert!(matches!(
+                    w.call(WriteCommand::EndRun {
+                        run_id: run,
+                        state: state.into(),
+                        finished_at_ns: 7
+                    }),
+                    Err(Error::Invalid("inactive run or grant"))
+                ));
+                let settled: (String, Option<i64>, Option<String>) = db.query_row("SELECT state,finished_at_ns,json_extract(error_json,'$.code') FROM scan_run WHERE id=?1", [run], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+                assert_eq!(
+                    settled,
+                    ("cancelled".into(), Some(7), Some("grant_not_active".into())),
+                    "bulk={bulk}, identity_changed={identity_changed}, state={state}"
+                );
+                let claim: (Option<i64>, String, Option<i64>) = db
+                    .query_row(
+                        "SELECT active_run,state,generation FROM root WHERE grant_id=?1",
+                        [grant_id],
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                    )
+                    .unwrap();
+                assert_eq!(claim, (None, "stale".into(), None));
+                assert_eq!(
+                    db.query_row("SELECT count(*) FROM bulk_dir", [], |r| r.get::<_, i64>(0))
+                        .unwrap(),
+                    0
+                );
+                assert_eq!(
+                    db.query_row("SELECT count(*) FROM stage_entry", [], |r| r
+                        .get::<_, i64>(0))
+                        .unwrap(),
+                    0
+                );
+                assert_eq!(
+                    db.query_row(
+                        "SELECT count(*) FROM scan_run WHERE state='completed'",
+                        [],
+                        |r| r.get::<_, i64>(0)
+                    )
+                    .unwrap(),
+                    0
+                );
+                if bulk {
+                    assert_eq!(
+                        db.query_row("SELECT count(*) FROM file", [], |r| r.get::<_, i64>(0))
+                            .unwrap(),
+                        0
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn refused_end_run_settlement_rolls_back_as_one_transaction() {
+    let (temp, c, grant, _, run) = setup();
+    let db = Connection::open(temp.path().join("catalog.db")).unwrap();
+    db.execute_batch("CREATE TRIGGER half_applied_cancel_refusal BEFORE UPDATE OF state ON scan_run WHEN NEW.state='cancelled' BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
+    assert!(c
+        .writer()
+        .call(WriteCommand::RevokeGrant {
+            grant_id: grant,
+            revoked_at_ns: 3
+        })
+        .is_err());
+    db.execute_batch(
+        "DROP TRIGGER half_applied_cancel_refusal;
+        CREATE TRIGGER root_release_refusal BEFORE UPDATE OF active_run ON root
+        WHEN NEW.active_run IS NULL BEGIN SELECT RAISE(ABORT,'injected release failure'); END;",
+    )
+    .unwrap();
+    let finish = || {
+        c.writer().call(WriteCommand::EndRun {
+            run_id: run,
+            state: "failed".into(),
+            finished_at_ns: 4,
+        })
+    };
+    assert!(matches!(finish(), Err(Error::Sql(_))));
+    let unsettled: (String, Option<String>, Option<i64>, i64) = db.query_row("SELECT s.state,s.error_json,r.active_run,(SELECT catalog_rev FROM revision) FROM scan_run s JOIN root r ON r.id=s.root_id WHERE s.id=?1", [run], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
+    assert_eq!(unsettled.0, "running");
+    assert_eq!(unsettled.1, None);
+    assert_eq!(unsettled.2, Some(run));
+    db.execute_batch("DROP TRIGGER root_release_refusal")
+        .unwrap();
+    assert!(matches!(
+        finish(),
+        Err(Error::Invalid("inactive run or grant"))
+    ));
+    let settled: (String, Option<i64>, i64) = db.query_row("SELECT s.state,r.active_run,(SELECT catalog_rev FROM revision) FROM scan_run s JOIN root r ON r.id=s.root_id WHERE s.id=?1", [run], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+    assert_eq!(settled, ("cancelled".into(), None, unsettled.3 + 1));
 }
 
 #[test]

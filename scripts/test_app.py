@@ -33,13 +33,14 @@ from types import SimpleNamespace
 import sys
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from playwright.sync_api import Page, expect, sync_playwright
 
 from test_app_collections import run_collections, run_live_collections
+from test_app_server import ThreadingHTTPServer
 from test_app_a11y import run_a11y
 import test_app_views
 from test_app_views import run_views, wait_until
@@ -846,7 +847,7 @@ def main() -> None:
         hosts: set[str] = set()
         dialogs: list[str] = []
         page.on('pageerror', lambda e: errors.append(f'pageerror: {e}'))
-        page.on('console', lambda m: m.type == 'error' and errors.append(f'console: {m.text}'))
+        page.on('console', lambda m: m.type == 'error' and errors.append(f"console: {m.text} ({m.location.get('url', '')})"))
         page.on('dialog', lambda d: (dialogs.append(d.message), d.dismiss()))
         page.on('request', lambda r: hosts.add(urlsplit(r.url).hostname or r.url))
 
@@ -1014,7 +1015,10 @@ def main() -> None:
         shot('unavailable.png')
 
         # --- http mode against the fake engine ---------------------------------------------------
-        page.goto(f'{base}/?transport=http#token={TOKEN}')  # an unknown transport value must not select mock
+        # Observe this document's stream before reloading: otherwise the reload waiter can
+        # consume its late response and drop the engine before the new document subscribes (#696).
+        with page.expect_response(lambda r: r.url == f'{base}/api/v3/events' and r.status == 200):
+            page.goto(f'{base}/?transport=http#token={TOKEN}')  # an unknown transport value must not select mock
         expect(page.get_by_role('status', name='Session status')).to_contain_text('Connected')
         check('token' not in page.url, 'the token is scrubbed from the address bar')
         expect(page.get_by_role('status', name='Session status')).to_contain_text('Dataset personal')

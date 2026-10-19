@@ -787,6 +787,7 @@ dependencies = [
  "loomward-engine",
  "loomward-operations",
  "loomward-protocol",
+ "loomward-service",
  "loomward-shell",
  "loomward-telemetry",
  "loomward-windows",

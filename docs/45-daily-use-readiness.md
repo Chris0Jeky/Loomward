@@ -23,7 +23,7 @@ Rules for this file:
 | 5 | Injected I/O faults and a full disk | PARTIAL |
 | 6 | Fuzzing every parser and contract | PARTIAL |
 | 7 | 72-hour soak | PARTIAL |
-| 8 | Power-cut simulation, per effect | UNVERIFIED |
+| 8 | Power-cut simulation, per effect | PARTIAL |
 | 9 | Proven restore, per effect | UNVERIFIED |
 
 ## 1. Crash injection at every write: PARTIAL
@@ -47,9 +47,29 @@ injects `boundaries+1`). Earlier single-point tests stay: `PublicationCrash` in
 `src/writer/publication_tests.rs`, `grant_survives_a_crash_between_precious_and_derived_commits` and the
 uncommitted-transaction child in `tests/writer.rs`, `tests/open.rs` corruption and interrupted-run cases.
 
-**Gap.** A killed process is not a power cut (row 8). Writers outside the catalogue writer are not swept: the
-service's `collections` connection that writes both files, label, learning and job state, backup import. A torn
-`VACUUM INTO` backup file cannot be injected mid-copy by a boundary hook. The migration fixture is a synthetic
+The service-side writers are swept too: `crates/loomward-service/src/crash_sweep_tests.rs` arms the service
+connection (`catalog.db` with `state.db` attached) and the learning store's connection through
+`loomward_catalog::crash_arm` (live only in a process started with a crash or trace variable; a no-op without
+`test-hooks`), and drives real service commands in the child. Scenario `meaning` (synthetic session, 59 boundaries
+on 2026-10-19): each open's own recovery writes, `collections.create`, `collections.update_members` add (new
+references and memberships in one transaction) and remove, `feedback.record` on a node with no reference yet (the
+catalogue writer's reference, then the label, its provenance, node binding and replay receipt in one learning
+transaction), and a `learning.refit` model commit. Scenario `backup` (personal session, 27 boundaries):
+`backups.import`, a replacing import under the same label, `backups.forget`. Invariants: integrity and
+foreign-key checks on both files, no membership, label, node binding or provenance without its parent row, no label
+without its replay receipt or receipt without its label, no pending reference intent, no resolved reference bound
+to a missing catalogue row or another catalogue's instance (the cross-file check), at most one candidate model,
+every acknowledged step durable (a step that began but was not acknowledged may land either way, never half), a
+second recovery changes nothing (catalogue revision excepted: every open publishes one by design), and each
+writer still takes a write. The checker can fail: `the_service_verifier_catches_planted_damage` (five cases) and,
+by hand on 2026-10-19, a mutant that commits the label's replay receipt in its own transaction failed 3 of its 61
+crash points. `an_unreached_service_crash_point_fails_the_sweep` guards the boundary count. No defect found.
+Job state is in memory (`loomward-engine/src/jobs`): its only durable effect is the refit commit swept above.
+
+**Gap.** A killed process is not a power cut (row 8). Service writers not yet in a scenario: tier declarations,
+alert settings, client grants, placement saves, teacher requests, the copy journal and diagnostics export; the
+learning redaction after a revoke is armed but only its empty pass is swept. A torn `VACUUM INTO` backup file
+cannot be injected mid-copy by a boundary hook. The migration fixture is a synthetic
 downgrade of a current store, not a store written by an old binary. Finding **F1** below (fixed).
 
 **Prove.**
@@ -58,6 +78,8 @@ downgrade of a current store, not a store written by an old binary. Finding **F1
 cargo test -p loomward-catalog --features test-hooks --test crash_sweep   # about 53 s (2026-10-12), samples row boundaries
 $env:LOOMWARD_CRASH_SWEEP='full'; cargo test -p loomward-catalog --features test-hooks --test crash_sweep   # every boundary, about 505 s (2026-10-12)
 cargo test -p loomward-catalog --features test-hooks --test crash_sweep -- lifecycle_at 123   # one boundary
+cargo test -p loomward-service --lib crash_sweep   # service writers, about 18 s sampled (2026-10-19)
+$env:LOOMWARD_CRASH_SWEEP='full'; cargo test -p loomward-service --lib crash_sweep_tests::every   # all 86 boundaries, about 28 s
 ```
 
 ## 2. The 10M-entry lab: PARTIAL
@@ -143,8 +165,57 @@ reopen, the remaining roots are written, and the closed and reopened store equal
 successful writes (every table row for row with its rowid, and the public `Reader` children pages).
 The test lives in the writer's test module rather than `crash_sweep.rs`.
 
-**Gap.** No read-error, access-denied-mid-scan or short-write injection below SQLite. A disk that fills below SQLite
-(an OS write failure, not the page limit) is not exercised; the page limit drives only SQLite's own `SQLITE_FULL`.
+I/O faults below SQLite (2026-10-19): `crates/loomward-catalog/tests/fault_vfs/mod.rs` is a test-only VFS that wraps
+the platform one (`win32`) inside a sweep child and fails the Nth read, write, fsync or truncate of the process with
+the code `os_win.c` returns for the Win32 failure: `read` (a failed ReadFile, `SQLITE_IOERR_READ`), `write`
+(`SQLITE_IOERR_WRITE`), `full` (`ERROR_DISK_FULL`: `SQLITE_FULL`, nothing written, every later write fails until the
+space is freed), `short-write` (the disk fills inside one WriteFile: half the bytes land, then `SQLITE_FULL`, sticky
+like `full`), `sync` (`SQLITE_IOERR_FSYNC`) and `truncate` (`SQLITE_IOERR_TRUNCATE`). The child drives the crash
+sweep's own lifecycle (scan through staged chunks, durable reference and labels, bulk first scan, rescan, revoke,
+forget) through the real writer; `every_io_fault_below_sqlite_fails_honestly_and_recovers` in `tests/crash_sweep.rs`
+enumerates the calls in a clean run (356 reads, 1,172 writes, 47 fsyncs, 12 truncates) and injects each kind at 12
+evenly spread calls of its class, every call with `LOOMWARD_CRASH_SWEEP=full`. Each fault must: fire (an unreached
+fault fails); end the lifecycle with an honest typed error (`SQLITE_FULL` for the full-disk kinds, `SQLITE_IOERR` for
+the others; never corruption, busy, `Closed` or success), or be absorbed with a store whose row counts and revision
+equal the clean run's; leave no panicking thread; let the same process reopen the store and take a write once the
+fault clears; and pass the crash sweep's `verify` unchanged (both recoveries, integrity and foreign-key checks on both
+files, no running run or staged residue, rollups agree with rows, every acknowledged step durable, forget
+all-or-nothing, a write probe). `a_full_disk_while_creating_the_store_never_wedges_it` faults the full disk at every
+write before the store's first open (finding **F2** below, fixed). The checker can fail:
+`a_disk_that_drops_writes_fails_the_fault_sweep` injects a lying disk that acknowledges writes it never makes, and the
+same checks catch 9 of its 12 points. A `short-read` (ReadFile stopping mid-file, `ERROR_HANDLE_EOF`: half the bytes,
+the rest zeroed) is also a lie to SQLite, whose VFS contract zero-fills a short read and carries on, so the error that
+follows can be "malformed", a constraint or a missing row, or none: `a_short_read_mid_file_still_recovers` holds it
+to every recovery check but not to an honest code. The matrix is in the run record.
+
+Access denied mid-scan (2026-10-19): `listing_denied_mid_scan_is_partial_and_flagged`
+(`crates/loomward-engine/src/scan/followups.rs`) generates the `DeniedDirectory` fixture, lifts its ACE
+(`GeneratedTree::allow_listing`) and wraps the native source so the real deny ACE is applied again
+(`GeneratedTree::deny_listing`) the moment the root's own listing reports `denied`, after the scan has opened and
+started listing the root and before that child is opened. The child's open is refused, the run is partial
+(`complete` and `coverage_complete` false, one failed open), the root's entry for the child carries `AccessDenied`
+(what the service's catalogue sink stores as `ACCESS_DENIED`, flag 64), no directory final is complete, the root
+counts only the visible file, and once listing is allowed again the next scan is complete with both files.
+
+**Gap.** Faults are one per run and one-shot (except the sticky full disk), on the catalogue writer's lifecycle only:
+the service's own connections (collections, labels, learning, job state, backup import) are not faulted, as in row 1.
+Not faulted: the `-shm` mapping, locking, file size, and the VFS-level open, delete and access calls (an
+`ERROR_ACCESS_DENIED` opening the log, for one). The full disk is the VFS's word, not a real full volume: no run fills
+an actual NTFS volume (a small VHD would). A short read mid-file cannot get an honest error (SQLite zero-fills it); it is
+held to recovery only, and one of 356 was absorbed with a different state revision than the clean run's. The
+mid-scan denial runs through the engine with the in-memory sink; the catalogue's mapping of that entry to its
+flag and the slice's `denied` coverage are proven by the pre-scan `real_acl_denied_directory_stays_visible_and_partial`
+through the service, not by one mid-scan run end to end. A deny on a directory whose handle is already open, and a deny
+on the root itself mid-scan, are not exercised.
+
+**Prove.**
+
+```powershell
+cargo test -p loomward-catalog --features test-hooks --test crash_sweep -- io_fault drops_writes creating_the_store short_read   # sampled, about 2 min
+$env:LOOMWARD_CRASH_SWEEP='full'; cargo test -p loomward-catalog --features test-hooks --test crash_sweep -- every_io_fault short_read
+cargo test -p loomward-catalog --features test-hooks --test crash_sweep -- --nocapture fault_at full:53   # one fault; the plan must be the last argument (no -q)
+cargo test -p loomward-engine --lib listing_denied_mid_scan
+```
 
 ## 6. Fuzzing every parser and contract: PARTIAL
 
@@ -238,13 +309,49 @@ a synthetic full-duration receipt tests the evaluator only, never qualifies as a
 **Gap.** No measured 72-hour run. Native watch plus explicit refresh does not establish automatic
 service watch reconciliation; graceful teardown/reopen does not establish process crash recovery.
 
-## 8. Power-cut simulation, per effect: UNVERIFIED
+## 8. Power-cut simulation, per effect: PARTIAL
 
 Row 1 kills the process; the operating system's cache survives it, so un-synced writes are never lost. The
 catalogue runs `synchronous=NORMAL` (state and publication-with-references use FULL), so a power cut can lose
-recent catalogue commits by design. Needs a fault-injecting SQLite VFS or a VM with a dropped write cache,
-dropping every write after the Nth fsync, then the row 1 invariants. File effects do not exist yet (invariant
-1); each effect's gate ships its own power-cut case.
+recent catalogue commits by design.
+
+**Exists (catalogue only, 2026-10-19).** A power-cut mode on row 5's test-only VFS
+(`crates/loomward-catalog/tests/fault_vfs/mod.rs`, `LOOMWARD_POWER_CUT=<mode>:<N>[:<seed>]`): every write and
+truncate of a store file (both databases, both WALs, rollback journals) is held per file until a successful
+xSync of that file makes it durable. The power fails at the entry of the process's sync N+1: `drop` loses every
+unsynced write of every file; `tear` keeps a deterministically seeded prefix of them, split at 512-byte sectors,
+drawn per file; `-shm` is volatile (removed, SQLite rebuilds it). The parent writes each file's surviving
+image over the store and asserts row 1's `verify` (integrity and foreign keys on both files, no running run or
+half-built bulk table, no staged or pending-reference residue, rollups agree with rows, forget all-or-nothing
+in rows and bytes, a second recovery changes nothing, the store takes a write) plus the durability contract:
+every step acknowledged under FULL survives (both grants, the reference, labels, revoke, the forget record);
+catalogue publications may be lost, and `normal_suffix` checks what survives: each listing is whole (never
+torn); A's rescan never survives B's lost bulk first scan; B's never survives A's lost first run end; a completed
+run of A never outlives its lost root-directory or sub-directory listing. `every_power_cut_keeps_full_commits_and_recovers` sweeps N over every sync of the crash
+sweep's lifecycle (scan through staged chunks, reference and labels, bulk first scan, rescan, revoke, forget),
+twice: as is (47 syncs) and with a reader holding a catalogue snapshot across the three scans (39 syncs).
+Without a reader each run end's checkpoint syncs the catalogue before its receipt, so no acknowledged
+publication is lost; with one the checkpoint (best effort, it never waits for a reader) cannot, and 17 of 200
+cuts lost an acknowledged run end, always within the contract. No durability defect was found. The checker can
+fail: a disk whose flush does nothing (`lie`) fails 27 of the 48 cuts of a full sweep (7 of 12 sampled)
+(`a_disk_that_ignores_flushes_fails_the_power_cut_sweep`), and a torn listing or an out-of-order survivor
+planted in a store is caught, one case per check (`the_power_cut_contract_catches_planted_damage`).
+
+**Gap.** File effects do not exist yet (invariant 1); each effect's gate ships its own power-cut case, and
+copying's G5 needs a real power cut. This is a model, not hardware: deletes are durable at once, file creation is
+durable (its content is not), renames are not modelled (the corrupt-catalogue and v1 archive paths), torn
+writes keep a prefix per file rather than reordering sectors, and cuts fall only at sync entries (tearing stands
+in for cuts between them). The service's own connections (collections, labels, learning, job state, backup
+import) and a migration from an old store are not swept, as in row 1. Durability is checked per acknowledged
+step, not per SQLite commit.
+
+**Prove.**
+
+```powershell
+cargo test -p loomward-catalog --features test-hooks --test crash_sweep -- power_cut ignores_flushes   # 12 cuts per mode and variant, about 10 s
+$env:LOOMWARD_CRASH_SWEEP='full'; cargo test -p loomward-catalog --features test-hooks --test crash_sweep -- every_power_cut ignores_flushes   # every sync, 4 tear seeds, about 70 s
+cargo test -p loomward-catalog --features test-hooks --test crash_sweep -- --nocapture power_cut_at reader+tear:20:1   # one cut; the plan must be the last argument
+```
 
 ## 9. Proven restore, per effect: UNVERIFIED
 
@@ -271,6 +378,18 @@ covered by F1: the older `state.start-*`, `state.before-v*` and `catalog.corrupt
 
 The sweep found no recovery defect other than the window F1's marker closes.
 
+**F2 (fixed; found by the row-5 fault sweep, 2026-10-19). A full disk while a store is first created wedged it.** A new
+`state.db` or `catalog.db` is created and migrated in rollback-journal mode before it switches to WAL. When the disk
+fills inside that commit, SQLite's own rollback cannot write either and leaves a hot journal. `inspect` in `db.rs`
+opens each file read-only before anything else, and a read-only connection cannot roll a hot journal back
+(`SQLITE_READONLY_ROLLBACK`), so every later open failed with "attempt to write a readonly database", in the same
+process and in a new one, after the space was freed: 2 of 1,172 `full` points and the same 2 `short-write` points
+(the commits creating `state.db` and `catalog.db`). Fix: on that error `inspect` opens the file read-write once, which
+makes SQLite roll the journal back, and inspects again. Regression test:
+`a_full_disk_while_creating_the_store_never_wedges_it` (red before the fix at `full:53` and `full:134`). A process
+killed inside that commit would leave the same hot journal; the crash sweep's boundaries (row, pre-commit,
+post-commit) never fall inside a commit's page writes, so it could not see this.
+
 ## Run record
 
 The 2026-10-17 soak-r7 checks use `CARGO_BUILD_JOBS=4`,
@@ -285,6 +404,12 @@ The depth-483 commands use `--manifest-path C:/lw/wt/depth-483/Cargo.toml`,
 
 | Date | Commit | Host | Command | Result |
 |---|---|---|---|---|
+| 2026-10-19 | 4ba5762 (fault sweep before F2's fix) | KRASPYON, Windows 11 Home, debug build, shared host | `LOOMWARD_CRASH_SWEEP=full cargo test -p loomward-catalog --features test-hooks --test crash_sweep -- every_io_fault --nocapture` (short-read then still in the honest set) | Failed, 34 of 4,287 faults in 1,306 s: `full:53`, `full:134`, `short-write:53`, `short-write:134` left a store every later open refused (`SQLITE_READONLY_ROLLBACK`; **F2**); 30 short reads ended in a non-I/O code (21 corrupt, 4 missing row, 3 SQL parse of a zeroed schema, 1 NOT NULL) and one was absorbed with state revision 4 instead of 6, all with `verify` otherwise clean |
+| 2026-10-19 | 0a32983 (F2 fixed) | same | `LOOMWARD_CRASH_SWEEP=full cargo test -p loomward-catalog --features test-hooks --test crash_sweep -- every_io_fault short_read creating_the_store --nocapture` | 3 passed in 1,188 s, every call of each class. Honest set, 3,931 faults: read 139 `SQLITE_IOERR` / 217 absorbed; write 791 / 381; full 895 `SQLITE_FULL` / 277; short-write 895 / 277; sync 26 / 21; truncate 12 absorbed; no violation. Store creation, 185 writes before first open: 185 `SQLITE_FULL`, every store reopened and wrote. Short read (recovery only), 356: 308 absorbed, 19 `SQLITE_IOERR`, 21 corrupt, 4 missing row, 3 parse, 1 constraint; every recovery check clean |
+| 2026-10-19 | 2c12b6f (before F2) | same | `cargo test -p loomward-catalog --features test-hooks --test crash_sweep -- a_disk_that_drops --nocapture` | 1 passed: the lost-write mutant (a disk that acknowledges writes it never makes) fails 9 of 12 sampled points (of the 12: 7 absorbed, 1 corrupt, 3 I/O, 1 other SQLite error) |
+| 2026-10-19 | 2c12b6f + the regression test, before the `db.rs` fix | same | `cargo test -p loomward-catalog --features test-hooks --test crash_sweep -- creating_the_store` | Failed as expected: `full:53` and `full:134` reopen failed `attempt to write a readonly database` |
+| 2026-10-19 | 4ba5762 | same, non-elevated | `cargo test -p loomward-engine --lib listing_denied_mid_scan` | 1 passed: deny ACE applied during the root's listing, child open refused, run partial, entry `AccessDenied`, root totals 1 file; rescan after allow complete with 2 files |
+| 2026-10-19 | 0a32983 + docs | same | `cargo fmt --all --check`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo clippy --workspace --all-targets -- -D warnings`; `cargo test -p loomward-catalog --all-features`; `cargo test -p loomward-engine -p loomward-service -p loomward-lab --no-fail-fast`; `git diff --check` | All exit 0: catalogue 317 passed, 1 ignored (existing); engine, service and lab 711 passed, 1 ignored (existing), 0 failed. Workspace-wide `cargo test --workspace` not run in this lane |
 | 2026-10-17 | 7bac459 + final depth-483 working diff (#483) | KRASPYON, Windows 11 Home, shared host | `cargo test --workspace --no-fail-fast` | Exit 0: **1,131 passed, 0 failed, 1 ignored** across 70 test/doc-test targets. Only ignore is the existing #190 Both-strategy wire-progress test. All five named #292 host-failure cases passed here. Pathological engine target 9/9 passed again; no failing test disabled, skipped or weakened. Fresh workspace test build took 14m 02s; timing is shared-host evidence, not a performance gate |
 | 2026-10-17 | 7bac459 + depth-483 working diff (#483) | KRASPYON, Windows 11 Home, shared host | `cargo test -p loomward-engine -p loomward-catalog -p loomward-protocol -p loomward-lab --no-fail-fast` | Exit 0: **533 passed, 0 failed, 1 ignored** across ordinary and doc tests: engine 233 passed/1 existing #190 ignore, catalogue 207 passed, protocol 53 passed, lab 40 passed. Engine pathological target **9/9 passed**, including the unignored 512 regression and new partial 513 case; strategy matrix passed. The four named #292 engine cases passed in this run; no tests disabled or weakened |
 | 2026-10-17 | same | same | `cargo clippy --workspace --all-targets -- -D warnings`; `PYTHONPATH=C:/lw/wt/depth-483/python py -3 -m unittest discover -s tests` | Both exit 0. Workspace clippy completed in 1m 24s. Python: 276 run, 275 passed, 1 skipped (optional `mistune` HTML renderer unavailable); JSON Schema validator available. Initial standalone Python invocation omitted the wrapper's `PYTHONPATH` and failed imports; corrected process-scoped environment, no source change |
@@ -337,3 +462,7 @@ The depth-483 commands use `--manifest-path C:/lw/wt/depth-483/Cargo.toml`,
 | 2026-10-17 | 912a491 | same | `LOOMWARD_FUZZ_CASES=100000 cargo test -p loomward-shell --test fuzz_shortcut` (`shortcuts::parse`) | 4 x 100,000 passed in 68 s |
 | 2026-10-17 | 912a491, each with one parser check weakened (mutants, reverted) | same | `cargo test -p <crate> --test <target>` after: windows `name_len > record_len - header` to `name_len > record_len`; windows `next < header ||` removed; lab `next < end` removed; protocol `same_json(&canonical, &value)` to `true`; backup `part != "."` removed from `provider_path` | all five failed their target (panic at `enumerate/mod.rs`, overlap property, reference disagreement, `positional_arrays_are_refused`, `hostile_provider_paths_are_refused_on_the_bound_snapshot_only`). Earlier drafts of the lab, protocol and backup targets passed the same three mutants; the directed properties above were added in response |
 | 2026-10-17 | this PR merged with main fe3176c (the merge brought #292, r5, r7 and documentation) | same | `cargo fmt --all --check`; `cargo clippy --workspace --all-targets -- -D warnings`; `cargo test --workspace --no-fail-fast`; `git diff --check` | fmt and clippy clean; 1,068 passed, 1 ignored, 0 failed; diff check clean. Before the merge, the same test run showed the 5 host failures of #292 plus 2 `loomward-service` tests that depend on host load (a 20 ms deadline in `wrong_dataset_and_timed_out_providers_never_publish_fallback`); neither pair touches this PR's code |
+| 2026-10-19 | 44f0144 (stacked on #748's branch, test code) | KRASPYON, Windows 11 Home, debug build | `cargo test -p loomward-catalog --features test-hooks --test crash_sweep -- power_cut ignores_flushes planted_damage` | passed: plain lifecycle 47 syncs, 24 cuts (12 drop, 12 tear), 22 with unsynced writes, 8 torn; reader variant 39 syncs, 24 cuts, 2 losing an acknowledged NORMAL run end; `lie` caught 7 of 12; planted torn and out-of-order listings caught; about 10 s |
+| 2026-10-19 | same | same | `LOOMWARD_CRASH_SWEEP=full cargo test -p loomward-catalog --features test-hooks --test crash_sweep -- every_power_cut ignores_flushes` | 2 passed in 70 s: plain 240 cuts (48 drop, 4 seeds x 48 tear), 230 with unsynced writes, 123 torn, none losing an acknowledged publication (each run end's checkpoint syncs first); reader 200 cuts, 190 unsynced, 103 torn, 17 losing an acknowledged run end, all within the contract; `lie` caught 27 of 48. No durability defect |
+| 2026-10-19 | same | same | `cargo fmt --all --check`; `cargo test -p loomward-catalog --all-features`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --no-fail-fast`; `git diff --check` | fmt clean; catalogue 321 passed, 1 ignored, 0 failed (3 min 53 s); clippy clean; workspace 1,714 passed, 4 ignored, 0 failed (10 min 38 s); diff check clean |
+| 2026-10-19 | review fix round on #792 (stricter `normal_suffix`, `register-b` checked, stale VFS handles dropped on open) | same | sample and `LOOMWARD_CRASH_SWEEP=full` power-cut commands above; `cargo test -p loomward-catalog --all-features`; workspace clippy `--all-features -D warnings`; fmt; `git diff --check` | sample 5 passed in 10 s; full 2 passed in 88 s with the same counts (plain 240 cuts, reader 200 with 17 acknowledged run ends lost within the contract, `lie` 27 of 48, now required to report "acknowledged but not durable"); 6 planted cases caught; catalogue 321 passed, 1 ignored, 0 failed; clippy, fmt and diff check clean |

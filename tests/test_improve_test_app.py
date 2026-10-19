@@ -20,10 +20,11 @@ ROOT = Path(__file__).resolve().parents[1]
 
 _STUB_NAMES = ('playwright', 'playwright.sync_api', 'test_app_collections',
                'test_app_a11y', 'test_app_views', 'test_app_inventory', 'test_app_copy', 'test_app_ask', 'test_app_clutter')
+_ISOLATED_NAMES = (*_STUB_NAMES, 'test_app_server')
 
 
 def _load_test_app():
-    saved = {name: sys.modules[name] for name in _STUB_NAMES if name in sys.modules}
+    saved = {name: sys.modules[name] for name in _ISOLATED_NAMES if name in sys.modules}
 
     def stub(name, **attrs):
         mod = types.ModuleType(name)
@@ -46,6 +47,13 @@ def _load_test_app():
         stub('test_app_copy', run_copy=lambda *a, **k: None)
         stub('test_app_ask', run_ask=lambda *a, **k: None, live_ask_isolated=lambda *a, **k: None)
         stub('test_app_clutter', run_clutter=lambda *a, **k: None, live_clutter=lambda *a, **k: None)
+        # The server helper has only stdlib dependencies. Load the real class even when
+        # unittest discovery does not put scripts/ on sys.path (#696).
+        server_spec = importlib.util.spec_from_file_location(
+            'test_app_server', ROOT / 'scripts' / 'test_app_server.py')
+        server_module = importlib.util.module_from_spec(server_spec)
+        sys.modules['test_app_server'] = server_module
+        server_spec.loader.exec_module(server_module)
         spec = importlib.util.spec_from_file_location(
             'test_app_under_test', ROOT / 'scripts' / 'test_app.py')
         module = importlib.util.module_from_spec(spec)
@@ -53,7 +61,7 @@ def _load_test_app():
         spec.loader.exec_module(module)
         return module
     finally:
-        for name in _STUB_NAMES:
+        for name in _ISOLATED_NAMES:
             sys.modules.pop(name, None)
         sys.modules.update(saved)
 

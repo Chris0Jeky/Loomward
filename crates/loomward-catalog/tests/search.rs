@@ -357,6 +357,35 @@ fn on_disk(dir: &Path, needle: &str) -> bool {
 }
 
 #[test]
+fn prior_scan_state_is_captured_with_each_search_page_root() {
+    let lab = lab();
+    let first = register(&lab, "vol", "First", 1);
+    let other = register(&lab, "vol", "Other", 2);
+    let other_run = begin(&lab, &other, "full");
+    list(&lab, other_run, other.dir, vec![], vec![]);
+    end(&lab, other_run);
+    let run = begin(&lab, &first, "full");
+    list(&lab, run, first.dir, vec![], vec![]);
+    let mut request = req("");
+    request.root_id = Some(first.root);
+    let building = search(&lab, &request);
+    assert_eq!(building.roots[0].scan_state, "scanning");
+    assert_eq!(building.index_state, "building");
+    assert!(!building.roots[0].has_completed_scan);
+    end(&lab, run);
+    assert!(
+        !building.roots[0].has_completed_scan,
+        "a later EndRun must not change the captured first-scan evidence"
+    );
+    assert!(search(&lab, &request).roots[0].has_completed_scan);
+    let rescan = begin(&lab, &first, "full");
+    let page = search(&lab, &request);
+    assert_eq!(page.roots[0].scan_state, "scanning");
+    assert!(page.roots[0].has_completed_scan);
+    end(&lab, rescan);
+}
+
+#[test]
 fn a_forgotten_root_leaves_no_index_entry_and_no_name_trigram_on_disk() {
     let mut lab = lab();
     let a = register(&lab, "vol", "Alpha", 1);

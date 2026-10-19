@@ -45,6 +45,11 @@ mod armed {
             std::process::exit(CRASH_EXIT);
         }
     }
+    /// Whether this process was started to trace or to crash.
+    pub fn configured() -> bool {
+        let (target, trace) = config();
+        target.is_some() || trace.is_some()
+    }
     pub fn arm(conn: &Connection) {
         let _ = conn.update_hook(Some(|action: Action, db: &str, table: &str, _row: i64| {
             hit(&format!("row {action:?} {db}.{table}"));
@@ -64,7 +69,7 @@ pub use armed::CRASH_EXIT;
 
 /// A boundary outside SQLite's hooks: a rename, a delete, a checkpoint, a VACUUM.
 #[inline]
-pub(crate) fn hit(label: &str) {
+pub fn hit(label: &str) {
     #[cfg(feature = "test-hooks")]
     armed::hit(label);
     #[cfg(not(feature = "test-hooks"))]
@@ -76,6 +81,17 @@ pub(crate) fn hit(label: &str) {
 pub(crate) fn arm(conn: &Connection) {
     #[cfg(feature = "test-hooks")]
     armed::arm(conn);
+    #[cfg(not(feature = "test-hooks"))]
+    let _ = conn;
+}
+/// [`arm`] for another crate's store connection (the service's and the learning store's), only in
+/// a process started to trace or to crash: elsewhere their SQLite auto-checkpoint stays as built.
+#[inline]
+pub fn arm_external(conn: &Connection) {
+    #[cfg(feature = "test-hooks")]
+    if armed::configured() {
+        armed::arm(conn);
+    }
     #[cfg(not(feature = "test-hooks"))]
     let _ = conn;
 }

@@ -242,6 +242,8 @@ impl Inner {
         grant: &ClientGrant,
         work: Option<&crate::ReadWork>,
     ) -> Handled {
+        #[cfg(test)]
+        self.hooks.before(command);
         match command {
             Command::SearchQuery => self.search(req, work, Some(grant)),
             Command::NodeInspect => {

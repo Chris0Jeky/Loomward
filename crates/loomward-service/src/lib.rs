@@ -205,11 +205,12 @@ impl Service {
         }
         let destination = paths::prospective_dir(&config.state_dir)?;
         let sqlite_destination = loomward_catalog::sqlite_dir(&destination);
-        paths::validate_roots(&config.grant_roots, Some(&destination))?;
-        Catalog::validate_stores(&destination, class_name(config.dataset))
+        // Grant the canonical spellings the rules approved, never the caller's raw text (#710).
+        let roots = paths::validate_roots(&config.grant_roots, Some(&destination))?;
+        let stores = Catalog::validate_stores(&destination, class_name(config.dataset))
             .map_err(|e| format!("state store: {e}"))?;
-        let mut protected = config.grant_roots.clone();
-        for root in &config.grant_roots {
+        let mut protected = roots.clone();
+        for root in &roots {
             let (volume, file_id) = lab::identity(root).map_err(refusal_name)?;
             if config.dataset == DatasetClass::Synthetic {
                 if file_id.len() != 16 {
@@ -271,14 +272,11 @@ impl Service {
             .canonicalize()
             .map_err(|_| "cannot resolve the state directory".to_string())?;
         // The ranked token index exists only where ranked search is served (#520).
-        let catalog = Catalog::open_with(
-            &state_dir,
-            class_name(config.dataset),
-            &CatalogOptions {
+        let catalog = stores
+            .open(&CatalogOptions {
                 ranked_index: FEDERATED_SEARCH,
-            },
-        )
-        .map_err(|e| format!("catalogue refused to open: {e}"))?;
+            })
+            .map_err(|e| format!("catalogue refused to open: {e}"))?;
         // A root's first full scan publishes once, atomically, with its file indexes built once (#148).
         catalog.writer().set_bulk_first_scan(true);
         let engine = Engine::open(EngineConfig::new(state_dir.clone(), config.dataset))
@@ -296,7 +294,7 @@ impl Service {
                 .map_err(|e| format!("learning store: {e}"))?,
         );
         if static_dir.is_some() {
-            let mut protected = config.grant_roots.clone();
+            let mut protected = roots.clone();
             protected
                 .extend(db::active_root_paths(&conn).map_err(|e| format!("state store: {e}"))?);
             paths::validate_static_dir(static_dir, &protected, Some(&state_dir))?;
@@ -341,7 +339,7 @@ impl Service {
                 .set_scan_sink(inner.scan.clone())
                 .map_err(|e| format!("engine refused the scan writer: {e}"))?;
         }
-        for (i, root) in config.grant_roots.iter().enumerate() {
+        for (i, root) in roots.iter().enumerate() {
             inner
                 .grant(root, "cli_flag", config.allow_identity_unverified)
                 .map_err(|r| {
@@ -706,6 +704,14 @@ impl ViewService for Service {
         {
             self.mutate(request, command, ctx.clone(), started, deadline)
         } else {
+            #[cfg(test)]
+            let deadline = self
+                .inner
+                .hooks
+                .read_clock
+                .lock()
+                .unwrap()
+                .map_or(deadline, |now| now + Duration::from_millis(wait));
             let permit = match ReadPermit::acquire(self.inner.clone()) {
                 Some(p) => p,
                 None => {
@@ -761,7 +767,11 @@ impl ViewService for Service {
             };
             #[cfg(not(test))]
             let now = Instant::now();
-            match rx.recv_timeout(deadline.saturating_duration_since(now)) {
+            #[cfg(test)]
+            let reply = self.inner.hooks.receive_read(&rx, deadline, now);
+            #[cfg(not(test))]
+            let reply = rx.recv_timeout(deadline.saturating_duration_since(now));
+            match reply {
                 Ok(mut r) => {
                     if let ResponseEnvelope::Ok(ref mut response) = r {
                         if let Some(position) = metadata_cursor

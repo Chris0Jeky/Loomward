@@ -621,7 +621,17 @@ impl Inner {
             }
         }
         drop(claim);
-        Ok(out(encode(&JobResult { job: job? })?, None))
+        // Keep pool exhaustion distinct inside the pre-emption loop; expose contention as Busy.
+        let job = job.map_err(|error| match error {
+            loomward_engine::EngineError::ResourceBudget { message } => {
+                loomward_engine::EngineError::Busy {
+                    message,
+                    detail: None,
+                }
+            }
+            other => other,
+        })?;
+        Ok(out(encode(&JobResult { job })?, None))
     }
 
     /// The root a session may scan or read (scan.start, duplicates.inspect): a synthetic session
@@ -817,11 +827,42 @@ impl Inner {
     }
 
     fn root_list(&self, work: Option<&crate::ReadWork>) -> Result<Value, ErrorBody> {
+        self.root_list_sharing(work, 75)
+    }
+
+    /// `share_percent` of the time left to the deadline goes to the roots' unique totals.
+    pub(crate) fn root_list_sharing(
+        &self,
+        work: Option<&crate::ReadWork>,
+        share_percent: u32,
+    ) -> Result<Value, ErrorBody> {
         let rows = db::roots(&self.db(), None).map_err(sql_error)?;
         let mut reader = self.read_reader(work)?;
+        // Unique totals share the request's budget (#722): keep the rest of it (a quarter) for the
+        // response, split the remainder over the roots still to measure, and let time a small
+        // root leaves flow to the next. A root past its share reports unknown totals, not a
+        // failed list.
+        let budget_end = work.map(|w| {
+            let now = std::time::Instant::now();
+            now + w.deadline.saturating_duration_since(now) * share_percent / 100
+        });
+        let measured = |r: &db::RootRow| {
+            r.dir.is_some() && r.grant_state == "active" && r.state != "never_scanned"
+        };
+        let mut left = rows.iter().filter(|r| measured(r)).count();
         let roots = rows
             .iter()
-            .map(|r| self.root_json(r, Some(&mut reader)))
+            .map(|r| {
+                if let Some(end) = budget_end {
+                    let now = std::time::Instant::now();
+                    reader.unique_totals_cut =
+                        Some(now + end.saturating_duration_since(now) / left.max(1) as u32);
+                    if measured(r) {
+                        left -= 1;
+                    }
+                }
+                self.root_json(r, Some(&mut reader))
+            })
             .collect::<Result<Vec<_>, _>>()?;
         Ok(json!({"roots": roots}))
     }
@@ -1454,6 +1495,9 @@ impl Inner {
                 scope: client.map(|g| g.roots.clone()),
             })
             .map_err(catalog_error)?;
+        #[cfg(test)]
+        self.hooks
+            .gate(Command::SearchQuery, "search_page_captured");
         let next = page.next_cursor.map(|c| {
             self.cursors
                 .issue(Command::SearchQuery, bind, Position::Search(c), None)
@@ -1464,7 +1508,18 @@ impl Inner {
                 .entry(hit.root_id)
                 .or_insert_with(|| self.hit_freshness(hit.root_id));
         }
-        let stale_scope = page.roots.iter().any(|r| self.freshness.stale(r.root_id));
+        let mut stale_roots = std::collections::BTreeSet::new();
+        for r in &page.roots {
+            if r.scan_state == "never_scanned" || !self.freshness.stale(r.root_id) {
+                continue;
+            }
+            // Before the first publication there is no old index for the watch to mark stale.
+            if r.scan_state == "scanning" && !r.has_completed_scan {
+                continue;
+            }
+            stale_roots.insert(r.root_id);
+        }
+        let stale_scope = !stale_roots.is_empty();
         let hits = page
             .hits
             .iter()
@@ -1486,8 +1541,8 @@ impl Inner {
             .map(|r| {
                 json!({
                     "root_id": self.root_id(r.root_id),
-                    "scan_state": if self.freshness.stale(r.root_id) { "stale" } else if r.scan_state == "repairing" { "partial" } else { r.scan_state.as_str() },
-                    "coverage": if self.freshness.stale(r.root_id) { "stale" } else { r.coverage.as_str() },
+                    "scan_state": if stale_roots.contains(&r.root_id) { "stale" } else if r.scan_state == "repairing" { "partial" } else { r.scan_state.as_str() },
+                    "coverage": if stale_roots.contains(&r.root_id) { "stale" } else { r.coverage.as_str() },
                 })
             })
             .collect();
@@ -1528,6 +1583,20 @@ impl Inner {
     }
 
     pub(crate) fn read_reader(&self, work: Option<&crate::ReadWork>) -> Result<Reader, ErrorBody> {
+        #[cfg(test)]
+        if let (Some(work), Some(now)) = (work, *self.hooks.read_clock.lock().unwrap()) {
+            let reader = self.catalog.reader().map_err(catalog_error)?;
+            let mut handle = work.interrupt.lock().unwrap();
+            if now >= work.deadline {
+                return Err(fail(
+                    ErrorCode::DeadlineExceeded,
+                    "the read deadline expired",
+                ));
+            }
+            // SQLite uses real Instants; the injected receiver clock owns its hard stop instead.
+            *handle = Some(reader.interrupt_handle());
+            return Ok(reader);
+        }
         match work {
             Some(work) => work.reader(&self.catalog),
             None => self.catalog.reader().map_err(catalog_error),

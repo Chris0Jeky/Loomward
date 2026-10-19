@@ -525,6 +525,8 @@ fn missing_invalid_and_unsupported_stay_unknown_not_zero() {
     assert!(row.private_working_set_bytes.is_none());
     assert!(row.gpu_dedicated_bytes.is_none());
     raw.logical_processor_count = None;
+    // A valid busy keeps the section present, so the unknown CPU count is still observable as null.
+    raw.system_cpu_busy_fraction = Some(0.5);
     raw.status = "unsupported".into();
     let sample = mapping::sample(&raw, None, 1, CHANNELS, false).unwrap();
     assert!(sample.system.unwrap().cpu.logical_cpus.is_none());
@@ -535,6 +537,39 @@ fn missing_invalid_and_unsupported_stay_unknown_not_zero() {
             .gpu
             .is_none()
     );
+}
+
+#[test]
+fn invalid_busy_without_memory_or_cpus_emits_no_system_section() {
+    for busy in [f64::NAN, 1.5, -0.1] {
+        let mut raw = raw();
+        raw.memory = Observation::Unknown {
+            reason: "access_denied".into(),
+        };
+        raw.logical_processor_count = None;
+        raw.system_cpu_busy_fraction = Some(busy);
+        let sample = mapping::sample(&raw, None, 1, &[TelemetryChannel::System], false).unwrap();
+        assert!(
+            sample.system.is_none(),
+            "invalid busy {busy} must not emit a section of nulls"
+        );
+    }
+}
+
+#[test]
+fn valid_busy_without_memory_or_cpus_keeps_system_section() {
+    let mut raw = raw();
+    raw.memory = Observation::Unknown {
+        reason: "access_denied".into(),
+    };
+    raw.logical_processor_count = None;
+    raw.system_cpu_busy_fraction = Some(0.5);
+    let sample = mapping::sample(&raw, None, 1, &[TelemetryChannel::System], false).unwrap();
+    let wire = to_value(&sample).unwrap();
+    assert!(wire["system"].is_object());
+    assert!(wire["system"]["memory"]["total_bytes"].is_null());
+    assert!(wire["system"]["cpu"]["logical_cpus"].is_null());
+    assert_eq!(wire["system"]["cpu"]["busy_fraction"], 0.5);
 }
 
 #[test]
