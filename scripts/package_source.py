@@ -18,6 +18,11 @@ def source_files(root: Path) -> list[Path]:
     if top.returncode or Path(top.stdout.strip()).resolve()!=root.resolve():
         raise SystemExit('Package from the repository root: '+str(root)+' is not the top of a git checkout')
     untracked=subprocess.run(['git','-C',str(root),'ls-files','--others','--exclude-standard','-z'],capture_output=True,check=True).stdout
+    # A prior packaging run may leave only its generated root manifest untracked.
+    if untracked==b'MANIFEST.sha256\0':
+        manifest=root/'MANIFEST.sha256'
+        if manifest.is_file() and not manifest.is_symlink() and manifest.stat().st_nlink==1:
+            untracked=b''
     if untracked:
         raise SystemExit('Untracked source files would be silently left out; add or ignore them first')
     files=[]
