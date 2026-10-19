@@ -5,6 +5,31 @@ use rusqlite::{params, Connection};
 use serde_json::json;
 use std::time::Instant;
 
+#[cfg(feature = "test-hooks")]
+thread_local! {
+    static SQL_COUNTS: std::cell::Cell<(usize, usize, usize, usize)> = const { std::cell::Cell::new((0, 0, 0, 0)) };
+}
+
+#[cfg(feature = "test-hooks")]
+fn count_statement(event: rusqlite::trace::TraceEvent<'_>) {
+    let rusqlite::trace::TraceEvent::Stmt(_, sql) = event else {
+        return;
+    };
+    SQL_COUNTS.with(|counts| {
+        let (all, fts, ancestry, internal) = counts.get();
+        counts.set((
+            all + 1,
+            fts + usize::from(sql.contains("search_name MATCH")),
+            ancestry
+                + usize::from(
+                    sql.starts_with("WITH RECURSIVE a(")
+                        || sql.starts_with("SELECT parent_id,name,listing_state FROM dir"),
+                ),
+            internal + usize::from(sql.starts_with("--")),
+        ));
+    });
+}
+
 fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args.len() != 2 {
@@ -59,6 +84,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let mut cases = Vec::new();
     for (label, text, scope) in [
         ("owner_common", "common", None),
+        ("owner_rare", "common-999999.txt", None),
         ("narrow_scope_common", "common", Some(vec![2])),
         ("disjoint_ancestors", "deep", Some(vec![2])),
     ] {
@@ -78,7 +104,25 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 "{label} run {run}: {ms:.3} ms, budget_hit={}",
                 page.budget_hit
             );
-            cases.push(json!({"case":label,"run":run,"ms":ms,"hits":page.hits.len(),"budget_hit":page.budget_hit,"has_cursor":page.next_cursor.is_some(),"next_key":page.next_cursor.map(|c|c.last_key)}));
+            let result = json!({"case":label,"run":run,"ms":ms,"hits":page.hits.len(),"budget_hit":page.budget_hit,"has_cursor":page.next_cursor.is_some(),"next_key":page.next_cursor.map(|c|c.last_key)});
+            #[cfg(feature = "test-hooks")]
+            let result = {
+                // Count a separate execution: tracing FTS-internal SQL can distort latency.
+                SQL_COUNTS.with(|counts| counts.set((0, 0, 0, 0)));
+                reader.trace_statements_for_test(Some(count_statement));
+                let counted = reader.search(&req);
+                reader.trace_statements_for_test(None);
+                let counted = counted?;
+                let (all, fts, ancestry, internal) = SQL_COUNTS.with(|counts| counts.get());
+                let mut result = result;
+                result["sql_statements"] = json!(all);
+                result["application_statements"] = json!(all - internal);
+                result["fts_statements"] = json!(fts);
+                result["ancestry_statements"] = json!(ancestry);
+                result["counted_next_key"] = json!(counted.next_cursor.map(|c| c.last_key));
+                result
+            };
+            cases.push(result);
         }
     }
     // Exact SQL from freshness::resolve; repeat 1,024 depth-20 changed paths.
@@ -113,7 +157,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     println!(
         "{}",
         serde_json::to_string_pretty(
-            &json!({"synthetic_files":rows+100,"search":cases,"resolve_1024_depth20_ms":resolve_ms,"resolve_prepared_1024_depth20_ms":start.elapsed().as_secs_f64()*1000.0,"resolve_sql_calls":1024*21,"limits":"generated fixture, first search run included; no filesystem enumeration, service, HTTP or cold-cache claim; resolver compares exact SQL separately"})
+            &json!({"synthetic_files":rows+100,"build_profile":if cfg!(debug_assertions) {"debug"} else {"release"},"search":cases,"resolve_1024_depth20_ms":resolve_ms,"resolve_prepared_1024_depth20_ms":start.elapsed().as_secs_f64()*1000.0,"resolve_sql_calls":1024*21,"limits":"generated fixture, first search run included; SQL counts use a separate untimed execution; no filesystem enumeration, service, HTTP or cold-cache claim; resolver compares exact SQL separately"})
         )?
     );
     Ok(())

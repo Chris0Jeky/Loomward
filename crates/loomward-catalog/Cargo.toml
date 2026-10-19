@@ -7,7 +7,7 @@ license.workspace = true
 
 [features]
 # Test seams for dependent crates' tests (#356); never enabled by a production build.
-test-hooks = []
+test-hooks = ["rusqlite/trace"]
 
 [dependencies]
 rusqlite = { version = "0.38.0", features = ["bundled", "hooks"] }

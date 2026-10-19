@@ -398,6 +398,15 @@ pub(crate) fn is_budget_interrupt(e: &Error) -> bool {
 }
 
 impl Reader {
+    /// Statement execution trace for synthetic performance probes only.
+    #[cfg(feature = "test-hooks")]
+    pub fn trace_statements_for_test(&self, callback: Option<fn(rusqlite::trace::TraceEvent<'_>)>) {
+        self.conn.trace_v2(
+            rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
+            callback,
+        );
+    }
+
     pub(crate) fn open(dir: &Path) -> Result<Self> {
         let conn =
             Connection::open_with_flags(dir.join("catalog.db"), OpenFlags::SQLITE_OPEN_READ_ONLY)?;
