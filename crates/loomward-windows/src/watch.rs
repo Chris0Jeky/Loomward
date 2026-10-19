@@ -239,12 +239,23 @@ mod native {
             Ok(read)
         }
         fn finish(&mut self) -> (Option<u32>, usize) {
+            self.result(0)
+        }
+        fn cancel_and_finish(&mut self) -> (Option<u32>, usize) {
+            if self.pending {
+                // Cancellation can lose to a successful completion; preserve its bytes.
+                unsafe { CancelIoEx(self.dir.as_raw_handle(), self.ov) };
+            }
+            self.result(1)
+        }
+        fn result(&mut self, wait: i32) -> (Option<u32>, usize) {
             if self.error == Some(ERROR_NOTIFY_ENUM_DIR) {
                 return (self.error, 0);
             }
             let mut returned = 0;
-            let ok =
-                unsafe { GetOverlappedResult(self.dir.as_raw_handle(), self.ov, &mut returned, 0) };
+            let ok = unsafe {
+                GetOverlappedResult(self.dir.as_raw_handle(), self.ov, &mut returned, wait)
+            };
             let error = (ok == 0).then(|| unsafe { GetLastError() });
             if error != Some(ERROR_IO_INCOMPLETE) {
                 self.pending = false;
@@ -255,12 +266,8 @@ mod native {
     impl Drop for PendingRead<'_> {
         fn drop(&mut self) {
             if self.pending {
-                let mut returned = 0;
                 // CancelIoEx is only a request; keep the buffer, OVERLAPPED and handle alive until completion.
-                unsafe {
-                    CancelIoEx(self.dir.as_raw_handle(), self.ov);
-                    GetOverlappedResult(self.dir.as_raw_handle(), self.ov, &mut returned, 1);
-                }
+                self.cancel_and_finish();
             }
         }
     }
@@ -307,6 +314,9 @@ mod native {
                     let mut first = true;
                     loop {
                         if stopped.load(Ordering::Acquire) {
+                            if let Some(hints) = previous.take() {
+                                checkpoint.deliver(hints, &callback);
+                            }
                             return Ok(());
                         }
                         let mut ov: OVERLAPPED = unsafe { zeroed() };
@@ -322,7 +332,7 @@ mod native {
                         }
                         let (error, returned) = loop {
                             if stopped.load(Ordering::Acquire) {
-                                return Ok(());
+                                break pending.cancel_and_finish();
                             }
                             // A handle can survive a root/ancestor rename without a notification.
                             if checked.elapsed() >= Duration::from_millis(250) {
@@ -351,6 +361,10 @@ mod native {
                                 _ => return Err(SourceError::Io(unsafe { GetLastError() } as i32)),
                             }
                         };
+                        if error == Some(ERROR_OPERATION_ABORTED) && stopped.load(Ordering::Acquire)
+                        {
+                            return Ok(());
+                        }
                         previous = Some(if overflow(error, returned) {
                             vec![Change::RootDirty]
                         } else if let Some(code) = error {
@@ -403,7 +417,7 @@ mod native {
         pub fn failed(&self) -> bool {
             self.failed.load(Ordering::Acquire)
         }
-        /// Stop and join, cancelling and draining pending I/O before releasing root pins.
+        /// Stop and join, delivering completed hints and draining cancelled I/O before releasing pins.
         pub fn stop(&self) {
             self.done.store(true, Ordering::Release);
             if let Some(thread) = self.thread.lock().unwrap().take() {
@@ -511,6 +525,83 @@ mod native {
         fn filter_covers_attributes_and_security() {
             assert_ne!(FILTER & FILE_NOTIFY_CHANGE_ATTRIBUTES, 0);
             assert_ne!(FILTER & FILE_NOTIFY_CHANGE_SECURITY, 0);
+        }
+        #[test]
+        fn rename_is_detected_during_continuous_completions() {
+            let tree = fixture();
+            let root = tree.path().join("root");
+            let moved = tree.path().join("moved");
+            std::fs::create_dir(&root).unwrap();
+            if elevated_refusal(&root) {
+                eprintln!("SKIP: native watcher requires a non-elevated token");
+                return;
+            }
+            let watched = root.clone();
+            let renamed = AtomicBool::new(false);
+            let sequence = std::sync::atomic::AtomicUsize::new(0);
+            let (tx, rx) = mpsc::channel();
+            let watcher = Watcher::start(&root, None, move |batch| {
+                if batch.contains(&Change::RootDirty) {
+                    tx.send(sequence.load(Ordering::Acquire)).unwrap();
+                    return;
+                }
+                if !renamed.swap(true, Ordering::AcqRel) {
+                    std::fs::rename(&watched, &moved).unwrap();
+                }
+                // Each callback completes the rearmed read, so the loop never waits idle.
+                let next = sequence.fetch_add(1, Ordering::AcqRel);
+                File::create(moved.join(format!("flood-{next}"))).unwrap();
+                thread::sleep(Duration::from_millis(2));
+            })
+            .unwrap();
+            File::create(root.join("prime")).unwrap();
+            let outcome = rx.recv_timeout(Duration::from_secs(3));
+            watcher.stop();
+            assert!(outcome.unwrap() > 0);
+            assert!(watcher.failed());
+        }
+
+        #[test]
+        fn stop_delivers_completion_received_during_callback() {
+            let tree = fixture();
+            if elevated_refusal(tree.path()) {
+                eprintln!("SKIP: native watcher requires a non-elevated token");
+                return;
+            }
+            let root = tree.path().to_owned();
+            let (stop_tx, stop_rx) = mpsc::sync_channel::<Arc<AtomicBool>>(1);
+            let stop_rx = Mutex::new(stop_rx);
+            let first = AtomicBool::new(true);
+            let (tx, rx) = mpsc::channel();
+            let watcher = Watcher::start(tree.path(), None, move |batch| {
+                if first.swap(false, Ordering::AcqRel) {
+                    // The next read is already armed while this callback is running.
+                    for i in 0..128 {
+                        File::create(root.join(format!("tail-{i}"))).unwrap();
+                    }
+                    stop_rx
+                        .lock()
+                        .unwrap()
+                        .recv()
+                        .unwrap()
+                        .store(true, Ordering::Release);
+                }
+                tx.send(batch).unwrap();
+            })
+            .unwrap();
+            stop_tx.send(watcher.done.clone()).unwrap();
+            File::create(tree.path().join("prime")).unwrap();
+            rx.recv_timeout(Duration::from_secs(3)).unwrap();
+            watcher.stop();
+            let tail: Vec<u16> = "tail-0".encode_utf16().collect();
+            assert!(
+                rx.try_iter().flatten().any(|hint| {
+                    hint == Change::RootDirty
+                        || matches!(hint, Change::Name { name, .. } if name == tail)
+                }),
+                "stop discarded the read completed during the callback"
+            );
+            assert!(!watcher.failed());
         }
         fn fixture() -> tempfile::TempDir {
             tempfile::tempdir_in(std::fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap()
