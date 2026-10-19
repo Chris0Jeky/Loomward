@@ -54,8 +54,9 @@ pub struct SubtreeTotals {
     /// Allocation counted once per unique object within this subtree; null when unique_objects is null or allocation is unknown.
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub unique_allocated_bytes: Option<Bytes>,
-    /// Entries whose object has another observed name anywhere in the dataset or an observed link count above 1.
-    pub multi_link_entries: Count,
+    /// Entries whose object has another observed name anywhere in the dataset or an observed link count above 1; null when the subtree was too large to count within the query budget.
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub multi_link_entries: Option<Count>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

@@ -265,7 +265,13 @@ and start-once checks use the unique wire-ID index; revocation selects only oper
 that grant, including recovered runs without a resident worker. These lookups never decode unrelated
 manifests. On first open of a pre-index journal, Store backfills the lookup tables one plan at a time
 in the schema migration transaction, without changing plans, journal rows or head anchors. Unreadable
-legacy plans remain unreadable and gain no lookup identity. Later opens do not rebuild the indexes.
+legacy plans remain unreadable and gain no lookup identity. An `AFTER INSERT ON op_plan` trigger
+maintains both indexes even when a rollback build writes plans without routing rows. Installing the
+trigger also backfills gaps in previously indexed databases once; later opens do not rebuild indexes.
+An exact duplicate lookup insert is a no-op so the previous indexed build can still write its rows;
+a different operation using the same wire ID still aborts the whole plan insert. `copy.start` repeats
+its wire-ID lookup under the mutation lock before journaling, refusing a competing start without
+leaving an orphan operation.
 Lookup rows locate a journal operation; only the executor's existing grant and native identity checks
 authorise effects. Copy remains synthetic-only; C8 stays closed.
 
@@ -319,7 +325,9 @@ then fences later messages. The copy run follows the same pattern, with one addi
    - if a publish intent was already journaled, withdraw it (`publish_withdrawn`) in the same transaction, so no
      rename is issued;
    - the only effect still allowed is removing Loomward's own journaled staging (section 4). Cleanup steps also take
-     the lock but are not fenced.
+     the lock. The fence itself does not forbid them, but each removal re-reads the journal's state and epoch
+     under its write lock, so a cleanup that a newer fence or decision supersedes stops before its next
+     removal, and the newer control finishes it (#672).
 5. **After the rename.** Once the rename step has read an unchanged epoch, the rename completes inside that step.
    A revocation can only be acknowledged after it, and the fence no longer cancels: the post-publish confirmation
    (section 4) still runs, because it is a read of the destination and not an effect. The receipt is annotated

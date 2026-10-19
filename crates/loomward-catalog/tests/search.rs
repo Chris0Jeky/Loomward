@@ -558,6 +558,57 @@ fn a_spent_time_budget_returns_a_partial_page_that_resumes() {
 }
 
 #[test]
+fn a_cursor_pass_must_belong_to_the_query_plan() {
+    let mut lab = lab();
+    let root = register(&lab, "vol", "Alpha", 1);
+    let run = begin(&lab, &root, "full");
+    let files = [
+        "ab",
+        "ab.txt",
+        "r",
+        "r.txt",
+        "re",
+        "re.txt",
+        "re po",
+        "re po.txt",
+        "report annual",
+        "report annual.txt",
+    ]
+    .into_iter()
+    .map(|name| obs(&mut lab, name, 1))
+    .collect();
+    list(&lab, run, root.dir, files, vec![]);
+    end(&lab, run);
+    for (text, valid) in [
+        ("ab", vec![0, 1, 2]),
+        ("", vec![6]),
+        ("r", vec![0]),
+        ("re", vec![0, 1, 2]),
+        ("report", vec![0, 1, 2, 3]),
+        ("re po", vec![0, 1, 2, 3, 4]),
+        ("report annual", vec![0, 1, 2, 3, 4, 5]),
+    ] {
+        let mut request = req(text);
+        request.limit = 1;
+        let cursor = search(&lab, &request).next_cursor.unwrap();
+        for pass in [0, 1, 2, 3, 4, 5, 6, 100, u8::MAX] {
+            let mut cursor = cursor.clone();
+            cursor.pass = pass;
+            request.cursor = Some(cursor);
+            let result = lab.c.reader().unwrap().search(&request);
+            if valid.contains(&pass) {
+                assert!(result.is_ok(), "{text:?}, pass={pass}: {result:?}");
+            } else {
+                assert!(
+                    matches!(result, Err(Error::Invalid("search cursor binding"))),
+                    "{text:?}, pass={pass}: {result:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn a_common_token_budget_cut_must_advance_or_refuse() {
     let mut lab = lab();
     let root = register(&lab, "vol", "Alpha", 1);

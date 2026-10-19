@@ -166,6 +166,27 @@ mod tests {
         assert_eq!(result["totals"]["complete"], true);
     }
 
+    /// #715: one root over the unique-totals work budget must not fail the listing; its unique
+    /// totals are null (unknown) and the stored aggregates stay exact.
+    #[test]
+    fn over_budget_unique_totals_stay_unknown_without_failing_the_root() {
+        let (_tmp, service, _connection, row) = fixture();
+        let mut reader = service.inner.catalog.reader().unwrap();
+        reader.unique_totals_steps = 1;
+        let result = service.inner.root_json(&row, Some(&mut reader)).unwrap();
+        let totals = &result["totals"];
+        assert_eq!(totals["files"], 0);
+        assert_eq!(totals["complete"], true);
+        for field in [
+            "unique_objects",
+            "unique_allocated_bytes",
+            "multi_link_entries",
+        ] {
+            assert!(totals[field].is_null(), "{field}: {totals}");
+        }
+        assert_eq!(result["scan"]["coverage"], "complete");
+    }
+
     #[test]
     fn repair_between_root_row_and_totals_cannot_leave_complete_coverage() {
         let (_tmp, service, connection, row) = fixture();
