@@ -820,7 +820,12 @@ fn unique_totals(
         )),
         // Over budget: unique totals and the link count are unknown, never zero or an error
         // that fails a whole listing (invariant 4). Every other aggregate is stored and exact.
-        Err(_) if guard.hit() => Ok((None, None, None)),
+        // Only the budget's own interrupt maps to unknown; any other SQLite error still fails.
+        Err(rusqlite::Error::SqliteFailure(e, _))
+            if guard.hit() && e.code == rusqlite::ErrorCode::OperationInterrupted =>
+        {
+            Ok((None, None, None))
+        }
         Err(e) => Err(Error::Sql(e)),
     }
 }
