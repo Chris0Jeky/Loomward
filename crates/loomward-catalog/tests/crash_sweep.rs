@@ -160,6 +160,9 @@ impl Ack {
             .unwrap();
         writeln!(f, "{line}").unwrap();
         f.sync_all().unwrap();
+        if line == "open" {
+            fault_vfs::mark_open();
+        }
     }
 }
 
@@ -269,10 +272,11 @@ fn fault_child(store: &Path, ack: &Ack, report: &Path) {
     std::fs::write(
         report,
         format!(
-            "{}\n{fired}\n{}\n{}\n",
+            "{}\n{fired}\n{}\n{}\n{}\n",
             counts.map(|n| n.to_string()).join(" "),
             line(result),
             line(probe.map(drop)),
+            fault_vfs::at_open().map(|n| n.to_string()).join(" "),
         ),
     )
     .unwrap();
@@ -921,22 +925,23 @@ struct FaultRun {
     result: String,
     /// The same process's reopen and write once the fault cleared.
     probe: String,
+    /// `counts` when the store first opened: the calls that create and migrate it.
+    opened: [u64; 4],
 }
 fn run_fault(work: &Path, plan: Option<&str>) -> (Outcome, FaultRun) {
     let out = run_child_with("faults", work, None, plan);
     let text = std::fs::read_to_string(work.join("fault.txt")).unwrap();
     let mut lines = text.lines().map(str::to_owned);
-    let counts: Vec<u64> = lines
-        .next()
-        .unwrap()
-        .split(' ')
-        .map(|n| n.parse().unwrap())
-        .collect();
+    let numbers = |line: String| -> [u64; 4] {
+        let n: Vec<u64> = line.split(' ').map(|n| n.parse().unwrap()).collect();
+        n.try_into().unwrap()
+    };
     let run = FaultRun {
-        counts: counts.try_into().unwrap(),
+        counts: numbers(lines.next().unwrap()),
         fired: lines.next().unwrap() == "true",
         result: lines.next().unwrap(),
         probe: lines.next().unwrap(),
+        opened: numbers(lines.next().unwrap()),
     };
     (out, run)
 }
@@ -962,7 +967,13 @@ fn fault_targets(total: u64, per: u64) -> Vec<u64> {
 /// lifecycle with an honest typed error or be absorbed with the clean run's store, lose no
 /// acknowledged step, leave a store that recovers to every crash-sweep invariant, and let the
 /// same process write again once the fault clears. Returns the faults that break that.
-fn fault_sweep(kinds: &[(&'static str, fault_vfs::Class)], per: u64) -> Vec<String> {
+/// `targets` picks the calls of a class to fault from the clean run; `strict: false` (a disk that
+/// lies) drops the honest-code and same-as-clean checks and keeps every recovery check.
+fn fault_sweep(
+    kinds: &[(&'static str, fault_vfs::Class)],
+    targets: impl Fn(fault_vfs::Class, &FaultRun) -> Vec<u64>,
+    strict: bool,
+) -> Vec<String> {
     let root = tempfile::tempdir().unwrap();
     let clean_work = root.path().join("clean");
     let (base, clean) = run_fault(&clean_work, None);
@@ -980,7 +991,7 @@ fn fault_sweep(kinds: &[(&'static str, fault_vfs::Class)], per: u64) -> Vec<Stri
     for &(kind, class) in kinds {
         let total = clean.counts[class as usize];
         assert!(total > 0, "the lifecycle makes no {class:?} call");
-        tasks.extend(fault_targets(total, per).into_iter().map(|n| (kind, n)));
+        tasks.extend(targets(class, &clean).into_iter().map(|n| (kind, n)));
     }
     eprintln!(
         "fault sweep: {:?} calls (read, write, sync, truncate), {} faults",
@@ -1002,7 +1013,7 @@ fn fault_sweep(kinds: &[(&'static str, fault_vfs::Class)], per: u64) -> Vec<Stri
         }
         let outcome = if run.result == "ok" {
             // Absorbed by SQLite or the writer: then nothing may differ from the clean run.
-            if snapshot(&store) != clean_rows {
+            if strict && snapshot(&store) != clean_rows {
                 bad.push(format!(
                     "succeeded with a store unlike the clean run's: {:?} vs {clean_rows:?}",
                     snapshot(&store)
@@ -1011,7 +1022,7 @@ fn fault_sweep(kinds: &[(&'static str, fault_vfs::Class)], per: u64) -> Vec<Stri
             "absorbed".to_owned()
         } else {
             let code = run.result.split(' ').next().unwrap_or_default().to_owned();
-            if !honest(kind, &code) {
+            if strict && !honest(kind, &code) {
                 bad.push(format!("not an honest error: {}", run.result));
             }
             format!("error {code}")
@@ -1041,7 +1052,11 @@ fn fault_sweep(kinds: &[(&'static str, fault_vfs::Class)], per: u64) -> Vec<Stri
 
 #[test]
 fn every_io_fault_below_sqlite_fails_honestly_and_recovers() {
-    let failures = fault_sweep(&fault_vfs::KINDS, 12);
+    let failures = fault_sweep(
+        &fault_vfs::KINDS,
+        |class, clean| fault_targets(clean.counts[class as usize], 12),
+        true,
+    );
     assert!(
         failures.is_empty(),
         "{} injected faults break the store\n{}",
@@ -1054,9 +1069,40 @@ fn every_io_fault_below_sqlite_fails_honestly_and_recovers() {
 /// acknowledged steps, and the sweep has to say so.
 #[test]
 fn a_disk_that_drops_writes_fails_the_fault_sweep() {
-    let failures = fault_sweep(&[fault_vfs::LOST_WRITE], 12);
+    let failures = fault_sweep(
+        &[fault_vfs::LOST_WRITE],
+        |class, clean| fault_targets(clean.counts[class as usize], 12),
+        true,
+    );
     eprintln!("lost-write: {} of 12 caught", failures.len());
     assert!(!failures.is_empty(), "a lying disk passed the fault sweep");
+}
+
+/// A disk that fills while the store is first created and migrated: SQLite's rollback of the
+/// failed commit cannot write either, so it leaves a hot rollback journal (the store is not yet in
+/// WAL mode). Once space is freed the store must open, roll back and take writes (found by the
+/// full fault sweep: the read-only inspection at open refused the journal forever).
+#[test]
+fn a_full_disk_while_creating_the_store_never_wedges_it() {
+    let failures = fault_sweep(
+        &[("full", fault_vfs::Class::Write)],
+        |class, clean| (1..=clean.opened[class as usize]).collect(),
+        true,
+    );
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// A read that stops short mid-file is a lie SQLite cannot see through (it zero-fills, by
+/// contract): the error may name corruption or nothing at all. What must still hold is every
+/// recovery check: no panic, no lost acknowledged step, a store that reopens clean and writes.
+#[test]
+fn a_short_read_mid_file_still_recovers() {
+    let failures = fault_sweep(
+        &[fault_vfs::SHORT_READ],
+        |class, clean| fault_targets(clean.counts[class as usize], 12),
+        false,
+    );
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 /// One fault, for reproducing a failure: `-- fault_at full:40`.
@@ -1064,7 +1110,11 @@ fn a_disk_that_drops_writes_fails_the_fault_sweep() {
 fn fault_at() {
     let Some(plan) = std::env::args().next_back().filter(|a| {
         a.split_once(':').is_some_and(|(kind, n)| {
-            fault_vfs::KINDS.iter().any(|(k, _)| *k == kind) && n.parse::<u64>().is_ok()
+            fault_vfs::KINDS
+                .iter()
+                .chain([&fault_vfs::LOST_WRITE, &fault_vfs::SHORT_READ])
+                .any(|(k, _)| *k == kind)
+                && n.parse::<u64>().is_ok()
         })
     }) else {
         return;

@@ -7,8 +7,8 @@
 //! Faults, with the Win32 failure each stands for (`winRead`/`winWrite` in SQLite's `os_win.c`
 //! map them to the same codes):
 //! - `read`: ReadFile fails (`ERROR_CRC`, a bad sector): `SQLITE_IOERR_READ`.
-//! - `short-read`: ReadFile stops early (`ERROR_HANDLE_EOF`): half the bytes, the rest zeroed,
-//!   `SQLITE_IOERR_SHORT_READ`.
+//! - `short-read` (`SHORT_READ`, recovery only): ReadFile stops early mid-file
+//!   (`ERROR_HANDLE_EOF`): half the bytes, the rest zeroed, `SQLITE_IOERR_SHORT_READ`.
 //! - `write`: WriteFile fails (`ERROR_IO_DEVICE`): `SQLITE_IOERR_WRITE`, nothing written.
 //! - `full`: the volume is full (`ERROR_DISK_FULL`): `SQLITE_FULL`, nothing written, and every
 //!   later write fails the same way until the space is freed (`clear`).
@@ -40,10 +40,9 @@ pub enum Class {
 }
 pub const CLASSES: [Class; 4] = [Class::Read, Class::Write, Class::Sync, Class::Truncate];
 
-/// Every fault kind with the call class it counts and fails.
-pub const KINDS: [(&str, Class); 7] = [
+/// Every fault the store must survive honestly, with the call class it counts and fails.
+pub const KINDS: [(&str, Class); 6] = [
     ("read", Class::Read),
-    ("short-read", Class::Read),
     ("write", Class::Write),
     ("full", Class::Write),
     ("short-write", Class::Write),
@@ -53,11 +52,16 @@ pub const KINDS: [(&str, Class); 7] = [
 /// Not a fault the sweep expects to survive: a disk that reports success for every write from
 /// the Nth on and stores none of them. It proves the sweep's checker can fail.
 pub const LOST_WRITE: (&str, Class) = ("lost-write", Class::Write);
+/// A read that stops short mid-file. SQLite's VFS contract treats a short read as end of file
+/// and zero-fills the rest (`pager.c`), so a lie here reaches SQL as zeroed data: the error that
+/// follows (if any) cannot name the disk. Swept for recovery only, not for an honest code.
+pub const SHORT_READ: (&str, Class) = ("short-read", Class::Read);
 
 static COUNTS: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
 static FIRED: AtomicBool = AtomicBool::new(false);
 static CLEARED: AtomicBool = AtomicBool::new(false);
 static INNER: OnceLock<usize> = OnceLock::new();
+static AT_OPEN: OnceLock<[u64; 4]> = OnceLock::new();
 /// The platform's method table and the faulting copy of it.
 static METHODS: OnceLock<(usize, ffi::sqlite3_io_methods)> = OnceLock::new();
 
@@ -68,7 +72,7 @@ fn plan() -> Option<(&'static str, Class, u64)> {
         let (kind, n) = spec.split_once(':').expect("LOOMWARD_FAULT=<kind>:<N>");
         let (kind, class) = KINDS
             .iter()
-            .chain([&LOST_WRITE])
+            .chain([&LOST_WRITE, &SHORT_READ])
             .copied()
             .find(|(k, _)| *k == kind)
             .unwrap_or_else(|| panic!("unknown fault kind {kind}"));
@@ -79,6 +83,14 @@ fn plan() -> Option<(&'static str, Class, u64)> {
 /// Calls of each class so far, in `CLASSES` order.
 pub fn counts() -> [u64; 4] {
     CLASSES.map(|c| COUNTS[c as usize].load(SeqCst))
+}
+/// Records the counts when the store first opened; later calls keep the first.
+pub fn mark_open() {
+    let _ = AT_OPEN.set(counts());
+}
+/// The counts when the store first opened (all of them if it never did).
+pub fn at_open() -> [u64; 4] {
+    AT_OPEN.get().copied().unwrap_or_else(counts)
 }
 /// The armed fault has been injected.
 pub fn fired() -> bool {

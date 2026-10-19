@@ -38,6 +38,25 @@ pub(crate) fn inspect(path: &Path, dataset: &str) -> Result<i64> {
         return Ok(0);
     }
     local_path(&path.canonicalize()?)?;
+    match inspect_read_only(path, dataset) {
+        // A hot rollback journal (a commit that failed, say on a full disk, or was cut before the
+        // file reached WAL mode) can only be rolled back by a writer: a read-only inspection
+        // refuses it on every open. Let SQLite roll it back, then inspect what it restored.
+        Err(Error::Sql(rusqlite::Error::SqliteFailure(e, _)))
+            if e.extended_code == rusqlite::ffi::SQLITE_READONLY_ROLLBACK =>
+        {
+            Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?.query_row(
+                "SELECT count(*) FROM sqlite_schema",
+                [],
+                |r| r.get::<_, i64>(0),
+            )?;
+            inspect_read_only(path, dataset)
+        }
+        other => other,
+    }
+}
+
+fn inspect_read_only(path: &Path, dataset: &str) -> Result<i64> {
     let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(inspection_error)?;
     let id: i64 = conn
