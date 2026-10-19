@@ -378,7 +378,8 @@ impl Engine {
         let store = self.learning_store()?;
         let db = store.db.lock().unwrap();
         Store::redact(&db)?;
-        let (student, _) = Store::student(&db)?;
+        let (student, fitted) = Store::student(&db)?;
+        let model_id = fitted.map(|_| format!("md_{}", student.model_id()));
         let state: i64 = db
             .query_row("SELECT state_rev FROM st.revision", [], |row| row.get(0))
             .map_err(internal)?;
@@ -415,7 +416,7 @@ impl Engine {
         for (row, features) in candidates {
             let prediction = student.predict(&features).map_err(learned)?;
             let suggestion = decode(
-                json!({"node_id":row.node_id,"model_id":format!("md_{}",student.model_id()),"ranked":prediction.to_value()["suggestions"],"abstain":prediction.abstain,"reasons":prediction.reasons,"feature_coverage":prediction.feature_coverage,"review_priority":prediction.review_priority,"calibrated":false,"autonomy_allowed":false,"teacher":null}),
+                json!({"node_id":row.node_id,"model_id":model_id,"ranked":prediction.to_value()["suggestions"],"abstain":prediction.abstain,"reasons":prediction.reasons,"feature_coverage":prediction.feature_coverage,"review_priority":prediction.review_priority,"calibrated":false,"autonomy_allowed":false,"teacher":null}),
             )?;
             items.push(LearningQueueItem { row, suggestion });
         }
@@ -439,7 +440,7 @@ impl Engine {
             None
         };
         decode(
-            json!({"model_id":format!("md_{}",student.model_id()),"items":items.into_iter().skip(offset).take(end.saturating_sub(offset)).collect::<Vec<_>>(),"next_cursor":next}),
+            json!({"model_id":model_id,"items":items.into_iter().skip(offset).take(end.saturating_sub(offset)).collect::<Vec<_>>(),"next_cursor":next}),
         )
     }
 
@@ -612,6 +613,74 @@ mod tests {
         engine.install_learning(store);
         (dir, engine)
     }
+    #[test]
+    fn learning_queue_model_ids_match_status_before_and_after_fit_and_feedback() {
+        let _serial = REFIT_TEST_LOCK.lock().unwrap();
+        let (_dir, engine) = fixture();
+        let example: Value = serde_json::from_str(include_str!(
+            "../../../../contracts/v3/examples/commands/learning.queue.result.json"
+        ))
+        .unwrap();
+        let row: EntryRow = serde_json::from_value(example["items"][0]["row"].clone()).unwrap();
+        let features =
+            json!({"name":"fixture.txt","extension":"txt","context":"fixture","size_bytes":1});
+        let queue = || {
+            let store = engine.learning_store().unwrap();
+            let state = store
+                .db
+                .lock()
+                .unwrap()
+                .query_row("SELECT state_rev FROM st.revision", [], |r| r.get(0))
+                .unwrap();
+            json!(engine
+                .learning_queue(
+                    &decode(json!({"root_id":null,"limit":20,"cursor":null})).unwrap(),
+                    vec![(row.clone(), features.clone())],
+                    (1, state),
+                )
+                .unwrap())
+        };
+        let assert_cold = || {
+            assert!(engine.learning_status().unwrap().model_id.is_none());
+            let queue = queue();
+            assert_eq!(queue["model_id"], Value::Null);
+            let suggestion = &queue["items"][0]["suggestion"];
+            assert_eq!(suggestion["model_id"], Value::Null);
+            assert_eq!(suggestion["abstain"], true);
+            assert!(suggestion["reasons"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("no_training_examples")));
+        };
+        assert_cold();
+
+        let job = engine.learning_refit().unwrap();
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        loop {
+            let done = engine.job_status(&job.job_id).unwrap();
+            if done.finished_at.is_some() {
+                assert_eq!(done.state, JobState::Completed);
+                break;
+            }
+            assert!(std::time::Instant::now() < until);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let status = json!(engine.learning_status().unwrap());
+        assert!(status["model_id"].is_string());
+        let fitted_queue = queue();
+        assert_eq!(fitted_queue["model_id"], status["model_id"]);
+        assert_eq!(
+            fitted_queue["items"][0]["suggestion"]["model_id"],
+            status["model_id"]
+        );
+
+        engine.learning_feedback(
+            &decode(json!({"node_id":row.node_id,"label":"Finance","retract":false,"client_event_id":"ce_changed"})).unwrap(),
+            1, &features, Some(1),
+        ).unwrap();
+        assert_cold();
+    }
+
     /// #390: the store opens SQLite by the plain drive path, never `\\?\` (see `sqlite_dir`).
     #[test]
     fn learning_store_opens_by_plain_path() {

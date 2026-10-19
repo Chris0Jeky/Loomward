@@ -505,6 +505,8 @@ impl Inner {
     /// before the rename it cancels itself, after it commits annotated
     /// `grant_revoked`. A run left waiting (blocked, interrupted, publishing) is
     /// then cancelled through the abandon path; `needs_attention` stays for the owner. Q1 applies.
+    /// `PublishUnobserved` (a publish intent, and the destination could not settle which side of
+    /// the rename the run is on) is answered like a pending fence: retryable `copy_fence_pending`.
     pub(crate) fn copies_fence(&self, grant: i64) -> Result<(), ErrorBody> {
         #[cfg(windows)]
         {
