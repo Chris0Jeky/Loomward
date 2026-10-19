@@ -7,7 +7,8 @@
 //! anything depends on them: a child lookup, the engine's relist barrier and `EndRun`. A step
 //! refused as obsolete then names its directory for relisting, exactly as a waited refusal did.
 //! Listings always take the chunked form (`StageChunk` then `ListingDone`), never the one-shot
-//! `DirListing`, so a rejected chunk is fenced by the writer and its listing publishes partial.
+//! `DirListing`. A rejected chunk fences its listing locally at send time or in the writer at
+//! commit time, so its listing publishes partial.
 //!
 //! - **N1.** Tickets carry an adapter input revision per directory. A chunk, publication or final
 //!   whose revision is no longer current is rejected `listing_revision_changed`, so the engine
@@ -91,6 +92,7 @@ struct Listing {
     revision: u64,
     seq: i64,
     staged: bool,
+    rejected: bool,
     skipped: u64,
     errors: u64,
 }
@@ -732,7 +734,7 @@ impl ScanSink for CatalogScanSink {
                 if files.is_empty() && dirs.is_empty() {
                     return Ok(());
                 }
-                self.send(
+                let sent = self.send(
                     root,
                     ticket,
                     false,
@@ -743,12 +745,13 @@ impl ScanSink for CatalogScanSink {
                         files,
                         dirs,
                     },
-                )?;
-                // Optimistic: a refused chunk fences the listing in the writer, which then
-                // publishes it partial, and settling names the directory for a relist.
+                );
                 let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
                 let r = Self::active(&mut s, root, run)?;
                 let listing = Self::current(r, ticket)?;
+                // A send-time refusal never reaches the writer's fence: retain it locally.
+                listing.rejected |= sent.is_err();
+                sent?;
                 listing.seq += 1;
                 listing.staged = true;
                 Ok(())
@@ -758,12 +761,17 @@ impl ScanSink for CatalogScanSink {
                 ticket,
                 outcome: done,
             } => {
-                let (catalog_run, skipped, errors) = {
+                let (catalog_run, skipped, errors, done) = {
                     let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
                     let r = Self::active(&mut s, root, run)?;
                     let catalog_run = r.run.unwrap().1;
                     let listing = Self::current(r, ticket)?;
-                    (catalog_run, listing.skipped, listing.errors)
+                    let done = if listing.rejected && done == ListOutcome::Complete {
+                        ListingOutcome::Incomplete("partial".into())
+                    } else {
+                        outcome(done)
+                    };
+                    (catalog_run, listing.skipped, listing.errors, done)
                 };
                 // Settling resets the listing and announces the publication once it commits.
                 self.send(
@@ -773,7 +781,7 @@ impl ScanSink for CatalogScanSink {
                     WriteCommand::ListingDone {
                         run_id: catalog_run,
                         dir_id: ticket.dir as i64,
-                        outcome: outcome(done),
+                        outcome: done,
                         skipped,
                         errors,
                     },

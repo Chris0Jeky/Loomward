@@ -6240,6 +6240,139 @@ fn obsolete_listing_revisions_are_refused_and_never_complete() {
     );
 }
 
+/// #763: a send-time refusal never reaches the writer's chunk fence. Even if the caller keeps
+/// sending and claims Complete, keep accepted entries and publish partial without absence.
+#[test]
+fn a_send_time_rejected_chunk_never_publishes_a_complete_listing() {
+    use loomward_engine::scan::source::{IdBasis, ListOutcome, OpenedIdentity};
+    for chunks in [
+        &[false, true][..],
+        &[true, false],
+        &[true, false, true],
+        &[false],
+    ] {
+        let tmp = temp_root();
+        let svc = open(tmp.path(), DatasetClass::Synthetic);
+        let (root, grant) = register(&svc, 7);
+        let dir = crate::db::active_root_dir(&svc.inner.db(), root)
+            .unwrap()
+            .unwrap();
+        let id = RootId::new(svc.inner.root_id(root)).unwrap();
+        let sink = &svc.inner.scan;
+        sink.bind(&id, grant, dir);
+        let identity = OpenedIdentity {
+            id: None,
+            basis: IdBasis::None,
+            volume_guid: None,
+            volume_serial: None,
+            attributes: 0x10,
+            reparse_tag: None,
+        };
+        // Seed an existing row: a partial listing must not establish its absence.
+        sink.begin_run(&id, 40, &RunScope::FullRoot).unwrap();
+        let seed = sink.prepare_listing(&id, 40, None, &[], identity).unwrap();
+        sink.consume(
+            &id,
+            ScanMessage::DirListing {
+                run: 40,
+                ticket: seed,
+                entries: vec![entry("previous.bin", 1, false)],
+            },
+        )
+        .unwrap();
+        sink.consume(
+            &id,
+            ScanMessage::ListingDone {
+                run: 40,
+                ticket: seed,
+                outcome: ListOutcome::Complete,
+            },
+        )
+        .unwrap();
+        sink.finish_run(&id, 40, &RunScope::FullRoot, true).unwrap();
+
+        sink.begin_run(&id, 41, &RunScope::FullRoot).unwrap();
+        let ticket = sink.prepare_listing(&id, 41, None, &[], identity).unwrap();
+        let mut accepted = Vec::new();
+        for (i, valid) in chunks.iter().enumerate() {
+            let entries = if *valid {
+                let name = format!("accepted-{i}.bin");
+                accepted.push(name.clone());
+                vec![entry(&name, 2, false)]
+            } else {
+                vec![
+                    entry("rejected.bin", 3, false),
+                    entry("duplicate.bin", 4, false),
+                    entry("duplicate.bin", 5, false),
+                ]
+            };
+            let result = sink.consume(
+                &id,
+                ScanMessage::DirListing {
+                    run: 41,
+                    ticket,
+                    entries,
+                },
+            );
+            if *valid {
+                result.unwrap();
+            } else {
+                assert!(
+                    matches!(
+                        result,
+                        Err(loomward_engine::EngineError::StaleGeneration { .. })
+                    ),
+                    "duplicate names are refused at send time"
+                );
+            }
+        }
+        sink.consume(
+            &id,
+            ScanMessage::ListingDone {
+                run: 41,
+                ticket,
+                outcome: ListOutcome::Complete,
+            },
+        )
+        .unwrap();
+        sink.settle(&id).unwrap();
+        let conn = svc.inner.db();
+        let names: Vec<String> = conn
+            .prepare("SELECT name FROM main.file ORDER BY name")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert!(
+            !names.iter().any(|n| n == "rejected.bin"),
+            "rejected chunk entries never reached the writer"
+        );
+        for name in &accepted {
+            assert!(names.contains(name), "accepted chunk missing: {names:?}");
+        }
+        let (state, coverage): (String, String) = conn
+            .query_row(
+                "SELECT listing_state,listing_outcome FROM main.dir WHERE id=?1",
+                [dir],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            (state.as_str(), coverage.as_str()),
+            ("incomplete", "partial"),
+            "chunks={chunks:?}, published entries={names:?}"
+        );
+        assert!(
+            names.iter().any(|n| n == "previous.bin"),
+            "partial coverage must preserve unseen entries"
+        );
+        drop(conn);
+        sink.finish_run(&id, 41, &RunScope::FullRoot, false)
+            .unwrap();
+    }
+}
+
 /// Parallel workers over a wider tree: every child ticket follows its parent's publication, so
 /// the published totals still equal an independent walk.
 #[cfg(windows)]
