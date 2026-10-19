@@ -1025,7 +1025,32 @@ fn volume_device_from_root(file: &File) -> Result<Vec<u16>, SourceError> {
     path.extend([u16::from(b'\\'), 0]);
     // Resolve the GUID from this device's root, never from a drive letter or a
     // serial-number search (serials need not be unique across volumes).
-    volume_device_path(&open_volume_root(&path)?)
+    let root = open_volume_root(&path)?;
+    // The name was read, then reopened: refuse if the device now names another volume.
+    if volume_serial(&root)? != volume_serial(file)? {
+        return Err(SourceError::IdentityUnverified);
+    }
+    volume_device_path(&root)
+}
+
+fn volume_serial(file: &File) -> Result<u32, SourceError> {
+    let mut serial = 0u32;
+    if unsafe {
+        GetVolumeInformationByHandleW(
+            file.as_raw_handle(),
+            null_mut(),
+            0,
+            &mut serial,
+            null_mut(),
+            null_mut(),
+            null_mut(),
+            0,
+        )
+    } == 0
+    {
+        return Err(last_error());
+    }
+    Ok(serial)
 }
 
 /// A metadata handle on the root directory of the volume `file` lives on, by volume GUID.
