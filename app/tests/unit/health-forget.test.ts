@@ -207,3 +207,102 @@ it('accepts a same-engine reply after an ordinary roots refresh and while the vi
   expect(forget.pending).toBeNull();
   expect(render(View).body).toContain('Forgotten at');
 });
+
+/** Ported from view-races (#716): the same behaviours, now against the store with a fake client. */
+class FakeClient {
+  nextRequestId = vi.fn(() => 'r_forget');
+  constructor(readonly call: ReturnType<typeof vi.fn>) {}
+}
+function fake(call: ReturnType<typeof vi.fn>) {
+  const c = new FakeClient(call);
+  session.client = c as unknown as typeof session.client;
+  const handle = vi.spyOn(session, 'handle').mockImplementation((e: unknown) => (e as Error).message);
+  return { c, handle };
+}
+const result = { result: completed };
+const forgotten = (id: string, at: string) => ({ kind: 'metadata_root', root_id: id, forgotten_at: at });
+
+it.each([deadline, unknown])('keeps an unknown outcome pending and checks the same request id (#716)', async fault => {
+  const call = vi.fn().mockRejectedValueOnce(fault).mockResolvedValue(result);
+  const { c, handle } = fake(call);
+  forget.ask(request);
+  await forget.confirm();
+  expect(call.mock.calls[0]).toEqual(['roots.forget', { root_id: 'rt_fixture' }, { deadlineMs: 60000, requestId: 'r_forget' }]);
+  expect(forget.pending).not.toBeNull();
+  expect(forget.unknown).toBe(true);
+  expect(forget.problem).toBe('');
+  expect(handle).not.toHaveBeenCalled();
+  await forget.confirm();
+  expect(call.mock.calls[1]).toEqual(call.mock.calls[0]);
+  expect(c.nextRequestId).toHaveBeenCalledTimes(1);
+  expect(forget.pending).toBeNull();
+  expect(forget.done).toContain('Forgotten at');
+});
+
+it('shows a definite refusal as an error (#716)', async () => {
+  fake(vi.fn().mockRejectedValue(new LoomwardError({ code: 'invalid_request', message: 'revoke it first', retryable: false, detail: null })));
+  forget.ask(request);
+  await forget.confirm();
+  expect(forget.problem).toBe('revoke it first');
+  expect(forget.unknown).toBe(false);
+});
+
+it('starts a new attempt after a definite error instead of replaying its cached answer (#716)', async () => {
+  const call = vi.fn().mockRejectedValueOnce(new LoomwardError({ code: 'internal_error', message: 'store error', retryable: true, detail: null })).mockResolvedValue(result);
+  const { c } = fake(call);
+  forget.ask(request);
+  await forget.confirm();
+  expect(forget.problem).toBe('store error');
+  await forget.confirm();
+  expect(c.nextRequestId).toHaveBeenCalledTimes(2);
+  expect(forget.done).toContain('Forgotten at');
+});
+
+it('recovers a completed forget from its anonymised record after receipt expiry or restart (#716)', async () => {
+  const call = vi.fn().mockRejectedValueOnce(deadline).mockRejectedValueOnce(notFound)
+    .mockResolvedValueOnce({ result: { grants: [{ kind: 'disclosure', grant_id: 'gr_disclosure' }, forgotten('rt_other', 'wrong'), forgotten('rt_fixture', completed.forgotten_at)] } })
+    .mockResolvedValue(result);
+  fake(call);
+  forget.ask(request);
+  await forget.confirm();
+  await forget.confirm();
+  expect(call.mock.calls[2]).toEqual(['grants.list', {}]);
+  expect(forget.pending).toBeNull();
+  expect(forget.done).toContain('Forgotten at 2026-10-18 00:00 UTC');
+  expect(forget.done).toContain('Backup cleanup is unverified');
+  expect(forget.problem).toBe('');
+});
+
+it('keeps the outcome unknown when a missing receipt has no matching forgotten record (#716)', async () => {
+  fake(vi.fn().mockRejectedValueOnce(deadline).mockRejectedValueOnce(notFound)
+    .mockResolvedValueOnce({ result: { grants: [forgotten('rt_other', completed.forgotten_at)] } }));
+  forget.ask(request);
+  await forget.confirm();
+  await forget.confirm();
+  expect(forget.unknown).toBe(true);
+  expect(forget.pending?.id).toBe('rt_fixture');
+  expect(forget.done).toBe('');
+  expect(forget.problem).toBe('');
+});
+
+it('cannot replace or cancel an unknown forget and lose its action key (#716)', async () => {
+  fake(vi.fn().mockRejectedValue(deadline));
+  forget.ask(request);
+  await forget.confirm();
+  const original = forget.pending;
+  forget.ask({ kind: 'forget', id: 'rt_other', label: 'Other' });
+  forget.cancel();
+  expect(forget.pending).toBe(original);
+});
+
+it('coalesces repeated confirmation while the same call is waiting (#716)', async () => {
+  let release!: (value: typeof result) => void;
+  const call = vi.fn().mockReturnValueOnce(new Promise(r => { release = r; })).mockResolvedValue(result);
+  fake(call);
+  forget.ask(request);
+  const first = forget.confirm();
+  await forget.confirm();
+  expect(call).toHaveBeenCalledTimes(1);
+  release(result);
+  await first;
+});

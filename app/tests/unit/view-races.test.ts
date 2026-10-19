@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import ts from 'typescript';
 import { describe, expect, it, vi } from 'vitest';
-import { LoomwardError, TransportError } from '../../src/lib/transport/client';
+import { LoomwardError } from '../../src/lib/transport/client';
 import { fallbackStep, onRefetchError, resolveTrail } from '../../src/views/explorer/refetch';
 import searchExample from '../../../contracts/v3/examples/commands/search.query.result.json';
 import learningStatus from '../../../contracts/v3/examples/commands/learning.status.result.json';
@@ -59,104 +59,6 @@ const deferred = <T>() => {
   const promise = new Promise<T>(r => { resolve = r; });
   return { promise, resolve };
 };
-
-function health(call: ReturnType<typeof vi.fn>) {
-  const state = {
-    session: { client: { call, nextRequestId: vi.fn(() => 'r_forget') }, handle: vi.fn((e: Error) => e.message), epoch: 0 },
-    scans: { sync: async () => undefined }, tick: async () => undefined, untrack, LoomwardError, TransportError,
-    document: { activeElement: null }, HTMLElement: class {},
-    formatTime: (v: string) => v, escapedName: (v: string) => v,
-    pending: { kind: 'forget', id: 'rt_fixture', label: 'Synthetic' } as Record<string, unknown> | null,
-    working: false, forgetUnknown: false, done: '', error: '', ticket: 0,
-  };
-  return { state, code: viewScript('health', state, 'session.epoch') };
-}
-
-describe('forget outcome recovery (#716)', () => {
-  const completed = { result: { forgotten_at: '2026-10-18T00:00:00Z', root_id: 'rt_fixture' } };
-  const unknown = new LoomwardError({ code: 'deadline_exceeded', message: 'outcome unknown', retryable: false, detail: null });
-
-  it.each([unknown, new TransportError('connection lost')])('keeps an unknown outcome pending and checks the same request id', async (fault) => {
-    const call = vi.fn().mockRejectedValueOnce(fault).mockResolvedValue(completed);
-    const { state, code } = health(call);
-    await code.confirm();
-    expect(call.mock.calls[0]).toEqual(['roots.forget', { root_id: 'rt_fixture' }, { deadlineMs: 60000, requestId: 'r_forget' }]);
-    expect(state.pending).not.toBeNull();
-    expect(state.forgetUnknown).toBe(true);
-    expect(state.error).toBe('');
-    expect(state.session.handle).not.toHaveBeenCalled();
-    await code.confirm();
-    expect(call.mock.calls[1]).toEqual(call.mock.calls[0]);
-    expect(state.session.client.nextRequestId).toHaveBeenCalledTimes(1);
-    expect(state.pending).toBeNull();
-    expect(state.done).toContain('Forgotten at');
-  });
-
-  it('shows a definite refusal as an error', async () => {
-    const { state, code } = health(vi.fn().mockRejectedValue(new LoomwardError({ code: 'invalid_request', message: 'revoke it first', retryable: false, detail: null })));
-    await code.confirm();
-    expect(state.error).toBe('revoke it first');
-    expect(state.forgetUnknown).toBe(false);
-  });
-
-  it('starts a new attempt after a definite error instead of replaying its cached answer', async () => {
-    const call = vi.fn().mockRejectedValueOnce(new LoomwardError({ code: 'internal_error', message: 'store error', retryable: true, detail: null })).mockResolvedValue(completed);
-    const { state, code } = health(call);
-    await code.confirm();
-    expect(state.error).toBe('store error');
-    await code.confirm();
-    expect(state.session.client.nextRequestId).toHaveBeenCalledTimes(2);
-    expect(state.done).toContain('Forgotten at');
-  });
-
-  it('recovers a completed forget from its anonymised record after receipt expiry or restart', async () => {
-    const call = vi.fn().mockRejectedValueOnce(unknown)
-      .mockRejectedValueOnce(new LoomwardError({ code: 'not_found', message: 'unknown root', retryable: false, detail: null }))
-      .mockResolvedValueOnce({ result: { grants: [{ kind: 'disclosure', grant_id: 'gr_disclosure' }, { kind: 'metadata_root', root_id: 'rt_other', forgotten_at: 'wrong' }, { kind: 'metadata_root', root_id: 'rt_fixture', forgotten_at: '2026-10-18T00:00:00Z' }] } })
-      .mockResolvedValue(completed);
-    const { state, code } = health(call);
-    await code.confirm();
-    await code.confirm();
-    expect(call.mock.calls[2]).toEqual(['grants.list', {}]);
-    expect(state.pending).toBeNull();
-    expect(state.done).toContain('Forgotten at 2026-10-18T00:00:00Z');
-    expect(state.done).toContain('Backup cleanup is unverified');
-    expect(state.error).toBe('');
-  });
-
-  it('keeps the outcome unknown when a missing receipt has no matching forgotten record', async () => {
-    const call = vi.fn().mockRejectedValueOnce(unknown)
-      .mockRejectedValueOnce(new LoomwardError({ code: 'not_found', message: 'unknown root', retryable: false, detail: null }))
-      .mockResolvedValueOnce({ result: { grants: [{ kind: 'metadata_root', root_id: 'rt_other', forgotten_at: '2026-10-18T00:00:00Z' }] } });
-    const { state, code } = health(call);
-    await code.confirm();
-    await code.confirm();
-    expect(state.forgetUnknown).toBe(true);
-    expect(state.pending?.id).toBe('rt_fixture');
-    expect(state.done).toBe('');
-    expect(state.error).toBe('');
-  });
-
-  it('cannot replace or cancel an unknown forget and lose its action key', async () => {
-    const { state, code } = health(vi.fn().mockRejectedValue(unknown));
-    await code.confirm();
-    const original = state.pending;
-    await code.ask({ kind: 'forget', id: 'rt_other', label: 'Other' });
-    await code.cancel();
-    expect(state.pending).toBe(original);
-  });
-
-  it('coalesces repeated confirmation while the same call is waiting', async () => {
-    const response = deferred<typeof completed>();
-    const call = vi.fn().mockReturnValueOnce(response.promise).mockResolvedValue(completed);
-    const { code } = health(call);
-    const first = code.confirm();
-    await code.confirm();
-    expect(call).toHaveBeenCalledTimes(1);
-    response.resolve(completed);
-    await first;
-  });
-});
 
 function review(call: ReturnType<typeof vi.fn>) {
   const state = {
