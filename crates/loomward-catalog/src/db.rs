@@ -2,6 +2,19 @@ use crate::{Error, Result, APPLICATION_ID, SCHEMA_VERSION};
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use std::{path::Path, time::Duration};
 
+#[cfg(feature = "test-hooks")]
+thread_local! {
+    static INTEGRITY_CHECKS: std::cell::RefCell<Vec<std::path::PathBuf>> = const {
+        std::cell::RefCell::new(Vec::new())
+    };
+}
+
+/// Take this thread's integrity-check executions; absent from production builds.
+#[cfg(feature = "test-hooks")]
+pub fn take_integrity_checks() -> Vec<std::path::PathBuf> {
+    INTEGRITY_CHECKS.with(|checks| checks.take())
+}
+
 pub(crate) fn local_path(path: &Path) -> Result<()> {
     let text = path.to_string_lossy().replace('/', "\\");
     let refused = if let Some(rest) = text.strip_prefix("\\\\?\\") {
@@ -33,7 +46,7 @@ fn inspection_error(error: rusqlite::Error) -> Error {
     }
 }
 
-pub(crate) fn inspect(path: &Path, dataset: &str) -> Result<i64> {
+pub(crate) fn inspect(path: &Path, dataset: &str, integrity: bool) -> Result<i64> {
     if !path.exists() {
         return Ok(0);
     }
@@ -55,11 +68,15 @@ pub(crate) fn inspect(path: &Path, dataset: &str) -> Result<i64> {
     if version > SCHEMA_VERSION {
         return Err(Error::NewerDatabase);
     }
-    let check: String = conn
-        .query_row("PRAGMA quick_check", [], |r| r.get(0))
-        .map_err(inspection_error)?;
-    if check != "ok" {
-        return Err(Error::CorruptDatabase);
+    if integrity {
+        #[cfg(feature = "test-hooks")]
+        INTEGRITY_CHECKS.with(|checks| checks.borrow_mut().push(path.to_path_buf()));
+        let check: String = conn
+            .query_row("PRAGMA quick_check", [], |r| r.get(0))
+            .map_err(inspection_error)?;
+        if check != "ok" {
+            return Err(Error::CorruptDatabase);
+        }
     }
     if version > 0 {
         let class: Option<String> = conn
@@ -274,11 +291,20 @@ pub(crate) fn open_pair(dir: &Path, dataset: &str) -> Result<Connection> {
     open_pair_with(dir, dataset, false)
 }
 /// `ranked`: create the ranked-search token index if the store lacks it (a store that has it keeps it).
+#[cfg(test)]
 pub(crate) fn open_pair_with(dir: &Path, dataset: &str, ranked: bool) -> Result<Connection> {
+    open_pair_validated(dir, dataset, ranked, false)
+}
+pub(crate) fn open_pair_validated(
+    dir: &Path,
+    dataset: &str,
+    ranked: bool,
+    state_validated: bool,
+) -> Result<Connection> {
     let state = dir.join("state.db");
     let catalog = dir.join("catalog.db");
-    let sv = inspect(&state, dataset)?;
-    let cv = match inspect(&catalog, dataset) {
+    let sv = inspect(&state, dataset, !state_validated)?;
+    let cv = match inspect(&catalog, dataset, true) {
         Err(Error::CorruptDatabase) => {
             preserve_catalog(dir, "corrupt")?;
             0

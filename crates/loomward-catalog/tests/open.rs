@@ -630,3 +630,43 @@ fn v10_lab_registrations_migrate_without_adopting_a_guid() {
     // Reopening must not fill the NULL binding either.
     drop(Catalog::open(temp.path(), "synthetic").unwrap());
 }
+
+#[test]
+fn preflight_verdict_on_a_corrupt_catalogue_is_unchanged_by_the_deferred_check() {
+    // A dataset mismatch must not turn a repairable corrupt catalogue into a refusal (#700).
+    let temp = tempfile::tempdir().unwrap();
+    drop(Catalog::open(temp.path(), "synthetic").unwrap());
+    let path = temp.path().join("catalog.db");
+    let conn = Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE integrity_probe(value TEXT); INSERT INTO integrity_probe VALUES('synthetic');
+         PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE",
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE meta SET value='personal' WHERE key='dataset_class'",
+        [],
+    )
+    .unwrap();
+    let page: u32 = conn
+        .query_row(
+            "SELECT rootpage FROM sqlite_schema WHERE name='integrity_probe'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let page_size: u32 = conn
+        .pragma_query_value(None, "page_size", |r| r.get(0))
+        .unwrap();
+    drop(conn);
+    // Healthy but mismatched: still refused at preflight.
+    assert!(matches!(
+        Catalog::validate_stores(temp.path(), "synthetic"),
+        Err(Error::DatasetMismatch)
+    ));
+    let mut bytes = std::fs::read(&path).unwrap();
+    bytes[((page - 1) * page_size) as usize] = 0;
+    std::fs::write(&path, &bytes).unwrap();
+    Catalog::validate_stores(temp.path(), "synthetic").unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+}

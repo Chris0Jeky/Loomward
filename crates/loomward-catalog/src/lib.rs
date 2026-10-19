@@ -17,6 +17,8 @@ mod developer_clutter;
 pub use crashpoint::CRASH_EXIT;
 pub use developer_clutter::{DeveloperClutter, DeveloperClutterCandidate};
 mod db;
+#[cfg(feature = "test-hooks")]
+pub use db::take_integrity_checks;
 mod duplicates;
 pub use duplicates::{DuplicateCandidate, DuplicateCandidates};
 mod model;
@@ -154,21 +156,59 @@ pub struct Catalog {
     dir: std::path::PathBuf,
     writer: std::sync::Arc<Writer>,
 }
+
+/// Read-only preflight for an immediate open of these same stores and dataset.
+/// Consuming it reuses the state integrity check; catalogue integrity is checked on open,
+/// where corrupt derived data can be preserved and rebuilt.
+pub struct ValidatedStores {
+    dir: std::path::PathBuf,
+    dataset: String,
+}
+
+impl ValidatedStores {
+    pub fn open(self, options: &CatalogOptions) -> Result<Catalog> {
+        Catalog::open_validated(&self.dir, &self.dataset, options, true)
+    }
+}
+
 impl Catalog {
     /// Inspect existing stores without creating, migrating or repairing anything.
-    pub fn validate_stores(dir: &Path, dataset: &str) -> Result<()> {
+    /// Checks state integrity and both stores' ownership, version and dataset. Catalogue
+    /// integrity is deferred to open, which can preserve and rebuild a corrupt catalogue.
+    pub fn validate_stores(dir: &Path, dataset: &str) -> Result<ValidatedStores> {
         db::local_path(dir)?;
-        db::inspect(&dir.join("state.db"), dataset)?;
-        match db::inspect(&dir.join("catalog.db"), dataset) {
-            Ok(_) | Err(Error::CorruptDatabase) => Ok(()),
-            Err(e) => Err(e),
+        db::inspect(&dir.join("state.db"), dataset, true)?;
+        let catalog = dir.join("catalog.db");
+        match db::inspect(&catalog, dataset, false) {
+            Ok(_) | Err(Error::CorruptDatabase) => {}
+            // Corruption masked these before the integrity check moved to open: confirm it
+            // here, on the failure path only, so the preflight verdict is unchanged.
+            Err(Error::DatasetMismatch | Error::Sql(_)) => {
+                match db::inspect(&catalog, dataset, true) {
+                    Ok(_) | Err(Error::CorruptDatabase) => {}
+                    Err(e) => return Err(e),
+                }
+            }
+            Err(e) => return Err(e),
         }
+        Ok(ValidatedStores {
+            dir: dir.to_path_buf(),
+            dataset: dataset.to_owned(),
+        })
     }
     /// Open with the default options: no ranked-search index (see [`CatalogOptions`]).
     pub fn open(dir: &Path, dataset: &str) -> Result<Self> {
         Self::open_with(dir, dataset, &CatalogOptions::default())
     }
     pub fn open_with(dir: &Path, dataset: &str, options: &CatalogOptions) -> Result<Self> {
+        Self::open_validated(dir, dataset, options, false)
+    }
+    fn open_validated(
+        dir: &Path,
+        dataset: &str,
+        options: &CatalogOptions,
+        state_validated: bool,
+    ) -> Result<Self> {
         db::local_path(dir)?;
         if !matches!(dataset, "synthetic" | "personal") {
             return Err(Error::Invalid("dataset class"));
@@ -176,7 +216,8 @@ impl Catalog {
         std::fs::create_dir_all(dir)?;
         let dir = sqlite_dir(&dir.canonicalize()?);
         db::local_path(&dir)?;
-        let connection = db::open_pair_with(&dir, dataset, options.ranked_index)?;
+        let connection =
+            db::open_pair_validated(&dir, dataset, options.ranked_index, state_validated)?;
         let writer = std::sync::Arc::new(Writer::start(connection)?);
         Ok(Self { dir, writer })
     }

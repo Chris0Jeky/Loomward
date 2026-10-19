@@ -149,6 +149,137 @@ fn open(dir: &Path, dataset: DatasetClass) -> Service {
     .unwrap()
 }
 
+#[test]
+fn normal_start_checks_each_database_once() {
+    let dir = temp_root();
+    let dist = dir.path().join("dist");
+    std::fs::create_dir(&dist).unwrap();
+    for dataset in [DatasetClass::Synthetic, DatasetClass::Personal] {
+        let state = dir.path().join(format!("{dataset:?}"));
+        drop(open(&state, dataset));
+        for static_dir in [None, Some(dist.as_path())] {
+            loomward_catalog::take_integrity_checks();
+            let service = Service::open_with_static(
+                Config {
+                    state_dir: state.clone(),
+                    dataset,
+                    allow_personal: true,
+                    allow_identity_unverified: false,
+                    grant_roots: vec![],
+                },
+                static_dir,
+            )
+            .unwrap();
+            let checks = loomward_catalog::take_integrity_checks();
+            for name in ["catalog.db", "state.db"] {
+                assert_eq!(
+                    checks.iter().filter(|path| path.ends_with(name)).count(),
+                    1,
+                    "{dataset:?}: {name}: {checks:?}"
+                );
+            }
+            drop(service);
+        }
+    }
+}
+
+fn damage_data_page(path: &Path) -> Vec<u8> {
+    // Leave the header and schema readable: only the full integrity check sees this damage.
+    let conn = rusqlite::Connection::open(path).unwrap();
+    conn.execute_batch("CREATE TABLE integrity_probe(value TEXT); INSERT INTO integrity_probe VALUES('synthetic'); PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE").unwrap();
+    let page: u32 = conn
+        .query_row(
+            "SELECT rootpage FROM sqlite_schema WHERE name='integrity_probe'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let page_size: u32 = conn
+        .pragma_query_value(None, "page_size", |r| r.get(0))
+        .unwrap();
+    drop(conn);
+    let mut corrupt = std::fs::read(path).unwrap();
+    corrupt[((page - 1) * page_size) as usize] = 0;
+    std::fs::write(path, &corrupt).unwrap();
+    corrupt
+}
+
+#[test]
+fn corrupt_catalogue_is_preserved_and_rebuilt_at_normal_start() {
+    let dir = temp_root();
+    drop(open(dir.path(), DatasetClass::Synthetic));
+    let corrupt = damage_data_page(&dir.path().join("catalog.db"));
+    loomward_catalog::take_integrity_checks();
+    drop(open(dir.path(), DatasetClass::Synthetic));
+    assert_eq!(
+        loomward_catalog::take_integrity_checks()
+            .iter()
+            .filter(|path| path.ends_with("catalog.db"))
+            .count(),
+        1
+    );
+    let preserved = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("catalog.corrupt-")
+        })
+        .expect("corrupt derived catalogue must be preserved");
+    assert_eq!(std::fs::read(preserved).unwrap(), corrupt);
+}
+
+#[test]
+fn state_integrity_failure_still_precedes_static_overlap() {
+    let dir = temp_root();
+    drop(open(dir.path(), DatasetClass::Synthetic));
+    let corrupt = damage_data_page(&dir.path().join("state.db"));
+    let error = Service::open_with_static(
+        Config {
+            state_dir: dir.path().to_path_buf(),
+            dataset: DatasetClass::Synthetic,
+            allow_personal: false,
+            allow_identity_unverified: false,
+            grant_roots: vec![],
+        },
+        Some(dir.path()),
+    )
+    .err()
+    .expect("corruption must refuse startup");
+    assert_eq!(error, "state store: CorruptDatabase");
+    assert_eq!(std::fs::read(dir.path().join("state.db")).unwrap(), corrupt);
+}
+
+#[test]
+fn corrupt_catalogue_is_refused_at_static_start_without_rewriting() {
+    let dir = temp_root();
+    let state = dir.path().join("state");
+    drop(open(&state, DatasetClass::Synthetic));
+    let corrupt = b"synthetic corrupt catalogue";
+    std::fs::write(state.join("catalog.db"), corrupt).unwrap();
+    let dist = dir.path().join("dist");
+    std::fs::create_dir(&dist).unwrap();
+    let error = Service::open_with_static(
+        Config {
+            state_dir: state.clone(),
+            dataset: DatasetClass::Synthetic,
+            allow_personal: false,
+            allow_identity_unverified: false,
+            grant_roots: vec![],
+        },
+        Some(&dist),
+    )
+    .err()
+    .expect("corrupt catalogue must refuse startup");
+    assert_eq!(
+        error,
+        "cannot inspect stored grants: catalogue version unavailable"
+    );
+    assert_eq!(std::fs::read(state.join("catalog.db")).unwrap(), corrupt);
+}
+
 pub(crate) fn temp_root() -> tempfile::TempDir {
     tempfile::tempdir_in(crate::paths::test_roots_base()).unwrap()
 }
