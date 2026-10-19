@@ -4390,6 +4390,80 @@ fn f3_completed_partial_full_scan_is_current_without_claiming_complete_coverage(
     assert_eq!(roots["roots"][0]["totals"]["complete"], false);
 }
 
+/// #774: a full scan that ran to the end around a denied folder is a finished (partial) run, not a
+/// cancelled one: roots.list and alerts see it, and the denied folder's catalogued rows survive.
+#[cfg(windows)]
+#[test]
+fn finished_partial_full_scan_is_recorded_without_reconciling_the_denied_subtree() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    assert_eq!(
+        settle(svc, &start(svc, &lab.root, "full"))["coverage"],
+        "complete"
+    );
+    struct Denied(std::path::PathBuf);
+    impl Drop for Denied {
+        fn drop(&mut self) {
+            let _ = std::process::Command::new("icacls")
+                .arg(&self.0)
+                .args(["/remove:d", "*S-1-1-0"])
+                .output();
+        }
+    }
+    let denied = Denied(lab.path.join("a"));
+    assert!(std::process::Command::new("icacls")
+        .arg(&denied.0)
+        .args(["/deny", "*S-1-1-0:(R)"])
+        .output()
+        .unwrap()
+        .status
+        .success());
+    assert!(std::fs::read_dir(&denied.0).is_err());
+    let job = settle(svc, &start(svc, &lab.root, "full"));
+    assert_eq!(job["state"], "completed");
+    assert_eq!(job["coverage"], "partial");
+    let db = svc.inner.db();
+    let (state, complete): (String, Option<bool>) = db
+        .query_row(
+            "SELECT state,json_extract(counters_json,'$.complete') FROM main.scan_run ORDER BY id DESC LIMIT 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((state.as_str(), complete), ("completed", Some(false)));
+    // The denied folder's rows from the first scan are not reconciled as absent.
+    let kept: (i64, i64) = db
+        .query_row(
+            "SELECT (SELECT count(*) FROM main.dir WHERE name IN ('a','deep') AND listing_state!='absent_pending'),
+                    (SELECT count(*) FROM main.file f JOIN main.dir d ON d.id=f.dir_id WHERE d.name IN ('a','deep'))",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(kept, (2, 4));
+    drop(db);
+    let (roots, _) = ok("roots.list", call(svc, "roots.list", json!({})));
+    let scan = &roots["roots"][0]["scan"];
+    assert_eq!(scan["coverage"], "partial");
+    assert!(!scan["finished_at"].is_null(), "{scan:?}");
+    assert!(!scan["generation"].is_null(), "{scan:?}");
+    let (alerts, _) = ok("alerts.list", call(svc, "alerts.list", json!({})));
+    let growth = alerts["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["kind"] == "fast_growth")
+        .unwrap();
+    assert_eq!(growth["coverage"], "partial", "{growth:?}");
+    assert!(
+        !growth["note"]
+            .as_str()
+            .unwrap()
+            .contains("No completed scan"),
+        "{growth:?}"
+    );
+}
+
 #[cfg(windows)]
 #[test]
 fn f3_limited_full_scan_stays_stale_until_an_unlimited_pass() {
