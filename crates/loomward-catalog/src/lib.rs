@@ -155,7 +155,9 @@ pub struct Catalog {
     writer: std::sync::Arc<Writer>,
 }
 impl Catalog {
-    /// Inspect existing stores without creating, migrating or repairing anything.
+    /// Inspect existing stores without creating or migrating anything. The one repair: a hot rollback
+    /// journal left by a write cut before WAL (e.g. a full disk at creation) is rolled back, which restores
+    /// the last committed state; a read-only open could not, and the store would never open again (F2).
     pub fn validate_stores(dir: &Path, dataset: &str) -> Result<()> {
         db::local_path(dir)?;
         db::inspect(&dir.join("state.db"), dataset)?;
