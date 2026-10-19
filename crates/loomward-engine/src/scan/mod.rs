@@ -635,6 +635,28 @@ impl Engine {
                 message: "root revoked".into(),
             });
         }
+        // A durable revoke can precede its in-memory cancellation fence after root minting.
+        if let RootKey::Grant(grant) = root.key() {
+            let denied = |message: &str| EngineError::PermissionDenied {
+                message: message.into(),
+            };
+            let conn = rusqlite::Connection::open_with_flags(
+                loomward_catalog::sqlite_dir(&self.config.state_dir).join("state.db"),
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+                    | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            )
+            .map_err(|_| denied("grant store unavailable"))?;
+            let active: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM root_grant WHERE id=?1 AND state='active')",
+                    [grant],
+                    |r| r.get(0),
+                )
+                .map_err(|_| denied("grant store unavailable"))?;
+            if !active {
+                return Err(denied("grant_not_active"));
+            }
+        }
         revoked.aliases.insert(root.root_id().clone());
         if let Some(job_id) = revoked
             .aliases
