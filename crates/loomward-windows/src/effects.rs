@@ -532,6 +532,14 @@ impl Staging<'_> {
     }
     /// Immediate entry names under identity-pinned staging or published parents; never follows links.
     pub fn entries(&self, path: &[(&str, ObjectKey)]) -> io::Result<Vec<String>> {
+        self.entries_with_limit(path, loomward_operations::MAX_ITEMS as usize)
+    }
+
+    fn entries_with_limit(
+        &self,
+        path: &[(&str, ObjectKey)],
+        limit: usize,
+    ) -> io::Result<Vec<String>> {
         let pins = self.pins(path, false)?;
         let folder = pins.last().unwrap();
         let mut buffer = vec![0u64; 8192];
@@ -566,9 +574,7 @@ impl Staging<'_> {
                 let name = String::from_utf16(entry.name)
                     .ok()
                     .filter(|n| component(n).is_ok());
-                if let Some(name) =
-                    name.filter(|_| names.len() < loomward_operations::MAX_ITEMS as usize)
-                {
+                if let Some(name) = name.filter(|_| names.len() < limit) {
                     names.push(name);
                     enumerate::Flow::Continue
                 } else {

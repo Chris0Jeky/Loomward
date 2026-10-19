@@ -529,28 +529,42 @@ fn save(inner: &Inner, grant: i64, bookmark: Option<Bookmark>, at: i64) -> rusql
     Ok(())
 }
 
+/// `Err(id)` when the root no longer has its grant's identity (docs/41 section 7 step 1); every
+/// other refusal is `Ok(None)`.
 #[cfg(windows)]
-fn granted(inner: &Inner, row: &db::RootRow) -> Option<loomward_engine::scan::GrantedRoot> {
-    inner.session_root_gate(row).ok()?;
-    let id = RootId::new(inner.root_id(row.root)).ok()?;
-    inner.scan.bind(&id, row.grant, row.dir?);
-    inner
-        .engine
-        .granted_root(
-            id,
-            row.grant,
-            &loomward_engine::scan::CatalogRootIdentity {
-                row: row.root,
-                instance: inner.instance.clone(),
-            },
-        )
-        .ok()
+fn granted(
+    inner: &Inner,
+    row: &db::RootRow,
+) -> Result<Option<loomward_engine::scan::GrantedRoot>, RootId> {
+    if inner.session_root_gate(row).is_err() {
+        return Ok(None);
+    }
+    let (Ok(id), Some(dir)) = (RootId::new(inner.root_id(row.root)), row.dir) else {
+        return Ok(None);
+    };
+    inner.scan.bind(&id, row.grant, dir);
+    match inner.engine.granted_root(
+        id.clone(),
+        row.grant,
+        &loomward_engine::scan::CatalogRootIdentity {
+            row: row.root,
+            instance: inner.instance.clone(),
+        },
+    ) {
+        Ok(root) => Ok(Some(root)),
+        Err(loomward_engine::EngineError::PermissionDenied { message })
+            if message == "root_identity_changed" =>
+        {
+            Err(id)
+        }
+        Err(_) => Ok(None),
+    }
 }
 
 #[cfg(windows)]
 fn journal(inner: &Inner, row: i64) -> Option<loomward_windows::usn::Journal> {
     let row = db::roots(&inner.db(), Some(row)).ok()?.pop()?;
-    let root = granted(inner, &row)?;
+    let root = granted(inner, &row).ok()??;
     loomward_windows::usn::Journal::open(root.path(), root.expected_identity()?).ok()
 }
 
@@ -598,8 +612,15 @@ fn ensure_roots_with_clock(inner: &Arc<Inner>, now: impl Fn() -> Instant) {
                 false
             }
         };
-        let Some(grant) = granted(inner, row) else {
-            continue;
+        let grant = match granted(inner, row) {
+            Ok(Some(grant)) => grant,
+            Ok(None) => continue,
+            Err(id) => {
+                // identity_changed fences the watch through `remove`, which takes setup.
+                drop(_setup);
+                inner.identity_changed(row.grant, &id, true);
+                continue;
+            }
         };
         let Some(expected) = grant.expected_identity() else {
             continue;
@@ -861,9 +882,17 @@ pub(crate) fn refresh(inner: &Inner) {
             }
             (root.full, root.paths.clone(), root.targets.clone())
         };
-        let Some(grant) = granted(inner, &row) else {
-            inner.freshness.remove(row.root);
-            continue;
+        let grant = match granted(inner, &row) {
+            Ok(Some(grant)) => grant,
+            Ok(None) => {
+                inner.freshness.remove(row.root);
+                continue;
+            }
+            // Also removes the tracked root.
+            Err(id) => {
+                inner.identity_changed(row.grant, &id, true);
+                continue;
+            }
         };
         let mut targets = action.2;
         let mut full = action.0;

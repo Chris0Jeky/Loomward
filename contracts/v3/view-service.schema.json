@@ -969,7 +969,7 @@
       "required": ["node_id", "model_id", "ranked", "abstain", "reasons", "feature_coverage", "review_priority", "calibrated", "autonomy_allowed", "teacher"],
       "properties": {
         "node_id": { "$ref": "#/$defs/NodeId" },
-        "model_id": { "$ref": "#/$defs/ModelId" },
+        "model_id": { "anyOf": [{ "$ref": "#/$defs/ModelId" }, { "type": "null" }] },
         "ranked": {
           "type": "array",
           "maxItems": 32,
