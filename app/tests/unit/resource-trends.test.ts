@@ -48,3 +48,17 @@ it('states the age of a series whose last point trails the sample, and stays sil
   expect(trendAge(at('2026-10-09T12:00:03Z'), 'not-a-time')).toBeNull();
   expect(trendAge({ ...series([]), points: [] } as TrendSeries, sample)).toBeNull();
 });
+
+it('measures the lag against the series own cadence, so a 15 s process series is silent for a 12 s lag and states a 60 s one', () => {
+  // The engine sets max_gap_ms to twice the requested interval; process series sample at least every 15 s, so 30 000 ms.
+  const processSeries = (observedAt: string, maxGapMs?: number) => ({
+    key: 'proc:1', metric: 'working_set_bytes', unit: 'bytes', max_gap_ms: maxGapMs, unknowns: [],
+    points: [{ offset_ms: 0, observed_at: observedAt, value: '1048576' }],
+  }) as unknown as TrendSeries;
+  const sample = '2026-10-09T12:00:15Z';
+  expect(trendAge(processSeries('2026-10-09T12:00:03Z', 30000), sample)).toBeNull(); // 12 s lag on a 15 s cadence
+  expect(trendAge(processSeries('2026-10-09T11:59:15Z', 30000), sample)).toBe('Last point observed 1 min before this sample');
+  expect(trendAge(processSeries('not-a-time', 30000), sample)).toBe('The age of the last point is unknown');
+  expect(trendAge(processSeries('2026-10-09T12:00:03Z'), sample)).toBeNull(); // no cadence carried: process falls back to 15 s
+  expect(trendAge(processSeries('2026-10-09T11:59:15Z'), sample)).toBe('Last point observed 1 min before this sample');
+});
