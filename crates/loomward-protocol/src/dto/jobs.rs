@@ -81,7 +81,10 @@ pub enum ScanProgressPhase {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ScanLimitReason {
+    /// Directory nesting reached the catalogue's chain limit (512 levels).
     DepthLimit,
+    /// The directory arena (directories in flight, with their handles and held child names) reached its budget.
+    DirectoryLimit,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -91,6 +94,8 @@ pub struct ScanProgress {
     pub strategy: EnumerationStrategy,
     pub examined: Count,
     pub indexed_files: Count,
+    /// Directories whose listing was read and indexed. A directory refused on open is catalogued
+    /// by name (flagged access denied) but is not indexed, so it is not counted here.
     pub indexed_dirs: Count,
     pub skipped: Count,
     pub failed: Count,
@@ -102,7 +107,9 @@ pub struct ScanProgress {
     pub entries_per_second: Rate,
     pub elapsed_ms: Count,
     pub limit_hit: bool,
-    /// Absent when the scan did not hit the depth cap (including older responses).
+    /// Present only when a named cap stopped the scan (`depth_limit` or `directory_limit`). Absent
+    /// when no cap was hit, and when the entry budget stopped it (`limit_hit` true, no named
+    /// cause); older responses omit it too.
     #[serde(
         default,
         deserialize_with = "crate::types::optional_present",
@@ -126,6 +133,8 @@ pub struct Job {
     pub started_at: Option<Timestamp>,
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub finished_at: Option<Timestamp>,
+    /// A scan's counters are published once, with its final report, so a running scan reads `null`
+    /// here. No live counters exist yet; a partial value is never invented in their place.
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub progress: Option<ScanProgress>,
     #[serde(deserialize_with = "crate::types::required_nullable")]

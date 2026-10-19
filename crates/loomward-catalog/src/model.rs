@@ -520,7 +520,7 @@ pub struct SubtreeTotals {
     pub stream_coverage: String,
     pub unique_objects: Option<u64>,
     pub unique_allocated_bytes: Option<String>,
-    pub multi_link_entries: u64,
+    pub multi_link_entries: Option<u64>,
     pub skipped: u64,
     pub failed: u64,
     pub complete: bool,
