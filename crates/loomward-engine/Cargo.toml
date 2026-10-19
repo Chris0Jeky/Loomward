@@ -22,7 +22,7 @@ serde_json.workspace = true
 serde.workspace = true
 sha2.workspace = true
 getrandom = "0.4"
-rusqlite = { version = "0.38.0", features = ["bundled"] }
+rusqlite = { version = "0.39.0", features = ["bundled"] }
 
 [dev-dependencies]
 loomward-lab = { path = "../loomward-lab" }

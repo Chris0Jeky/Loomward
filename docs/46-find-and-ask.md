@@ -467,6 +467,12 @@ that we can delete and rebuild.
 The UI shows the index age per root ("as of 14:02, live") and never presents a stale hit as current
 (invariant 4).
 
+A settled full-root traversal can be current while coverage remains partial (for example, a denied
+directory or an excluded reparse entry). Search uses the existing `index_state: current` with
+`partial: true` and root `coverage: partial`; watched hits may be `live`. This does not claim complete
+coverage or authorise absence reconciliation. Cancelled, limited or unsettled traversals remain stale,
+as do traversals followed by newer watcher hints or lacking a healthy watcher checkpoint.
+
 ### F3 failed-watcher recovery (#592)
 
 A failed per-root watcher (including a failed initial open) is retried by the existing service

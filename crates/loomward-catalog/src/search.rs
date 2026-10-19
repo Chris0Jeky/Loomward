@@ -516,7 +516,7 @@ impl Reader {
             let revisions = in_scope(req, revisions(conn, req.root_id)?, |r| r.0);
             let catalog_instance = instance(conn)?;
             if let Some(c) = &req.cursor {
-                if c.filters != filters {
+                if c.filters != filters || !plan.passes.iter().any(|(pass, _)| *pass == c.pass) {
                     return Err(Error::Invalid("search cursor binding"));
                 }
                 if c.catalog_instance != catalog_instance {
