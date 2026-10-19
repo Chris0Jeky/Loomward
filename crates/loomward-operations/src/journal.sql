@@ -34,3 +34,20 @@ CREATE TABLE IF NOT EXISTS op_plan_grant (
   grant_id INTEGER NOT NULL,
   op_id INTEGER NOT NULL CHECK (op_id > 0),
   PRIMARY KEY (grant_id, op_id)) STRICT, WITHOUT ROWID;
+-- Older indexed builds insert this same row after the plan; allow that exact retry only.
+CREATE TRIGGER IF NOT EXISTS op_plan_lookup_same BEFORE INSERT ON op_plan_lookup
+  WHEN EXISTS (SELECT 1 FROM op_plan_lookup WHERE op_id=NEW.op_id AND wire_id IS NEW.wire_id)
+  BEGIN SELECT RAISE(IGNORE); END;
+-- Plan-only writers (including rollbacks) must maintain both routing indexes too.
+CREATE TRIGGER IF NOT EXISTS op_plan_index AFTER INSERT ON op_plan
+  BEGIN
+    INSERT INTO op_plan_lookup(op_id,wire_id)
+      SELECT NEW.op_id, CASE WHEN json_type(p,'$.operation_id')='text'
+        THEN nullif(json_extract(p,'$.operation_id'),'') END
+      FROM (SELECT CASE WHEN json_valid(NEW.plan) THEN NEW.plan ELSE '{}' END AS p);
+    INSERT OR IGNORE INTO op_plan_grant(grant_id,op_id)
+      SELECT value, NEW.op_id
+      FROM (SELECT CASE WHEN json_valid(NEW.plan) THEN NEW.plan ELSE '{}' END AS p),
+        json_each(p, '$.grants')
+      WHERE json_type(p,'$.grants')='array' AND type='integer';
+  END;

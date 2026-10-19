@@ -298,7 +298,7 @@
         "stream_coverage": { "const": "default_stream_only", "$comment": "Alternate data streams and filesystem metadata are not observed in v0.3." },
         "unique_objects": { "$ref": "#/$defs/NullableCount", "$comment": "Distinct (volume_key, file_id) objects within this subtree; null when any entry lacks a native ID." },
         "unique_allocated_bytes": { "$ref": "#/$defs/NullableBytes", "$comment": "Allocation counted once per unique object within this subtree; null when unique_objects is null or allocation is unknown." },
-        "multi_link_entries": { "$ref": "#/$defs/Count", "$comment": "Entries whose object has another observed name anywhere in the dataset or an observed link count above 1." }
+        "multi_link_entries": { "$ref": "#/$defs/NullableCount", "$comment": "Entries whose object has another observed name anywhere in the dataset or an observed link count above 1; null when the subtree was too large to count within the query budget (unique_objects and unique_allocated_bytes are then null too)." }
       }
     },
     "Root": {
@@ -659,7 +659,7 @@
         "strategy": { "$ref": "#/$defs/EnumerationStrategy" },
         "examined": { "$ref": "#/$defs/Count" },
         "indexed_files": { "$ref": "#/$defs/Count" },
-        "indexed_dirs": { "$ref": "#/$defs/Count" },
+        "indexed_dirs": { "$ref": "#/$defs/Count", "$comment": "Directories whose listing was read and indexed; a directory refused on open is catalogued by name but not counted here." },
         "skipped": { "$ref": "#/$defs/Count" },
         "failed": { "$ref": "#/$defs/Count" },
         "logical_bytes": { "$ref": "#/$defs/ByteCount" },
@@ -669,7 +669,7 @@
         "entries_per_second": { "type": "number", "minimum": 0 },
         "elapsed_ms": { "$ref": "#/$defs/Count" },
         "limit_hit": { "type": "boolean" },
-        "limit_reason": { "enum": ["depth_limit"] }
+        "limit_reason": { "enum": ["depth_limit", "directory_limit"] }
       }
     },
     "Job": {
@@ -2034,7 +2034,7 @@
           "additionalProperties": false,
           "required": ["logical_cpus", "busy_fraction"],
           "properties": {
-            "logical_cpus": { "$ref": "#/$defs/Count" },
+            "logical_cpus": { "$ref": "#/$defs/NullableCount" },
             "busy_fraction": { "$ref": "#/$defs/NullableFraction" }
           }
         }

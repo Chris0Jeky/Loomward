@@ -136,7 +136,12 @@ mod native {
             identity,
         );
         let engine = Arc::new(
-            Engine::open(EngineConfig::new("unused".into(), DatasetClass::Synthetic)).unwrap(),
+            // A real state directory: an unidentifiable state exclusion refuses the scan.
+            Engine::open(EngineConfig::new(
+                std::env::temp_dir(),
+                DatasetClass::Synthetic,
+            ))
+            .unwrap(),
         );
         Some((temp, root, engine))
     }
