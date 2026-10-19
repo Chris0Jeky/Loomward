@@ -973,20 +973,36 @@ impl Inner {
             ));
         }
         let at = now_ns();
-        self.catalog
-            .writer()
-            .call(WriteCommand::ForgetGrant {
-                grant_id: grant,
-                forgotten_at_ns: at,
-                expected_state_rev: req.expected_state_rev.map(|g| g.get() as i64),
-            })
-            .map_err(|e| match e {
-                loomward_catalog::Error::StaleGeneration => stale(
-                    "state.db changed since your read; re-read and ask the owner again",
-                    "state_rev_changed",
-                ),
-                e => catalog_error(e),
-            })?;
+        // The state half can commit before the catalogue purge returns. Fence adapter admission
+        // for that whole interval without holding a Bus lock over the blocking writer call.
+        let _delivery = self.engine.suspend_event_delivery();
+        let written = self.catalog.writer().call(WriteCommand::ForgetGrant {
+            grant_id: grant,
+            forgotten_at_ns: at,
+            expected_state_rev: req.expected_state_rev.map(|g| g.get() as i64),
+        });
+        // A derived purge error does not undo state.db's FULL forget transaction. Read its marker
+        // before propagating the original error. If that read also fails, suppress the old name
+        // conservatively; an unreadable marker cannot establish permission to deliver it.
+        let forgotten = written.is_ok()
+            || self
+                .db()
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM st.root_forgotten WHERE grant_id=?1)",
+                    [grant],
+                    |row| row.get::<_, bool>(0),
+                )
+                .unwrap_or(true);
+        if forgotten {
+            self.engine.redact_root_events(r.root_id.as_str());
+        }
+        written.map_err(|e| match e {
+            loomward_catalog::Error::StaleGeneration => stale(
+                "state.db changed since your read; re-read and ask the owner again",
+                "state_rev_changed",
+            ),
+            e => catalog_error(e),
+        })?;
         self.db()
             .execute("DELETE FROM st.root_freshness WHERE grant_id=?1", [grant])
             .map_err(sql_error)?;
@@ -1180,6 +1196,17 @@ impl Inner {
         if !fresh {
             return refused(RootGrantResultRefusal::AlreadyGranted);
         }
+        self.granted_root_reply(root)
+    }
+
+    /// The post-picker grant response and its root-list event use the same snapshot.
+    pub(crate) fn granted_root_reply(&self, root: i64) -> Handled {
+        // The picker is outside the mutation FIFO, and grant() released this lock before returning.
+        // Keep the snapshot and its publication in one turn so a forget cannot fall between them.
+        let _mutation = self
+            .mutation
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let revs = self.revisions()?;
         let rows = db::roots(&self.db(), Some(root)).map_err(sql_error)?;
         let row = rows
@@ -1187,6 +1214,9 @@ impl Inner {
             .ok_or_else(|| fail(ErrorCode::InternalError, "grant vanished"))?;
         let root_json = self.root_json(row, None)?;
         if let Ok(list) = self.root_list(None) {
+            #[cfg(test)]
+            self.hooks
+                .gate(Command::RootsRequestGrant, "grant_snapshot");
             self.publish(EventName::RootsChanged, list, Some(revs.0), Some(revs.1));
         }
         Ok(out(

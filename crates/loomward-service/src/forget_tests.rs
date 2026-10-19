@@ -1139,3 +1139,195 @@ fn another_forget_cannot_clear_an_earlier_unknown_copy_obligation() {
     assert!(svc.inner.backup_scrub_pending().unwrap().is_none());
     assert!(!holders(dir.path(), PATH_A).contains(&"state.before-v1.db".into()));
 }
+
+/// #391: the `roots.changed` the revoke published still names the root in the event replay
+/// buffer. After the forget, neither a reader that had not drained it yet nor a client resuming
+/// from the start of the epoch may receive that name.
+#[test]
+fn forget_redacts_the_root_from_retained_roots_events() {
+    let dir = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    let (root, grant) = named(&svc, 1, NAME_A, PATH_A);
+    named(&svc, 2, "KeptRoot", PATH_B);
+    let mut slow = svc.subscribe(None);
+    let RecvOutcome::Event(hello) = slow.recv_timeout(Duration::from_secs(5)) else {
+        panic!("expected hello")
+    };
+    let epoch = hello.data["epoch"].as_str().unwrap().to_string();
+    svc.inner.revoke(grant).unwrap();
+    ok("roots.forget", forget(&svc, root, None));
+    for mut stream in [slow, svc.subscribe(Some((epoch, 0)))] {
+        let mut roots_events = 0;
+        while let RecvOutcome::Event(e) = stream.recv_timeout(Duration::from_millis(300)) {
+            let text = serde_json::to_string(&e).unwrap();
+            assert!(
+                !text.contains(PATH_A),
+                "a retained event names the forgotten root"
+            );
+            if e.event == EventName::RootsChanged {
+                e.validate().unwrap();
+                assert!(text.contains(PATH_B), "the kept root stays in the event");
+                roots_events += 1;
+            }
+        }
+        assert!(
+            roots_events >= 2,
+            "both the revoke and the forget events replay"
+        );
+    }
+}
+
+/// The state half of ForgetGrant commits before the catalogue half. Its error receipt must not
+/// leave a forgotten name readable from the retained revoke event.
+#[test]
+fn a_post_commit_catalogue_purge_error_still_redacts_the_retained_root_events() {
+    let dir = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    let (root, grant) = named(&svc, 1, NAME_A, PATH_A);
+    let (kept, _) = named(&svc, 2, "KeptRoot", PATH_B);
+    let mut slow = svc.subscribe(None);
+    let RecvOutcome::Event(hello) = slow.recv_timeout(Duration::from_secs(5)) else {
+        panic!("expected hello");
+    };
+    svc.inner.revoke(grant).unwrap();
+    svc.inner
+        .db()
+        .execute_batch(&format!(
+            "CREATE TRIGGER main.refuse_forget_purge BEFORE DELETE ON root WHEN OLD.id={root} BEGIN SELECT RAISE(ABORT, 'synthetic post-commit purge failure'); END"
+        ))
+        .unwrap();
+    let failed = err(forget(&svc, root, None));
+    assert_eq!(failed.code, ErrorCode::InternalError);
+    assert_eq!(
+        count(
+            &svc,
+            &format!("SELECT count(*) FROM st.root_forgotten WHERE grant_id={grant}")
+        ),
+        1,
+        "the state half really committed before the error"
+    );
+    assert_eq!(
+        count(
+            &svc,
+            &format!("SELECT count(*) FROM main.root WHERE id={root}")
+        ),
+        1,
+        "the catalogue half really rolled back"
+    );
+    for mut stream in [
+        slow,
+        svc.subscribe(Some((hello.epoch.to_string(), hello.seq.get()))),
+    ] {
+        let retained = loop {
+            let RecvOutcome::Event(event) = stream.recv_timeout(Duration::from_secs(5)) else {
+                panic!("expected retained roots.changed");
+            };
+            if event.event == EventName::RootsChanged {
+                break event;
+            }
+        };
+        retained.validate().unwrap();
+        let text = serde_json::to_string(&retained).unwrap();
+        assert!(
+            !text.contains(PATH_A),
+            "the durable forget survived an error, but its name replayed"
+        );
+        assert!(text.contains(PATH_B), "the other root remains in replay");
+    }
+    // A later grant response uses the live root-list source after the delivery suspension ended.
+    // The durable marker must exclude the old root even though its derived rows still exist.
+    let mut live = svc.subscribe(None);
+    assert!(matches!(
+        live.recv_timeout(Duration::from_secs(5)),
+        RecvOutcome::Event(_)
+    ));
+    let admission = live.delivery_policy().stamp();
+    svc.inner.granted_root_reply(kept).unwrap();
+    let RecvOutcome::Event(future) = live.recv_timeout(Duration::from_secs(5)) else {
+        panic!("fresh root-list event after failed purge");
+    };
+    assert!(
+        admission.admit(),
+        "delivery resumed after the failed RPC settled"
+    );
+    assert_eq!(future.event, EventName::RootsChanged);
+    future.validate().unwrap();
+    let text = serde_json::to_string(&future).unwrap();
+    assert!(
+        !text.contains(PATH_A),
+        "a fresh snapshot reintroduced the durably forgotten root"
+    );
+    assert!(text.contains(PATH_B));
+}
+
+/// The picker bypasses the mutation FIFO while waiting on the owner. Drive its real post-picker
+/// publication helper on a synthetic catalogue so Linux can prove the same ordering as Windows.
+#[test]
+fn a_grant_snapshot_cannot_republish_a_root_after_a_concurrent_forget() {
+    let dir = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    let (forgotten, grant) = named(&svc, 1, NAME_A, PATH_A);
+    let (kept, _) = named(&svc, 2, "KeptRoot", PATH_B);
+    svc.inner.revoke(grant).unwrap();
+    const GATE: (Command, &str) = (Command::RootsRequestGrant, "grant_snapshot");
+    svc.inner.hooks.closed.lock().unwrap().push(GATE);
+    struct Release(Arc<crate::tests::Hooks>);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            self.0.open(GATE.0, GATE.1);
+        }
+    }
+    let (held, early) = std::thread::scope(|scope| {
+        let publishing = scope.spawn(|| svc.inner.granted_root_reply(kept));
+        let release = Release(svc.inner.hooks.clone());
+        svc.inner
+            .hooks
+            .until("the grant owns its root-list snapshot", |h| {
+                h.arrived.lock().unwrap().contains(&GATE)
+            });
+        // This deterministic observation complements the concurrent operation below: it cannot
+        // pass merely because a slow scheduler delayed the forget beyond the bounded wait.
+        let held = svc.inner.mutation.try_lock().is_err();
+        let (sent, received) = std::sync::mpsc::channel();
+        let forgetting_service = &svc;
+        let forgetting = scope.spawn(move || {
+            let response = forget(forgetting_service, forgotten, None);
+            sent.send(response).unwrap();
+        });
+        svc.inner
+            .hooks
+            .until("the forget entered its production handler", |h| {
+                h.runs.lock().unwrap().contains_key(&Command::RootsForget)
+            });
+        let early = received.recv_timeout(Duration::from_millis(50)).ok();
+        drop(release);
+        publishing.join().unwrap().unwrap();
+        forgetting.join().unwrap();
+        let was_early = early.is_some();
+        ok(
+            "roots.forget",
+            early.unwrap_or_else(|| received.recv_timeout(Duration::from_secs(5)).unwrap()),
+        );
+        (held, was_early)
+    });
+    let mut replay = svc.subscribe(None);
+    let RecvOutcome::Event(hello) = replay.recv_timeout(Duration::from_secs(5)) else {
+        panic!("hello");
+    };
+    let mut replay = svc.subscribe(Some((hello.epoch.to_string(), 0)));
+    while let RecvOutcome::Event(event) = replay.recv_timeout(Duration::from_millis(100)) {
+        let text = serde_json::to_string(&event).unwrap();
+        assert!(
+            !text.contains(PATH_A),
+            "the grant republished its pre-forget snapshot after redaction"
+        );
+    }
+    assert!(
+        held,
+        "root-list snapshot and publication must hold the mutation turn"
+    );
+    assert!(
+        !early,
+        "forget may not commit between the grant snapshot and its event"
+    );
+}
