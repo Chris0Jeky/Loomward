@@ -175,6 +175,24 @@ fn copy_staged_writes_and_metadata_keep_file_and_ancestry_pinned() {
 }
 
 #[test]
+fn staging_entry_limit_is_inclusive() {
+    assert_eq!(loomward_operations::MAX_ITEMS, 200_000);
+    if skip_elevated() {
+        return;
+    }
+    let (_temp, destination) = lab();
+    let stage = destination.stage("staging").unwrap();
+    for n in 0..9 {
+        drop(stage.create_file(&[], &format!("file-{n}")).unwrap());
+    }
+    assert_eq!(stage.entries_with_limit(&[], 9).unwrap().len(), 9);
+    assert_eq!(
+        stage.entries_with_limit(&[], 8).unwrap_err().to_string(),
+        "incomplete staging listing"
+    );
+}
+
+#[test]
 fn journaled_staging_lists_entries_before_and_after_publish() {
     if skip_elevated() {
         return;

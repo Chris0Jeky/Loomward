@@ -230,33 +230,68 @@ fn unpaired_surrogate_staging_entries_are_never_committed() {
 }
 
 #[test]
-#[cfg(feature = "fixtures")]
 fn over_limit_staging_entries_are_never_committed() {
-    let Some(lab) = Lab::new() else { return };
-    fs::write(lab.src().join("f"), b"payload").unwrap();
-    let op = lab.start(&["f"]);
-    let dest = lab.dest();
-    let control = Control::new(false).with_hook(move |point, _| {
-        if point == Point::BeforePublish {
-            let staging = fs::read_dir(&dest).unwrap().next().unwrap().unwrap().path();
-            for n in 0..loomward_operations::MAX_ITEMS {
-                fs::write(staging.join(format!("extra-{n:06}")), b"").unwrap();
+    assert_staging_limit(false);
+}
+
+#[test]
+fn over_limit_staging_tree_entries_are_never_committed() {
+    assert_staging_limit(true);
+}
+
+fn assert_staging_limit(nested: bool) {
+    // Refuse before publish and during confirmation; accepting exactly the limit is the control.
+    for (limit, late) in [(8, false), (8, true), (9, false)] {
+        let Some(lab) = Lab::new() else { return };
+        let selected: Vec<String> = if nested {
+            // Each folder fits the cap; only the aggregate listing exceeds it.
+            (0..3).map(|n| format!("folder-{n}")).collect()
+        } else {
+            (0..9).map(|n| format!("file-{n}")).collect()
+        };
+        let mut files = Vec::new();
+        for name in &selected {
+            if nested {
+                fs::create_dir(lab.src().join(name)).unwrap();
+                for n in 0..2 {
+                    files.push(lab.src().join(name).join(format!("file-{n}")));
+                }
+            } else {
+                files.push(lab.src().join(name));
             }
-            assert_eq!(
-                fs::read_dir(&staging).unwrap().count(),
-                loomward_operations::MAX_ITEMS as usize + 1
-            );
-            assert_incomplete_listing(&staging);
         }
-        Flow::Continue
-    });
-    let outcome = run(&lab.store, op, &control).unwrap();
-    assert_eq!(outcome.state, OpState::NeedsAttention, "{outcome:?}");
-    assert_eq!(
-        outcome.refusal,
-        Some((Refusal::ChangedAfterVerification, None))
-    );
-    assert_eq!(fs::read(lab.src().join("f")).unwrap(), b"payload");
+        for path in &files {
+            fs::write(path, b"payload").unwrap();
+        }
+        let op = lab.start(&selected.iter().map(String::as_str).collect::<Vec<_>>());
+        let control = Control::new(false).with_hook(move |point, control| {
+            if late && point == Point::BeforePublish {
+                control.staging_entry_limit.store(limit, Ordering::SeqCst);
+            }
+            Flow::Continue
+        });
+        control
+            .staging_entry_limit
+            .store(if late { 9 } else { limit }, Ordering::SeqCst);
+        // All nine entries belong to the manifest: a name mismatch cannot mask a removed bound.
+        let outcome = run(&lab.store, op, &control).unwrap();
+        assert_eq!(
+            outcome.state,
+            if limit == 8 {
+                OpState::NeedsAttention
+            } else {
+                OpState::Committed
+            },
+            "nested={nested}, limit={limit}, late={late}: {outcome:?}"
+        );
+        assert_eq!(
+            outcome.refusal,
+            (limit == 8).then_some((Refusal::ChangedAfterVerification, None))
+        );
+        for path in files {
+            assert_eq!(fs::read(path).unwrap(), b"payload");
+        }
+    }
 }
 
 fn assert_incomplete_listing(folder: &Path) {
