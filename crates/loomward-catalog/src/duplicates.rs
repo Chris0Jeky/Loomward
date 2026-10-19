@@ -40,7 +40,8 @@ impl Reader {
         let result = self.read(|conn| {
             crate::query::revisions(conn, Some(root))?;
             let complete: bool = conn.query_row("SELECT sub_complete FROM dir WHERE root_id=?1 AND parent_id IS NULL", [root], |r|r.get(0))?;
-            let _guard = WorkGuard::new(conn, 2_000_000, deadline)?;
+            // Sized so a 130k-file root answers (about 0.4 s debug, #715); a larger root is refused (resource_budget), never truncated.
+            let _guard = WorkGuard::new(conn, 32_000_000, deadline)?;
             // visible_dir supplies the grant/tombstone rules; excluded ancestors also shield old rows.
             let mut stmt = conn.prepare("WITH RECURSIVE shielded(id) AS (
                 SELECT id FROM dir WHERE root_id=?1 AND (listing_state='excluded' OR flags & ?4 != 0)

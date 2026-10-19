@@ -669,6 +669,8 @@ mod lab_copy {
             .store(300, std::sync::atomic::Ordering::SeqCst);
         ok("copy.start", call(&lab.svc, "copy.start", consent));
         wait.recv_timeout(Duration::from_secs(60)).unwrap();
+        let journal = loomward_catalog::sqlite_dir(&lab.path.parent().unwrap().join("state"))
+            .join("state.db");
         let Lab { _tmp, svc, .. } = lab;
         let (dropped, finished) = std::sync::mpsc::channel();
         let closer = std::thread::spawn(move || {
@@ -676,15 +678,53 @@ mod lab_copy {
             let _ = dropped.send(());
         });
         let bounded = finished.recv_timeout(Duration::from_secs(20));
+        let mut reopened = bounded
+            .is_ok()
+            .then(|| loomward_operations::Store::open(&journal).unwrap());
+        let before = reopened.as_mut().map(|s| {
+            let r = s.replay(1).unwrap().unwrap();
+            assert_eq!(r.state, loomward_operations::OpState::Copying);
+            // A reopened service can fence this operation while its detached worker is held.
+            s.append(
+                1,
+                r.epoch + 1,
+                loomward_operations::Record::Fenced {
+                    cause: loomward_operations::FenceCause::GrantRevoked,
+                },
+            )
+            .unwrap()
+        });
         // Always release the worker before asserting, including against the unbounded implementation.
         release.send(()).unwrap();
         closer.join().unwrap();
         bounded.expect("dropping the service waited for the stuck worker");
-        // The detached worker stops at its next chunk; wait for it before the temp folder goes.
+        // A second connection reads real WAL snapshots while the detached worker appends its stop.
+        let mut reopened = reopened.unwrap();
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while matches!(gone.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)) {
+            reopened.replay(1).unwrap().unwrap();
+            assert!(Instant::now() < deadline, "detached worker did not stop");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let after = reopened.replay(1).unwrap().unwrap();
+        assert_eq!(after.state, loomward_operations::OpState::Cancelled);
+        assert!(
+            after.seq > before.unwrap(),
+            "worker appended no final stop records"
+        );
+        // This store cached the fence before the worker's final appends; it must refresh that cache.
         assert!(matches!(
-            gone.recv_timeout(Duration::from_secs(60)),
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
+            reopened.append(
+                1,
+                after.epoch,
+                loomward_operations::Record::Transition {
+                    to: loomward_operations::OpState::Cancelling,
+                    code: None,
+                },
+            ),
+            Err(loomward_operations::AppendError::Rejected(_))
         ));
+        assert_eq!(reopened.replay(1).unwrap().unwrap().seq, after.seq);
     }
 
     #[test]
@@ -764,6 +804,56 @@ mod lab_copy {
             "detached worker wrote after new service cancelled"
         );
         assert_eq!(settle_copy(&svc, &op)["state"], "cancelled");
+    }
+
+    #[test]
+    fn racing_copy_starts_recheck_the_wire_id_before_journaling() {
+        let Some((lab, a, b)) = scanned() else { return };
+        let svc = &lab.svc;
+        let p = preview(svc, &a, &b);
+        let op = p["operation_id"].as_str().unwrap().to_owned();
+        let consent = json!({"operation_id": op, "digest": digest(&p)});
+        ok("copy.approve", call(svc, "copy.approve", consent.clone()));
+        let (reached, wait) = std::sync::mpsc::channel();
+        let (release, resume) = std::sync::mpsc::channel::<()>();
+        let resume = Mutex::new(resume);
+        let first = std::sync::atomic::AtomicBool::new(true);
+        *svc.inner.copies.gate.lock().unwrap() = Some(Arc::new(move |point| {
+            if point == "prepared" && first.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                reached.send(()).unwrap();
+                let _ = resume.lock().unwrap().recv_timeout(Duration::from_secs(60));
+            }
+        }));
+        std::thread::scope(|scope| {
+            // Exercise handler concurrency directly, without the adapter's idempotency lock.
+            let waiting = scope.spawn(|| {
+                svc.inner
+                    .copy_start(&request("copy.start", consent.clone()))
+            });
+            wait.recv_timeout(Duration::from_secs(60)).unwrap();
+            // The first start consumed its approval but has not registered. A new approval lets
+            // another caller pass the initial lookup and win the mutation lock.
+            ok("copy.approve", call(svc, "copy.approve", consent.clone()));
+            svc.inner
+                .copy_start(&request("copy.start", consent.clone()))
+                .unwrap();
+            release.send(()).unwrap();
+            let e = waiting
+                .join()
+                .unwrap()
+                .err()
+                .expect("the competing start must refuse");
+            assert_eq!(reason(&e), Some("copy_already_started"), "{e:?}");
+        });
+        assert_eq!(settle_copy(svc, &op)["state"], "committed");
+        let store = svc.inner.copies.store.as_ref().unwrap().lock().unwrap();
+        let ops = store.operations().unwrap();
+        assert_eq!(
+            ops.len(),
+            1,
+            "a refused racing start left an orphan operation"
+        );
+        assert!(store.plan(ops[0]).unwrap().is_some());
     }
 
     #[test]

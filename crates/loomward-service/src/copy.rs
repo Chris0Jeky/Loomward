@@ -273,10 +273,9 @@ impl Copies {
 }
 
 /// Shutdown cancels every running worker (it stops at its next item or 1 MiB chunk, before publish)
-/// and waits for each, so no effect or journal write outlives the service and a reopened service never
-/// recovers alongside an old executor (review of #522). The wait is bounded (`shutdown_wait_ms` in
-/// total, #569): a worker stuck in a blocking OS call is detached, still cancelled, and its journal is
-/// left to the recovery of the next open.
+/// and waits for each within a shared `shutdown_wait_ms` bound (#569). A worker stuck in a blocking
+/// OS call is detached, still cancelled, and its journal is left to the recovery of the next open.
+/// Store serialises appends from that worker and a reopened service against the current journal.
 #[cfg(windows)]
 impl Drop for Copies {
     fn drop(&mut self) {
@@ -505,6 +504,8 @@ impl Inner {
     /// before the rename it cancels itself, after it commits annotated
     /// `grant_revoked`. A run left waiting (blocked, interrupted, publishing) is
     /// then cancelled through the abandon path; `needs_attention` stays for the owner. Q1 applies.
+    /// `PublishUnobserved` (a publish intent, and the destination could not settle which side of
+    /// the rename the run is on) is answered like a pending fence: retryable `copy_fence_pending`.
     pub(crate) fn copies_fence(&self, grant: i64) -> Result<(), ErrorBody> {
         #[cfg(windows)]
         {
@@ -795,6 +796,15 @@ impl Inner {
             // `copies_fence`, so under it the grants are re-checked and the run is registered in
             // `ops` and `running` atomically: a revoke either refuses this start or fences this run.
             let _registering = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
+            if self.copy_op(&id)?.is_some() {
+                return Err(with_reason(
+                    fail(
+                        ErrorCode::InvalidRequest,
+                        "this operation has started; abandon it to end it",
+                    ),
+                    "copy_already_started",
+                ));
+            }
             for &grant in &plan.grants {
                 let state: Option<String> = self
                     .db()

@@ -121,7 +121,9 @@ events are excluded and counted in `learning.status.unresolved_human_events`.
 
 `learning.refit` produces a persisted **candidate**, without promotion (LW-027). Status and queue
 use the latest candidate for advice only; `calibrated` and `autonomy_allowed` remain false. Scores
-are **relative scores, not probabilities**. New fits record the highest human-feedback row ID observed at commit and use that
+are **relative scores, not probabilities**. When no current fitted candidate exists, status,
+queue and every queue suggestion return `model_id: null`; the cold student abstains with
+`no_training_examples`. New fits record the highest human-feedback row ID observed at commit and use that
 monotonic counter for freshness, independent of the wall clock. Older stored candidates retain
 their timestamp guard until explicitly refitted; no feature history is removed by this change.
 Queue order is descending review priority with a node
@@ -144,6 +146,16 @@ table; it never writes a file-operation manifest. A duplicate canonical inputs d
 saved scenario. Saving checks the read's catalogue revision, declarations, active grants and root
 generations before committing, including catalogue changes within a generation.
 
+The engine save digest retains both the candidate projection (including its empty
+`excluded_volumes` member) and the simulation's excluded-volume reasons. These are part of the
+historical explanation, even when the planner scenario is unchanged. Overrides are hashed in
+group-ID order; their request order does not change the scenario's identity. Existing sorted
+digests are unchanged, and stored details remain readable without digest recomputation.
+Pre-#350 digests omitted that candidate member; older unsorted overrides also used array order.
+Re-saving either legacy form can create one new row. This is a deduplication boundary, not
+verification of a legacy digest against current inputs.
+Historical simulations never authorise an effect.
+
 The catalogue adapter reads active granted roots only, in one bounded SQLite snapshot. Missing
 fresh identity-matched link observations leave relief Unknown; default `verified_only` simulation
 pre-rejects those groups. Entry-allocation what-ifs remain explicitly labelled assumptions. Missing
@@ -165,8 +177,10 @@ reason `overlapping_grant_ancestry_unknown`.
 
 Volumes whose recorded roots have no active grant remain visible in `volumes.list` and
 `tiers.model`, with their observed `online` state and a "No active grant" tier note. They are
-excluded from candidates and simulations with `excluded_volumes.reason = "no_active_grant"`; choosing one as
-the source refuses with `invalid_request`, `detail.reason = "no_active_grant"`.
+excluded from the engine snapshot. The service adds them to `excluded_volumes` on both
+`placement.candidates` and `placement.simulate` with `reason = "no_active_grant"`; choosing one
+as the source refuses with `invalid_request`, `detail.reason = "no_active_grant"`. Candidate
+groups themselves come only from active granted roots.
 
 Each `tiers.model` volume has a required `source_eligible` boolean. It is false for offline,
 unknown-tier, missing or unusable capacity/free-space observations, out-of-range planner
@@ -391,6 +405,11 @@ process enumeration time, including in newer `TelemetrySample`s; process list an
 timestamps refer to that enumeration too. Rates use the interval between process observations.
 An engine thread count not observed on the current tick is null. Requests for channels outside
 the sampled lease union return `partial_coverage` (not sampled), distinct from hardware unavailable.
+
+A requested, sampled system section remains present even when CPU capacity is unknown.
+`system.cpu.logical_cpus` is required but nullable: a failed or zero native count maps to null,
+while known memory and CPU readings remain visible. Numeric counts keep their existing encoding;
+readers built against the earlier non-nullable v3 draft must accept null before consuming these samples.
 
 `TelemetrySample.trends` (LW-051) is read-only and projects the same requested channels.
 `trends` is a required field of every v3 `TelemetrySample`: a v3 reader may rely on it, and a

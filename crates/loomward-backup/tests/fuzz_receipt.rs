@@ -17,6 +17,11 @@ fn id(c: char) -> String {
     c.to_string().repeat(64)
 }
 
+/// The UTF-16 byte-order marks: the only inputs that may end in `ReceiptError::Utf16Bom` (#349).
+fn utf16_bom(raw: &[u8]) -> bool {
+    raw.starts_with(&[0xff, 0xfe]) || raw.starts_with(&[0xfe, 0xff])
+}
+
 fn file(path: &str) -> FileVersion {
     FileVersion {
         path: path.into(),
@@ -185,7 +190,10 @@ proptest! {
     fn never_panics_on_arbitrary_bytes(raw in prop::collection::vec(any::<u8>(), 0..600)) {
         match normalise_backup_receipt(&raw, &source()) {
             Ok(e) => headline_has_its_predicates(&e, &source())?,
-            Err(err) => prop_assert!(matches!(err, ReceiptError::InvalidJson | ReceiptError::InvalidReceipt)),
+            Err(err) => prop_assert!(
+                matches!(err, ReceiptError::InvalidJson | ReceiptError::InvalidReceipt)
+                    || (err == ReceiptError::Utf16Bom && utf16_bom(&raw))
+            ),
         }
     }
 
@@ -220,7 +228,10 @@ proptest! {
                 // Accepted bytes mean what an independent reader says they mean.
                 prop_assert_eq!(ev.snapshot_time, bound_time(&mutated));
             }
-            Err(err) => prop_assert!(matches!(err, ReceiptError::InvalidJson | ReceiptError::InvalidReceipt)),
+            Err(err) => prop_assert!(
+                matches!(err, ReceiptError::InvalidJson | ReceiptError::InvalidReceipt)
+                    || (err == ReceiptError::Utf16Bom && utf16_bom(&mutated))
+            ),
         }
     }
 

@@ -301,7 +301,7 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
     totals: {
       files: n.files, dirs: n.dirs, logical_bytes: n.logical.toString(), allocated_bytes: n.allocated === null ? null : n.allocated.toString(),
       allocation_unknown_files: n.unknownFiles, skipped: 0, failed: 0, complete: n.coverage === 'complete', stream_coverage: 'default_stream_only',
-      unique_objects: null, unique_allocated_bytes: null, multi_link_entries: 0, // the schema's Count has no null: this 0 is a placeholder, the synthetic catalogue has no native file IDs to count
+      unique_objects: null, unique_allocated_bytes: null, multi_link_entries: null, // the synthetic catalogue has no native file IDs to count
     },
   });
 
