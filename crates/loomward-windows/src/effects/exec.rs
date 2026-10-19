@@ -783,12 +783,19 @@ impl Journal<'_> {
     }
 
     fn commit(&self, control: &Control) -> Result<(), Stop> {
-        #[cfg(test)]
-        crash::record("before", &Record::Committed);
         let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
         // Serialize the pending annotation with commit so a fence cannot slip between them.
-        journal_fence_locked(&mut store, self.op, control)
-            .map_err(|e| Stop::Journal(format!("{e:?}")))?;
+        let pending_fence = control
+            .unjournaled
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some();
+        if pending_fence {
+            journal_fence_locked(&mut store, self.op, control)
+                .map_err(|e| Stop::Journal(format!("{e:?}")))?;
+        }
+        #[cfg(test)]
+        crash::record("before", &Record::Committed);
         store
             .append(self.op, self.epoch, Record::Committed)
             .map_err(|e| Stop::Journal(format!("{e:?}")))?;
@@ -1768,10 +1775,14 @@ fn journal_fence_locked(s: &mut Store, op: u64, control: &Control) -> Result<Rep
         .map_err(|e| Fault::Journal(e.to_string()))?
         .map_err(|e| Fault::Journal(format!("{e:?}")))?;
     if let Some(cause) = unjournaled.take().filter(|_| !r.state.is_terminal()) {
+        #[cfg(test)]
+        crash::record("before", &Record::Fenced { cause });
         if let Err(e) = s.append(op, r.epoch + 1, Record::Fenced { cause }) {
             *unjournaled = Some(cause);
             return Err(Fault::Journal(format!("{e:?}")));
         }
+        #[cfg(test)]
+        crash::record("after", &Record::Fenced { cause });
     }
     Ok(r)
 }
