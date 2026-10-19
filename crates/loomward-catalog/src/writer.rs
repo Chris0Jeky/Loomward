@@ -540,11 +540,10 @@ fn stages_references(command: &WriteCommand) -> bool {
 }
 /// AUTOINCREMENT's high-water mark: every new reference raises it, even after a deletion.
 fn reference_mark(conn: &Connection) -> rusqlite::Result<i64> {
-    conn.query_row(
+    conn.prepare_cached(
         "SELECT coalesce((SELECT seq FROM st.sqlite_sequence WHERE name='object_ref'),0)",
-        [],
-        |r| r.get(0),
     )
+    .and_then(|mut s| s.query_row([], |r| r.get(0)))
 }
 /// Reference intents are staged from a snapshot of `object_ref` and commit before the catalogue
 /// transaction begins, so another connection can bind a new reference in between (#356):
@@ -669,7 +668,7 @@ fn serve(
         let forget = matches!(first.command, WriteCommand::ForgetGrant { .. });
         let mut batch = vec![first];
         let first_run = staged_run(&batch[0].command).filter(|run| {
-            conn.query_row("SELECT s.mode='full' AND NOT EXISTS(SELECT 1 FROM scan_run prior WHERE prior.root_id=s.root_id AND prior.id<s.id) FROM scan_run s WHERE s.id=?1", [run], |r| r.get::<_, bool>(0)).unwrap_or(false)
+            conn.prepare_cached("SELECT s.mode='full' AND NOT EXISTS(SELECT 1 FROM scan_run prior WHERE prior.root_id=s.root_id AND prior.id<s.id) FROM scan_run s WHERE s.id=?1").and_then(|mut s| s.query_row([run], |r| r.get::<_, bool>(0))).unwrap_or(false)
         });
         let mut results = Vec::with_capacity(batch.len());
         let mut failed = false;
@@ -692,11 +691,10 @@ fn serve(
                 };
                 batchable = listing_command(&batch[0].command)
                     && !conn
-                        .query_row(
+                        .prepare_cached(
                             "SELECT EXISTS(SELECT 1 FROM st.object_ref WHERE state='resolved')",
-                            [],
-                            |r| r.get::<_, bool>(0),
                         )
+                        .and_then(|mut s| s.query_row([], |r| r.get::<_, bool>(0)))
                         .unwrap_or(true);
                 let prepare_start = Instant::now();
                 prepared = Some(prepare_state(
@@ -718,11 +716,9 @@ fn serve(
                 if let Some(PublicationCrash::BeforeFence(observe)) = crash.filter(|_| stages) {
                     observe(&conn);
                 }
-                let durability = conn.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM st.pending_reference)",
-                    [],
-                    |r| r.get::<_, bool>(0),
-                );
+                let durability = conn
+                    .prepare_cached("SELECT EXISTS(SELECT 1 FROM st.pending_reference)")
+                    .and_then(|mut s| s.query_row([], |r| r.get::<_, bool>(0)));
                 // Sticky across a re-stage, so NORMAL is always restored after the batch.
                 full |= matches!(durability, Ok(true));
                 // The publication must survive power loss before FULL state confirmation can retire it.
@@ -776,12 +772,9 @@ fn serve(
                         .then(|| context.bulk.clone());
                         results.push(ready.and_then(|prepared| {
                         let save = tx.savepoint()?;
-                        save.execute(
-                            "UPDATE revision SET catalog_rev=catalog_rev+1 WHERE id=1",
-                            [],
-                        )?;
+                        save.prepare_cached("UPDATE revision SET catalog_rev=catalog_rev+1 WHERE id=1").and_then(|mut s| s.execute([],))?;
                         context.revision =
-                            save.query_row("SELECT catalog_rev FROM revision", [], |r| r.get(0))?;
+                            save.prepare_cached("SELECT catalog_rev FROM revision").and_then(|mut s| s.query_row([], |r| r.get(0)))?;
                         let dirty_start = context.dirty.len();
                         let result = apply(&save, &p.command, &mut context, prepared)
                             .and_then(|reply| {
@@ -792,7 +785,7 @@ fn serve(
                             });
                         // The witness commits atomically with the catalogue publication.
                         let result = result.and_then(|reply| {
-                            save.execute("INSERT INTO meta(key,value) SELECT 'reference_publication',publication_token FROM st.pending_reference LIMIT 1 ON CONFLICT(key) DO UPDATE SET value=excluded.value", [])?;
+                            save.prepare_cached("INSERT INTO meta(key,value) SELECT 'reference_publication',publication_token FROM st.pending_reference LIMIT 1 ON CONFLICT(key) DO UPDATE SET value=excluded.value").and_then(|mut s| s.execute([]))?;
                             Ok(reply)
                         });
                         match result {
@@ -1095,7 +1088,7 @@ fn fail_batch(results: &mut [Result<WriteReply>], error: Error) {
     }
 }
 fn active_run(conn: &Connection, t: Tables, run: i64, dir: Option<i64>) -> Result<i64> {
-    let root:Option<i64>=conn.query_row("SELECT s.root_id FROM scan_run s JOIN root r ON r.id=s.root_id JOIN st.root_grant g ON g.id=r.grant_id WHERE s.id=?1 AND s.state='running' AND r.active_run=s.id AND g.state='active'",[run],|r|r.get(0)).optional()?;
+    let root:Option<i64>=conn.prepare_cached("SELECT s.root_id FROM scan_run s JOIN root r ON r.id=s.root_id JOIN st.root_grant g ON g.id=r.grant_id WHERE s.id=?1 AND s.state='running' AND r.active_run=s.id AND g.state='active'").and_then(|mut s| s.query_row([run],|r|r.get(0))).optional()?;
     let root = root.ok_or(Error::Invalid("inactive run or grant"))?;
     if let Some(dir) = dir {
         if !conn.prepare_cached(&format!("SELECT EXISTS(SELECT 1 FROM {} WHERE id=?1 AND root_id=?2 AND listing_state!='absent_pending')",t.dir))?.query_row(params![dir,root],|r|r.get::<_,bool>(0))?{return Err(Error::NotFound);}
@@ -1904,7 +1897,7 @@ fn stage(
     dirs: &Vec<Observation>,
 ) -> Result<()> {
     active_run(conn, t, run, Some(dir))?;
-    let previous:Option<(i64,i64)>=conn.query_row("SELECT seq,entry_count_total FROM stage_entry WHERE run_id=?1 AND dir_id=?2 ORDER BY seq DESC LIMIT 1",params![run,dir],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+    let previous:Option<(i64,i64)>=conn.prepare_cached("SELECT seq,entry_count_total FROM stage_entry WHERE run_id=?1 AND dir_id=?2 ORDER BY seq DESC LIMIT 1").and_then(|mut s| s.query_row(params![run,dir],|r|Ok((r.get(0)?,r.get(1)?)))).optional()?;
     let (next, count) = previous.map_or((0, 0), |(seq, count)| (seq + 1, count));
     if seq != next {
         return Err(Error::Invalid("non-contiguous chunk sequence"));
@@ -1932,14 +1925,23 @@ type DirectoryMatch = (
     String,
     Option<i64>,
 );
+/// Per-listing scratch statements, from the statement cache rather than parsed per listing (#148).
+fn scratch(conn: &Connection, statements: &[&str]) -> Result<()> {
+    for sql in statements {
+        conn.prepare_cached(sql)?.execute([])?;
+    }
+    Ok(())
+}
 fn old_files(conn: &Connection, t: Tables, dir: i64) -> Result<bool> {
-    conn.execute_batch("CREATE TEMP TABLE IF NOT EXISTS old_file(id INTEGER PRIMARY KEY,name TEXT,raw BLOB,identity BLOB,created_ft INTEGER,used INTEGER);CREATE INDEX IF NOT EXISTS old_by_name ON old_file(name,raw);CREATE INDEX IF NOT EXISTS old_by_identity ON old_file(identity,used);DELETE FROM old_file")?;
+    scratch(conn, &["CREATE TEMP TABLE IF NOT EXISTS old_file(id INTEGER PRIMARY KEY,name TEXT,raw BLOB,identity BLOB,created_ft INTEGER,used INTEGER)", "CREATE INDEX IF NOT EXISTS old_by_name ON old_file(name,raw)", "CREATE INDEX IF NOT EXISTS old_by_identity ON old_file(identity,used)", "DELETE FROM old_file"])?;
     conn.prepare_cached(&format!(
         "INSERT INTO old_file SELECT id,name,name_utf16,file_id,created_ft,0 FROM {} WHERE dir_id=?1",
         t.file
     ))?
     .execute([dir])?;
-    Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM old_file)", [], |r| r.get(0))?)
+    Ok(conn
+        .prepare_cached("SELECT EXISTS(SELECT 1 FROM old_file)")
+        .and_then(|mut s| s.query_row([], |r| r.get(0)))?)
 }
 fn match_file(
     conn: &Connection,
@@ -1973,22 +1975,22 @@ fn publish(
     if t == BULK {
         share_sequences(conn)?;
     }
-    let (depth,fs):(i64,Option<String>)=conn.query_row(&format!("SELECT d.depth,v.filesystem FROM {d} d JOIN root r ON r.id=d.root_id LEFT JOIN volume v ON v.id=r.volume_id WHERE d.id=?1"),[dir],|r|Ok((r.get(0)?,r.get(1)?)))?;
+    let (depth,fs):(i64,Option<String>)=conn.prepare_cached(&format!("SELECT d.depth,v.filesystem FROM {d} d JOIN root r ON r.id=d.root_id LEFT JOIN volume v ON v.id=r.volume_id WHERE d.id=?1")).and_then(|mut s| s.query_row([dir],|r|Ok((r.get(0)?,r.get(1)?))))?;
     let complete = matches!(outcome, ListingOutcome::Complete);
     let coverage = outcome.coverage()?;
-    // Direct payloads are prevalidated, but staged entries still need the cross-entry guard.
-    let is_direct = direct.is_some()
-        && !conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM stage_entry WHERE run_id=?1 AND dir_id=?2)",
-            params![run, dir],
-            |r| r.get::<_, bool>(0),
-        )?;
+    // Every payload is validated alone when sent, files and directories together: a direct
+    // listing, or one staged chunk, cannot repeat a name. Only several payloads need the guard.
+    let chunks: i64 = conn
+        .prepare_cached("SELECT count(*) FROM stage_entry WHERE run_id=?1 AND dir_id=?2")?
+        .query_row(params![run, dir], |r| r.get(0))?;
+    let is_direct = chunks + i64::from(direct.is_some()) <= 1;
     let has_old = if prepared {
-        conn.query_row("SELECT EXISTS(SELECT 1 FROM old_file)", [], |r| r.get(0))?
+        conn.prepare_cached("SELECT EXISTS(SELECT 1 FROM old_file)")
+            .and_then(|mut s| s.query_row([], |r| r.get(0)))?
     } else {
         old_files(conn, t, dir)?
     };
-    conn.execute_batch("CREATE TEMP TABLE IF NOT EXISTS listing_seen(kind INTEGER,id INTEGER,PRIMARY KEY(kind,id));DELETE FROM listing_seen;CREATE TEMP TABLE IF NOT EXISTS listing_names(name TEXT,raw BLOB,kind INTEGER);DELETE FROM listing_names")?;
+    scratch(conn, &["CREATE TEMP TABLE IF NOT EXISTS listing_seen(kind INTEGER,id INTEGER,PRIMARY KEY(kind,id))", "DELETE FROM listing_seen", "CREATE TEMP TABLE IF NOT EXISTS listing_names(name TEXT,raw BLOB,kind INTEGER)", "DELETE FROM listing_names"])?;
     let mut own = Totals {
         complete,
         ..Totals::default()
@@ -2124,6 +2126,7 @@ fn publish(
         let (insert, seen) = insert_files(conn, t, &mut values, &mut tuples, has_old)?;
         file_seconds += insert;
         seen_seconds += seen;
+
         for o in dirs {
             let identity = native_id(o, fs.as_deref());
             let excluded = o.flags & EXCLUDED_FLAGS != 0;
@@ -2199,35 +2202,35 @@ fn publish(
         }
     }
     if !is_direct
-        && conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM listing_names GROUP BY name,raw HAVING count(*)>1)",
-            [],
-            |r| r.get::<_, bool>(0),
-        )?
+        && conn
+            .prepare_cached(
+                "SELECT EXISTS(SELECT 1 FROM listing_names GROUP BY name,raw HAVING count(*)>1)",
+            )
+            .and_then(|mut s| s.query_row([], |r| r.get::<_, bool>(0)))?
     {
         return Err(Error::Invalid(
             "duplicate listing name or directory identity",
         ));
     }
-    members_changed |= conn.execute(
-        &format!(
+    members_changed |= conn
+        .prepare_cached(&format!(
             "DELETE FROM {} WHERE id IN (SELECT id FROM old_file WHERE used=-1)",
             t.file
-        ),
-        [],
-    )? > 0;
+        ))
+        .and_then(|mut s| s.execute([]))?
+        > 0;
     if complete {
-        members_changed |= conn.execute(
-            &format!(
+        members_changed |= conn
+            .prepare_cached(&format!(
                 "DELETE FROM {} WHERE id IN (SELECT id FROM old_file WHERE used=0)",
                 t.file
-            ),
-            [],
-        )? > 0;
-        let missing=conn.execute(&format!("UPDATE {d} SET listing_state='absent_pending' WHERE parent_id=?1 AND listing_state!='absent_pending' AND id NOT IN (SELECT id FROM listing_seen WHERE kind=0)"),[dir])?;
+            ))
+            .and_then(|mut s| s.execute([]))?
+            > 0;
+        let missing=conn.prepare_cached(&format!("UPDATE {d} SET listing_state='absent_pending' WHERE parent_id=?1 AND listing_state!='absent_pending' AND id NOT IN (SELECT id FROM listing_seen WHERE kind=0)")).and_then(|mut s| s.execute([dir]))?;
         members_changed |= missing > 0;
     } else {
-        let sums:(i64,i64,i64,i64,i64,Option<i64>)=conn.query_row(&format!("SELECT count(*),coalesce(sum(logical),0),coalesce(sum(allocated),0),coalesce(sum(allocated IS NULL),0),coalesce(sum(file_id IS NULL),0),max(modified_ft) FROM {} WHERE dir_id=?1 AND flags & ?2 = 0", t.file),params![dir,EXCLUDED_FLAGS],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)))?;
+        let sums:(i64,i64,i64,i64,i64,Option<i64>)=conn.prepare_cached(&format!("SELECT count(*),coalesce(sum(logical),0),coalesce(sum(allocated),0),coalesce(sum(allocated IS NULL),0),coalesce(sum(file_id IS NULL),0),max(modified_ft) FROM {} WHERE dir_id=?1 AND flags & ?2 = 0", t.file)).and_then(|mut s| s.query_row(params![dir,EXCLUDED_FLAGS],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))))?;
         own.files = sums.0 as u64;
         own.logical = sums.1 as u64;
         own.allocated = sums.2 as u64;
@@ -2235,7 +2238,7 @@ fn publish(
         noid = sums.4;
         own.newest_ft = sums.5;
     }
-    conn.execute(&format!("UPDATE {d} SET listing_state=?2,seen_run=?3,listing_rev=listing_rev+?4,own_files=?5,own_logical=?6,own_allocated=?7,own_alloc_unknown=?8,own_noid=?9,own_newest_ft=?10,own_skipped=?11,own_errors=?12,listing_outcome=?13 WHERE id=?1"),params![dir,if complete{"complete"}else{"incomplete"},run,i64::from(members_changed),own.files as i64,own.logical as i64,own.allocated as i64,own.allocation_unknown as i64,noid,own.newest_ft,skipped as i64,errors as i64,coverage])?;
+    conn.prepare_cached(&format!("UPDATE {d} SET listing_state=?2,seen_run=?3,listing_rev=listing_rev+?4,own_files=?5,own_logical=?6,own_allocated=?7,own_alloc_unknown=?8,own_noid=?9,own_newest_ft=?10,own_skipped=?11,own_errors=?12,listing_outcome=?13 WHERE id=?1")).and_then(|mut s| s.execute(params![dir,if complete{"complete"}else{"incomplete"},run,i64::from(members_changed),own.files as i64,own.logical as i64,own.allocated as i64,own.allocation_unknown as i64,noid,own.newest_ft,skipped as i64,errors as i64,coverage]))?;
     ctx.dirty(dir, run);
     if !revealed.is_empty() {
         let destination = ctx.chain_length(conn, t, dir, &mut HashMap::new())?;
@@ -2249,10 +2252,8 @@ fn publish(
             }
         }
     }
-    conn.execute(
-        "DELETE FROM stage_entry WHERE run_id=?1 AND dir_id=?2",
-        params![run, dir],
-    )?;
+    conn.prepare_cached("DELETE FROM stage_entry WHERE run_id=?1 AND dir_id=?2")
+        .and_then(|mut s| s.execute(params![run, dir]))?;
     if t == BULK {
         share_sequences(conn)?;
     }
