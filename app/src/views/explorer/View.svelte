@@ -452,7 +452,7 @@
               {#if found.get(r.node_id)}<span class="tag">{found.get(r.node_id)?.match_kind}</span>{/if}
               {#if hasHiddenCharacters(r.name)}<span class="tag warn">hidden characters</span>{/if}
               {#if r.coverage !== 'complete'}<span class="tag warn">{r.coverage}</span>{/if}
-              {#each r.flags as f (f)}<span class="tag">{f.replaceAll('_', ' ')}</span>{/each}
+              {#each r.flags as f (f)}<span class="tag">{String(f).replaceAll('_', ' ')}</span>{/each}
             </td>
             <td><button class="btn" type="button" data-inspect onkeydown={rowKeys} aria-label={`Inspect ${escapedName(r.name)}`} onclick={() => void inspect(r)}>Inspect</button></td>
           </tr>
