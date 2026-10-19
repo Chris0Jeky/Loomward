@@ -226,7 +226,7 @@ describe('Health resources refresh independently', () => {
         return { result: command === 'roots.list' ? revokedRoots : command === 'grants.list' ? revokedGrants : freshHealth };
       }) }, epoch: 0, handle: (e: Error) => e.message },
       scans: { sync: vi.fn(async () => { if (failed === 'scans') throw new Error('Unavailable: scans'); }) },
-      untrack, ticket: 0, error: '',
+      untrack, ticket: 0, alive: true, loadError: '',
       roots: { roots: [{ root_id: 'root_a', grant_state: 'active' }] } as typeof revokedRoots | null,
       grants: { grants: [{ grant_id: 'grant_a', revoked_at: null }] } as { grants: { grant_id: string; revoked_at: string | null }[] } | null,
       health: { observed_at: '2026-10-16T12:00:00Z' } as typeof freshHealth | null,
@@ -236,7 +236,7 @@ describe('Health resources refresh independently', () => {
     expect(state.roots).toEqual(failed === 'roots.list' ? null : revokedRoots);
     expect(state.grants).toEqual(failed === 'grants.list' ? null : revokedGrants);
     expect(state.health).toEqual(failed === 'health.get' ? null : freshHealth);
-    expect(state.error).toBe(`Unavailable: ${failed}`);
+    expect(state.loadError).toBe(`Unavailable: ${failed}`);
   });
 });
 
