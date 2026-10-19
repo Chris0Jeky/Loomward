@@ -41,3 +41,19 @@ export function trendLabel(v: TrendValue | null, unit: TrendUnit): string {
   if (unit === 'queue') return `${n} queued`;
   return `${formatBytes(String(Math.round(Number(n))))}/s`;
 }
+
+/**
+ * States the age of a series' last point when it trails the sample it is shown beside (the feed carries the process series
+ * between its 15 s polls, and the engine samples them no faster than every 15 s), so an older line never passes for a
+ * live one. This is information, not a fault: within one sampler interval (plus slack) it stays silent.
+ */
+export function trendAge(series: TrendSeries, sampleAt: string): string | null {
+  const last = series.points.at(-1);
+  const sample = Date.parse(sampleAt);
+  if (!last || !Number.isFinite(sample)) return null;
+  const lag = sample - Date.parse(last.observed_at);
+  if (!Number.isFinite(lag)) return 'The age of the last point is unknown';
+  if (lag < 2000) return null;
+  const s = Math.floor(lag / 1000);
+  return `Last point observed ${s < 60 ? `${s} s` : s < 3600 ? `${Math.floor(s / 60)} min` : `${Math.floor(s / 3600)} h`} before this sample`;
+}
