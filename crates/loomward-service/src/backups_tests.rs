@@ -1,6 +1,8 @@
 //! Backups stage 1: the open-file dialog's path stays in Rust, at most 256 KiB is read, only
 //! normalised evidence is stored, and every refusal names its rule. Synthetic receipts only.
 use super::*;
+#[cfg(windows)]
+use crate::backups::open_receipt;
 use crate::backups::{read_receipt, CHECK_TITLE, MAX_AGE_SECONDS, SNAPSHOTS_TITLE};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -272,12 +274,15 @@ fn malformed_oversized_and_non_regular_picks_are_refused_by_name() {
     let big = write(tmp.path(), "big.json", vec![b' '; 256 * 1024 + 1]);
     let malformed = write(tmp.path(), "bad.json", "[{");
     let wrong = write(tmp.path(), "wrong.json", "{\"snapshots\":[]}");
+    // UTF-16 with a BOM: the lib names it (Utf16Bom); the wire keeps invalid_json until decided.
+    let utf16 = write(tmp.path(), "utf16.json", [0xff, 0xfe, b'[', 0, b']', 0]);
     let dir = tmp.path().join("folder.json");
     std::fs::create_dir(&dir).unwrap();
     let local = write(tmp.path(), "local.json", snapshots());
     let mut cases = vec![
         (big, "too_large"),
         (malformed, "invalid_json"),
+        (utf16, "invalid_json"),
         (wrong, "invalid_receipt"),
         (dir, "not_a_regular_file"),
         (tmp.path().join("missing.json"), "unreadable"),
@@ -326,6 +331,32 @@ fn malformed_oversized_and_non_regular_picks_are_refused_by_name() {
     let body = payload("synthetic-nas", None, None, false);
     imported(import(&svc, &files, body));
     assert_eq!(list(&svc).len(), 1, "refusals stored nothing");
+}
+
+#[test]
+#[cfg(windows)]
+fn a_receipt_file_link_is_refused_by_its_own_handle() {
+    // The pre-open check already refuses a link by name. This pins the handle: a plain open
+    // follows the link and returns the target's metadata, so a handle check alone would pass.
+    // The open must describe the link itself (#349, handle check).
+    let tmp = temp_root();
+    let target = write(tmp.path(), "target.json", snapshots());
+    let link = tmp.path().join("link.json");
+    if std::os::windows::fs::symlink_file(&target, &link).is_err() {
+        eprintln!("skipped: this host cannot create file links");
+        return;
+    }
+    let handle = open_receipt(&link).unwrap();
+    let meta = handle.metadata().unwrap();
+    assert!(
+        meta.file_type().is_symlink() || crate::paths::unsafe_attributes(&meta),
+        "the open followed the file link to its target"
+    );
+    drop(handle);
+    assert_eq!(
+        read_receipt(&link).unwrap_err(),
+        BackupImportRefusal::NotARegularFile
+    );
 }
 
 #[test]

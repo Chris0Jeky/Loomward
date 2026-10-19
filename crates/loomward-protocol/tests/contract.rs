@@ -19,6 +19,25 @@ fn contracts() -> PathBuf {
 }
 
 #[test]
+fn sampled_system_cpu_count_is_required_but_nullable() {
+    let mut schema = Schema::load();
+    let mut value = read(&contracts().join("examples/commands/telemetry.snapshot.result.json"))
+        ["system"]
+        .clone();
+    assert!(value.is_object());
+    for cpus in [json!(16), Value::Null] {
+        value["cpu"]["logical_cpus"] = cpus;
+        assert!(schema.errors("SystemSample", &value).is_empty());
+        let decoded: loomward_protocol::SystemSample =
+            serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(decoded).unwrap(), value);
+    }
+    value["cpu"].as_object_mut().unwrap().remove("logical_cpus");
+    assert!(!schema.errors("SystemSample", &value).is_empty());
+    assert!(serde_json::from_value::<loomward_protocol::SystemSample>(value).is_err());
+}
+
+#[test]
 fn diagnostics_elevated_session_refusal_roundtrips_through_schema_and_dto() {
     let value = json!({
         "outcome": "refused", "bytes_written": null, "refusal": "elevated_session"

@@ -136,7 +136,7 @@ fn index_plan(conn: &Connection, op: u64, plan: &str, backfill: bool) -> rusqlit
     let lookup = serde_json::from_str::<PlanLookup>(plan).unwrap_or_default();
     conn.execute(
         if backfill {
-            "INSERT INTO op_plan_lookup(op_id,wire_id) VALUES(?1,?2) ON CONFLICT(wire_id) DO NOTHING"
+            "INSERT INTO op_plan_lookup(op_id,wire_id) VALUES(?1,?2) ON CONFLICT DO NOTHING"
         } else {
             "INSERT INTO op_plan_lookup(op_id,wire_id) VALUES(?1,?2)"
         },
@@ -168,11 +168,12 @@ impl Store {
         let current = {
             let tx = conn.transaction_with_behavior(TransactionBehavior::Deferred)?;
             let current: bool = tx.query_row(
-                "SELECT count(*)=9 FROM sqlite_schema
+                "SELECT count(*)=11 FROM sqlite_schema
                  WHERE (type='table' AND name IN ('op_journal','op_journal_head','op_plan',
                                                  'op_plan_lookup','op_plan_grant'))
                     OR (type='trigger' AND name IN ('op_journal_no_replace','op_journal_no_update',
-                                                    'op_journal_no_delete','op_plan_no_update'))",
+                                                    'op_journal_no_delete','op_plan_no_update',
+                                                    'op_plan_index','op_plan_lookup_same'))",
                 [],
                 |r| r.get(0),
             )?;
@@ -187,8 +188,7 @@ impl Store {
                 [], |r| r.get(0),
             )?;
             let indexed: bool = tx.query_row(
-                "SELECT count(*)=2 FROM sqlite_schema WHERE type='table'
-                 AND name IN ('op_plan_lookup','op_plan_grant')",
+                "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='trigger' AND name='op_plan_index')",
                 [],
                 |r| r.get(0),
             )?;
@@ -202,7 +202,7 @@ impl Store {
                 )?;
             }
             if !indexed {
-                // One-time legacy migration, one plan at a time, under the same write transaction.
+                // Also fill gaps left by rollback builds before the database maintained its indexes.
                 let mut plans = tx.prepare("SELECT op_id,plan FROM op_plan ORDER BY op_id")?;
                 let mut rows = plans.query([])?;
                 while let Some(row) = rows.next()? {
@@ -289,7 +289,6 @@ impl Store {
             "INSERT INTO op_plan(op_id,plan) VALUES(?1,?2)",
             params![op as i64, plan],
         )?;
-        index_plan(&tx, op, plan, false)?;
         tx.commit()?;
         Ok(())
     }
@@ -444,6 +443,75 @@ fn insert_head(conn: &Connection, op: u64, row: &Row) -> rusqlite::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn plan_inserts_from_older_builds_are_indexed_and_duplicate_ids_are_atomic() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        let store = Store::open(&path).unwrap();
+        let old = Connection::open(&path).unwrap();
+        let plan = r#"{"operation_id":"cp_rollback","grants":[4,5,4],"manifest":{"items":[]}}"#;
+        old.execute("INSERT INTO op_plan VALUES(1,?1)", [plan])
+            .unwrap();
+        assert_eq!(store.operation_by_wire_id("cp_rollback").unwrap(), Some(1));
+        assert_eq!(store.operations_for_grant(4).unwrap(), vec![1]);
+        assert_eq!(store.operations_for_grant(5).unwrap(), vec![1]);
+        // The immediately previous indexed build also explicitly writes the same routing rows.
+        index_plan(&old, 1, plan, false).unwrap();
+        assert!(old
+            .execute("INSERT INTO op_plan VALUES(2,?1)", [plan])
+            .is_err());
+        assert!(store.plan(2).unwrap().is_none());
+        for (op, plan) in [
+            (3, "unreadable"),
+            (4, "{}"),
+            (5, r#"{"operation_id":"","grants":[]}"#),
+        ] {
+            old.execute("INSERT INTO op_plan VALUES(?1,?2)", params![op, plan])
+                .unwrap();
+            assert_eq!(store.plan(op as u64).unwrap().as_deref(), Some(plan));
+        }
+        assert_eq!(store.operation_by_wire_id("").unwrap(), None);
+    }
+
+    #[test]
+    fn indexed_schema_migration_backfills_plans_written_during_rollback() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(include_str!(
+            "../tests/fixtures/journal-before-plan-index.sql"
+        ))
+        .unwrap();
+        // #652's schema: lookup tables exist, but old plan-only writers leave gaps in them.
+        conn.execute_batch(
+            "CREATE TABLE op_plan_lookup(op_id INTEGER PRIMARY KEY CHECK(op_id>0), wire_id TEXT UNIQUE) STRICT;
+             CREATE TABLE op_plan_grant(grant_id INTEGER NOT NULL, op_id INTEGER NOT NULL CHECK(op_id>0),
+                 PRIMARY KEY(grant_id,op_id)) STRICT, WITHOUT ROWID;"
+        ).unwrap();
+        let first = r#"{"operation_id":"cp_existing","grants":[4]}"#;
+        conn.execute("INSERT INTO op_plan VALUES(1,?1)", [first])
+            .unwrap();
+        index_plan(&conn, 1, first, false).unwrap();
+        let plan = r#"{"operation_id":"cp_gap","grants":[7,8]}"#;
+        conn.execute("INSERT INTO op_plan VALUES(2,?1)", [plan])
+            .unwrap();
+        conn.execute("INSERT INTO op_plan VALUES(3,?1)", [first])
+            .unwrap();
+        drop(conn);
+        let store = Store::open(&path).unwrap();
+        assert_eq!(store.operation_by_wire_id("cp_existing").unwrap(), Some(1));
+        assert_eq!(store.operation_by_wire_id("cp_gap").unwrap(), Some(2));
+        assert_eq!(store.operations_for_grant(8).unwrap(), vec![2]);
+        assert_eq!(store.operations_for_grant(4).unwrap(), vec![1, 3]);
+        assert_eq!(store.plan(2).unwrap().as_deref(), Some(plan));
+        drop(store);
+        let locker = Connection::open(&path).unwrap();
+        locker.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let reopened = Store::open(&path).unwrap();
+        assert_eq!(reopened.operation_by_wire_id("cp_gap").unwrap(), Some(2));
+        locker.execute_batch("ROLLBACK").unwrap();
+    }
+
     #[test]
     fn plan_lookup_is_written_with_the_plan() {
         let mut store = Store::new(Connection::open_in_memory().unwrap()).unwrap();
