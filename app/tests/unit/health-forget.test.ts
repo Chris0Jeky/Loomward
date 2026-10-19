@@ -65,6 +65,31 @@ const reply = (r: { request_id: string }, result: unknown) => ({ protocol: 'loom
 beforeEach(() => { Object.assign(forget, { pending: null, working: false, unknown: false, done: '', problem: '', stopped: false }); });
 afterEach(() => { session.client = null; session.info = null; vi.restoreAllMocks(); });
 
+it.each(['connection epoch', 'session info', 'client'])('a definite status failure after a new %s retains a usable retry prompt', async change => {
+  const first = client().mockRejectedValueOnce(unknown);
+  forget.ask(request);
+  await forget.confirm();
+  expect(forget.unknown).toBe(true);
+  const originalKey = first.mock.calls[0]![0].request_id;
+  if (change === 'connection epoch') session.connectionEpoch++;
+  if (change === 'session info') session.info = { session_started_at: '2026-10-19T03:00:00Z' } as SessionInfo;
+  const current = change === 'client' ? client() : first;
+  current.mockRejectedValueOnce(new LoomwardError({ code: 'internal_error', message: 'status failed', retryable: true, detail: null }))
+    .mockImplementationOnce(async r => reply(r, completed));
+  forget.resume();
+  await forget.confirm();
+  expect(current.mock.calls.at(-1)![0].request_id).toBe(originalKey);
+  expect(forget.unknown).toBe(false);
+  expect(forget.pending?.id).toBe(request.id);
+  expect(forget.pending?.requestId).toBeUndefined();
+  const attempts = current.mock.calls.length;
+  await forget.confirm();
+  expect(current).toHaveBeenCalledTimes(attempts + 1);
+  expect(current.mock.calls.at(-1)![0].request_id).not.toBe(originalKey);
+  expect(forget.pending).toBeNull();
+  expect(forget.done).toContain('Forgotten at');
+});
+
 it.each(['navigation', 'reconnect'])('leaving Health discards an unsubmitted forget before %s', async reason => {
   const call = client().mockImplementation(async r => reply(r, completed));
   const first = mount();
