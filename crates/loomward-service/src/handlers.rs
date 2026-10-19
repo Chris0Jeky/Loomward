@@ -817,15 +817,24 @@ impl Inner {
     }
 
     fn root_list(&self, work: Option<&crate::ReadWork>) -> Result<Value, ErrorBody> {
+        self.root_list_sharing(work, 75)
+    }
+
+    /// `share_percent` of the time left to the deadline goes to the roots' unique totals.
+    pub(crate) fn root_list_sharing(
+        &self,
+        work: Option<&crate::ReadWork>,
+        share_percent: u32,
+    ) -> Result<Value, ErrorBody> {
         let rows = db::roots(&self.db(), None).map_err(sql_error)?;
         let mut reader = self.read_reader(work)?;
-        // Unique totals share the request's budget (#722): keep a quarter for the rest of the
+        // Unique totals share the request's budget (#722): keep the rest of it (a quarter) for the
         // response, split the remainder over the roots still to measure, and let time a small
         // root leaves flow to the next. A root past its share reports unknown totals, not a
         // failed list.
         let budget_end = work.map(|w| {
             let now = std::time::Instant::now();
-            now + w.deadline.saturating_duration_since(now) * 3 / 4
+            now + w.deadline.saturating_duration_since(now) * share_percent / 100
         });
         let measured = |r: &db::RootRow| {
             r.dir.is_some() && r.grant_state == "active" && r.state != "never_scanned"

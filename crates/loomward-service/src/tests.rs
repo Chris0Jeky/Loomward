@@ -409,7 +409,6 @@ fn roots_list_degrades_slow_roots_to_unknown_totals_inside_the_deadline() {
     let tmp = temp_root();
     let svc = open(tmp.path(), DatasetClass::Synthetic);
     let sizes = [200u64, 70_000, 70_000, 70_000];
-    let mut big = 0;
     for (i, &files) in sizes.iter().enumerate() {
         let (root, grant) = register(&svc, i as u8 + 1);
         let dir: i64 = svc
@@ -421,7 +420,6 @@ fn roots_list_degrades_slow_roots_to_unknown_totals_inside_the_deadline() {
                 |r| r.get(0),
             )
             .unwrap();
-        big = dir;
         let w = svc.inner.catalog.writer();
         let WriteReply::Run(run) = w
             .call(WriteCommand::BeginRun {
@@ -490,23 +488,15 @@ fn roots_list_degrades_slow_roots_to_unknown_totals_inside_the_deadline() {
         })
         .unwrap();
     }
-    // Calibrate to this machine: a deadline of twice one big root's measured cost leaves each of
-    // the three about half the time it needs, whatever the host speed (the margin keeps a quarter).
+    // A 5% share of a one-second budget (about 50 ms for all four roots) is far below what the
+    // big roots need on any host, so they are cut deterministically while the small one is not.
+    let work = crate::ReadWork {
+        deadline: Instant::now() + Duration::from_secs(1),
+        interrupt: Mutex::new(None),
+    };
     let started = Instant::now();
-    let measured = svc
-        .inner
-        .catalog
-        .reader()
-        .unwrap()
-        .inspect(loomward_catalog::NodeKey::Dir(big))
-        .unwrap()
-        .subtree
-        .unwrap();
-    assert_eq!(measured.unique_objects, Some(70_000));
-    let deadline = (started.elapsed().as_millis() as i64 * 2).max(400);
-    let mut req = request("roots.list", json!({}));
-    req.deadline_ms = Some(Int::new(deadline).unwrap());
-    let (roots, _) = ok("roots.list", svc.call(req, &CallContext::http()));
+    let roots = svc.inner.root_list_sharing(Some(&work), 5).unwrap();
+    assert!(started.elapsed() < Duration::from_secs(1));
     let roots = roots["roots"].as_array().unwrap();
     assert_eq!(roots.len(), sizes.len());
     let mut cut = 0;
