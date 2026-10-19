@@ -343,12 +343,14 @@ impl Provider for BrokerProvider {
             .map_err(|e| broker_failed(format!("broker did not start: {e}"), false))?;
         let mut stdin = child.stdin.take().expect("piped");
         let mut stdout = child.stdout.take().expect("piped");
-        let reader = std::thread::spawn(move || {
+        // The reply comes back over a channel, so the success path can wait for it with a deadline.
+        let (out_tx, out_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
             let mut out = Vec::new();
             let _ = (&mut stdout)
                 .take((MAX_REPLY_BYTES * 2) as u64)
                 .read_to_end(&mut out);
-            out
+            let _ = out_tx.send(out);
         });
         // A broker that never drains stdin must not hold this thread past `kill_at`: the write runs
         // aside and the deadline loop below owns the child.
@@ -379,8 +381,27 @@ impl Provider for BrokerProvider {
                 }
             }
         }
-        let wrote = wrote_rx.recv().unwrap_or(false);
-        let out = reader.join().unwrap_or_default();
+        // The broker has exited, but a grandchild may still hold either pipe open. Both waits run to
+        // the round's kill deadline; a thread still blocked then is detached, never joined.
+        let expired = |dispatched: bool| {
+            ProviderError::new(
+                ErrorKind::Timeout,
+                "round deadline passed; outcome unknown",
+                dispatched,
+            )
+        };
+        let wrote = match wrote_rx.recv_timeout(kill_at.saturating_duration_since(Instant::now())) {
+            Ok(wrote) => wrote,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => false,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                return Err(expired(wrote_rx.try_recv().unwrap_or(false)))
+            }
+        };
+        let out = match out_rx.recv_timeout(kill_at.saturating_duration_since(Instant::now())) {
+            Ok(out) => out,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Vec::new(),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => return Err(expired(wrote)),
+        };
         let line = out.split(|b| *b == b'\n').next().unwrap_or_default();
         serde_json::from_slice::<BrokerReply>(line)
             .unwrap_or_else(|_| Err(broker_failed("broker reply unreadable".into(), wrote)))
