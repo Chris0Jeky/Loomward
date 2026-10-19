@@ -239,6 +239,10 @@ unsafe extern "C" fn open(
             "a second platform method table"
         );
         unsafe { (*file).pMethods = faulting };
+        // SQLite reuses `sqlite3_file` memory: a stale entry must not claim this file's writes.
+        if cut_plan().is_some() {
+            handles().remove(&(file as usize));
+        }
         let tracked = ffi::SQLITE_OPEN_MAIN_DB
             | ffi::SQLITE_OPEN_MAIN_JOURNAL
             | ffi::SQLITE_OPEN_WAL

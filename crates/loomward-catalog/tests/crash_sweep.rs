@@ -645,6 +645,12 @@ fn verify(store: &Path, acks: &[String], scenario: &str) -> Vec<String> {
     let file_in = |grant: i64, name: &str| {
         one(&db, &format!("SELECT count(*) FROM file f JOIN dir d ON d.id=f.dir_id JOIN root r ON r.id=d.root_id WHERE r.grant_id={grant} AND f.name='{name}'"))
     };
+    if acked("register-b") {
+        want(
+            one(&db, "SELECT count(*) FROM st.root_grant WHERE id=2").map(|n| n == 1),
+            "register-b: grant 2",
+        );
+    }
     if acked("register-a") {
         want(
             one(&db, "SELECT count(*) FROM st.root_grant WHERE id=1").map(|n| n == 1),
@@ -840,6 +846,16 @@ fn normal_suffix(db: &Connection, forgotten: bool) -> Vec<String> {
     }
     if b_complete == Ok(1) && !matches!(a_done, Ok(n) if n >= 1) {
         bad.push("B's bulk first scan survived A's earlier first scan that was lost".into());
+    }
+    // A run's listings precede its end: a completed run never outlives one of them.
+    if matches!(a_done, Ok(n) if n >= 1) {
+        if names(1, true) == Ok(String::new()) {
+            bad.push("A's run end survived its lost root-directory listing".into());
+        }
+        let sub = one(db, &format!("SELECT count(*) FROM dir d JOIN root r ON r.id=d.root_id WHERE r.grant_id=1 AND d.name='{A_SUB}'"));
+        if sub == Ok(1) && names(1, false) == Ok(String::new()) {
+            bad.push("A's run end survived its lost sub-directory listing".into());
+        }
     }
     bad
 }
@@ -1392,7 +1408,12 @@ fn a_disk_that_ignores_flushes_fails_the_power_cut_sweep() {
             .collect()
     });
     eprintln!("lie: {} cuts caught", failures.len());
-    assert!(!failures.is_empty(), "a disk that ignores flushes passed");
+    assert!(
+        failures
+            .iter()
+            .any(|f| f.contains("acknowledged but not durable")),
+        "a disk that ignores flushes lost no acknowledged step: {failures:#?}"
+    );
 }
 
 /// The NORMAL-commit checker must be able to fail: a torn listing, and a later publication that
@@ -1407,8 +1428,11 @@ fn the_power_cut_contract_catches_planted_damage() {
         let (ga, da) = register(w, A_NAME, A_PATH, 1).unwrap();
         let a_files =
             |third: &str, id: u8| vec![ident(A_ROOT_FILES[0], 11, 100), ident(third, id, 200)];
+        let sub = || vec![ident(A_SUB, 13, 0)];
         let run = begin(w, ga, "full").unwrap();
-        listing(w, run, da, a_files(A_ROOT_FILES[1], 12), vec![]).unwrap();
+        listing(w, run, da, a_files(A_ROOT_FILES[1], 12), sub()).unwrap();
+        let sd = row_id(&store, &format!("SELECT id FROM dir WHERE name='{A_SUB}'")).unwrap();
+        listing(w, run, sd, vec![ident(A_DEEP, 14, 4096)], vec![]).unwrap();
         end(w, run).unwrap();
         let (gb, db) = register(w, B_NAME, r"C:\Synthetic\KeepPathBeta", 2).unwrap();
         let run = begin(w, gb, "full").unwrap();
@@ -1416,7 +1440,8 @@ fn the_power_cut_contract_catches_planted_damage() {
         listing(w, run, db, b, vec![]).unwrap();
         end(w, run).unwrap();
         let run = begin(w, ga, "refresh").unwrap();
-        listing(w, run, da, a_files(A_NEW, 15), vec![]).unwrap();
+        listing(w, run, da, a_files(A_NEW, 15), sub()).unwrap();
+        listing(w, run, sd, vec![ident(A_DEEP, 14, 4096)], vec![]).unwrap();
         end(w, run).unwrap();
     }
     let control = normal_suffix(&reader(&store), false);
@@ -1426,6 +1451,8 @@ fn the_power_cut_contract_catches_planted_damage() {
         ("half of A's rescan", "UPDATE file SET name='crashrootA2.zzqx' WHERE name='crashrootA1.zzqx'", "torn publication of root A"),
         ("B's run end lost under A's rescan", "UPDATE root SET state='partial' WHERE grant_id=2", "A's rescan survived"),
         ("A's first run end lost under B's", "UPDATE scan_run SET state='failed' WHERE root_id=(SELECT id FROM root WHERE grant_id=1)", "B's bulk first scan survived"),
+        ("A's root listing lost under its run end", "DELETE FROM file WHERE name IN ('crashrootA1.zzqx','crashrootA3.zzqx')", "survived its lost root-directory listing"),
+        ("A's sub listing lost under its run end", "DELETE FROM file WHERE name='crashdeepA.zzqx'", "survived its lost sub-directory listing"),
     ] {
         let copy = root.path().join(format!("copy-{}", what.len()));
         copy_store(&store, &copy);

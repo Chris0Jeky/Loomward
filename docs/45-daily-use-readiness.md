@@ -302,9 +302,10 @@ drawn per file; `-shm` is volatile (removed, SQLite rebuilds it). The parent wri
 image over the store and asserts row 1's `verify` (integrity and foreign keys on both files, no running run or
 half-built bulk table, no staged or pending-reference residue, rollups agree with rows, forget all-or-nothing
 in rows and bytes, a second recovery changes nothing, the store takes a write) plus the durability contract:
-every step acknowledged under FULL survives (grants, references, labels, revoke, forget record); catalogue
-publications may be lost, but each listing is whole (never torn) and a later one never survives an earlier lost
-one (`normal_suffix`). `every_power_cut_keeps_full_commits_and_recovers` sweeps N over every sync of the crash
+every step acknowledged under FULL survives (both grants, the reference, labels, revoke, the forget record);
+catalogue publications may be lost, and `normal_suffix` checks what survives: each listing is whole (never
+torn); A's rescan never survives B's lost bulk first scan; B's never survives A's lost first run end; a completed
+run of A never outlives its lost root-directory or sub-directory listing. `every_power_cut_keeps_full_commits_and_recovers` sweeps N over every sync of the crash
 sweep's lifecycle (scan through staged chunks, reference and labels, bulk first scan, rescan, revoke, forget),
 twice: as is (47 syncs) and with a reader holding a catalogue snapshot across the three scans (39 syncs).
 Without a reader each run end's checkpoint syncs the catalogue before its receipt, so no acknowledged
@@ -312,7 +313,7 @@ publication is lost; with one the checkpoint (best effort, it never waits for a 
 cuts lost an acknowledged run end, always within the contract. No durability defect was found. The checker can
 fail: a disk whose flush does nothing (`lie`) fails 27 of the 48 cuts of a full sweep (7 of 12 sampled)
 (`a_disk_that_ignores_flushes_fails_the_power_cut_sweep`), and a torn listing or an out-of-order survivor
-planted in a store is caught (`the_power_cut_contract_catches_planted_damage`).
+planted in a store is caught, one case per check (`the_power_cut_contract_catches_planted_damage`).
 
 **Gap.** File effects do not exist yet (invariant 1); each effect's gate ships its own power-cut case, and
 copying's G5 needs a real power cut. This is a model, not hardware: deletes are durable at once, file creation is
@@ -442,3 +443,4 @@ The depth-483 commands use `--manifest-path C:/lw/wt/depth-483/Cargo.toml`,
 | 2026-10-19 | 44f0144 (stacked on #748's branch, test code) | KRASPYON, Windows 11 Home, debug build | `cargo test -p loomward-catalog --features test-hooks --test crash_sweep -- power_cut ignores_flushes planted_damage` | passed: plain lifecycle 47 syncs, 24 cuts (12 drop, 12 tear), 22 with unsynced writes, 8 torn; reader variant 39 syncs, 24 cuts, 2 losing an acknowledged NORMAL run end; `lie` caught 7 of 12; planted torn and out-of-order listings caught; about 10 s |
 | 2026-10-19 | same | same | `LOOMWARD_CRASH_SWEEP=full cargo test -p loomward-catalog --features test-hooks --test crash_sweep -- every_power_cut ignores_flushes` | 2 passed in 70 s: plain 240 cuts (48 drop, 4 seeds x 48 tear), 230 with unsynced writes, 123 torn, none losing an acknowledged publication (each run end's checkpoint syncs first); reader 200 cuts, 190 unsynced, 103 torn, 17 losing an acknowledged run end, all within the contract; `lie` caught 27 of 48. No durability defect |
 | 2026-10-19 | same | same | `cargo fmt --all --check`; `cargo test -p loomward-catalog --all-features`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --no-fail-fast`; `git diff --check` | fmt clean; catalogue 321 passed, 1 ignored, 0 failed (3 min 53 s); clippy clean; workspace 1,714 passed, 4 ignored, 0 failed (10 min 38 s); diff check clean |
+| 2026-10-19 | review fix round on #792 (stricter `normal_suffix`, `register-b` checked, stale VFS handles dropped on open) | same | sample and `LOOMWARD_CRASH_SWEEP=full` power-cut commands above; `cargo test -p loomward-catalog --all-features`; workspace clippy `--all-features -D warnings`; fmt; `git diff --check` | sample 5 passed in 10 s; full 2 passed in 88 s with the same counts (plain 240 cuts, reader 200 with 17 acknowledged run ends lost within the contract, `lie` 27 of 48, now required to report "acknowledged but not durable"); 6 planted cases caught; catalogue 321 passed, 1 ignored, 0 failed; clippy, fmt and diff check clean |
