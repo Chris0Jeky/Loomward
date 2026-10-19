@@ -1,4 +1,4 @@
-import type { TrendSeries, TrendValue, TrendUnit } from '../../lib/contracts.gen';
+import type { TrendSeries, TrendValue, TrendUnit, TrendMetric } from '../../lib/contracts.gen';
 import { parseBytes, formatBytes } from '../../lib/format/bytes';
 
 function reading(v: TrendValue | null, unit: TrendUnit): bigint | number | null {
@@ -42,10 +42,23 @@ export function trendLabel(v: TrendValue | null, unit: TrendUnit): string {
   return `${formatBytes(String(Math.round(Number(n))))}/s`;
 }
 
+/** The series the engine files under the `processes` channel (`TrendMetric::channel`); mirrors feed.ts. */
+const PROCESS_METRICS = new Set<TrendMetric>(['private_commit_bytes', 'private_working_set_bytes', 'working_set_bytes', 'cpu_fraction', 'io_read_bytes_per_s', 'io_write_bytes_per_s', 'gpu_dedicated_bytes']);
+const PROCESS_CADENCE_MS = 15_000; // the engine samples process series no faster than the enumeration cadence
+const MACHINE_CADENCE_MS = 1_000; // fallback for machine and disk series: the feed's default poll
+const SLACK_MS = 1_000;
+
+/** The series' own sampling cadence. The engine sets max_gap_ms to twice the requested interval (contracts/v3 semantics, section 12). */
+function cadenceMs(series: TrendSeries): number {
+  const gap = series.max_gap_ms;
+  if (typeof gap === 'number' && Number.isFinite(gap) && gap > 0) return gap / 2;
+  return PROCESS_METRICS.has(series.metric) ? PROCESS_CADENCE_MS : MACHINE_CADENCE_MS;
+}
+
 /**
  * States the age of a series' last point when it trails the sample it is shown beside (the feed carries the process series
- * between its 15 s polls, and the engine samples them no faster than every 15 s), so an older line never passes for a
- * live one. This is information, not a fault: within one sampler interval (plus slack) it stays silent.
+ * between its 15 s polls, so an older line never passes for a live one). This is information, not a fault: a lag within the
+ * series' own cadence plus one second of slack stays silent; an older point is stated.
  */
 export function trendAge(series: TrendSeries, sampleAt: string): string | null {
   const last = series.points.at(-1);
@@ -53,7 +66,7 @@ export function trendAge(series: TrendSeries, sampleAt: string): string | null {
   if (!last || !Number.isFinite(sample)) return null;
   const lag = sample - Date.parse(last.observed_at);
   if (!Number.isFinite(lag)) return 'The age of the last point is unknown';
-  if (lag < 2000) return null;
+  if (lag < cadenceMs(series) + SLACK_MS) return null;
   const s = Math.floor(lag / 1000);
   return `Last point observed ${s < 60 ? `${s} s` : s < 3600 ? `${Math.floor(s / 60)} min` : `${Math.floor(s / 3600)} h`} before this sample`;
 }
