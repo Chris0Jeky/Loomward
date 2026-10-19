@@ -116,15 +116,22 @@ impl Hooks {
     }
 
     pub fn gate(&self, c: Command, at: &'static str) {
-        self.arrived.lock().unwrap().push((c, at));
-        let mut closed = self.closed.lock().unwrap();
+        // These gates also run from Drop: preserve the first test panic after poisoning.
+        self.arrived
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((c, at));
+        let mut closed = self.closed.lock().unwrap_or_else(|e| e.into_inner());
         while closed.contains(&(c, at)) {
-            closed = self.opened.wait(closed).unwrap();
+            closed = self.opened.wait(closed).unwrap_or_else(|e| e.into_inner());
         }
     }
 
     pub fn open(&self, c: Command, at: &'static str) {
-        self.closed.lock().unwrap().retain(|g| *g != (c, at));
+        self.closed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|g| *g != (c, at));
         self.opened.notify_all();
     }
 
@@ -151,6 +158,56 @@ fn open(dir: &Path, dataset: DatasetClass) -> Service {
 
 pub(crate) fn temp_root() -> tempfile::TempDir {
     tempfile::tempdir_in(crate::paths::test_roots_base()).unwrap()
+}
+
+/// #730: a failed assertion holding a test gate must not panic again during cleanup.
+#[test]
+fn poisoned_test_gates_preserve_the_original_panic() {
+    const CHILD: &str = "LOOMWARD_730_POISONED_GATE";
+    if let Some(gate) = std::env::var_os(CHILD) {
+        let tmp = temp_root();
+        let svc = open(tmp.path(), DatasetClass::Synthetic);
+        struct Release(Arc<Hooks>);
+        impl Drop for Release {
+            fn drop(&mut self) {
+                self.0.open(Command::VolumesList, "space_read");
+            }
+        }
+        let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let svc = svc;
+            let _release = Release(svc.inner.hooks.clone());
+            let _lock = if gate == "arrived" {
+                svc.inner.hooks.arrived.lock().unwrap()
+            } else {
+                svc.inner.hooks.closed.lock().unwrap()
+            };
+            panic!("original test failure");
+        }));
+        let payload = failure.expect_err("the original panic must still be reported");
+        assert_eq!(
+            payload.downcast_ref::<&str>(),
+            Some(&"original test failure")
+        );
+        return;
+    }
+    for gate in ["arrived", "closed"] {
+        // A second panic aborts the process, so catch_unwind alone cannot test this regression.
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::poisoned_test_gates_preserve_the_original_panic",
+                "--nocapture",
+            ])
+            .env(CHILD, gate)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{gate}: cleanup aborted: {}\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }
 
 /// Fixtures stay outside the source tree and inside the profile fence wherever the checkout is
