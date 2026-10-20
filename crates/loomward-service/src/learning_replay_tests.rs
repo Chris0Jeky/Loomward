@@ -288,9 +288,7 @@ fn replay_with_committed_dirty_root(same_target: bool) {
     // a receipt must not take that path, even when the eventual target comparison will fail.
     svc.inner
         .db()
-        .execute_batch(
-            "UPDATE main.dir SET dirty_rev=agg_valid_rev+1 WHERE parent_id IS NULL",
-        )
+        .execute_batch("UPDATE main.dir SET dirty_rev=agg_valid_rev+1 WHERE parent_id IS NULL")
         .unwrap();
     let needs_repair = "SELECT count(*) FROM main.dir d JOIN main.root r ON r.id=d.root_id
         WHERE d.parent_id IS NULL AND d.agg_valid_rev<d.dirty_rev
@@ -310,7 +308,11 @@ fn replay_with_committed_dirty_root(same_target: bool) {
         assert_eq!(err(reply).code, ErrorCode::InvalidRequest);
     }
     assert_eq!(durable_counts(&svc), before);
-    assert_eq!(count(&svc, needs_repair), 1, "replay must not repair the root");
+    assert_eq!(
+        count(&svc, needs_repair),
+        1,
+        "replay must not repair the root"
+    );
     while let RecvOutcome::Event(event) = events.recv_timeout(Duration::ZERO) {
         assert!(!matches!(
             event.event,
