@@ -307,3 +307,67 @@ fn retained_privacy_alerts_http_withholds_pending_list_and_configuration_reports
     assert!(!fresh.to_string().contains(PRIVATE_NAME));
     assert_eq!(fresh["result"]["settings"]["low_space_free_percent"], 7);
 }
+
+fn rejected_forget_preserves_http_body(writer_failure: bool) {
+    let (dir, service, root, volume, _) = fixture();
+    let shared = shared(service.clone());
+    let runtime = runtime();
+    let req = request("volumes.declare_tier", json!({"volume_id":volume,"tier":2}));
+    let pending = runtime.block_on(pending_http(&shared, req.clone()));
+    revoke(&service, &root);
+    let state = rusqlite::Connection::open(dir.path().join("state.db")).unwrap();
+    let mut forget = request("roots.forget", json!({"root_id":root}));
+    if writer_failure {
+        state.execute_batch(
+            "CREATE TRIGGER reject_response_forget BEFORE INSERT ON root_forgotten
+             BEGIN SELECT RAISE(ABORT, 'synthetic pre-commit forget failure'); END",
+        ).unwrap();
+    } else {
+        forget.expected_state_rev = Some(loomward_protocol::Generation(0));
+    }
+    let rejected = service.call(forget, &CallContext::http());
+    let ResponseEnvelope::Err(error) = rejected else {
+        panic!("the forget should be rejected before its marker commits")
+    };
+    assert_eq!(
+        error.error.code,
+        if writer_failure {
+            ErrorCode::InternalError
+        } else {
+            ErrorCode::StaleGeneration
+        }
+    );
+    assert_eq!(
+        state
+            .query_row("SELECT count(*) FROM root_forgotten", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    let delivered = body_json(&runtime, pending);
+    assert_eq!(delivered["request_id"], req.request_id.as_str());
+    assert_eq!(
+        delivered["ok"], true,
+        "a rejected forget withdrew a successful HTTP reply"
+    );
+    assert!(delivered.to_string().contains(PRIVATE_NAME));
+    let replay = runtime.block_on(pending_http(&shared, req));
+    assert_eq!(body_json(&runtime, replay), delivered);
+    assert_eq!(
+        state
+            .query_row("SELECT count(*) FROM tier_declaration", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn retained_privacy_rejected_forget_http_preserves_body_after_a_stale_revision() {
+    rejected_forget_preserves_http_body(false);
+}
+
+#[test]
+fn retained_privacy_rejected_forget_http_preserves_body_after_writer_rollback() {
+    rejected_forget_preserves_http_body(true);
+}

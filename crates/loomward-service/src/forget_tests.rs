@@ -1743,3 +1743,66 @@ fn retained_privacy_alerts_late_configuration_settlement_cannot_restore_forgotte
     );
     assert_eq!(reason(&err(replay)), Some("forgotten_result"));
 }
+
+fn rejected_forget_preserves_pending_replies(writer_failure: bool) {
+    let dir = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    let (root, grant) = named(&svc, 1, NAME_A, PATH_A);
+    named(&svc, 2, "KeptVolumeRoot", PATH_B);
+    svc.inner.revoke(grant).unwrap();
+    let req = retained_privacy_tier_request(&svc);
+    let original = svc.call(req.clone(), &CallContext::http());
+    ok("volumes.declare_tier", original.clone());
+    let pending_tier = svc.call_pending(req.clone(), &CallContext::http());
+    let pending_roots = svc.call_pending(request("roots.list", json!({})), &CallContext::http());
+    let rev = state_rev(&svc);
+    if writer_failure {
+        // Reject after the writer has changed rows inside its transaction. Rollback must be
+        // distinguished from a durable marker followed by a derived catalogue purge failure.
+        svc.inner.db().execute_batch(
+            "CREATE TRIGGER st.reject_response_forget BEFORE INSERT ON root_forgotten
+             BEGIN SELECT RAISE(ABORT, 'synthetic pre-commit forget failure'); END",
+        ).unwrap();
+    }
+    let rejected = err(forget(&svc, root, (!writer_failure).then_some(rev + 7)));
+    assert_eq!(
+        rejected.code,
+        if writer_failure {
+            ErrorCode::InternalError
+        } else {
+            ErrorCode::StaleGeneration
+        }
+    );
+    assert_eq!(count(&svc, "SELECT count(*) FROM st.root_forgotten"), 0);
+    assert_eq!(state_rev(&svc), rev);
+    assert_eq!(
+        pending_tier.admit(),
+        original,
+        "a confirmed rejected forget must resume the original response stamp"
+    );
+    let roots = pending_roots.admit();
+    ok("roots.list", roots.clone());
+    assert!(retained_privacy_has_name(&roots, PATH_A));
+    assert_eq!(svc.call(req.clone(), &CallContext::http()), original);
+    assert_eq!(count(&svc, "SELECT count(*) FROM st.tier_declaration"), 1);
+    assert_eq!(
+        svc.inner.hooks.runs.lock().unwrap()[&Command::VolumesDeclareTier],
+        1
+    );
+    let mut changed = req;
+    changed.payload.insert("tier".into(), json!(5));
+    assert_eq!(
+        reason(&err(svc.call(changed, &CallContext::http()))),
+        Some("idempotency_conflict")
+    );
+}
+
+#[test]
+fn retained_privacy_rejected_forget_resumes_pending_replies_after_a_stale_revision() {
+    rejected_forget_preserves_pending_replies(false);
+}
+
+#[test]
+fn retained_privacy_rejected_forget_resumes_pending_replies_after_writer_rollback() {
+    rejected_forget_preserves_pending_replies(true);
+}
