@@ -223,6 +223,31 @@ impl Bus {
         }
         self.delivery.invalidate();
     }
+    /// A volume label can originate from any of its recorded roots. With no durable label
+    /// provenance, use a generic label in old snapshots when one of those roots is forgotten.
+    /// Preserve the volume's physics/preferences and every unrelated volume in that event.
+    pub(crate) fn redact_volume(&self, volume_id: &str) {
+        let mut state = self.state.lock().unwrap();
+        for retained in &mut state.replay {
+            if retained.event.event == EventName::VolumesChanged {
+                if let Some(volumes) = retained
+                    .event
+                    .data
+                    .get_mut("volumes")
+                    .and_then(|v| v.as_array_mut())
+                {
+                    for volume in volumes {
+                        if volume.get("volume_id").and_then(|v| v.as_str()) == Some(volume_id) {
+                            if let Some(object) = volume.as_object_mut() {
+                                object.insert("display_name".into(), serde_json::json!("Volume"));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        self.delivery.invalidate();
+    }
     fn subscribe(self: &Arc<Self>, resume: Option<EventResume>) -> Subscription {
         let state = self.state.lock().unwrap();
         let mut initial = VecDeque::from([self.hello(&state)]);
@@ -336,6 +361,10 @@ impl Engine {
     /// Drop a forgotten root from the retained `roots.changed` events (#391).
     pub fn redact_root_events(&self, root_id: &str) {
         self.events.redact_root(root_id);
+    }
+    /// Remove an affected volume's earlier root-derived labels from retained events.
+    pub fn redact_volume_events(&self, volume_id: &str) {
+        self.events.redact_volume(volume_id);
     }
     /// Suspend unsent adapter events across a privacy mutation's durable and derived phases.
     /// The returned guard owns no Bus lock; its final drop permits only fresh receives.

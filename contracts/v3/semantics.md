@@ -240,6 +240,20 @@ report `personal_metadata_unsupported`. There is no synthetic fallback for perso
   `request_id` alone, scoped to the session. Replaying the same `request_id` with a byte-identical canonical payload returns
   the cached response. The same `request_id` with a different payload is `invalid_request` with
   `detail.reason = "idempotency_conflict"`. The cache does not survive a restart; durable keys below do.
+- **Forget privacy.** A durable root forget withdraws a cached `roots.request_grant` success for
+  that root, cached `volumes.declare_tier` successes for its volume, and cached `alerts.configure`
+  successes (their reports may contain labels from multiple roots/volumes). The retained reply becomes
+  an existing `permission_denied` envelope with `detail.reason = "forgotten_result"` and
+  `retryable: false`, preserving the original `request_id`. This means the reply was withheld;
+  **the action may already have completed**. Read current state before acting again. Never reopen
+  a picker or repeat a mutation automatically to replace a withheld receipt.
+  The action key, fingerprint, conflict checks and original completion/expiry time stay intact.
+  A running slot stays running until its actual worker finishes, and cannot expire in the meantime.
+  A pending grant picker has no root ID yet, so any such slot crossing the durable forget is
+  conservatively withheld when it finishes. Pending alert configurations are also withheld when
+  they finish; saved settings and the at-most-once action key remain intact. Completed grant/tier
+  replies for other roots/volumes remain available, and a later completion cannot restore an
+  invalidated private snapshot.
 - **Durable keys.** `client_event_id` (feedback, forever), `preview_id` (one grant), `grant_id` (one teacher
   request), one active scan per root, one active refit. Durable keys win over the session cache.
 - Clients MUST generate `request_id` values that are unique per user action and reuse one only to retry that
@@ -337,6 +351,28 @@ Rules:
   passing an envelope to the native sink, with no intervening await. Bytes already admitted to the
   transport, its buffers or a client cannot be recalled. Admission stamps are internal Rust state;
   they add no envelope field, sequence number, stream reason or forgotten-root history.
+- A volume display name may have originated from one of its roots, including a name from before
+  a rename. Forget uses the existing opaque volume key for a surviving volume's fresh display
+  name. While a post-commit catalogue purge is still pending, volume projections use the durable
+  forgotten marker for the same fallback. Retained `volumes.changed` snapshots use the generic
+  display name `Volume` for that volume, preserving their sequence/revisions, measurements, tier
+  preferences and unrelated volume rows. A later live volume snapshot also uses the safe projection.
+- Pending replies for `roots.request_grant`, `roots.list`, `volumes.declare_tier`, `volumes.list`,
+  `tiers.model`, `alerts.list` and `alerts.configure` carry a separate internal admission stamp
+  captured before the service call.
+  A forget attempt pauses successful-reply admission across its durable/derived phases. Pending
+  replies wait for that decision: a confirmed rejection before the durable marker committed resumes
+  the same stamps, while a durable, unknown or unclassified outcome retires them. Existing error
+  envelopes in these classes carry no root/volume snapshot and remain deliverable during a pause.
+  This reversible response pause does not change event-stream suspension. HTTP serializes first
+  and checks when its one-frame response body is polled; native carries the stamp across its
+  blocking-worker await and checks immediately before returning the envelope to Tauri. Waiting
+  yields to the async runtime; neither adapter holds a service lock across admission or handoff.
+  Invalidated successes become the `forgotten_result` error above, with no automatic retry.
+  The stamp is conservative for every pending reply in those classes; it retains no root-ID
+  history. `roots.forget` itself is outside those reply classes, so its own receipt is deliverable.
+  The already-admitted limit above applies equally to replies; other reply classes are not
+  established as covered by this bounded change.
 - Reconnecting: HTTP sends `Last-Event-ID: <epoch>.<seq>`; Tauri passes `lastEpoch` and `lastSeq`.
   - Same epoch and `seq + 1 >= oldest_replayable_seq`: the service replays from `seq + 1` in order, then
     continues live.

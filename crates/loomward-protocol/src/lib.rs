@@ -14,6 +14,8 @@ pub mod envelope;
 pub mod error;
 pub mod event;
 pub mod query_grammar;
+mod response_delivery;
+mod response_policy;
 pub mod service;
 pub mod types;
 
@@ -26,6 +28,8 @@ pub use envelope::{
 };
 pub use error::{ErrorBody, ErrorCode};
 pub use event::{EventEnvelope, EventName};
+pub use response_delivery::{PendingResponse, SerializedResponse};
+pub use response_policy::{ResponseDeliveryPolicy, ResponseDeliveryStamp, ResponseDeliverySuspension};
 pub use service::{
     CallContext, CloseReason, EventStream, NativeDialogs, Principal, RecvOutcome, SaveDialog,
     ViewService,

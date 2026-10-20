@@ -1331,3 +1331,603 @@ fn a_grant_snapshot_cannot_republish_a_root_after_a_concurrent_forget() {
         "forget may not commit between the grant snapshot and its event"
     );
 }
+
+// The volume-label and session-receipt surfaces deliberately retained by #769/#801.
+// These use synthetic catalogue rows; the native folder picker is never invoked.
+fn retained_privacy_volume(svc: &Service) -> String {
+    ok("volumes.list", call(svc, "volumes.list", json!({}))).0["volumes"][0]["volume_id"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+fn retained_privacy_tier_request(svc: &Service) -> RequestEnvelope {
+    request(
+        "volumes.declare_tier",
+        json!({"volume_id": retained_privacy_volume(svc), "tier": 2}),
+    )
+}
+
+fn retained_privacy_has_name(response: &impl serde::Serialize, needle: &str) -> bool {
+    serde_json::to_string(response).unwrap().contains(needle)
+}
+
+/// Seed only the completed native-picker boundary. Snapshot construction, validation, metadata,
+/// Settle::drop, cache lookup and the retry's service ingress are the production paths.
+fn retained_privacy_grant_completion(svc: &Service, root: i64) -> (RequestEnvelope, crate::Settle) {
+    let req = request("roots.request_grant", json!({"purpose": "metadata_scan"}));
+    let fingerprint = json!({
+        "command": req.command,
+        "payload": req.payload,
+        "expected_state_rev": req.expected_state_rev,
+        "expected_generation": req.expected_generation,
+    });
+    assert_eq!(
+        svc.inner.idem.claim(&req.request_id, &fingerprint),
+        crate::idem::Claim::Run
+    );
+    let out = svc.inner.granted_root_reply(root).unwrap();
+    let map = out.result.as_object().unwrap().clone();
+    Command::RootsRequestGrant.validate_result(&map).unwrap();
+    let meta = svc
+        .inner
+        .meta(Instant::now(), &map, out.catalog_rev, out.state_rev);
+    let outcome = ResponseEnvelope::ok_object(req.request_id.clone(), map, meta);
+    assert!(retained_privacy_has_name(&outcome, PATH_A));
+    let settle = crate::Settle {
+        inner: svc.inner.clone(),
+        key: req.request_id.to_string(),
+        ticket: None,
+        outcome: Some(outcome),
+    };
+    (req, settle)
+}
+
+fn retained_privacy_tauri() -> CallContext {
+    CallContext {
+        adapter: Adapter::Tauri,
+        dialogs: None,
+        principal: Principal::Owner,
+    }
+}
+
+#[test]
+fn retained_privacy_volume_events_drop_a_forgotten_root_derived_name() {
+    let dir = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    let (root, grant) = named(&svc, 1, NAME_A, PATH_A);
+    named(&svc, 2, "KeptVolumeRoot", PATH_B);
+    svc.inner
+        .catalog
+        .writer()
+        .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_guid: None,
+            volume_key: "fixture-unrelated-volume".into(),
+            display_name: "UnrelatedVolumeName".into(),
+            display_path: "SyntheticUnrelatedVolumeRoot".into(),
+            root_file_id: Some(vec![3; 16]),
+            filesystem: Some("NTFS".into()),
+            origin: "fixture".into(),
+            granted_via: "fixture".into(),
+            observed_at_ns: 0,
+        }))
+        .unwrap();
+    let mut before = svc.subscribe(None);
+    let RecvOutcome::Event(hello) = before.recv_timeout(Duration::from_secs(5)) else {
+        panic!("expected hello");
+    };
+    let tier = svc.call(retained_privacy_tier_request(&svc), &CallContext::http());
+    ok("volumes.declare_tier", tier.clone());
+    assert!(retained_privacy_has_name(&tier, NAME_A));
+    let mut expected = loop {
+        let RecvOutcome::Event(event) = before.recv_timeout(Duration::from_secs(5)) else {
+            panic!("expected the declaration's original volume event");
+        };
+        if event.event == EventName::VolumesChanged {
+            break event;
+        }
+    };
+    assert_eq!(expected.data["volumes"].as_array().unwrap().len(), 2);
+    expected.data["volumes"][0]["display_name"] = json!("Volume");
+    svc.inner.revoke(grant).unwrap();
+    ok("roots.forget", forget(&svc, root, None));
+    let fresh = call(&svc, "volumes.list", json!({}));
+    ok("volumes.list", fresh.clone());
+    assert!(!retained_privacy_has_name(&fresh, NAME_A));
+    let mut replay = svc.subscribe(Some((hello.epoch.to_string(), hello.seq.get())));
+    for _ in 0..10 {
+        let stamp = replay.delivery_policy().stamp();
+        let RecvOutcome::Event(event) = replay.recv_timeout(Duration::from_secs(5)) else {
+            panic!("expected retained volume event");
+        };
+        if event.event == EventName::VolumesChanged {
+            assert!(stamp.admit(), "a fresh replay is admissible");
+            event.validate().unwrap();
+            assert!(
+                !retained_privacy_has_name(&event, NAME_A),
+                "retained volumes.changed discloses the forgotten root-derived name"
+            );
+            assert_eq!(event, expected, "only the affected display name changes; sequence, revisions, physics, tiers and the other volume remain exact");
+            return;
+        }
+    }
+    panic!("the declaration's volume event was not replayed");
+}
+
+#[test]
+fn retained_privacy_cached_tier_reply_drops_the_forgotten_name_without_reexecution() {
+    let dir = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    let (root, grant) = named(&svc, 1, NAME_A, PATH_A);
+    named(&svc, 2, "KeptVolumeRoot", PATH_B);
+    let req = retained_privacy_tier_request(&svc);
+    let first = svc.call(req.clone(), &CallContext::http());
+    ok("volumes.declare_tier", first.clone());
+    assert!(retained_privacy_has_name(&first, NAME_A));
+    svc.inner.revoke(grant).unwrap();
+    ok("roots.forget", forget(&svc, root, None));
+    let replay = svc.call(req.clone(), &CallContext::http());
+    assert_eq!(count(&svc, "SELECT count(*) FROM st.tier_declaration"), 1);
+    assert_eq!(
+        svc.inner.hooks.runs.lock().unwrap()[&Command::VolumesDeclareTier],
+        1
+    );
+    let mut changed = req;
+    changed.payload.insert("tier".into(), json!(5));
+    assert_eq!(
+        reason(&err(svc.call(changed, &CallContext::http()))),
+        Some("idempotency_conflict")
+    );
+    assert!(
+        !retained_privacy_has_name(&replay, NAME_A),
+        "a retained tier receipt discloses the forgotten root-derived name"
+    );
+}
+
+#[test]
+fn retained_privacy_fresh_volumes_are_safe_after_a_durable_forget_with_purge_error() {
+    let dir = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    let (root, grant) = named(&svc, 1, NAME_A, PATH_A);
+    named(&svc, 2, "KeptVolumeRoot", PATH_B);
+    svc.inner.revoke(grant).unwrap();
+    svc.inner.db().execute_batch(&format!(
+        "CREATE TRIGGER main.retained_privacy_refuse_purge BEFORE DELETE ON root WHEN OLD.id={root} BEGIN SELECT RAISE(ABORT, 'synthetic post-commit purge failure'); END"
+    )).unwrap();
+    let failed = err(forget(&svc, root, None));
+    assert_eq!(failed.code, ErrorCode::InternalError);
+    assert_eq!(
+        count(
+            &svc,
+            &format!("SELECT count(*) FROM st.root_forgotten WHERE grant_id={grant}")
+        ),
+        1
+    );
+    assert_eq!(
+        count(
+            &svc,
+            &format!("SELECT count(*) FROM main.root WHERE id={root}")
+        ),
+        1
+    );
+    let fresh = call(&svc, "volumes.list", json!({}));
+    let (view, _) = ok("volumes.list", fresh.clone());
+    assert_eq!(
+        view["volumes"].as_array().unwrap().len(),
+        1,
+        "the other root's volume remains visible"
+    );
+    assert!(
+        !retained_privacy_has_name(&fresh, NAME_A),
+        "fresh volumes.list discloses a root whose durable forget already committed"
+    );
+    // A later live publication also reads through the durable-marker projection while the
+    // catalogue row still exists. It must not restore the label that replay just removed.
+    let mut live = svc.subscribe(None);
+    live.recv_timeout(Duration::from_secs(5));
+    let declaration = svc.call(retained_privacy_tier_request(&svc), &CallContext::http());
+    ok("volumes.declare_tier", declaration.clone());
+    assert!(!retained_privacy_has_name(&declaration, NAME_A));
+    let RecvOutcome::Event(event) = live.recv_timeout(Duration::from_secs(5)) else {
+        panic!("expected the new volume event")
+    };
+    assert_eq!(event.event, EventName::VolumesChanged);
+    event.validate().unwrap();
+    assert!(
+        !retained_privacy_has_name(&event, NAME_A),
+        "a later mutation republished forgotten volume metadata"
+    );
+}
+
+#[test]
+fn retained_privacy_cached_grant_reply_drops_forgotten_root_json() {
+    let dir = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    let (root, grant) = named(&svc, 1, NAME_A, PATH_A);
+    let (req, settle) = retained_privacy_grant_completion(&svc, root);
+    drop(settle);
+    let before = svc.call(req.clone(), &retained_privacy_tauri());
+    ok("roots.request_grant", before.clone());
+    assert!(retained_privacy_has_name(&before, PATH_A));
+    svc.inner.revoke(grant).unwrap();
+    ok("roots.forget", forget(&svc, root, None));
+    let replay = svc.call(req, &retained_privacy_tauri());
+    assert_eq!(
+        count(
+            &svc,
+            "SELECT count(*) FROM st.root_grant WHERE state='active'"
+        ),
+        0
+    );
+    assert_eq!(count(&svc, "SELECT count(*) FROM st.root_forgotten"), 1);
+    assert!(!svc
+        .inner
+        .hooks
+        .runs
+        .lock()
+        .unwrap()
+        .contains_key(&Command::RootsRequestGrant));
+    assert!(
+        !retained_privacy_has_name(&replay, PATH_A),
+        "a cached roots.request_grant reply discloses the forgotten root JSON"
+    );
+}
+
+#[test]
+fn retained_privacy_a_late_grant_completion_cannot_restore_forgotten_root_json() {
+    let dir = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    let (root, grant) = named(&svc, 1, NAME_A, PATH_A);
+    let (req, settle) = retained_privacy_grant_completion(&svc, root);
+    svc.inner.revoke(grant).unwrap();
+    ok("roots.forget", forget(&svc, root, None));
+    // The response snapshot existed before forget; the actual production completion now runs
+    // after its cache scrub. No timing sleeps or fabricated response payloads are involved.
+    drop(settle);
+    let replay = svc.call(req, &retained_privacy_tauri());
+    assert_eq!(
+        count(
+            &svc,
+            "SELECT count(*) FROM st.root_grant WHERE state='active'"
+        ),
+        0
+    );
+    assert_eq!(count(&svc, "SELECT count(*) FROM st.root_forgotten"), 1);
+    assert!(!svc
+        .inner
+        .hooks
+        .runs
+        .lock()
+        .unwrap()
+        .contains_key(&Command::RootsRequestGrant));
+    assert!(
+        !retained_privacy_has_name(&replay, PATH_A),
+        "Settle::drop restored forgotten root JSON after the privacy boundary"
+    );
+}
+
+#[test]
+fn retained_privacy_forget_also_removes_a_volume_label_from_before_a_root_rename() {
+    let dir = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    let (root, grant) = named(&svc, 1, NAME_A, PATH_A);
+    named(&svc, 2, "KeptVolumeRoot", PATH_B);
+    // A top directory can be renamed after its name initialized the volume row. There is no
+    // persistent label-origin ID; matching the current root name does not prove this label safe.
+    svc.inner.db().execute(
+        "UPDATE main.dir SET name='SyntheticRenamedRoot' WHERE root_id=?1 AND parent_id IS NULL",
+        [root],
+    ).unwrap();
+    assert!(retained_privacy_has_name(
+        &call(&svc, "volumes.list", json!({})),
+        NAME_A
+    ));
+    svc.inner.revoke(grant).unwrap();
+    ok("roots.forget", forget(&svc, root, None));
+    let fresh = call(&svc, "volumes.list", json!({}));
+    ok("volumes.list", fresh.clone());
+    assert!(
+        !retained_privacy_has_name(&fresh, NAME_A),
+        "normal purge retained the root's older name as the surviving volume label"
+    );
+}
+
+fn retained_privacy_alert_settings(svc: &Service, low_percent: u64) -> Value {
+    let mut settings = ok("alerts.list", call(svc, "alerts.list", json!({}))).0["settings"].clone();
+    settings["low_space_free_percent"] = json!(low_percent);
+    settings
+}
+
+#[test]
+fn retained_privacy_alerts_cached_configuration_never_replays_forgotten_labels_or_old_settings() {
+    let dir = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    let (root, grant) = named(&svc, 1, NAME_A, PATH_A);
+    named(&svc, 2, "KeptVolumeRoot", PATH_B);
+    let req = request("alerts.configure", retained_privacy_alert_settings(&svc, 7));
+    let first = svc.call(req.clone(), &CallContext::http());
+    ok("alerts.configure", first.clone());
+    assert!(retained_privacy_has_name(&first, NAME_A));
+    assert!(retained_privacy_has_name(&first, PATH_A));
+    // A newer owner choice makes replaying the old mutation observable even if its old reply
+    // were accidentally hidden. Forget must preserve both choices' keys and the latest setting.
+    ok(
+        "alerts.configure",
+        call(
+            &svc,
+            "alerts.configure",
+            retained_privacy_alert_settings(&svc, 11),
+        ),
+    );
+    svc.inner.revoke(grant).unwrap();
+    ok("roots.forget", forget(&svc, root, None));
+    let replay = svc.call(req.clone(), &CallContext::http());
+    assert_eq!(
+        svc.inner.hooks.runs.lock().unwrap()[&Command::AlertsConfigure],
+        2
+    );
+    let fresh = ok("alerts.list", call(&svc, "alerts.list", json!({}))).0;
+    assert_eq!(fresh["settings"]["low_space_free_percent"], 11);
+    assert!(!retained_privacy_has_name(&fresh, NAME_A));
+    assert!(!retained_privacy_has_name(&fresh, PATH_A));
+    let mut changed = req;
+    changed
+        .payload
+        .insert("low_space_free_percent".into(), json!(13));
+    assert_eq!(
+        reason(&err(svc.call(changed, &CallContext::http()))),
+        Some("idempotency_conflict")
+    );
+    assert!(
+        !retained_privacy_has_name(&replay, NAME_A) && !retained_privacy_has_name(&replay, PATH_A),
+        "a cached alerts.configure report disclosed forgotten root or volume labels"
+    );
+    let error = err(replay);
+    assert_eq!(error.code, ErrorCode::PermissionDenied);
+    assert_eq!(reason(&error), Some("forgotten_result"));
+    assert!(!error.retryable);
+}
+
+#[test]
+fn retained_privacy_alerts_late_configuration_settlement_cannot_restore_forgotten_labels() {
+    let dir = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    let (root, grant) = named(&svc, 1, NAME_A, PATH_A);
+    named(&svc, 2, "KeptVolumeRoot", PATH_B);
+    let req = request("alerts.configure", retained_privacy_alert_settings(&svc, 7));
+    let fingerprint = json!({
+        "command": req.command,
+        "payload": req.payload,
+        "expected_state_rev": req.expected_state_rev,
+        "expected_generation": req.expected_generation,
+    });
+    assert_eq!(
+        svc.inner.idem.claim(&req.request_id, &fingerprint),
+        crate::idem::Claim::Run
+    );
+    // Execute the actual settings handler and its response validation, then retain the same
+    // Settle boundary a mutation worker reaches after the handler releases the mutation mutex.
+    let reply = svc.inner.respond(
+        &req,
+        Command::AlertsConfigure,
+        &CallContext::http(),
+        Instant::now(),
+        None,
+        None,
+    );
+    ok("alerts.configure", reply.clone());
+    assert!(retained_privacy_has_name(&reply, NAME_A));
+    assert!(retained_privacy_has_name(&reply, PATH_A));
+    let settle = crate::Settle {
+        inner: svc.inner.clone(),
+        key: req.request_id.to_string(),
+        ticket: None,
+        outcome: Some(reply),
+    };
+    svc.inner.revoke(grant).unwrap();
+    ok("roots.forget", forget(&svc, root, None));
+    drop(settle);
+    let replay = svc.call(req, &CallContext::http());
+    assert_eq!(
+        svc.inner.hooks.runs.lock().unwrap()[&Command::AlertsConfigure],
+        1
+    );
+    assert_eq!(
+        ok("alerts.list", call(&svc, "alerts.list", json!({}))).0["settings"]
+            ["low_space_free_percent"],
+        7
+    );
+    assert!(
+        !retained_privacy_has_name(&replay, NAME_A) && !retained_privacy_has_name(&replay, PATH_A),
+        "late alerts.configure settlement restored forgotten root or volume labels"
+    );
+    assert_eq!(reason(&err(replay)), Some("forgotten_result"));
+}
+
+fn rejected_forget_preserves_pending_replies(writer_failure: bool) {
+    let dir = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    let (root, grant) = named(&svc, 1, NAME_A, PATH_A);
+    named(&svc, 2, "KeptVolumeRoot", PATH_B);
+    svc.inner.revoke(grant).unwrap();
+    let req = retained_privacy_tier_request(&svc);
+    let original = svc.call(req.clone(), &CallContext::http());
+    ok("volumes.declare_tier", original.clone());
+    let pending_tier = svc.call_pending(req.clone(), &CallContext::http());
+    let pending_roots = svc.call_pending(request("roots.list", json!({})), &CallContext::http());
+    let rev = state_rev(&svc);
+    if writer_failure {
+        // Reject after the writer has changed rows inside its transaction. Rollback must be
+        // distinguished from a durable marker followed by a derived catalogue purge failure.
+        svc.inner
+            .db()
+            .execute_batch(
+                "CREATE TRIGGER st.reject_response_forget BEFORE INSERT ON root_forgotten
+             BEGIN SELECT RAISE(ABORT, 'synthetic pre-commit forget failure'); END",
+            )
+            .unwrap();
+    }
+    let rejected = err(forget(&svc, root, (!writer_failure).then_some(rev + 7)));
+    assert_eq!(
+        rejected.code,
+        if writer_failure {
+            ErrorCode::InternalError
+        } else {
+            ErrorCode::StaleGeneration
+        }
+    );
+    assert_eq!(count(&svc, "SELECT count(*) FROM st.root_forgotten"), 0);
+    assert_eq!(state_rev(&svc), rev);
+    assert_eq!(
+        pending_tier.admit(),
+        original,
+        "a confirmed rejected forget must resume the original response stamp"
+    );
+    let roots = pending_roots.admit();
+    ok("roots.list", roots.clone());
+    assert!(retained_privacy_has_name(&roots, PATH_A));
+    assert_eq!(svc.call(req.clone(), &CallContext::http()), original);
+    assert_eq!(count(&svc, "SELECT count(*) FROM st.tier_declaration"), 1);
+    assert_eq!(
+        svc.inner.hooks.runs.lock().unwrap()[&Command::VolumesDeclareTier],
+        1
+    );
+    let mut changed = req;
+    changed.payload.insert("tier".into(), json!(5));
+    assert_eq!(
+        reason(&err(svc.call(changed, &CallContext::http()))),
+        Some("idempotency_conflict")
+    );
+}
+
+#[test]
+fn retained_privacy_rejected_forget_resumes_pending_replies_after_a_stale_revision() {
+    rejected_forget_preserves_pending_replies(false);
+}
+
+#[test]
+fn retained_privacy_rejected_forget_resumes_pending_replies_after_writer_rollback() {
+    rejected_forget_preserves_pending_replies(true);
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum ResponseForgetOutcome {
+    Rejected,
+    Durable,
+    Unknown,
+}
+
+fn response_waits_for_forget_decision(outcome: ResponseForgetOutcome) {
+    use std::future::Future;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::task::{Context, Poll, Wake, Waker};
+
+    struct ObserveWake {
+        inner: Arc<crate::Inner>,
+        held_mutation: AtomicBool,
+        wakes: AtomicUsize,
+    }
+    impl Wake for ObserveWake {
+        fn wake(self: Arc<Self>) {
+            if self.inner.mutation.try_lock().is_err() {
+                self.held_mutation.store(true, Ordering::SeqCst);
+            }
+            self.wakes.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    let dir = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    let (root, grant) = named(&svc, 1, NAME_A, PATH_A);
+    named(&svc, 2, "KeptVolumeRoot", PATH_B);
+    svc.inner.revoke(grant).unwrap();
+    let pending = svc.call_pending(request("roots.list", json!({})), &CallContext::http());
+    let mut admission = std::pin::pin!(pending.admit_async());
+    let wake = Arc::new(ObserveWake {
+        inner: svc.inner.clone(),
+        held_mutation: AtomicBool::new(false),
+        wakes: AtomicUsize::new(0),
+    });
+    let waker = Waker::from(wake.clone());
+    let mut cx = Context::from_waker(&waker);
+    let expected = (outcome != ResponseForgetOutcome::Durable).then_some(state_rev(&svc) + 7);
+    const GATE: (Command, &str) = (Command::RootsForget, "forget_written");
+    svc.inner.hooks.closed.lock().unwrap().push(GATE);
+    struct Release(Arc<crate::tests::Hooks>);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            self.0.open(GATE.0, GATE.1);
+        }
+    }
+    let forgotten = std::thread::scope(|scope| {
+        let worker = scope.spawn(|| forget(&svc, root, expected));
+        let release = Release(svc.inner.hooks.clone());
+        svc.inner
+            .hooks
+            .until("the writer returned before the marker decision", |h| {
+                h.arrived.lock().unwrap().contains(&GATE)
+            });
+        assert!(
+            admission.as_mut().poll(&mut cx).is_pending(),
+            "admission must wait while forget has not classified the durable outcome"
+        );
+        assert_eq!(
+            count(&svc, "SELECT count(*) FROM st.root_forgotten"),
+            i64::from(outcome == ResponseForgetOutcome::Durable)
+        );
+        if outcome == ResponseForgetOutcome::Unknown {
+            svc.inner
+                .db()
+                .execute_batch(
+                    "ALTER TABLE st.root_forgotten RENAME TO hidden_response_marker",
+                )
+                .unwrap();
+        }
+        drop(release);
+        worker.join().unwrap()
+    });
+    if outcome == ResponseForgetOutcome::Unknown {
+        svc.inner
+            .db()
+            .execute_batch(
+                "ALTER TABLE st.hidden_response_marker RENAME TO root_forgotten",
+            )
+            .unwrap();
+        assert_eq!(count(&svc, "SELECT count(*) FROM st.root_forgotten"), 0);
+    }
+    if outcome == ResponseForgetOutcome::Durable {
+        ok("roots.forget", forgotten);
+    } else {
+        assert_eq!(err(forgotten).code, ErrorCode::StaleGeneration);
+    }
+    assert!(wake.wakes.load(Ordering::SeqCst) > 0);
+    assert!(
+        !wake.held_mutation.load(Ordering::SeqCst),
+        "a response wake callback ran while the service mutation lock was held"
+    );
+    let Poll::Ready(delivered) = admission.as_mut().poll(&mut cx) else {
+        panic!("the completed forget left a response paused")
+    };
+    if outcome == ResponseForgetOutcome::Rejected {
+        ok("roots.list", delivered.clone());
+        assert!(retained_privacy_has_name(&delivered, PATH_A));
+    } else {
+        assert!(!retained_privacy_has_name(&delivered, PATH_A));
+        assert_eq!(reason(&err(delivered)), Some("forgotten_result"));
+    }
+}
+
+#[test]
+fn retained_privacy_response_waits_for_a_rejected_forget_decision() {
+    response_waits_for_forget_decision(ResponseForgetOutcome::Rejected);
+}
+
+#[test]
+fn retained_privacy_response_waits_for_a_durable_forget_decision() {
+    response_waits_for_forget_decision(ResponseForgetOutcome::Durable);
+}
+
+#[test]
+fn retained_privacy_unreadable_marker_retires_the_pending_response() {
+    response_waits_for_forget_decision(ResponseForgetOutcome::Unknown);
+}

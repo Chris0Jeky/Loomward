@@ -112,6 +112,8 @@ pub(crate) struct Inner {
     ids: ids::NodeIds,
     cursors: cursors::Cursors,
     idem: idem::Idempotency,
+    /// Pending root/volume replies in adapters; no root identifiers or generation history.
+    reply_delivery: loomward_protocol::ResponseDeliveryPolicy,
     /// Serialises owner-state mutations (revocation, declarations, grants).
     // ponytail: one lock for every owner-state mutation; per-resource locks if contention shows.
     mutation: Mutex<()>,
@@ -315,6 +317,7 @@ impl Service {
             ids: ids::NodeIds::session(),
             cursors: cursors::Cursors::new(4096),
             idem: idem::Idempotency::new(ttl),
+            reply_delivery: loomward_protocol::ResponseDeliveryPolicy::default(),
             mutation: Mutex::new(()),
             turn: (Mutex::new(Queue::default()), std::sync::Condvar::new()),
             dialog: Mutex::new(()),
@@ -588,6 +591,23 @@ pub(crate) struct Out {
 }
 
 impl ViewService for Service {
+    fn response_delivery_policy(
+        &self,
+        command: Command,
+    ) -> Option<loomward_protocol::ResponseDeliveryPolicy> {
+        matches!(
+            command,
+            Command::RootsRequestGrant
+                | Command::RootsList
+                | Command::VolumesDeclareTier
+                | Command::VolumesList
+                | Command::TiersModel
+                | Command::AlertsList
+                | Command::AlertsConfigure
+        )
+        .then(|| self.inner.reply_delivery.clone())
+    }
+
     fn call(&self, request: RequestEnvelope, ctx: &CallContext) -> ResponseEnvelope {
         let started = Instant::now();
         let id = request.request_id.clone();

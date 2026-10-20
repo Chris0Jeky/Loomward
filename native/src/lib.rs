@@ -12,6 +12,9 @@
 mod delivery;
 pub mod dialogs;
 pub mod launch;
+mod response;
+#[cfg(test)]
+mod response_tests;
 pub mod selftest;
 pub mod shell;
 pub mod updates;
@@ -19,8 +22,8 @@ pub mod updates;
 use loomward_protocol::limits::MAX_REQUEST_BYTES;
 use loomward_protocol::{
     Adapter, CallContext, CloseReason, Command, DatasetClass, ErrorBody, ErrorCode, EventEnvelope,
-    NativeDialogs, RecvOutcome, RequestEnvelope, ResponseEnvelope, ResponseMeta, StreamEpoch,
-    ViewService,
+    NativeDialogs, PendingResponse, RecvOutcome, RequestEnvelope, ResponseEnvelope, ResponseMeta,
+    StreamEpoch, ViewService,
 };
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -126,12 +129,19 @@ impl Desktop {
     }
 
     pub fn dispatch_bytes(&self, bytes: &[u8]) -> Result<ResponseEnvelope, String> {
+        self.dispatch_bytes_pending(bytes)
+            .map(PendingResponse::admit)
+    }
+
+    /// The IPC binding keeps this response pending through its worker await, then admits it at
+    /// the final return to Tauri. Synchronous callers use `dispatch_bytes` at their own handoff.
+    pub fn dispatch_bytes_pending(&self, bytes: &[u8]) -> Result<PendingResponse, String> {
         if bytes.len() > MAX_REQUEST_BYTES {
             return Err("the request exceeds 64 KiB".into());
         }
         let request = match RequestEnvelope::from_slice(bytes) {
             Ok(r) => r,
-            Err(rejected) => return Ok(rejected.into_response()),
+            Err(rejected) => return Ok(PendingResponse::unrestricted(rejected.into_response())),
         };
         let command = Command::from_name(&request.command);
         if !command.is_some_and(|c| c.available_on(Adapter::Tauri)) {
@@ -140,11 +150,11 @@ impl Desktop {
                 "this command is not offered by the desktop adapter",
                 false,
             );
-            return Ok(ResponseEnvelope::error(
+            return Ok(PendingResponse::unrestricted(ResponseEnvelope::error(
                 Some(request.request_id),
                 error,
                 None,
-            ));
+            )));
         }
         // Fail closed before the service, so no dialog can open for these (docs/41 5.2,
         // semantics.md 11). The engine service refuses both itself (a synthetic picker request,
@@ -163,15 +173,15 @@ impl Desktop {
             _ => None,
         };
         if let Some(Value::Object(result)) = refusal {
-            return Ok(ResponseEnvelope::ok_object(
+            return Ok(PendingResponse::unrestricted(ResponseEnvelope::ok_object(
                 request.request_id,
                 result,
                 self.meta(),
-            ));
+            )));
         }
         Ok(self
             .service
-            .call(request, &CallContext::tauri(self.dialogs.clone())))
+            .call_pending(request, &CallContext::tauri(self.dialogs.clone())))
     }
 
     /// `lw_events`. Opens a stream for `webview`, delivers `stream.hello` (and any replay or

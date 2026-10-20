@@ -126,6 +126,22 @@ impl fmt::Debug for CallContext {
 pub trait ViewService: Send + Sync + 'static {
     /// Synchronous; long work returns a Job. Deadlines per `semantics.md` section 2.
     fn call(&self, request: RequestEnvelope, ctx: &CallContext) -> ResponseEnvelope;
+    /// The source's shared privacy policy for reply classes containing root/volume metadata.
+    /// Other commands (especially roots.forget itself) return None. No wire capability changes.
+    fn response_delivery_policy(
+        &self,
+        _command: crate::Command,
+    ) -> Option<crate::ResponseDeliveryPolicy> {
+        None
+    }
+    /// Adapters retain this pending response through any blocking-worker await. They must admit
+    /// it only at the final native return or HTTP body poll, never before that await/queue.
+    fn call_pending(&self, request: RequestEnvelope, ctx: &CallContext) -> crate::PendingResponse {
+        let stamp = crate::Command::from_name(&request.command)
+            .and_then(|command| self.response_delivery_policy(command))
+            .map(|policy| policy.stamp());
+        crate::PendingResponse::new(self.call(request, ctx), stamp)
+    }
     /// Opens a stream. `resume` is the client's (epoch, last applied seq), if any.
     fn subscribe(&self, resume: Option<(String, u64)>) -> Box<dyn EventStream>;
 }

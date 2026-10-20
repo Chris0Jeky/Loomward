@@ -1487,10 +1487,12 @@ fn forget_state(conn: &mut Connection, grant: i64, at: i64, expected: Option<i64
 /// aggregates, then whatever only it kept alive (extension vocabulary, a volume with no other root,
 /// a volume name taken from its folder). The link counts of a volume that stays are recomputed.
 pub(crate) fn purge_root(conn: &Connection, root: i64) -> Result<()> {
-    let (volume, name): (Option<i64>, Option<String>) = conn.query_row(
-        "SELECT r.volume_id,(SELECT name FROM dir WHERE root_id=r.id AND parent_id IS NULL) FROM root r WHERE r.id=?1",
+    let (volume, name, forgotten): (Option<i64>, Option<String>, bool) = conn.query_row(
+        "SELECT r.volume_id,(SELECT name FROM dir WHERE root_id=r.id AND parent_id IS NULL),
+                EXISTS(SELECT 1 FROM st.root_forgotten f WHERE f.grant_id=r.grant_id)
+         FROM root r WHERE r.id=?1",
         [root],
-        |r| Ok((r.get(0)?, r.get(1)?)),
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     )?;
     conn.execute(
         "DELETE FROM stage_entry WHERE run_id IN (SELECT id FROM scan_run WHERE root_id=?1)",
@@ -1533,9 +1535,12 @@ pub(crate) fn purge_root(conn: &Connection, root: i64) -> Result<()> {
         match other {
             Some(other) => {
                 rebuild_multilink(conn, other)?;
+                // A forgotten root may have changed name since it initialized this volume.
+                // No durable label-origin record proves the old name safe; retain the volume
+                // and its physics/preferences, but fall back to its existing opaque key.
                 conn.execute(
-                    "UPDATE volume SET display_name=volume_key WHERE id=?1 AND display_name=?2",
-                    params![volume, name],
+                    "UPDATE volume SET display_name=volume_key WHERE id=?1 AND (?3 OR display_name=?2)",
+                    params![volume, name, forgotten],
                 )?;
             }
             None => {
