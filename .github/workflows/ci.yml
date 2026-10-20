@@ -40,6 +40,10 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
       - run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
       - run: cargo +stable fmt --all -- --check
+      # These journal/control tests perform no native file effects and never skip for elevation.
+      - name: Copy metadata and pending-fence receipts (Windows)
+        if: runner.os == 'Windows'
+        run: cargo +stable test --locked -p loomward-windows --features copy-primitives pending_fence_tests
       - run: cargo +stable test --workspace
       - run: cargo +stable clippy --workspace --all-targets -- -D warnings
   desktop:

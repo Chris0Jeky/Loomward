@@ -2401,6 +2401,10 @@ mod tests;
 #[path = "exec_crash_tests.rs"]
 mod crash_tests;
 
+#[cfg(test)]
+#[path = "exec_pending_fence_tests.rs"]
+mod pending_fence_tests;
+
 /// The held file's named streams are exactly `want` (bare names, sorted) and it has no EAs.
 fn exact_streams(held: &VerifiedFile, want: &[(String, u64)]) -> io::Result<bool> {
     let mut found: Vec<(String, u64)> = held
