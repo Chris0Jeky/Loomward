@@ -899,7 +899,7 @@ impl ScanSink for CatalogScanSink {
         scope: &RunScope,
         complete: bool,
     ) -> EngineResult<()> {
-        self.finish_traversal(root, run, scope, complete, complete)
+        self.finish_traversal(root, run, scope, complete, complete, false)
     }
 
     fn finish_traversal(
@@ -909,6 +909,7 @@ impl ScanSink for CatalogScanSink {
         scope: &RunScope,
         complete: bool,
         settled: bool,
+        limited: bool,
     ) -> EngineResult<()> {
         // EndRun queues behind every step sent. An unsettled or obsolete step means the engine
         // never relisted it, so neither completeness nor a settled traversal can be claimed.
@@ -916,6 +917,7 @@ impl ScanSink for CatalogScanSink {
         let receipts_settled = receipts.as_ref().is_ok_and(Vec::is_empty);
         let complete = complete && receipts_settled;
         let settled = settled && receipts_settled;
+        let limited = limited && receipts_settled;
         let catalog_run = {
             let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
             let r = Self::active(&mut s, root, run)?;
@@ -925,7 +927,8 @@ impl ScanSink for CatalogScanSink {
         };
         // Only an engine-complete run may let the writer finalise absence and coverage; the writer
         // still requires its own full traversal for that. A settled traversal with coverage gaps
-        // (a denied folder) finished, so it ends `partial`, never `cancelled` (#774).
+        // (a denied folder) finished, so it ends `partial`, never `cancelled` (#774). A drained
+        // budget stop records the same partial history without settling freshness (#781).
         let end = |state: &str| {
             self.call(WriteCommand::EndRun {
                 run_id: catalog_run,
@@ -935,7 +938,7 @@ impl ScanSink for CatalogScanSink {
         };
         if let Err(e) = end(if complete {
             "completed"
-        } else if settled {
+        } else if settled || limited {
             "partial"
         } else {
             "cancelled"

@@ -220,6 +220,8 @@ pub trait ScanSink: Send + Sync {
     /// published work without cancellation, limits or unresolved reconciliation; it never permits
     /// absence reconciliation, which still requires `complete`.
     /// For targeted runs it also requires bounded traversal with no skipped or failed listings.
+    /// `limited` is a drained, reconciled budget stop: it may record a finished partial sample,
+    /// but grants neither freshness nor absence reconciliation.
     fn finish_traversal(
         &self,
         root: &RootId,
@@ -227,6 +229,7 @@ pub trait ScanSink: Send + Sync {
         scope: &RunScope,
         complete: bool,
         _settled: bool,
+        _limited: bool,
     ) -> EngineResult<()> {
         self.finish_run(root, run, scope, complete)
     }

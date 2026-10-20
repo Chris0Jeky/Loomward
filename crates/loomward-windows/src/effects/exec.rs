@@ -424,6 +424,15 @@ fn hit(label: &str) {
 
 type Hook = Box<dyn Fn(Point, &Control) -> Flow + Send + Sync>;
 
+/// Only an observation of a nonterminal operation can create this eligible pending cause. Keeping
+/// its operation and epoch prevents a later terminal request from manufacturing or replacing it.
+#[derive(Clone, Copy)]
+struct PendingFence {
+    op: u64,
+    epoch: u64,
+    cause: loomward_operations::FenceCause,
+}
+
 /// One run's controls: the owner's cancel, the staging-removal policy, and the revocation fence with
 /// its admission lock (docs/47 section 5).
 pub struct Control {
@@ -443,9 +452,12 @@ pub struct Control {
     admission: Mutex<()>,
     /// Set inside the rename step when the rename succeeded: the run is on the published side.
     renamed: AtomicBool,
-    /// A fence raised in memory and not yet journaled: the fencer, once the step in flight returns,
-    /// or the run, when it stops on the fence, journals it (`journal_fence`), whichever comes first.
-    unjournaled: Mutex<Option<loomward_operations::FenceCause>>,
+    /// Causes observed while nonterminal and not yet journaled: at most one per cause. The fencer
+    /// or the run journals them once the step returns. A new terminal request never replaces them.
+    unjournaled: Mutex<Vec<PendingFence>>,
+    /// Retention hint for the service's reaper. Reading it must not wait on a journal transaction
+    /// holding `unjournaled`; only that mutex's owner changes it. It conveys no effect authority.
+    pending_fence: AtomicBool,
 }
 
 /// What an acknowledged revocation says about the run (docs/47 section 5, revocation step 3).
@@ -488,7 +500,8 @@ impl Control {
             fenced: AtomicBool::new(false),
             admission: Mutex::new(()),
             renamed: AtomicBool::new(false),
-            unjournaled: Mutex::new(None),
+            unjournaled: Mutex::new(Vec::new()),
+            pending_fence: AtomicBool::new(false),
         }
     }
     pub fn with_hook(
@@ -545,6 +558,12 @@ impl Control {
     /// A revocation or emergency stop has fenced this run.
     pub fn fenced(&self) -> bool {
         self.fenced.load(Ordering::SeqCst)
+    }
+    /// An eligible cause still needs a durable fence or terminal annotation. A finished worker can
+    /// leave this true after a retryable journal error; its owner must retain this Control for retry.
+    /// This nonblocking query is a lifetime hint, never permission to run or clean an operation.
+    pub fn has_pending_fence(&self) -> bool {
+        self.pending_fence.load(Ordering::Acquire)
     }
     /// Sleep up to `wait`, ending early once the owner cancels or a fence lands. False when cancelled.
     fn pause(&self, wait: Duration) -> bool {
@@ -785,11 +804,11 @@ impl Journal<'_> {
     fn commit(&self, control: &Control) -> Result<(), Stop> {
         let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
         // Serialize the pending annotation with commit so a fence cannot slip between them.
-        let pending_fence = control
+        let pending_fence = !control
             .unjournaled
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .is_some();
+            .is_empty();
         if pending_fence {
             journal_fence_locked(&mut store, self.op, control)
                 .map_err(|e| Stop::Journal(format!("{e:?}")))?;
@@ -917,6 +936,11 @@ fn status_observing(store: &Mutex<Store>, op: u64, idle: bool) -> Result<Outcome
                 code: Some(code), ..
             }) => refusal = Some((code, None)),
             Ok(Record::Fenced { .. }) => refusal = Some((Refusal::GrantRevoked, None)),
+            Ok(Record::RevokedAfterPublish { .. }) => {
+                // Terminal attribution must not erase an earlier, more specific refusal. A live
+                // Fenced row keeps its existing chronological precedence above.
+                refusal.get_or_insert((Refusal::GrantRevoked, None));
+            }
             _ => {}
         }
     }
@@ -1713,14 +1737,10 @@ fn fence_waiting(
     cause: loomward_operations::FenceCause,
     wait: Duration,
 ) -> Result<Ack, Fault> {
-    {
-        // Under the store lock, which `journal_fence` takes: a run stopping on this fence finds it
-        // unjournaled. Recorded before `fenced` is raised, so no run sees the fence without it.
+    let (settled, pending) = {
+        // `journal_fence` takes this same lock. Raise admission before reading the journal, and
+        // record an eligible nonterminal observation before releasing Store to a stopped worker.
         let s = store.lock().unwrap_or_else(|e| e.into_inner());
-        *control
-            .unjournaled
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(cause);
         control.fenced.store(true, Ordering::SeqCst);
         let r = match s.replay(op).map_err(|e| Fault::Journal(e.to_string()))? {
             Ok(r) => r,
@@ -1739,14 +1759,39 @@ fn fence_waiting(
             }
             Err(e) => return Err(Fault::Journal(format!("{e:?}"))),
         };
-        if r.state.is_terminal() {
-            return Ok(Ack::Settled);
+        let mut pending = control
+            .unjournaled
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if pending.iter().any(|p| p.op != op) {
+            return Err(Fault::Journal("pending fence belongs to another operation".into()));
         }
-    }
+        if !r.state.is_terminal() && !pending.iter().any(|p| p.cause == cause) {
+            pending.push(PendingFence {
+                op,
+                epoch: r.epoch,
+                cause,
+            });
+            control.pending_fence.store(true, Ordering::Release);
+        }
+        (r.state.is_terminal(), !pending.is_empty())
+    };
     let Some(renamed) = control.fence(wait) else {
         return Ok(Ack::PendingInFlightStep);
     };
+    // Even a terminal winner cannot acknowledge while a resident admitted step is still running.
+    // A new request first observed after commit has no eligible cause to annotate.
+    if settled && !pending {
+        return Ok(Ack::Settled);
+    }
     let r = journal_fence(store, op, control)?;
+    if r.state.is_terminal() {
+        return Ok(if r.state == OpState::Committed {
+            Ack::Published
+        } else {
+            Ack::Settled
+        });
+    }
     Ok(match renamed {
         true => Ack::Published,
         false if r.publish.is_none() => Ack::StoppedBeforePublish,
@@ -1755,6 +1800,20 @@ fn fence_waiting(
         // it has either finished or never will: the destination says which (#672).
         false => published_on_disk(store, op, &r),
     })
+}
+
+/// Retry only causes this Control already observed while nonterminal. This does not observe a new
+/// request, inspect native paths, resume a run, or authorize cleanup. A still-admitted step returns
+/// `false` immediately, without holding Store or waiting; the caller keeps the Control for retry.
+pub fn retry_pending_fence(store: &Mutex<Store>, op: u64, control: &Control) -> Result<bool, Fault> {
+    if !control.has_pending_fence() {
+        return Ok(true);
+    }
+    if control.fence(Duration::ZERO).is_none() {
+        return Ok(false);
+    }
+    journal_fence(store, op, control)?;
+    Ok(!control.has_pending_fence())
 }
 
 /// Journal the fence `control` raised in memory, once: by the fencer after the step in flight
@@ -1770,19 +1829,48 @@ fn journal_fence_locked(s: &mut Store, op: u64, control: &Control) -> Result<Rep
         .unjournaled
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    let r = s
+    let mut r = s
         .replay(op)
         .map_err(|e| Fault::Journal(e.to_string()))?
         .map_err(|e| Fault::Journal(format!("{e:?}")))?;
-    if let Some(cause) = unjournaled.take().filter(|_| !r.state.is_terminal()) {
-        #[cfg(test)]
-        crash::record("before", &Record::Fenced { cause });
-        if let Err(e) = s.append(op, r.epoch + 1, Record::Fenced { cause }) {
-            *unjournaled = Some(cause);
-            return Err(Fault::Journal(format!("{e:?}")));
+    while let Some(pending) = unjournaled.first().copied() {
+        if pending.op != op || pending.epoch > r.epoch {
+            return Err(Fault::Journal("pending fence does not match this operation".into()));
         }
-        #[cfg(test)]
-        crash::record("after", &Record::Fenced { cause });
+        let cause = pending.cause;
+        if !r.has_fence_cause(cause) && r.state == OpState::Committed {
+            #[cfg(test)]
+            let record = Record::RevokedAfterPublish { cause };
+            #[cfg(test)]
+            crash::record("before", &record);
+            let outcome = s
+                .annotate_pending_fence(op, pending.epoch, cause)
+                .map_err(|e| Fault::Journal(format!("{e:?}")))?;
+            if outcome == loomward_operations::store::FenceAnnotation::Ineligible {
+                return Err(Fault::Journal("pending terminal annotation was ineligible".into()));
+            }
+            #[cfg(test)]
+            crash::record("after", &record);
+        } else if !r.has_fence_cause(cause) && !r.state.is_terminal() {
+            #[cfg(test)]
+            crash::record("before", &Record::Fenced { cause });
+            s.append(op, r.epoch + 1, Record::Fenced { cause })
+                .map_err(|e| Fault::Journal(format!("{e:?}")))?;
+            #[cfg(test)]
+            crash::record("after", &Record::Fenced { cause });
+        }
+        // Clear only after durable success/equivalence, or a non-committed terminal decision for
+        // which no terminal annotation is legal. Every append error, including Ack, retains it.
+        unjournaled.remove(0);
+        control
+            .pending_fence
+            .store(!unjournaled.is_empty(), Ordering::Release);
+        if !unjournaled.is_empty() {
+            r = s
+                .replay(op)
+                .map_err(|e| Fault::Journal(e.to_string()))?
+                .map_err(|e| Fault::Journal(format!("{e:?}")))?;
+        }
     }
     Ok(r)
 }
@@ -1823,11 +1911,11 @@ fn finish(
     stopped: Result<(), Stop>,
 ) -> Result<Outcome, Fault> {
     // A fence answered `PendingInFlightStep` becomes durable now that the step has returned.
-    let unjournaled = control
+    let unjournaled = !control
         .unjournaled
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .is_some();
+        .is_empty();
     if unjournaled {
         journal_fence(store, op, control)?;
     }

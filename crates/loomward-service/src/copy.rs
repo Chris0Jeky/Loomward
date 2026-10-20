@@ -58,6 +58,10 @@ pub(crate) struct Copies {
     pub(crate) ops: Mutex<HashMap<String, u64>>,
     #[cfg(windows)]
     pub(crate) running: Mutex<HashMap<u64, Run>>,
+    /// Pending fence metadata outlives worker handles, including a failed no-worker revocation.
+    /// One Control per operation; unresolved entries stop new admission instead of being evicted.
+    #[cfg(windows)]
+    pending_fences: Mutex<HashMap<u64, Arc<loomward_windows::effects::exec::Control>>>,
     /// The Q1 setting for this service (tests flip it; production reads the constant).
     pub(crate) removal: AtomicBool,
     /// How long `Drop` waits, in total, for cancelled workers (#569). A worker stuck in a blocking OS
@@ -125,6 +129,10 @@ fn parse_digest(d: &str) -> Result<[u8; 32], ErrorBody> {
     }
     Ok(out)
 }
+
+#[cfg(all(test, windows))]
+#[path = "copy_pending_fence_tests.rs"]
+mod pending_fence_tests;
 
 fn code_name<T: serde::Serialize>(code: T) -> Value {
     serde_json::to_value(code).unwrap_or(Value::Null)
@@ -210,6 +218,13 @@ fn unknown() -> ErrorBody {
     fail(ErrorCode::NotFound, "unknown copy operation")
 }
 
+#[cfg(windows)]
+fn fence_pending(code: ErrorCode, message: &str) -> ErrorBody {
+    let mut error = with_reason(fail(code, message), "copy_fence_pending");
+    error.retryable = true;
+    error
+}
+
 impl Copies {
     /// Open the journal for a synthetic session and run recovery (docs/47 section 5): C3's reader
     /// decides, and only its decisions run, through the C2 primitives. Nothing resumes by itself.
@@ -241,6 +256,7 @@ impl Copies {
                 pending: Mutex::default(),
                 ops: Mutex::default(),
                 running: Mutex::default(),
+                pending_fences: Mutex::default(),
                 removal,
                 shutdown_wait_ms,
                 #[cfg(test)]
@@ -317,17 +333,74 @@ impl Copies {
             .retain(|_, p| now_ms < p.expires_ms);
     }
 
-    /// Drop the runs whose worker has returned (#569). Its last journal record is durable by then, so
-    /// the journal answers `copy.status` and nothing needs the handle; a finished thread has no effect
-    /// left. Evict its wire ID too; historical lookups use the durable plan.
+    /// Drop finished worker handles (#569), retaining any cause whose journal acknowledgement
+    /// failed (#738). Status never retries writes or waits on the worker/journal here. Historical
+    /// wire lookups use the durable plan; retained Controls confer no effect or cleanup authority.
     #[cfg(windows)]
     fn reap(&self) {
         let mut running = self.running.lock().unwrap();
-        running.retain(|_, r| !r.thread.is_finished());
+        let mut pending = self.pending_fences.lock().unwrap();
+        running.retain(|&op, run| {
+            if !run.thread.is_finished() {
+                return true;
+            }
+            if run.control.has_pending_fence() {
+                pending.entry(op).or_insert_with(|| run.control.clone());
+            }
+            false
+        });
+        pending.retain(|_, control| control.has_pending_fence());
         self.ops
             .lock()
             .unwrap()
             .retain(|_, op| running.contains_key(op));
+    }
+
+    /// Called by the mutation-serialized fencer/canceller after taking the Run out of `running`.
+    /// A reaper that removed it first transferred its pending Control before releasing `running`.
+    #[cfg(windows)]
+    fn fence_control(
+        &self,
+        op: u64,
+        run: Option<&Run>,
+        removal: bool,
+    ) -> Arc<loomward_windows::effects::exec::Control> {
+        self.pending_fences
+            .lock()
+            .unwrap()
+            .get(&op)
+            .cloned()
+            .or_else(|| run.map(|run| run.control.clone()))
+            .unwrap_or_else(|| Arc::new(loomward_windows::effects::exec::Control::new(removal)))
+    }
+
+    /// Every path that consumes a worker or temporary fencer retains its eligible cause on error.
+    /// The flag is inspected under this map lock so a worker clearing it cannot cause a stale
+    /// cleanup decision to remove a later retained request. No Store/admission lock is taken here.
+    #[cfg(windows)]
+    fn retain_fence(&self, op: u64, control: &Arc<loomward_windows::effects::exec::Control>) {
+        let mut pending = self.pending_fences.lock().unwrap();
+        if control.has_pending_fence() {
+            pending.entry(op).or_insert_with(|| control.clone());
+        } else if pending.get(&op).is_some_and(|old| Arc::ptr_eq(old, control)) {
+            pending.remove(&op);
+        }
+    }
+
+    /// Persistent journal errors must not accumulate an unbounded queue behind new lab copies.
+    /// Keep the existing operations' causes; the owner can retry revoke/cancel to release this gate.
+    #[cfg(windows)]
+    fn check_admission(&self) -> Result<(), ErrorBody> {
+        let mut pending = self.pending_fences.lock().unwrap();
+        pending.retain(|_, control| control.has_pending_fence());
+        if pending.is_empty() {
+            Ok(())
+        } else {
+            Err(fence_pending(
+                ErrorCode::Busy,
+                "an earlier copy fence is pending; retry its revocation or cancellation",
+            ))
+        }
     }
 }
 
@@ -525,6 +598,7 @@ impl Inner {
                 Err(_) => store.lock().unwrap().operations().unwrap_or_default(),
             };
             ops.extend(self.copies.running.lock().unwrap().keys().copied());
+            ops.extend(self.copies.pending_fences.lock().unwrap().keys().copied());
             ops.sort_unstable();
             ops.dedup();
             for op in ops {
@@ -538,10 +612,7 @@ impl Inner {
                     .removal
                     .load(std::sync::atomic::Ordering::SeqCst);
                 let running = self.copies.running.lock().unwrap().remove(&op);
-                let control = running.as_ref().map_or_else(
-                    || Arc::new(exec::Control::new(removal)),
-                    |r| r.control.clone(),
-                );
+                let control = self.copies.fence_control(op, running.as_ref(), removal);
                 let cause = loomward_operations::FenceCause::GrantRevoked;
                 let stopped = match exec::fence(store, op, &control, cause) {
                     Ok(exec::Ack::StoppedBeforePublish | exec::Ack::Published) => true,
@@ -552,8 +623,9 @@ impl Inner {
                         false
                     }
                 };
+                self.copies.retain_fence(op, &control);
                 if !stopped {
-                    // Keep the live control for retry; a failed append still fenced it in memory.
+                    // Keep a live worker and, independently, the cause even when no worker exists.
                     if let Some(run) = running {
                         self.copies.running.lock().unwrap().insert(op, run);
                     }
@@ -581,15 +653,10 @@ impl Inner {
             }
             self.copies.reap();
             if pending {
-                let mut error = with_reason(
-                    fail(
-                        ErrorCode::InternalError,
-                        "the grant ended, but a copy fence is pending; retry revocation",
-                    ),
-                    "copy_fence_pending",
-                );
-                error.retryable = true;
-                return Err(error);
+                return Err(fence_pending(
+                    ErrorCode::InternalError,
+                    "the grant ended, but a copy fence is pending; retry revocation",
+                ));
             }
         }
         #[cfg(not(windows))]
@@ -766,6 +833,7 @@ impl Inner {
                     "copy_already_started",
                 ));
             }
+            self.copies.check_admission()?;
             let shown = parse_digest(request.digest.as_str())?;
             // The approval is consumed here whatever follows: single use.
             let (sources, destination, approval) = {
@@ -808,6 +876,9 @@ impl Inner {
                     "copy_already_started",
                 ));
             }
+            // A fence may have failed while preparation was outside `mutation`. Preserve its
+            // retry budget before admitting another journal/worker, just as for the grant recheck.
+            self.copies.check_admission()?;
             for &grant in &plan.grants {
                 let state: Option<String> = self
                     .db()
@@ -921,6 +992,12 @@ impl Inner {
             // the other finds it settled.
             let _m = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
             let running = self.copies.running.lock().unwrap().remove(&op);
+            let removal = self
+                .copies
+                .removal
+                .load(std::sync::atomic::Ordering::SeqCst);
+            let pending_control = self.copies.fence_control(op, running.as_ref(), removal);
+            self.copies.retain_fence(op, &pending_control);
             if let Some(run) = running {
                 run.control.cancel();
                 if let Err(run) = run.join() {
@@ -934,6 +1011,25 @@ impl Inner {
                     ));
                 }
             }
+            // Joining consumes Run, but cannot consume an unacknowledged pre-terminal cause.
+            // This retry is metadata-only and returns immediately if a step is still admitted.
+            let retry = exec::retry_pending_fence(&store, op, &pending_control);
+            self.copies.retain_fence(op, &pending_control);
+            match retry {
+                Ok(true) => {}
+                Ok(false) => {
+                    return Err(fence_pending(
+                        ErrorCode::Busy,
+                        "copy cancellation is pending an earlier fence",
+                    ));
+                }
+                Err(_) => {
+                    return Err(fence_pending(
+                        ErrorCode::InternalError,
+                        "copy cancellation is pending an earlier fence; retry cancellation",
+                    ));
+                }
+            }
             let plan: exec::Plan = store
                 .lock()
                 .unwrap()
@@ -942,11 +1038,7 @@ impl Inner {
                 .flatten()
                 .and_then(|p| serde_json::from_str(&p).ok())
                 .ok_or_else(unknown)?;
-            let control = exec::Control::new(
-                self.copies
-                    .removal
-                    .load(std::sync::atomic::Ordering::SeqCst),
-            );
+            let control = exec::Control::new(removal);
             exec::cancel(&store, op, &plan, &control)
                 .map_err(|_| fail(ErrorCode::InternalError, "the journal refused the cancel"))?;
         }

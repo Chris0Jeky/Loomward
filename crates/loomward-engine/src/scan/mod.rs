@@ -730,14 +730,8 @@ impl Engine {
         let bytes = self.budgets.bytes.clone();
         static NEXT_RUN: AtomicU64 = AtomicU64::new(1);
         let run = NEXT_RUN.fetch_add(1, Ordering::Relaxed);
-        #[cfg(windows)]
-        let existing = self.scan_watches.lock().unwrap().remove(root.root_id());
         // The reservation excludes other starts; cancellation can now acquire the gate.
         drop(revoked);
-        #[cfg(windows)]
-        if let Some(watch) = existing {
-            watch.stop();
-        }
         // A sink that refuses watch hints (the trait default) is never watched: its scans are
         // plain full passes, and no watch pins outlive them (#184 MEDIUM-2).
         // An identity-unverified root (#219) is never watched: the watch reopens by file ID.
@@ -750,6 +744,14 @@ impl Engine {
                 Err(EngineError::Unavailable { .. }) => false,
                 Err(e) => return Err(e),
             };
+        // A failed probe leaves the current watch installed and live. The start reservation
+        // still excludes another start; revocation may independently remove and stop it.
+        #[cfg(windows)]
+        let existing = self.scan_watches.lock().unwrap().remove(root.root_id());
+        #[cfg(windows)]
+        if let Some(watch) = existing {
+            watch.stop();
+        }
         #[cfg(windows)]
         let armed = if watched {
             Some(watch::RootWatch::start(&root, sink.clone())?)

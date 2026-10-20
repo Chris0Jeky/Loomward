@@ -307,8 +307,8 @@ then fences later messages. The copy run follows the same pattern, with one addi
    step's epoch read is therefore the pre-rename check (HIGH fix (d)).
 2. **Revocation.** Revoking a source grant, or pressing emergency stop, runs in this order:
    1. for a grant revocation, first commit it in `state.db`, making the approval unusable;
-   2. under the Store mutex, record the pending cause on the run's Control and raise its in-memory fence,
-      closing admission to later effect steps;
+   2. under the Store mutex, raise the run's in-memory fence, closing admission to later effect steps,
+      then bind the cause to the replayed nonterminal operation and epoch before releasing Store;
    3. release the Store mutex and wait for the admitted step to return; a worker may need Store before it
       can release its admission lock;
    4. once the step has returned, journal `Fenced` with a new run epoch, determine the run's position
@@ -351,6 +351,53 @@ then fences later messages. The copy run follows the same pattern, with one addi
 An identity change that ends a source or destination grant fences its copies under the same service
 mutation lock as revocation. It uses the same journal cause and receipt annotation, `grant_revoked`:
 before rename the run cancels; after rename it confirms and commits with the annotation.
+
+**A different Store commits first (#738).** A resident pending cause binds the operation and the
+nonterminal epoch at which the request was observed. A later request first observed after a terminal
+decision cannot create or overwrite that history. Once the admitted step returns, a cause that loses
+the race to another Store's `Committed` is appended as `RevokedAfterPublish { cause }`. This is a
+metadata record, legal only on `Committed` with its publish and staging identities retained. It changes
+the journal sequence and chain, but no operation state, fence epoch, verification, identity, cleanup
+authority or effect eligibility. `Fenced` remains illegal on every terminal state.
+
+The Store validates the complete journal, head and tail, checks the committed receipt and the observed
+epoch, deduplicates the same cause (including an existing `Fenced`), and writes the row and head in one
+`BEGIN IMMEDIATE` transaction. Each distinct cause is retained; at most one terminal annotation per
+operation and cause is stored. Row/head errors keep the resident request pending. A lost acknowledgement
+is recognized by durable replay on retry, without a second row. The executor waits outside the Store
+mutex for its admitted step before returning an acknowledgement, even when another Store is already
+terminal. A terminal metadata row adds the existing `grant_revoked` receipt reason only if no earlier
+reason is present; it never replaces a more specific earlier refusal. All original reasons remain in
+the journal.
+
+Within the live service, pending Controls are retained by operation independently of worker handles.
+Status reaping, the end of revocation, and Cancel/Abandon joining a finished worker cannot discard a
+cause after a journal error. This also covers a revocation made without a resident worker. Status
+only transfers or retires Controls using a nonblocking pending flag; it does not retry journal writes
+or wait for an admitted step. Explicit revocation/cancellation retries retain the original operation,
+epoch and cause until a durable row or equivalent existing fence acknowledges it. The pending retry
+itself only writes journal metadata and grants no copy, resume or cleanup authority; the explicit
+command's existing nonterminal cancellation behavior is unchanged. Successfully drained Controls are
+retired. While any retained cause remains, new `copy.start` admission returns retryable
+`busy`/`copy_fence_pending`, checked both before consuming approval and under the registration lock.
+Persistent journal failures therefore retain the existing operation set instead of accumulating
+causes behind new lab copies or evicting old requests.
+
+**Rollback/read compatibility.** The row format gains the `revoked_after_publish` kind; SQL tables and
+existing rows do not change. Binaries predating this record refuse it as an unknown kind and cannot
+replay or advance the affected operation. They must not skip it, rewrite history, or re-anchor the
+head. Upgrading to a reader that understands the record restores replay. The exact previous
+`Record`/`Entry` decoder is retained as a test fixture to pin that refusal; newer readers continue
+refusing future unknown kinds too. This is an explicit fail-closed rollback policy for the lab-only
+copy journal, not backward-readable metadata.
+
+This retention lasts for the live service; it is not a durable outbox. If the service or process ends
+before any durable fence or annotation, its volatile eligible request remains lost; a new terminal
+request must not reconstruct it. The operation stays committed and no automatic effect or cleanup
+follows. Process-exit tests cover reopening on each side of the metadata commit; they are not
+power-loss evidence. Service metadata tests cover finished-worker reaping, cancellation joining,
+no-worker revocation, persistent Row/Head faults and acknowledgement loss without invoking native
+copy effects or requiring an elevation-dependent lab. C8 and the native copy safety gates are unchanged.
 
 Cancel and Abandon request cooperative cancellation and wait up to 30 s for the worker to finish.
 If a source read is still stuck, they return `busy` with reason `pending_in_flight_step`, release the

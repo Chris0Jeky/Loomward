@@ -355,6 +355,9 @@ impl ScanSink for RepairSink {
     fn fence_root(&self, root: &RootId) -> EngineResult<()> {
         self.inner.fence_root(root)
     }
+    fn settle(&self, root: &RootId) -> EngineResult<Vec<u64>> {
+        self.inner.settle(root)
+    }
 }
 
 #[cfg(windows)]
@@ -607,6 +610,68 @@ mod tests {
             )
         });
     }
+    /// #763: a deferred stale receipt must make the scan relist through its repair wrapper.
+    #[test]
+    fn repair_settle_relists_deferred_obsolete_directories() {
+        use super::super::tests::{root, Tree};
+        let root = root();
+        let sink = Arc::new(RecordingSink::default());
+        *sink.settlement.lock().unwrap() = Some(Ok(vec![1]));
+        let repair = Arc::new(RepairSink {
+            inner: sink.clone(),
+            valid: Mutex::new(true),
+            reparented: AtomicBool::new(false),
+        });
+        let report = run_scan(
+            &Tree,
+            &root,
+            1,
+            repair,
+            Arc::new(ByteBudget::new(crate::budgets::SCAN_BYTES)),
+            Arc::new(AtomicBool::new(false)),
+            ScanOptions::default(),
+        )
+        .unwrap();
+        assert!(report.complete);
+        assert_eq!(
+            sink.publications
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|dir| **dir == 1)
+                .count(),
+            2,
+            "the root listing must be published again after its deferred refusal"
+        );
+    }
+
+    #[test]
+    fn repair_settle_does_not_hide_a_writer_error() {
+        use super::super::tests::{root, Tree};
+        let sink = Arc::new(RecordingSink::default());
+        *sink.settlement.lock().unwrap() = Some(Err(EngineError::PermissionDenied {
+            message: "synthetic revoked writer".into(),
+        }));
+        let repair = Arc::new(RepairSink {
+            inner: sink,
+            valid: Mutex::new(true),
+            reparented: AtomicBool::new(false),
+        });
+        let result = run_scan(
+            &Tree,
+            &root(),
+            1,
+            repair,
+            Arc::new(ByteBudget::new(crate::budgets::SCAN_BYTES)),
+            Arc::new(AtomicBool::new(false)),
+            ScanOptions::default(),
+        );
+        assert!(matches!(
+            result,
+            Err(EngineError::PermissionDenied { message }) if message == "synthetic revoked writer"
+        ));
+    }
+
     #[test]
     fn repair_reparent_does_not_hide_an_obsolete_run_or_unrelated_ticket() {
         use super::super::tests::{root, Tree};
@@ -946,6 +1011,8 @@ mod tests {
             }
         }
     }
+    type WatchProbe = Box<dyn Fn() -> EngineResult<()> + Send>;
+
     #[derive(Default)]
     pub(super) struct RecordingSink {
         pub(super) memory: MemorySink,
@@ -954,7 +1021,9 @@ mod tests {
         stages: Mutex<HashMap<u64, DirectoryRows>>,
         pub(super) scopes: Mutex<Vec<RunScope>>,
         pub(super) finish_change: Mutex<Option<PathBuf>>,
-        pub(super) watch_probe: Mutex<Option<Box<dyn Fn() + Send>>>,
+        pub(super) watch_probe: Mutex<Option<WatchProbe>>,
+        settlement: Mutex<Option<EngineResult<Vec<u64>>>>,
+        publications: Mutex<Vec<u64>>,
     }
     impl ScanSink for RecordingSink {
         fn resolve_watch_directory(&self, root: &RootId, path: &[Vec<u16>]) -> Option<u64> {
@@ -962,7 +1031,7 @@ mod tests {
         }
         fn watch_dirty(&self, root: &RootId) -> EngineResult<()> {
             if let Some(probe) = self.watch_probe.lock().unwrap().as_ref() {
-                probe();
+                probe()?;
             }
             self.memory.watch_dirty(root)
         }
@@ -1012,6 +1081,7 @@ mod tests {
                 ScanMessage::ListingDone {
                     ticket, outcome, ..
                 } => {
+                    self.publications.lock().unwrap().push(ticket.dir);
                     let stage = self
                         .stages
                         .lock()
@@ -1047,6 +1117,13 @@ mod tests {
         }
         fn fence_root(&self, root: &RootId) -> EngineResult<()> {
             self.memory.fence_root(root)
+        }
+        fn settle(&self, root: &RootId) -> EngineResult<Vec<u64>> {
+            self.settlement
+                .lock()
+                .unwrap()
+                .take()
+                .unwrap_or_else(|| self.memory.settle(root))
         }
     }
     #[test]
@@ -1836,12 +1913,150 @@ mod native_tests {
                     "native/sink probes must run outside the watch map lock"
                 );
             }
+            Ok(())
         }));
         engine.set_scan_sink(sink).unwrap();
         let job = engine.scan_start(&root, None).unwrap();
         engine.scan_cancel(&job.job_id).unwrap();
         engine.scan_cancel_root(root.key(), root.root_id()).unwrap();
     }
+
+    #[test]
+    fn failed_scan_start_probe_preserves_existing_watch() {
+        let tree = fixture();
+        let Some(root) = grant(tree.path()) else {
+            return;
+        };
+        let engine = Arc::new(
+            Engine::open(crate::EngineConfig::new(
+                tree.path().join("state"),
+                root.dataset_class(),
+            ))
+            .unwrap(),
+        );
+        let sink = Arc::new(RecordingSink::default());
+        engine.set_scan_sink(sink.clone()).unwrap();
+        let watch = RootWatch::start(&root, sink.clone()).unwrap();
+        engine
+            .scan_watches
+            .lock()
+            .unwrap()
+            .insert(root.root_id().clone(), watch.clone());
+        assert!(watch.healthy());
+
+        let weak = Arc::downgrade(&engine);
+        let key = root.key().clone();
+        let caller = std::thread::current().id();
+        *sink.watch_probe.lock().unwrap() = Some(Box::new(move || {
+            if std::thread::current().id() == caller {
+                let engine = weak.upgrade().unwrap();
+                assert!(
+                    engine.scan_root_gate(&key).try_lock().is_ok(),
+                    "a slow sink probe must leave the root gate available for cancellation"
+                );
+                assert!(engine.scan_watches.try_lock().is_ok());
+                return Err(EngineError::Internal {
+                    message: "fixture watch probe refused".into(),
+                    detail: None,
+                });
+            }
+            Ok(())
+        }));
+        for refresh in [false, true] {
+            let result = if refresh {
+                engine.scan_refresh(&root, None)
+            } else {
+                engine.scan_start(&root, None)
+            };
+            assert!(matches!(result, Err(EngineError::Internal { message, .. })
+                if message == "fixture watch probe refused"));
+            assert!(
+                engine
+                    .scan_watches
+                    .lock()
+                    .unwrap()
+                    .get(root.root_id())
+                    .is_some_and(|retained| Arc::ptr_eq(retained, &watch)),
+                "a rejected probe must preserve the installed watch"
+            );
+            assert!(watch.healthy(), "a rejected probe must not stop coverage");
+            assert!(engine.jobs.root_jobs(root.root_id()).is_empty());
+        }
+        *sink.watch_probe.lock().unwrap() = None;
+        let epoch = watch.dirty.lock().unwrap().epoch;
+        std::fs::write(tree.path().join("after-rejected-probe"), b"fixture").unwrap();
+        assert!(watch.checkpoint());
+        assert!(
+            watch.dirty.lock().unwrap().epoch > epoch,
+            "the preserved watch must still deliver new change hints"
+        );
+        engine.scan_cancel_root(root.key(), root.root_id()).unwrap();
+        assert!(watch.dirty.lock().unwrap().stopped);
+    }
+
+    #[test]
+    fn revocation_during_first_scan_probe_stops_the_existing_watch() {
+        use std::sync::mpsc;
+
+        let tree = fixture();
+        let Some(root) = grant(tree.path()) else {
+            return;
+        };
+        let engine = Engine::open(crate::EngineConfig::new(
+            tree.path().join("state"),
+            root.dataset_class(),
+        ))
+        .unwrap();
+        let sink = Arc::new(RecordingSink::default());
+        engine.set_scan_sink(sink.clone()).unwrap();
+        let watch = RootWatch::start(&root, sink.clone()).unwrap();
+        engine
+            .scan_watches
+            .lock()
+            .unwrap()
+            .insert(root.root_id().clone(), watch.clone());
+        assert!(watch.healthy());
+        let (entered, entry) = mpsc::sync_channel(1);
+        let (release, released) = mpsc::sync_channel(1);
+        let first = AtomicBool::new(true);
+        *sink.watch_probe.lock().unwrap() = Some(Box::new(move || {
+            if first.swap(false, Ordering::AcqRel) {
+                entered.send(()).unwrap();
+                released.recv_timeout(Duration::from_secs(30)).unwrap();
+            }
+            Ok(())
+        }));
+        let (results, result) = mpsc::channel();
+        std::thread::scope(|threads| {
+            let start = threads.spawn(|| engine.scan_start(&root, None));
+            entry.recv_timeout(Duration::from_secs(30)).unwrap();
+            let retained_at_probe = engine
+                .scan_watches
+                .lock()
+                .unwrap()
+                .get(root.root_id())
+                .is_some_and(|retained| Arc::ptr_eq(retained, &watch));
+            let running_at_probe = !watch.dirty.lock().unwrap().stopped;
+            threads.spawn(|| {
+                results
+                    .send(engine.scan_cancel_root(root.key(), root.root_id()))
+                    .unwrap();
+            });
+            let early = result.recv_timeout(Duration::from_secs(2));
+            release.send(()).unwrap();
+            let started = start.join().unwrap();
+            assert!(retained_at_probe && running_at_probe);
+            assert!(early
+                .expect("revocation waited for the slow first probe")
+                .unwrap()
+                .is_empty());
+            assert!(matches!(started, Err(EngineError::PermissionDenied { .. })));
+            assert!(engine.scan_watches.lock().unwrap().is_empty());
+            assert!(engine.jobs.root_jobs(root.root_id()).is_empty());
+            assert!(watch.dirty.lock().unwrap().stopped);
+        });
+    }
+
     #[test]
     fn root_cancellation_requests_job_before_stopping_watch() {
         use loomward_protocol::{CoverageState, JobKind, JobState};
@@ -1937,6 +2152,7 @@ mod native_tests {
                 entered.send(()).unwrap();
                 released.recv_timeout(Duration::from_secs(2)).unwrap();
             }
+            Ok(())
         }));
         engine.set_scan_sink(sink.clone()).unwrap();
         // Keep the winning runner alive until cancellation, without blocking watcher shutdown.
@@ -2013,6 +2229,7 @@ mod native_tests {
                 entered.send(()).unwrap();
                 released.recv_timeout(Duration::from_secs(30)).unwrap();
             }
+            Ok(())
         }));
         engine.set_scan_sink(sink).unwrap();
         let _bytes = engine

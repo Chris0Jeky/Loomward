@@ -44,6 +44,9 @@ jobs:
       - name: Copy metadata and pending-fence receipts (Windows)
         if: runner.os == 'Windows'
         run: cargo +stable test --locked -p loomward-windows --features copy-primitives pending_fence_tests
+      - name: Service pending-fence ownership receipts (Windows)
+        if: runner.os == 'Windows'
+        run: cargo +stable test --locked -p loomward-service copy::pending_fence_tests
       - run: cargo +stable test --workspace
       - run: cargo +stable clippy --workspace --all-targets -- -D warnings
   desktop:

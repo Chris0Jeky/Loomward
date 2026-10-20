@@ -131,7 +131,7 @@ pub trait ViewService: Send + Sync + 'static {
     fn response_delivery_policy(
         &self,
         _command: crate::Command,
-    ) -> Option<crate::EventDeliveryPolicy> {
+    ) -> Option<crate::ResponseDeliveryPolicy> {
         None
     }
     /// Adapters retain this pending response through any blocking-worker await. They must admit

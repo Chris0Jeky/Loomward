@@ -1,0 +1,86 @@
+diff --git a/crates/loomward-windows/src/effects/exec_tests.rs b/crates/loomward-windows/src/effects/exec_tests.rs
+--- a/crates/loomward-windows/src/effects/exec_tests.rs
++++ b/crates/loomward-windows/src/effects/exec_tests.rs
+@@ -2220,6 +2220,82 @@
+     assert_eq!(durable.refusal, Some((Refusal::GrantRevoked, None)));
+ }
+ 
++/// Known-failure reproducer for #738, supplied as an unapplied patch rather than weakening gates.
++/// A resident rename reports PendingInFlightStep; a different Store then confirms and commits before
++/// the resident worker can journal the pending cause. Requires the non-elevated synthetic Windows lab.
++#[test]
++fn another_store_committing_a_pending_rename_keeps_the_annotation() {
++    use std::sync::mpsc::channel;
++    let mut lab =
++        Lab::new().expect("#738 reproducer requires the supported non-elevated Windows lab");
++    tree_fixture(&lab.src());
++    let before = source_snapshot(&lab.src());
++    let op = lab.start(&["top"]);
++    let other = Mutex::new(Store::open(&lab.tmp.path().join("state/state.db")).unwrap());
++    let (entered, parked) = channel();
++    let (release_rename, rename_resume) = channel();
++    let rename_resume = Mutex::new(rename_resume);
++    let (renamed, published) = channel();
++    let (release_finish, finish_resume) = channel();
++    let finish_resume = Mutex::new(finish_resume);
++    let control = Control::new(false).with_hook(move |point, _| {
++        if point == Point::CheckedPublish {
++            entered.send(()).unwrap();
++            rename_resume
++                .lock()
++                .unwrap()
++                .recv_timeout(Duration::from_secs(30))
++                .expect("#738 rename fixture was not released");
++        }
++        if point == Point::AfterPublish {
++            renamed.send(()).unwrap();
++            finish_resume
++                .lock()
++                .unwrap()
++                .recv_timeout(Duration::from_secs(30))
++                .expect("#738 finish fixture was not released");
++        }
++        Flow::Continue
++    });
++    std::thread::scope(|scope| {
++        let worker = scope.spawn(|| run(&lab.store, op, &control));
++        let reached = parked.recv_timeout(Duration::from_secs(30));
++        let pending = reached.as_ref().ok().map(|_| {
++            fence_waiting(
++                &lab.store,
++                op,
++                &control,
++                loomward_operations::FenceCause::GrantRevoked,
++                Duration::ZERO,
++            )
++        });
++        let _ = release_rename.send(());
++        let reached_publish = published.recv_timeout(Duration::from_secs(30));
++        // Actual recovery performs the native post-publish confirmation before this Store commits.
++        let foreign = reached_publish
++            .as_ref()
++            .ok()
++            .map(|_| recover(&other, op, &Control::new(false)));
++        let _ = release_finish.send(());
++        let resident = worker.join().unwrap();
++        reached.expect("the rename step was not entered");
++        assert_eq!(pending.unwrap().unwrap(), Ack::PendingInFlightStep);
++        reached_publish.expect("the rename did not return");
++        assert_eq!(foreign.unwrap().unwrap().state, OpState::Committed);
++        assert_eq!(resident.unwrap().state, OpState::Committed);
++    });
++    assert!(tree::compare(&c1(&lab.src().join("top")), &c1(&lab.dest().join("top"))).equal());
++    assert_eq!(source_snapshot(&lab.src()), before);
++    lab.reopen();
++    let durable = status(&lab.store, op).unwrap();
++    assert_eq!(durable.state, OpState::Committed);
++    assert_eq!(
++        durable.refusal,
++        Some((Refusal::GrantRevoked, None)),
++        "the foreign commit won and the resident pending cause was discarded"
++    );
++}
++
+ /// A real process exit loses the pending in-memory fence, without running `finish`.
+ #[test]
+ fn a_process_dying_with_a_pending_fence_reopens_without_effects() {

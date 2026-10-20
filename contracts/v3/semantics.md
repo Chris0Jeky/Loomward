@@ -126,7 +126,15 @@ q-11 opens the local student only, and the teacher's personal conditions (q-5) a
 `retract` is true; a retraction with no prior human label is `invalid_request`. It stores the
 withdrawn label at the next human revision. The durable receipt preserves the original complete
 result across restart, including its learning status; replay changes only `idempotent_replay`.
-Replay is checked before resolving the session-local node ID. Human events are stored only in
+An exact replay is checked before resolving the session-local node ID and retains the original
+request digest. A retry with a new session node ID must authenticate that ID and prove that its
+current native continuity tuple and published binding name the same existing resolved durable
+reference, with unchanged label/retraction content. This check creates no reference, event,
+receipt, node alias or revision and emits no learning update. The original snapshot grant must
+still be active and its features must not have been redacted. Legacy events without snapshot
+provenance, retired/unresolved targets and revoked snapshots retain exact-request replay only;
+a missing saved receipt is an error, never permission to record another event under that key.
+Human events are stored only in
 `human_feedback`; teacher rows remain separate and never enter this lane's refit. Unresolved human
 events are excluded and counted in `learning.status.unresolved_human_events`.
 
@@ -360,9 +368,14 @@ Rules:
 - Pending replies for `roots.request_grant`, `roots.list`, `volumes.declare_tier`, `volumes.list`,
   `tiers.model`, `alerts.list` and `alerts.configure` carry a separate internal admission stamp
   captured before the service call.
-  A forget attempt suspends admission across its durable/derived phases. HTTP serializes first
+  A forget attempt pauses successful-reply admission across its durable/derived phases. Pending
+  replies wait for that decision: a confirmed rejection before the durable marker committed resumes
+  the same stamps, while a durable, unknown or unclassified outcome retires them. Existing error
+  envelopes in these classes carry no root/volume snapshot and remain deliverable during a pause.
+  This reversible response pause does not change event-stream suspension. HTTP serializes first
   and checks when its one-frame response body is polled; native carries the stamp across its
-  blocking-worker await and checks immediately before returning the envelope to Tauri.
+  blocking-worker await and checks immediately before returning the envelope to Tauri. Waiting
+  yields to the async runtime; neither adapter holds a service lock across admission or handoff.
   Invalidated successes become the `forgotten_result` error above, with no automatic retry.
   The stamp is conservative for every pending reply in those classes; it retains no root-ID
   history. `roots.forget` itself is outside those reply classes, so its own receipt is deliverable.
