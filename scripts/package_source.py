@@ -1,5 +1,5 @@
 """Create a checksummed source ZIP, excluding runtimes, private state and Git internals.
-Run after review/testing. The generated manifest is deliberately not self-hashed.
+Run after review/testing. The manifest lives only in the ZIP and is not self-hashed.
 """
 from __future__ import annotations
 import argparse
@@ -18,11 +18,6 @@ def source_files(root: Path) -> list[Path]:
     if top.returncode or Path(top.stdout.strip()).resolve()!=root.resolve():
         raise SystemExit('Package from the repository root: '+str(root)+' is not the top of a git checkout')
     untracked=subprocess.run(['git','-C',str(root),'ls-files','--others','--exclude-standard','-z'],capture_output=True,check=True).stdout
-    # A prior packaging run may leave only its generated root manifest untracked.
-    if untracked==b'MANIFEST.sha256\0':
-        manifest=root/'MANIFEST.sha256'
-        if manifest.is_file() and not manifest.is_symlink() and manifest.stat().st_nlink==1:
-            untracked=b''
     if untracked:
         raise SystemExit('Untracked source files would be silently left out; add or ignore them first')
     files=[]
@@ -41,15 +36,18 @@ def main():
     if output==ROOT or ROOT in output.parents:raise SystemExit('Select an output ZIP outside the source tree')
     if output.exists():raise SystemExit('Refusing to overwrite an existing artifact')
     files=source_files(ROOT)
-    manifest=ROOT/'MANIFEST.sha256'
-    manifest.write_text(''.join(hashlib.sha256(f.read_bytes()).hexdigest()+'  '+f.relative_to(ROOT).as_posix()+'\n' for f in files),encoding='utf-8')
-    files.append(manifest)
+    # Never create or overwrite a checkout file, including an existing tracked manifest.
+    manifest=''.join(hashlib.sha256(f.read_bytes()).hexdigest()+'  '+f.relative_to(ROOT).as_posix()+'\n' for f in files).encode('utf-8')
+    entries={f.relative_to(ROOT).as_posix():f for f in files}
+    entries['MANIFEST.sha256']=None
     with zipfile.ZipFile(output,'x',compression=zipfile.ZIP_DEFLATED,compresslevel=9) as z:
-        for f in sorted(files):
-            info=zipfile.ZipInfo('loomward/'+f.relative_to(ROOT).as_posix(),date_time=(2026,10,9,0,0,0))
+        # POSIX names have the same order on every host; Windows Path ordering case-folds.
+        for name in sorted(entries):
+            info=zipfile.ZipInfo('loomward/'+name,date_time=(2026,10,9,0,0,0))
             info.compress_type=zipfile.ZIP_DEFLATED;info.external_attr=0o100644<<16
-            z.writestr(info,f.read_bytes())
+            f=entries[name]
+            z.writestr(info,manifest if f is None else f.read_bytes())
     with zipfile.ZipFile(output) as z:
         if z.testzip() is not None:raise SystemExit('ZIP integrity verification failed')
-    print(f'Created {output.name}: {len(files)} source entries, SHA-256 '+hashlib.sha256(output.read_bytes()).hexdigest())
+    print(f'Created {output.name}: {len(entries)} source entries, SHA-256 '+hashlib.sha256(output.read_bytes()).hexdigest())
 if __name__=='__main__':main()
