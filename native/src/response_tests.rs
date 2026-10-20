@@ -1,5 +1,5 @@
 use super::*;
-use loomward_protocol::{DisclosureSummary, EventDeliveryPolicy, EventStream, RequestId};
+use loomward_protocol::{DisclosureSummary, EventStream, RequestId, ResponseDeliveryPolicy};
 
 pub(super) const PRIVATE_LABEL: &str = "SyntheticRetainedNativeReply";
 
@@ -52,7 +52,7 @@ impl NativeDialogs for NoDialogs {
 }
 
 struct PrivateService {
-    policy: EventDeliveryPolicy,
+    policy: ResponseDeliveryPolicy,
     forget_during_call: bool,
 }
 
@@ -66,7 +66,7 @@ impl ViewService for PrivateService {
         reply
     }
 
-    fn response_delivery_policy(&self, command: Command) -> Option<EventDeliveryPolicy> {
+    fn response_delivery_policy(&self, command: Command) -> Option<ResponseDeliveryPolicy> {
         (command == Command::RootsList).then(|| self.policy.clone())
     }
 
@@ -86,7 +86,7 @@ fn request_bytes() -> Vec<u8> {
 #[test]
 fn native_dispatch_refuses_a_reply_invalidated_while_the_service_is_running() {
     let service = Arc::new(PrivateService {
-        policy: EventDeliveryPolicy::default(),
+        policy: ResponseDeliveryPolicy::default(),
         forget_during_call: true,
     });
     let desktop = Desktop::new(service, DatasetClass::Synthetic, Arc::new(NoDialogs));
@@ -98,7 +98,7 @@ fn native_reply_is_still_pending_across_the_worker_await() {
     use std::future::{poll_fn, Future};
     use std::task::{Context, Poll, Waker};
 
-    let policy = EventDeliveryPolicy::default();
+    let policy = ResponseDeliveryPolicy::default();
     let service = Arc::new(PrivateService {
         policy: policy.clone(),
         forget_during_call: false,
@@ -127,7 +127,7 @@ fn native_reply_is_still_pending_across_the_worker_await() {
 #[test]
 fn native_admission_preserves_current_replies_and_adapter_refusals() {
     let service = Arc::new(PrivateService {
-        policy: EventDeliveryPolicy::default(),
+        policy: ResponseDeliveryPolicy::default(),
         forget_during_call: false,
     });
     let desktop = Desktop::new(service, DatasetClass::Synthetic, Arc::new(NoDialogs));
@@ -178,4 +178,57 @@ fn native_worker_and_dispatch_faults_keep_their_transport_meaning() {
         dispatch_fault.as_mut().poll(&mut cx),
         Poll::Ready(Err("the request exceeds 64 KiB".into()))
     );
+}
+
+#[test]
+fn native_response_waits_for_a_rejected_forget_after_the_worker_returns() {
+    use std::future::{ready, Future};
+    use std::task::{Context, Poll, Waker};
+
+    let policy = ResponseDeliveryPolicy::default();
+    let service = Arc::new(PrivateService {
+        policy: policy.clone(),
+        forget_during_call: false,
+    });
+    let desktop = Desktop::new(service, DatasetClass::Synthetic, Arc::new(NoDialogs));
+    let pending = desktop.dispatch_bytes_pending(&request_bytes()).unwrap();
+    let pause = policy.suspend();
+    let mut response = std::pin::pin!(crate::response::admit_after_work(ready(Ok::<_, ()>(Ok(
+        pending
+    )))));
+    let mut cx = Context::from_waker(Waker::noop());
+    assert!(response.as_mut().poll(&mut cx).is_pending());
+    pause.resume();
+    let Poll::Ready(delivered) = response.as_mut().poll(&mut cx) else {
+        panic!("a rejected forget left the native reply paused")
+    };
+    assert_eq!(
+        delivered.unwrap(),
+        private_reply(RequestId::new("native-retained-reply").unwrap())
+    );
+}
+
+#[test]
+fn native_response_withholds_an_unclassified_forget_after_the_worker_returns() {
+    use std::future::{ready, Future};
+    use std::task::{Context, Poll, Waker};
+
+    let policy = ResponseDeliveryPolicy::default();
+    let service = Arc::new(PrivateService {
+        policy: policy.clone(),
+        forget_during_call: false,
+    });
+    let desktop = Desktop::new(service, DatasetClass::Synthetic, Arc::new(NoDialogs));
+    let pending = desktop.dispatch_bytes_pending(&request_bytes()).unwrap();
+    let pause = policy.suspend();
+    let mut response = std::pin::pin!(crate::response::admit_after_work(ready(Ok::<_, ()>(Ok(
+        pending
+    )))));
+    let mut cx = Context::from_waker(Waker::noop());
+    assert!(response.as_mut().poll(&mut cx).is_pending());
+    drop(pause);
+    let Poll::Ready(delivered) = response.as_mut().poll(&mut cx) else {
+        panic!("an unclassified forget left the native reply paused")
+    };
+    assert_withheld(delivered.unwrap());
 }

@@ -720,7 +720,8 @@ fn pending_json_response(pending: PendingResponse) -> Response<Body> {
     let encoded = pending.serialize();
     // Construction is not admission: this body may sit unpolled across a root forget. The
     // first poll chooses the original bytes or the existing nonretryable privacy error envelope.
-    let frame = stream::once(async move { Ok::<_, Infallible>(Bytes::from(encoded.admit())) });
+    let frame =
+        stream::once(async move { Ok::<_, Infallible>(Bytes::from(encoded.admit_async().await)) });
     let mut response = Response::new(Body::from_stream(frame));
     response.headers_mut().insert(
         header::CONTENT_TYPE,

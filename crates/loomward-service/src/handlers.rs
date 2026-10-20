@@ -953,7 +953,10 @@ impl Inner {
     fn roots_forget(&self, req: &RequestEnvelope) -> Handled {
         let r: RootForgetRequest = req.decode_payload()?;
         let root = self.root_row(&r.root_id)?;
-        let _m = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
+        // Declare before the mutation guard: on every return or unwind it wakes adapters only
+        // after the service lock releases. It is initialized only once forget can reach a write.
+        let reply_delivery;
+        let mutation = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
         let (grant, grant_state, path, volume) = db::roots(&self.db(), Some(root))
             .map_err(sql_error)?
             .first()
@@ -983,12 +986,14 @@ impl Inner {
         // The state half can commit before the catalogue purge returns. Fence adapter admission
         // for that whole interval without holding a Bus lock over the blocking writer call.
         let _delivery = self.engine.suspend_event_delivery();
-        let _reply_delivery = self.reply_delivery.suspend();
+        reply_delivery = self.reply_delivery.suspend();
         let written = self.catalog.writer().call(WriteCommand::ForgetGrant {
             grant_id: grant,
             forgotten_at_ns: at,
             expected_state_rev: req.expected_state_rev.map(|g| g.get() as i64),
         });
+        #[cfg(test)]
+        self.hooks.gate(Command::RootsForget, "forget_written");
         // A derived purge error does not undo state.db's FULL forget transaction. Read its marker
         // before propagating the original error. If that read also fails, suppress the old name
         // conservatively; an unreadable marker cannot establish permission to deliver it.
@@ -1009,6 +1014,14 @@ impl Inner {
             if let Some(volume_id) = volume_id {
                 self.engine.redact_volume_events(&volume_id);
             }
+        } else {
+            // The writer rejected before its durable marker committed. Resume this response
+            // generation without withdrawing successful receipts. Durable/unknown outcomes and
+            // every unclassified unwind keep the guard's fail-closed retirement on Drop.
+            // A false marker implies a writer error; release before waking, then return that
+            // original error below without any further owner-state work.
+            drop(mutation);
+            reply_delivery.resume();
         }
         written.map_err(|e| match e {
             loomward_catalog::Error::StaleGeneration => stale(
