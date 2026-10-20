@@ -55,16 +55,23 @@ fn terminal_annotation_survives_reopen_without_new_effect_authority() {
     let mut store = committed(&path);
     let before = store.replay(1).unwrap().unwrap();
     assert_eq!(
-        store.annotate_pending_fence(1, 1, FenceCause::GrantRevoked).unwrap(),
+        store
+            .annotate_pending_fence(1, 1, FenceCause::GrantRevoked)
+            .unwrap(),
         FenceAnnotation::Recorded
     );
     assert_eq!(
-        store.annotate_pending_fence(1, 1, FenceCause::GrantRevoked).unwrap(),
+        store
+            .annotate_pending_fence(1, 1, FenceCause::GrantRevoked)
+            .unwrap(),
         FenceAnnotation::AlreadyPresent
     );
     assert_eq!(store.rows(1).unwrap().len(), before.seq as usize + 1);
     let ran = std::cell::Cell::new(false);
-    let effect = store.while_current(1, OpState::Publishing, 1, || ran.set(true)).unwrap().unwrap();
+    let effect = store
+        .while_current(1, OpState::Publishing, 1, || ran.set(true))
+        .unwrap()
+        .unwrap();
     assert_eq!(effect, None);
     assert!(!ran.get());
     drop(store);
@@ -90,11 +97,15 @@ fn two_stores_record_one_terminal_annotation_for_the_same_cause() {
     let (a, b) = std::thread::scope(|scope| {
         let a = scope.spawn(|| {
             go.wait();
-            first.annotate_pending_fence(1, 1, FenceCause::GrantRevoked).unwrap()
+            first
+                .annotate_pending_fence(1, 1, FenceCause::GrantRevoked)
+                .unwrap()
         });
         let b = scope.spawn(|| {
             go.wait();
-            second.annotate_pending_fence(1, 1, FenceCause::GrantRevoked).unwrap()
+            second
+                .annotate_pending_fence(1, 1, FenceCause::GrantRevoked)
+                .unwrap()
         });
         (a.join().unwrap(), b.join().unwrap())
     });
@@ -105,22 +116,37 @@ fn two_stores_record_one_terminal_annotation_for_the_same_cause() {
     ));
     let reopened = Store::open(&path).unwrap();
     assert_eq!(reopened.rows(1).unwrap().len(), before + 1);
-    assert_eq!(reopened.replay(1).unwrap().unwrap().state, OpState::Committed);
+    assert_eq!(
+        reopened.replay(1).unwrap().unwrap().state,
+        OpState::Committed
+    );
 }
 
 #[test]
 fn an_existing_fence_deduplicates_only_its_own_cause() {
     let dir = tempfile::tempdir().unwrap();
     let mut store = publishing(&dir.path().join("state.db"));
-    store.append(1, 2, Record::Fenced { cause: FenceCause::GrantRevoked }).unwrap();
+    store
+        .append(
+            1,
+            2,
+            Record::Fenced {
+                cause: FenceCause::GrantRevoked,
+            },
+        )
+        .unwrap();
     store.append(1, 1, Record::Committed).unwrap();
     let before = store.rows(1).unwrap().len();
     assert_eq!(
-        store.annotate_pending_fence(1, 1, FenceCause::GrantRevoked).unwrap(),
+        store
+            .annotate_pending_fence(1, 1, FenceCause::GrantRevoked)
+            .unwrap(),
         FenceAnnotation::AlreadyPresent
     );
     assert_eq!(
-        store.annotate_pending_fence(1, 1, FenceCause::EmergencyStop).unwrap(),
+        store
+            .annotate_pending_fence(1, 1, FenceCause::EmergencyStop)
+            .unwrap(),
         FenceAnnotation::Recorded
     );
     let after = store.replay(1).unwrap().unwrap();
@@ -144,12 +170,19 @@ fn terminal_annotation_row_and_head_errors_roll_back_together() {
         let mut store = committed(&path);
         let before = store.rows(1).unwrap();
         store.conn.execute_batch(sql).unwrap();
-        assert!(store.annotate_pending_fence(1, 1, FenceCause::GrantRevoked).is_err());
+        assert!(store
+            .annotate_pending_fence(1, 1, FenceCause::GrantRevoked)
+            .is_err());
         assert_eq!(store.rows(1).unwrap(), before);
         assert_eq!(store.replay(1).unwrap().unwrap().seq, before.len() as u64);
-        store.conn.execute_batch("DROP TRIGGER fail_annotation").unwrap();
+        store
+            .conn
+            .execute_batch("DROP TRIGGER fail_annotation")
+            .unwrap();
         assert_eq!(
-            store.annotate_pending_fence(1, 1, FenceCause::GrantRevoked).unwrap(),
+            store
+                .annotate_pending_fence(1, 1, FenceCause::GrantRevoked)
+                .unwrap(),
             FenceAnnotation::Recorded
         );
     }
@@ -181,14 +214,18 @@ fn terminal_annotation_requires_a_committed_receipt_and_an_observed_epoch() {
     let mut store = publishing(&dir.path().join("state.db"));
     let before = store.rows(1).unwrap();
     assert_eq!(
-        store.annotate_pending_fence(1, 1, FenceCause::GrantRevoked).unwrap(),
+        store
+            .annotate_pending_fence(1, 1, FenceCause::GrantRevoked)
+            .unwrap(),
         FenceAnnotation::Ineligible
     );
     assert_eq!(store.rows(1).unwrap(), before);
     store.append(1, 1, Record::Committed).unwrap();
     for epoch in [0, 2] {
         assert_eq!(
-            store.annotate_pending_fence(1, epoch, FenceCause::GrantRevoked).unwrap(),
+            store
+                .annotate_pending_fence(1, epoch, FenceCause::GrantRevoked)
+                .unwrap(),
             FenceAnnotation::Ineligible
         );
     }
@@ -206,11 +243,15 @@ fn a_lost_terminal_annotation_acknowledgement_deduplicates_on_retry() {
         (matches!(record, Record::RevokedAfterPublish { .. }) && stage == fault::Stage::Ack)
             .then_some(fault::Kind::Full)
     })));
-    assert!(store.annotate_pending_fence(1, 1, FenceCause::GrantRevoked).is_err());
+    assert!(store
+        .annotate_pending_fence(1, 1, FenceCause::GrantRevoked)
+        .is_err());
     drop(store);
     let mut reopened = Store::open(&path).unwrap();
     assert_eq!(
-        reopened.annotate_pending_fence(1, 1, FenceCause::GrantRevoked).unwrap(),
+        reopened
+            .annotate_pending_fence(1, 1, FenceCause::GrantRevoked)
+            .unwrap(),
         FenceAnnotation::AlreadyPresent
     );
     assert_eq!(reopened.rows(1).unwrap().len(), before + 1);
@@ -224,7 +265,9 @@ fn terminal_annotation_process_exit_child() {
     let mut store = Store::open(Path::new(&path)).unwrap();
     if std::env::var("LOOMWARD_TERMINAL_ANNOTATION_CHILD_PHASE").unwrap() == "after" {
         assert_eq!(
-            store.annotate_pending_fence(1, 1, FenceCause::GrantRevoked).unwrap(),
+            store
+                .annotate_pending_fence(1, 1, FenceCause::GrantRevoked)
+                .unwrap(),
             FenceAnnotation::Recorded
         );
     }
@@ -250,14 +293,24 @@ fn terminal_annotation_reopens_honestly_after_process_exit_on_either_side() {
             .env("LOOMWARD_TERMINAL_ANNOTATION_CHILD_PHASE", phase)
             .status()
             .unwrap();
-        assert_eq!(child.code(), Some(87), "child did not reach the requested boundary");
+        assert_eq!(
+            child.code(),
+            Some(87),
+            "child did not reach the requested boundary"
+        );
         let mut reopened = Store::open(&path).unwrap();
         let r = reopened.replay(1).unwrap().unwrap();
         assert_eq!(r.state, OpState::Committed);
         assert_eq!(r.epoch, 1);
         assert_eq!(r.items.iter().filter(|item| item.verified).count(), 1);
-        assert_eq!(r.has_fence_cause(FenceCause::GrantRevoked), phase == "after");
-        assert_eq!(reopened.rows(1).unwrap().len(), before + usize::from(phase == "after"));
+        assert_eq!(
+            r.has_fence_cause(FenceCause::GrantRevoked),
+            phase == "after"
+        );
+        assert_eq!(
+            reopened.rows(1).unwrap().len(),
+            before + usize::from(phase == "after")
+        );
         let ran = std::cell::Cell::new(false);
         assert_eq!(
             reopened

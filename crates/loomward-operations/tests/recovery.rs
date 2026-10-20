@@ -41,7 +41,10 @@ fn terminal_annotation_preserves_the_committed_receipt_and_effect_refusals() {
     assert_eq!(after.staging, before.staging);
     assert_eq!(after.publish, before.publish);
     assert_eq!(after.seq, before.seq + 1);
-    assert_eq!(decide(&j, &full_disk().published()).decision, Decision::Settled);
+    assert_eq!(
+        decide(&j, &full_disk().published()).decision,
+        Decision::Settled
+    );
     for record in [
         Record::Fenced {
             cause: FenceCause::EmergencyStop,
@@ -56,7 +59,11 @@ fn terminal_annotation_preserves_the_committed_receipt_and_effect_refusals() {
             code: None,
         },
     ] {
-        let epoch = if matches!(record, Record::Fenced { .. }) { 2 } else { 1 };
+        let epoch = if matches!(record, Record::Fenced { .. }) {
+            2
+        } else {
+            1
+        };
         assert!(j.try_push(epoch, record).is_err());
     }
 }
@@ -67,8 +74,12 @@ fn terminal_annotation_is_illegal_before_commit_and_at_a_stale_epoch() {
         assert!(j.try_push(1, after_publish("grant_revoked")).is_err());
     }
     let mut committed = run().pop().unwrap();
-    assert!(committed.try_push(0, after_publish("grant_revoked")).is_err());
-    assert!(committed.try_push(2, after_publish("grant_revoked")).is_err());
+    assert!(committed
+        .try_push(0, after_publish("grant_revoked"))
+        .is_err());
+    assert!(committed
+        .try_push(2, after_publish("grant_revoked"))
+        .is_err());
 }
 
 #[test]
@@ -92,7 +103,10 @@ fn terminal_annotation_is_refused_by_the_exact_older_record_decoder() {
     let error = serde_json::from_str::<legacy_terminal_reader::Entry>(body).unwrap_err();
     assert!(error.to_string().contains("unknown variant"));
     assert!(error.to_string().contains("revoked_after_publish"));
-    assert_eq!(Replay::from_rows(OP, &j.rows).unwrap().state, OpState::Committed);
+    assert_eq!(
+        Replay::from_rows(OP, &j.rows).unwrap().state,
+        OpState::Committed
+    );
     // Newer readers also reject future kinds; neither generation silently skips metadata.
     let future = body.replace("revoked_after_publish", "unknown_future_annotation");
     assert!(serde_json::from_str::<Entry>(&future).is_err());
@@ -101,12 +115,32 @@ fn terminal_annotation_is_refused_by_the_exact_older_record_decoder() {
 #[test]
 fn terminal_annotation_is_illegal_on_refused_or_cancelled_operations() {
     let mut refused = run()[0].clone();
-    refused.push(1, Record::Transition { to: OpState::Refused, code: None });
+    refused.push(
+        1,
+        Record::Transition {
+            to: OpState::Refused,
+            code: None,
+        },
+    );
     assert!(refused.try_push(1, after_publish("grant_revoked")).is_err());
     let mut cancelled = run()[0].clone();
-    cancelled.push(1, Record::Transition { to: OpState::Cancelling, code: None });
-    cancelled.push(1, Record::Transition { to: OpState::Cancelled, code: None });
-    assert!(cancelled.try_push(1, after_publish("grant_revoked")).is_err());
+    cancelled.push(
+        1,
+        Record::Transition {
+            to: OpState::Cancelling,
+            code: None,
+        },
+    );
+    cancelled.push(
+        1,
+        Record::Transition {
+            to: OpState::Cancelled,
+            code: None,
+        },
+    );
+    assert!(cancelled
+        .try_push(1, after_publish("grant_revoked"))
+        .is_err());
 }
 
 /// A journal built the way a correct executor would: every row validated by replay as it is appended.

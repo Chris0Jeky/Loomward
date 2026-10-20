@@ -1764,7 +1764,9 @@ fn fence_waiting(
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         if pending.iter().any(|p| p.op != op) {
-            return Err(Fault::Journal("pending fence belongs to another operation".into()));
+            return Err(Fault::Journal(
+                "pending fence belongs to another operation".into(),
+            ));
         }
         if !r.state.is_terminal() && !pending.iter().any(|p| p.cause == cause) {
             pending.push(PendingFence {
@@ -1805,7 +1807,11 @@ fn fence_waiting(
 /// Retry only causes this Control already observed while nonterminal. This does not observe a new
 /// request, inspect native paths, resume a run, or authorize cleanup. A still-admitted step returns
 /// `false` immediately, without holding Store or waiting; the caller keeps the Control for retry.
-pub fn retry_pending_fence(store: &Mutex<Store>, op: u64, control: &Control) -> Result<bool, Fault> {
+pub fn retry_pending_fence(
+    store: &Mutex<Store>,
+    op: u64,
+    control: &Control,
+) -> Result<bool, Fault> {
     if !control.has_pending_fence() {
         return Ok(true);
     }
@@ -1835,7 +1841,9 @@ fn journal_fence_locked(s: &mut Store, op: u64, control: &Control) -> Result<Rep
         .map_err(|e| Fault::Journal(format!("{e:?}")))?;
     while let Some(pending) = unjournaled.first().copied() {
         if pending.op != op || pending.epoch > r.epoch {
-            return Err(Fault::Journal("pending fence does not match this operation".into()));
+            return Err(Fault::Journal(
+                "pending fence does not match this operation".into(),
+            ));
         }
         let cause = pending.cause;
         if !r.has_fence_cause(cause) && r.state == OpState::Committed {
@@ -1847,7 +1855,9 @@ fn journal_fence_locked(s: &mut Store, op: u64, control: &Control) -> Result<Rep
                 .annotate_pending_fence(op, pending.epoch, cause)
                 .map_err(|e| Fault::Journal(format!("{e:?}")))?;
             if outcome == loomward_operations::store::FenceAnnotation::Ineligible {
-                return Err(Fault::Journal("pending terminal annotation was ineligible".into()));
+                return Err(Fault::Journal(
+                    "pending terminal annotation was ineligible".into(),
+                ));
             }
             #[cfg(test)]
             crash::record("after", &record);

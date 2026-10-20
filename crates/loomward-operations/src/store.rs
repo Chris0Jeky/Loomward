@@ -354,7 +354,10 @@ impl Store {
         let observed = rows.iter().any(|row| {
             serde_json::from_str::<Entry>(&row.body).is_ok_and(|entry| {
                 entry.epoch == observed_epoch
-                    && !matches!(entry.record, Record::Committed | Record::RevokedAfterPublish { .. })
+                    && !matches!(
+                        entry.record,
+                        Record::Committed | Record::RevokedAfterPublish { .. }
+                    )
             })
         });
         if replay.state != crate::state::OpState::Committed

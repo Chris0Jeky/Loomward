@@ -214,7 +214,9 @@ impl Store {
             && if r.retract {
                 r.label.is_none()
             } else {
-                r.label.as_ref().is_some_and(|value| value.as_str() == label)
+                r.label
+                    .as_ref()
+                    .is_some_and(|value| value.as_str() == label)
             };
         if !exact && (!same_content || !can_resolve) {
             return Err(invalid("client_event_id was used for different content"));

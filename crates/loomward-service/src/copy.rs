@@ -382,7 +382,10 @@ impl Copies {
         let mut pending = self.pending_fences.lock().unwrap();
         if control.has_pending_fence() {
             pending.entry(op).or_insert_with(|| control.clone());
-        } else if pending.get(&op).is_some_and(|old| Arc::ptr_eq(old, control)) {
+        } else if pending
+            .get(&op)
+            .is_some_and(|old| Arc::ptr_eq(old, control))
+        {
             pending.remove(&op);
         }
     }

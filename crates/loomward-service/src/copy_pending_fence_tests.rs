@@ -151,7 +151,9 @@ impl Fixture {
         ] {
             store.append(OP, 1, record).unwrap();
         }
-        store.set_plan(OP, &serde_json::to_string(&plan).unwrap()).unwrap();
+        store
+            .set_plan(OP, &serde_json::to_string(&plan).unwrap())
+            .unwrap();
         drop(store);
         Fixture {
             root: service.inner.root_id(root),
@@ -166,11 +168,14 @@ impl Fixture {
     }
 
     fn fault(&self, stage: Stage) {
-        self.store().lock().unwrap().set_fault(Some(Box::new(move |record, at| {
-            ((matches!(record, Record::Fenced { .. }) && at == Stage::Row)
-                || (matches!(record, Record::RevokedAfterPublish { .. }) && at == stage))
-                .then_some(FaultKind::Full)
-        })));
+        self.store()
+            .lock()
+            .unwrap()
+            .set_fault(Some(Box::new(move |record, at| {
+                ((matches!(record, Record::Fenced { .. }) && at == Stage::Row)
+                    || (matches!(record, Record::RevokedAfterPublish { .. }) && at == stage))
+                    .then_some(FaultKind::Full)
+            })));
     }
 
     fn call(&self, command: &str, payload: Value) -> Result<Payload, ErrorBody> {
@@ -185,7 +190,8 @@ impl Fixture {
         .unwrap();
         match self.service.call(req, &CallContext::http()) {
             ResponseEnvelope::Ok(ok) => {
-                ok.validate_for(Command::from_name(command).unwrap()).unwrap();
+                ok.validate_for(Command::from_name(command).unwrap())
+                    .unwrap();
                 Ok(ok.result)
             }
             ResponseEnvelope::Err(err) => Err(err.error),
@@ -193,15 +199,22 @@ impl Fixture {
     }
 
     fn revoke(&self) -> Result<Payload, ErrorBody> {
-        self.call("roots.revoke", json!({"root_id": self.root, "purge_catalog": false}))
+        self.call(
+            "roots.revoke",
+            json!({"root_id": self.root, "purge_catalog": false}),
+        )
     }
 
     fn status(&self) -> Payload {
-        self.call("copy.status", json!({"operation_id": WIRE})).unwrap()
+        self.call("copy.status", json!({"operation_id": WIRE}))
+            .unwrap()
     }
 
     fn committed(&self) -> Replay {
-        Store::open(&self.path).unwrap().append(OP, 1, Record::Committed).unwrap();
+        Store::open(&self.path)
+            .unwrap()
+            .append(OP, 1, Record::Committed)
+            .unwrap();
         self.store().lock().unwrap().replay(OP).unwrap().unwrap()
     }
 
@@ -217,12 +230,17 @@ impl Fixture {
         assert_eq!(after.cancelled, before.cancelled);
         assert_eq!(after.fenced, before.fenced);
         assert_eq!(after.seq, before.seq + 1);
-        let annotations: Vec<_> = reopened.rows(OP).unwrap().into_iter().filter_map(|row| {
-            match serde_json::from_str::<Entry>(&row.body).unwrap().record {
-                Record::RevokedAfterPublish { cause } => Some(cause),
-                _ => None,
-            }
-        }).collect();
+        let annotations: Vec<_> = reopened
+            .rows(OP)
+            .unwrap()
+            .into_iter()
+            .filter_map(
+                |row| match serde_json::from_str::<Entry>(&row.body).unwrap().record {
+                    Record::RevokedAfterPublish { cause } => Some(cause),
+                    _ => None,
+                },
+            )
+            .collect();
         assert_eq!(annotations, vec![cause]);
         let status = self.status();
         assert_eq!(status["state"], "committed");
@@ -233,10 +251,14 @@ impl Fixture {
     }
 
     fn admission_error(&self) -> ErrorBody {
-        self.call("copy.start", json!({
-            "operation_id": "cp_new738",
-            "digest": format!("sha256:{}", "00".repeat(32)),
-        })).unwrap_err()
+        self.call(
+            "copy.start",
+            json!({
+                "operation_id": "cp_new738",
+                "digest": format!("sha256:{}", "00".repeat(32)),
+            }),
+        )
+        .unwrap_err()
     }
 
     fn finished_pending_worker(&self, cause: FenceCause) -> (Replay, Weak<exec::Control>) {
@@ -251,7 +273,9 @@ impl Fixture {
         let thread = std::thread::spawn(move || {
             // The journal fault stays active through this return AND service reaping. A one-shot
             // fault could heal in finish() and would not exercise the ownership regression.
-            returned.send(exec::fence(&worker_store, OP, &worker_control, cause).is_err()).unwrap();
+            returned
+                .send(exec::fence(&worker_store, OP, &worker_control, cause).is_err())
+                .unwrap();
             let _ = completed.send(());
         });
         assert!(result.recv_timeout(Duration::from_secs(5)).unwrap());
@@ -260,15 +284,31 @@ impl Fixture {
             assert!(Instant::now() < until, "metadata worker did not finish");
             std::thread::yield_now();
         }
-        self.service.inner.copies.running.lock().unwrap().insert(OP, Run { control, thread, done });
-        self.service.inner.copies.ops.lock().unwrap().insert(WIRE.into(), OP);
+        self.service.inner.copies.running.lock().unwrap().insert(
+            OP,
+            Run {
+                control,
+                thread,
+                done,
+            },
+        );
+        self.service
+            .inner
+            .copies
+            .ops
+            .lock()
+            .unwrap()
+            .insert(WIRE.into(), OP);
         (before, weak)
     }
 }
 
 fn pending(error: ErrorBody) {
     assert!(error.retryable, "{error:?}");
-    assert_eq!(error.detail.as_ref().unwrap()["reason"], "copy_fence_pending");
+    assert_eq!(
+        error.detail.as_ref().unwrap()["reason"],
+        "copy_fence_pending"
+    );
 }
 
 #[test]
@@ -278,16 +318,30 @@ fn finished_worker_metadata_survives_status_reaping_and_retries_once() {
         fixture.fault(stage);
         let (before, control) = fixture.finished_pending_worker(FenceCause::EmergencyStop);
         assert_eq!(fixture.status()["state"], "committed");
-        assert!(fixture.service.inner.copies.running.lock().unwrap().is_empty());
+        assert!(fixture
+            .service
+            .inner
+            .copies
+            .running
+            .lock()
+            .unwrap()
+            .is_empty());
         assert!(fixture.service.inner.copies.ops.lock().unwrap().is_empty());
-        assert!(control.strong_count() > 0, "{stage:?}: status lost the pending cause");
+        assert!(
+            control.strong_count() > 0,
+            "{stage:?}: status lost the pending cause"
+        );
         let error = fixture.admission_error();
         assert_eq!(error.code, ErrorCode::Busy);
         pending(error);
         fixture.store().lock().unwrap().set_fault(None);
         fixture.revoke().unwrap();
         fixture.assert_receipt(&before, FenceCause::EmergencyStop);
-        assert_eq!(control.strong_count(), 0, "successful retry must retire the control");
+        assert_eq!(
+            control.strong_count(),
+            0,
+            "successful retry must retire the control"
+        );
         assert_eq!(fixture.admission_error().code, ErrorCode::NotFound);
         fixture.revoke().unwrap();
         fixture.assert_receipt(&before, FenceCause::EmergencyStop);
@@ -301,8 +355,18 @@ fn end_of_revoke_reaping_keeps_a_finished_workers_retryable_annotation() {
         fixture.fault(stage);
         let (before, control) = fixture.finished_pending_worker(FenceCause::GrantRevoked);
         pending(fixture.revoke().unwrap_err());
-        assert!(fixture.service.inner.copies.running.lock().unwrap().is_empty());
-        assert!(control.strong_count() > 0, "{stage:?}: the error response lost its retry");
+        assert!(fixture
+            .service
+            .inner
+            .copies
+            .running
+            .lock()
+            .unwrap()
+            .is_empty());
+        assert!(
+            control.strong_count() > 0,
+            "{stage:?}: the error response lost its retry"
+        );
         assert_eq!(fixture.status()["state"], "committed");
         fixture.store().lock().unwrap().set_fault(None);
         fixture.revoke().unwrap();
@@ -317,12 +381,28 @@ fn cancellation_join_keeps_a_failed_terminal_annotation_for_retry() {
         let fixture = Fixture::publishing();
         fixture.fault(stage);
         let (before, control) = fixture.finished_pending_worker(FenceCause::EmergencyStop);
-        pending(fixture.call("copy.cancel", json!({"operation_id": WIRE})).unwrap_err());
-        assert!(fixture.service.inner.copies.running.lock().unwrap().is_empty());
-        assert!(control.strong_count() > 0, "{stage:?}: joining discarded the pending cause");
+        pending(
+            fixture
+                .call("copy.cancel", json!({"operation_id": WIRE}))
+                .unwrap_err(),
+        );
+        assert!(fixture
+            .service
+            .inner
+            .copies
+            .running
+            .lock()
+            .unwrap()
+            .is_empty());
+        assert!(
+            control.strong_count() > 0,
+            "{stage:?}: joining discarded the pending cause"
+        );
         assert_eq!(fixture.status()["state"], "committed");
         fixture.store().lock().unwrap().set_fault(None);
-        fixture.call("copy.cancel", json!({"operation_id": WIRE})).unwrap();
+        fixture
+            .call("copy.cancel", json!({"operation_id": WIRE}))
+            .unwrap();
         fixture.assert_receipt(&before, FenceCause::EmergencyStop);
         assert_eq!(control.strong_count(), 0);
     }
@@ -334,7 +414,14 @@ fn a_no_worker_fence_retains_its_preterminal_cause_across_foreign_commit() {
         let fixture = Fixture::publishing();
         fixture.fault(stage);
         pending(fixture.revoke().unwrap_err());
-        assert!(fixture.service.inner.copies.running.lock().unwrap().is_empty());
+        assert!(fixture
+            .service
+            .inner
+            .copies
+            .running
+            .lock()
+            .unwrap()
+            .is_empty());
         let before = fixture.committed();
         pending(fixture.revoke().unwrap_err());
         assert_eq!(fixture.status()["state"], "committed");
