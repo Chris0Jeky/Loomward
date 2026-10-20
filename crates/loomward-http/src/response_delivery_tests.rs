@@ -3,7 +3,7 @@
 
 use super::*;
 use loomward_catalog::{Catalog, RootObservation, WriteCommand, WriteReply};
-use loomward_protocol::{DatasetClass, EventDeliveryPolicy};
+use loomward_protocol::{DatasetClass, ResponseDeliveryPolicy};
 use loomward_service::{Config, Service};
 use serde_json::{json, Value};
 use std::sync::{mpsc as observed, Condvar, Mutex};
@@ -239,7 +239,7 @@ impl ViewService for ParkedReply {
         }
         reply
     }
-    fn response_delivery_policy(&self, command: Command) -> Option<EventDeliveryPolicy> {
+    fn response_delivery_policy(&self, command: Command) -> Option<ResponseDeliveryPolicy> {
         self.service.response_delivery_policy(command)
     }
     fn subscribe(&self, resume: Option<(String, u64)>) -> Box<dyn EventStream> {
@@ -372,4 +372,64 @@ fn retained_privacy_rejected_forget_http_preserves_body_after_a_stale_revision()
 #[test]
 fn retained_privacy_rejected_forget_http_preserves_body_after_writer_rollback() {
     rejected_forget_preserves_http_body(true);
+}
+
+#[test]
+fn retained_privacy_http_body_waits_asynchronously_for_a_rejected_forget() {
+    use std::task::{Context, Poll, Waker};
+
+    let (_dir, service, _, volume, _) = fixture();
+    let shared = shared(service.clone());
+    let runtime = runtime();
+    let req = request("volumes.declare_tier", json!({"volume_id":volume,"tier":2}));
+    let pending = runtime.block_on(pending_http(&shared, req.clone()));
+    let policy = service
+        .response_delivery_policy(Command::VolumesDeclareTier)
+        .unwrap();
+    let pause = policy.suspend();
+    let mut body = std::pin::pin!(pending.into_body().collect());
+    let mut cx = Context::from_waker(Waker::noop());
+    assert!(body.as_mut().poll(&mut cx).is_pending());
+    pause.resume();
+    let Poll::Ready(delivered) = body.as_mut().poll(&mut cx) else {
+        panic!("the resolved response pause did not release the HTTP body")
+    };
+    let bytes = delivered.unwrap().to_bytes();
+    let value: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(value["request_id"], req.request_id.as_str());
+    assert_eq!(value["ok"], true);
+    assert!(value.to_string().contains(PRIVATE_NAME));
+}
+
+#[test]
+fn retained_privacy_cancelled_http_body_releases_its_waiter() {
+    use std::sync::atomic::AtomicUsize;
+    use std::task::{Context, Wake, Waker};
+
+    struct WakeCount(AtomicUsize);
+    impl Wake for WakeCount {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    let (_dir, service, _, volume, _) = fixture();
+    let shared = shared(service.clone());
+    let runtime = runtime();
+    let req = request("volumes.declare_tier", json!({"volume_id":volume,"tier":2}));
+    let pending = runtime.block_on(pending_http(&shared, req));
+    let policy = service
+        .response_delivery_policy(Command::VolumesDeclareTier)
+        .unwrap();
+    let pause = policy.suspend();
+    let wakes = Arc::new(WakeCount(AtomicUsize::new(0)));
+    let waker = Waker::from(wakes.clone());
+    let mut body = Box::pin(pending.into_body().collect());
+    let mut cx = Context::from_waker(&waker);
+    assert!(body.as_mut().poll(&mut cx).is_pending());
+    drop(body);
+    drop(waker);
+    assert_eq!(Arc::strong_count(&wakes), 1);
+    pause.resume();
+    assert_eq!(wakes.0.load(Ordering::SeqCst), 0);
 }

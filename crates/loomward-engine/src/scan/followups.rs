@@ -131,6 +131,9 @@ impl ScanSink for ProbeWriter {
     fn fence_root(&self, root: &RootId) -> crate::EngineResult<()> {
         self.sink.fence_root(root)
     }
+    fn settle(&self, root: &RootId) -> crate::EngineResult<Vec<u64>> {
+        self.sink.settle(root)
+    }
 }
 fn scan(source: &impl DirSource, sink: Arc<dyn ScanSink>) -> ScanReport {
     run_scan(
