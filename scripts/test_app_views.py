@@ -1210,6 +1210,9 @@ def check_process_strip_failures(browser) -> None:
         page.evaluate("location.hash = '#/observatory'")
         strip = page.get_by_role('region', name='Processes', exact=True)
         expect(strip.get_by_role('link')).to_have_count(1)
+        # Mark the resumed read: subscribe arrival alone does not mean its async poll settled.
+        # This remains an old observation by the later Companion deep-link check.
+        engine.process_observed_at = start.isoformat().replace('+00:00', 'Z')
         engine.invalidate()
         for _ in range(30):
             if len(engine.telemetry_calls) >= 3:
@@ -1223,6 +1226,7 @@ def check_process_strip_failures(browser) -> None:
            'process strip: session epoch change releases the old lease and subscribes once again')
         ok([r['payload']['subscription_id'] for r in first if r['command'] == 'telemetry.unsubscribe'] == ['sub_fake_1'],
            'process strip: epoch change releases the correct subscription')
+        expect(strip.locator('time')).to_have_attribute('datetime', engine.process_observed_at)
         page.evaluate("""() => {
           window.__stripStatus = document.querySelector('#strip-status');
           window.__stripAnnouncements = [];
@@ -1230,10 +1234,13 @@ def check_process_strip_failures(browser) -> None:
             text: window.__stripStatus.textContent, focus: document.activeElement.id
           })).observe(window.__stripStatus, {childList: true, characterData: true, subtree: true});
         }""")
-        for i, code in enumerate(('partial_coverage', 'capability_unavailable'), 1):
+        # Advance elapsed time AND scheduled callbacks across the 15 s process cadence.
+        # set_system_time only changes Date.now(); fixed offsets also lose time spent on reads.
+        # Each following DOM assertion waits for the real request to settle before the next phase.
+        for code in ('partial_coverage', 'capability_unavailable'):
             strip.get_by_role('link').first.focus()
             engine.process_error = code
-            page.clock.set_system_time(start + timedelta(seconds=16 * (2 * i - 1)))
+            page.clock.run_for(16000)
             expect(strip.get_by_role('status')).to_contain_text('not sampled' if code == 'partial_coverage' else 'unavailable')
             expect(strip.get_by_text('synthetic process observation failure', exact=True)).to_be_visible()
             expect(strip.get_by_role('link')).to_have_count(0)
@@ -1248,7 +1255,7 @@ def check_process_strip_failures(browser) -> None:
                 && window.__stripAnnouncements.some(a => a.text.includes(text) && a.focus === 'strip-h');
             }""", spoken), f'process strip: {code} updates the persistent live region after the focus move')
             engine.process_error = ''
-            page.clock.set_system_time(start + timedelta(seconds=32 * i))
+            page.clock.run_for(16000)
             expect(strip.get_by_role('link')).to_have_count(1)
         engine.process_error = 'partial_coverage'
         engine.explain_partial_once = True
@@ -1258,12 +1265,14 @@ def check_process_strip_failures(browser) -> None:
         ok(len(engine.explain_calls) == 1 and page.locator('main [role=alert]').filter(has_text='synthetic process sample not ready').count() == 0,
            'Companion deep link: partial coverage waits honestly without a stale explanation alert')
         engine.process_error = ''
-        page.clock.set_system_time(start + timedelta(seconds=80))
+        page.clock.run_for(16000)
         expect(page.locator('table.procs tbody tr')).to_have_count(1)
         expect(page.get_by_role('status').filter(has_text='Waiting for a fresh process sample.')).to_be_visible()
         ok(len(engine.explain_calls) == 1, 'Companion deep link: retained observations do not trigger a retry')
-        engine.process_observed_at = (start + timedelta(seconds=96)).isoformat().replace('+00:00', 'Z')
-        page.clock.set_system_time(start + timedelta(seconds=96))
+        # This observation is newer than the deep-link request, without predicting a future sample.
+        observed_at = datetime.fromtimestamp(page.evaluate('Date.now()') / 1000, tz=timezone.utc)
+        engine.process_observed_at = observed_at.isoformat().replace('+00:00', 'Z')
+        page.clock.run_for(16000)
         expect(page.get_by_role('region', name='Explanation')).to_be_visible(timeout=10000)
         expect(page.get_by_role('heading', name='About this process')).to_be_focused()
         ok(len(engine.explain_calls) == 2 and engine.explain_calls[0] == engine.explain_calls[1],
