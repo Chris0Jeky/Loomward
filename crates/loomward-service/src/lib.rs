@@ -113,7 +113,7 @@ pub(crate) struct Inner {
     cursors: cursors::Cursors,
     idem: idem::Idempotency,
     /// Pending root/volume replies in adapters; no root identifiers or generation history.
-    reply_delivery: loomward_protocol::EventDeliveryPolicy,
+    reply_delivery: loomward_protocol::ResponseDeliveryPolicy,
     /// Serialises owner-state mutations (revocation, declarations, grants).
     // ponytail: one lock for every owner-state mutation; per-resource locks if contention shows.
     mutation: Mutex<()>,
@@ -317,7 +317,7 @@ impl Service {
             ids: ids::NodeIds::session(),
             cursors: cursors::Cursors::new(4096),
             idem: idem::Idempotency::new(ttl),
-            reply_delivery: loomward_protocol::EventDeliveryPolicy::default(),
+            reply_delivery: loomward_protocol::ResponseDeliveryPolicy::default(),
             mutation: Mutex::new(()),
             turn: (Mutex::new(Queue::default()), std::sync::Condvar::new()),
             dialog: Mutex::new(()),
@@ -594,7 +594,7 @@ impl ViewService for Service {
     fn response_delivery_policy(
         &self,
         command: Command,
-    ) -> Option<loomward_protocol::EventDeliveryPolicy> {
+    ) -> Option<loomward_protocol::ResponseDeliveryPolicy> {
         matches!(
             command,
             Command::RootsRequestGrant

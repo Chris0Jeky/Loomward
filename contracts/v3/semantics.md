@@ -360,9 +360,14 @@ Rules:
 - Pending replies for `roots.request_grant`, `roots.list`, `volumes.declare_tier`, `volumes.list`,
   `tiers.model`, `alerts.list` and `alerts.configure` carry a separate internal admission stamp
   captured before the service call.
-  A forget attempt suspends admission across its durable/derived phases. HTTP serializes first
+  A forget attempt pauses successful-reply admission across its durable/derived phases. Pending
+  replies wait for that decision: a confirmed rejection before the durable marker committed resumes
+  the same stamps, while a durable, unknown or unclassified outcome retires them. Existing error
+  envelopes in these classes carry no root/volume snapshot and remain deliverable during a pause.
+  This reversible response pause does not change event-stream suspension. HTTP serializes first
   and checks when its one-frame response body is polled; native carries the stamp across its
-  blocking-worker await and checks immediately before returning the envelope to Tauri.
+  blocking-worker await and checks immediately before returning the envelope to Tauri. Waiting
+  yields to the async runtime; neither adapter holds a service lock across admission or handoff.
   Invalidated successes become the `forgotten_result` error above, with no automatic retry.
   The stamp is conservative for every pending reply in those classes; it retains no root-ID
   history. `roots.forget` itself is outside those reply classes, so its own receipt is deliverable.
