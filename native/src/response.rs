@@ -8,6 +8,7 @@ pub(crate) async fn admit_after_work<E>(
     work: impl Future<Output = Result<Result<PendingResponse, String>, E>>,
 ) -> Result<ResponseEnvelope, String> {
     let pending = work.await.map_err(|_| "the service failed".to_string())??;
-    // No await or service lock after admission. A later forget cannot recall an admitted reply.
-    Ok(pending.admit())
+    // A response pause yields to the runtime until the durable outcome is classified. Once
+    // admitted there is no further await or service lock before returning to Tauri.
+    Ok(pending.admit_async().await)
 }

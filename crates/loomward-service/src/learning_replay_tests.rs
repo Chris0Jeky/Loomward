@@ -271,3 +271,121 @@ fn learning_rebound_missing_receipt_never_creates_another_reference_or_event() {
     ));
     assert_eq!(durable_counts(&svc), before);
 }
+
+fn replay_with_committed_dirty_root(same_target: bool) {
+    let dir = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    let old = learning_node(&svc);
+    let request = feedback(&old, "ce_rebound_dirty", Some("Documents"), false);
+    let (original, _) = ok(
+        "feedback.record",
+        call(&svc, "feedback.record", request.clone()),
+    );
+    drop(svc);
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    let node = current_node(&svc, if same_target { 1 } else { 2 });
+    // Ordinary Reader methods repair this committed root before inspecting any node. Replaying
+    // a receipt must not take that path, even when the eventual target comparison will fail.
+    svc.inner
+        .db()
+        .execute_batch(
+            "UPDATE main.dir SET dirty_rev=agg_valid_rev+1 WHERE parent_id IS NULL",
+        )
+        .unwrap();
+    let needs_repair = "SELECT count(*) FROM main.dir d JOIN main.root r ON r.id=d.root_id
+        WHERE d.parent_id IS NULL AND d.agg_valid_rev<d.dirty_rev
+          AND r.active_run IS NULL AND r.state!='repairing'";
+    assert_eq!(count(&svc, needs_repair), 1);
+    let before = durable_counts(&svc);
+    let mut events = svc.subscribe(None);
+    let mut remapped = request;
+    remapped["node_id"] = json!(node);
+    let reply = call(&svc, "feedback.record", remapped);
+    if same_target {
+        let (replay, _) = ok("feedback.record", reply);
+        let mut expected = original;
+        expected["idempotent_replay"] = json!(true);
+        assert_eq!(replay, expected);
+    } else {
+        assert_eq!(err(reply).code, ErrorCode::InvalidRequest);
+    }
+    assert_eq!(durable_counts(&svc), before);
+    assert_eq!(count(&svc, needs_repair), 1, "replay must not repair the root");
+    while let RecvOutcome::Event(event) = events.recv_timeout(Duration::ZERO) {
+        assert!(!matches!(
+            event.event,
+            EventName::LearningUpdated | EventName::TreeInvalidated | EventName::RootsChanged
+        ));
+    }
+}
+
+#[test]
+fn learning_rebound_dirty_root_returns_the_receipt_without_repair() {
+    replay_with_committed_dirty_root(true);
+}
+
+#[test]
+fn learning_rebound_dirty_root_refuses_another_target_without_repair() {
+    replay_with_committed_dirty_root(false);
+}
+
+#[test]
+fn learning_rebound_key_preserves_visibility_and_exclusion_guards() {
+    for guard in [
+        "absent_parent",
+        "absent_ancestor",
+        "excluded_ancestor",
+        "excluded_target",
+        "incarnation",
+        "hardlink",
+    ] {
+        let dir = temp_root();
+        let svc = open(dir.path(), DatasetClass::Synthetic);
+        let old = learning_node(&svc);
+        let request = feedback(&old, "ce_rebound_guard", Some("Documents"), false);
+        let (original, _) = ok(
+            "feedback.record",
+            call(&svc, "feedback.record", request.clone()),
+        );
+        drop(svc);
+        let svc = open(dir.path(), DatasetClass::Synthetic);
+        let node = current_node(&svc, 1);
+        let setup = match guard {
+            "absent_parent" => {
+                "UPDATE main.dir SET listing_state='absent_pending' WHERE id=1"
+            }
+            "absent_ancestor" => {
+                "UPDATE main.file SET dir_id=(SELECT id FROM main.dir WHERE parent_id=1 LIMIT 1) WHERE id=1;
+                 UPDATE main.dir SET listing_state='absent_pending' WHERE id=1"
+            }
+            "excluded_ancestor" => {
+                "UPDATE main.file SET dir_id=(SELECT id FROM main.dir WHERE parent_id=1 LIMIT 1) WHERE id=1;
+                 UPDATE main.dir SET listing_state='excluded' WHERE id=1"
+            }
+            "excluded_target" => "UPDATE main.file SET flags=1 WHERE id=1",
+            "incarnation" => "UPDATE main.file SET born_run=born_run+1 WHERE id=1",
+            "hardlink" => "UPDATE main.file SET flags=4 WHERE id=1",
+            _ => unreachable!(),
+        };
+        svc.inner.db().execute_batch(setup).unwrap();
+        let before = durable_counts(&svc);
+        let mut remapped = request.clone();
+        remapped["node_id"] = json!(node);
+        let reply = call(&svc, "feedback.record", remapped);
+        let mut expected = original;
+        expected["idempotent_replay"] = json!(true);
+        if guard == "hardlink" {
+            let (replay, _) = ok("feedback.record", reply);
+            assert_eq!(replay, expected);
+        } else {
+            let error = err(reply);
+            assert!(
+                matches!(error.code, ErrorCode::InvalidRequest | ErrorCode::NotFound),
+                "{guard}: {error:?}"
+            );
+        }
+        let (exact, _) = ok("feedback.record", call(&svc, "feedback.record", request));
+        assert_eq!(exact, expected, "{guard}: exact replay is still durable");
+        assert_eq!(durable_counts(&svc), before, "{guard}");
+    }
+}

@@ -1743,3 +1743,187 @@ fn retained_privacy_alerts_late_configuration_settlement_cannot_restore_forgotte
     );
     assert_eq!(reason(&err(replay)), Some("forgotten_result"));
 }
+
+fn rejected_forget_preserves_pending_replies(writer_failure: bool) {
+    let dir = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    let (root, grant) = named(&svc, 1, NAME_A, PATH_A);
+    named(&svc, 2, "KeptVolumeRoot", PATH_B);
+    svc.inner.revoke(grant).unwrap();
+    let req = retained_privacy_tier_request(&svc);
+    let original = svc.call(req.clone(), &CallContext::http());
+    ok("volumes.declare_tier", original.clone());
+    let pending_tier = svc.call_pending(req.clone(), &CallContext::http());
+    let pending_roots = svc.call_pending(request("roots.list", json!({})), &CallContext::http());
+    let rev = state_rev(&svc);
+    if writer_failure {
+        // Reject after the writer has changed rows inside its transaction. Rollback must be
+        // distinguished from a durable marker followed by a derived catalogue purge failure.
+        svc.inner
+            .db()
+            .execute_batch(
+                "CREATE TRIGGER st.reject_response_forget BEFORE INSERT ON root_forgotten
+             BEGIN SELECT RAISE(ABORT, 'synthetic pre-commit forget failure'); END",
+            )
+            .unwrap();
+    }
+    let rejected = err(forget(&svc, root, (!writer_failure).then_some(rev + 7)));
+    assert_eq!(
+        rejected.code,
+        if writer_failure {
+            ErrorCode::InternalError
+        } else {
+            ErrorCode::StaleGeneration
+        }
+    );
+    assert_eq!(count(&svc, "SELECT count(*) FROM st.root_forgotten"), 0);
+    assert_eq!(state_rev(&svc), rev);
+    assert_eq!(
+        pending_tier.admit(),
+        original,
+        "a confirmed rejected forget must resume the original response stamp"
+    );
+    let roots = pending_roots.admit();
+    ok("roots.list", roots.clone());
+    assert!(retained_privacy_has_name(&roots, PATH_A));
+    assert_eq!(svc.call(req.clone(), &CallContext::http()), original);
+    assert_eq!(count(&svc, "SELECT count(*) FROM st.tier_declaration"), 1);
+    assert_eq!(
+        svc.inner.hooks.runs.lock().unwrap()[&Command::VolumesDeclareTier],
+        1
+    );
+    let mut changed = req;
+    changed.payload.insert("tier".into(), json!(5));
+    assert_eq!(
+        reason(&err(svc.call(changed, &CallContext::http()))),
+        Some("idempotency_conflict")
+    );
+}
+
+#[test]
+fn retained_privacy_rejected_forget_resumes_pending_replies_after_a_stale_revision() {
+    rejected_forget_preserves_pending_replies(false);
+}
+
+#[test]
+fn retained_privacy_rejected_forget_resumes_pending_replies_after_writer_rollback() {
+    rejected_forget_preserves_pending_replies(true);
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum ResponseForgetOutcome {
+    Rejected,
+    Durable,
+    Unknown,
+}
+
+fn response_waits_for_forget_decision(outcome: ResponseForgetOutcome) {
+    use std::future::Future;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::task::{Context, Poll, Wake, Waker};
+
+    struct ObserveWake {
+        inner: Arc<crate::Inner>,
+        held_mutation: AtomicBool,
+        wakes: AtomicUsize,
+    }
+    impl Wake for ObserveWake {
+        fn wake(self: Arc<Self>) {
+            if self.inner.mutation.try_lock().is_err() {
+                self.held_mutation.store(true, Ordering::SeqCst);
+            }
+            self.wakes.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    let dir = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    let (root, grant) = named(&svc, 1, NAME_A, PATH_A);
+    named(&svc, 2, "KeptVolumeRoot", PATH_B);
+    svc.inner.revoke(grant).unwrap();
+    let pending = svc.call_pending(request("roots.list", json!({})), &CallContext::http());
+    let mut admission = std::pin::pin!(pending.admit_async());
+    let wake = Arc::new(ObserveWake {
+        inner: svc.inner.clone(),
+        held_mutation: AtomicBool::new(false),
+        wakes: AtomicUsize::new(0),
+    });
+    let waker = Waker::from(wake.clone());
+    let mut cx = Context::from_waker(&waker);
+    let expected = (outcome != ResponseForgetOutcome::Durable).then_some(state_rev(&svc) + 7);
+    const GATE: (Command, &str) = (Command::RootsForget, "forget_written");
+    svc.inner.hooks.closed.lock().unwrap().push(GATE);
+    struct Release(Arc<crate::tests::Hooks>);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            self.0.open(GATE.0, GATE.1);
+        }
+    }
+    let forgotten = std::thread::scope(|scope| {
+        let worker = scope.spawn(|| forget(&svc, root, expected));
+        let release = Release(svc.inner.hooks.clone());
+        svc.inner
+            .hooks
+            .until("the writer returned before the marker decision", |h| {
+                h.arrived.lock().unwrap().contains(&GATE)
+            });
+        assert!(
+            admission.as_mut().poll(&mut cx).is_pending(),
+            "admission must wait while forget has not classified the durable outcome"
+        );
+        assert_eq!(
+            count(&svc, "SELECT count(*) FROM st.root_forgotten"),
+            i64::from(outcome == ResponseForgetOutcome::Durable)
+        );
+        if outcome == ResponseForgetOutcome::Unknown {
+            svc.inner
+                .db()
+                .execute_batch("ALTER TABLE st.root_forgotten RENAME TO hidden_response_marker")
+                .unwrap();
+        }
+        drop(release);
+        worker.join().unwrap()
+    });
+    if outcome == ResponseForgetOutcome::Unknown {
+        svc.inner
+            .db()
+            .execute_batch("ALTER TABLE st.hidden_response_marker RENAME TO root_forgotten")
+            .unwrap();
+        assert_eq!(count(&svc, "SELECT count(*) FROM st.root_forgotten"), 0);
+    }
+    if outcome == ResponseForgetOutcome::Durable {
+        ok("roots.forget", forgotten);
+    } else {
+        assert_eq!(err(forgotten).code, ErrorCode::StaleGeneration);
+    }
+    assert!(wake.wakes.load(Ordering::SeqCst) > 0);
+    assert!(
+        !wake.held_mutation.load(Ordering::SeqCst),
+        "a response wake callback ran while the service mutation lock was held"
+    );
+    let Poll::Ready(delivered) = admission.as_mut().poll(&mut cx) else {
+        panic!("the completed forget left a response paused")
+    };
+    if outcome == ResponseForgetOutcome::Rejected {
+        ok("roots.list", delivered.clone());
+        assert!(retained_privacy_has_name(&delivered, PATH_A));
+    } else {
+        assert!(!retained_privacy_has_name(&delivered, PATH_A));
+        assert_eq!(reason(&err(delivered)), Some("forgotten_result"));
+    }
+}
+
+#[test]
+fn retained_privacy_response_waits_for_a_rejected_forget_decision() {
+    response_waits_for_forget_decision(ResponseForgetOutcome::Rejected);
+}
+
+#[test]
+fn retained_privacy_response_waits_for_a_durable_forget_decision() {
+    response_waits_for_forget_decision(ResponseForgetOutcome::Durable);
+}
+
+#[test]
+fn retained_privacy_unreadable_marker_retires_the_pending_response() {
+    response_waits_for_forget_decision(ResponseForgetOutcome::Unknown);
+}

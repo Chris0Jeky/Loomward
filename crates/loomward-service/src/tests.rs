@@ -4479,15 +4479,33 @@ fn scan_start_publishes_a_lab_tree_matching_an_independent_walk_with_live_events
     let mut events = svc.subscribe(None);
     let job = start(svc, &lab.root, "full");
     let done = settle(svc, &job);
-    assert_eq!(done["state"], "completed", "{done:?}");
-    assert_eq!(done["coverage"], "complete");
+    assert_eq!(done["state"], "completed", "initial scan state: {done:?}");
+    assert_eq!(done["coverage"], "complete", "initial scan coverage");
     let slice = lab_slice(svc, &lab.root);
-    assert_eq!(slice_totals(&slice), walk(&lab.path));
-    assert_eq!(slice_totals(&slice), (5, 3, 165));
-    assert_eq!(slice["aggregate_state"], "consistent", "{slice:?}");
+    assert_eq!(
+        slice_totals(&slice),
+        walk(&lab.path),
+        "initial catalogue totals versus independent walk"
+    );
+    assert_eq!(
+        slice_totals(&slice),
+        (5, 3, 165),
+        "initial catalogue totals versus fixture"
+    );
+    assert_eq!(
+        slice["aggregate_state"], "consistent",
+        "initial catalogue aggregate state: {slice:?}"
+    );
     let (roots, _) = ok("roots.list", call(svc, "roots.list", json!({})));
-    assert_eq!(roots["roots"][0]["scan"]["coverage"], "complete");
-    assert_eq!(roots["roots"][0]["scan"]["last_job_id"], json!(job));
+    assert_eq!(
+        roots["roots"][0]["scan"]["coverage"], "complete",
+        "roots.list scan coverage"
+    );
+    assert_eq!(
+        roots["roots"][0]["scan"]["last_job_id"],
+        json!(job),
+        "roots.list last_job_id"
+    );
     // Events: catalogue revisions arrive before the job's terminal state, each after its commit.
     let mut seen = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -4498,7 +4516,11 @@ fn scan_start_publishes_a_lab_tree_matching_an_independent_walk_with_live_events
                 e.validate().unwrap();
                 if e.event == EventName::TreeInvalidated {
                     assert!(e.catalog_rev.is_some());
-                    assert_eq!(e.data["root_id"], lab.root.as_str());
+                    assert_eq!(
+                        e.data["root_id"],
+                        lab.root.as_str(),
+                        "tree.invalidated root_id"
+                    );
                 }
                 let terminal =
                     e.event == EventName::JobState && e.data["job"]["state"] == "completed";
@@ -4520,9 +4542,14 @@ fn scan_start_publishes_a_lab_tree_matching_an_independent_walk_with_live_events
     // A refresh scans the same root again to the same totals.
     assert_eq!(
         settle(svc, &start(svc, &lab.root, "refresh"))["state"],
-        "completed"
+        "completed",
+        "refresh scan state"
     );
-    assert_eq!(slice_totals(&lab_slice(svc, &lab.root)), (5, 3, 165));
+    assert_eq!(
+        slice_totals(&lab_slice(svc, &lab.root)),
+        (5, 3, 165),
+        "refreshed catalogue totals versus fixture"
+    );
 }
 
 #[cfg(windows)]
@@ -5014,32 +5041,65 @@ fn finished_partial_full_scan_is_recorded_without_reconciling_the_denied_subtree
     );
 }
 
+/// #781: limits produce a finished partial sample, while freshness still requires an unlimited pass.
 #[cfg(windows)]
 #[test]
 fn f3_limited_full_scan_stays_stale_until_an_unlimited_pass() {
-    let Some(lab) = lab() else { return };
-    let svc = &lab.svc;
-    let claim = svc.inner.freshness.explicit(1);
-    let (started, _) = ok(
-        "scan.start",
-        call(
-            svc,
+    for budget in [json!({"max_entries": 1}), json!({"max_dirs": 1})] {
+        let Some(lab) = lab() else { return };
+        let svc = &lab.svc;
+        let claim = svc.inner.freshness.explicit(1);
+        let (started, _) = ok(
             "scan.start",
-            json!({
-                "root_id": lab.root, "mode": "full", "budget": {"max_entries": 1}
-            }),
-        ),
-    );
-    let job = settle(svc, started["job"]["job_id"].as_str().unwrap());
-    assert_eq!(job["state"], "completed");
-    assert_eq!(job["coverage"], "partial");
-    assert_eq!(f3_hits(svc)["index_state"], "stale");
-    drop(claim);
-    assert_eq!(
-        settle(svc, &start(svc, &lab.root, "full"))["coverage"],
-        "complete"
-    );
-    assert_eq!(f3_wait_live(svc)["index_state"], "current");
+            call(
+                svc,
+                "scan.start",
+                json!({"root_id": lab.root, "mode": "full", "budget": budget}),
+            ),
+        );
+        let job = settle(svc, started["job"]["job_id"].as_str().unwrap());
+        assert_eq!(job["state"], "completed");
+        assert_eq!(job["coverage"], "partial");
+        assert_eq!(job["progress"]["limit_hit"], true);
+        assert_eq!(f3_hits(svc)["index_state"], "stale");
+        let (state, complete): (String, Option<bool>) = svc
+            .inner
+            .db()
+            .query_row(
+                "SELECT state,json_extract(counters_json,'$.complete') FROM main.scan_run ORDER BY id DESC LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((state.as_str(), complete), ("completed", Some(false)));
+        let (roots, _) = ok("roots.list", call(svc, "roots.list", json!({})));
+        let scan = &roots["roots"][0]["scan"];
+        assert_eq!(scan["coverage"], "partial");
+        assert!(!scan["finished_at"].is_null(), "{scan:?}");
+        assert!(!scan["generation"].is_null(), "{scan:?}");
+        assert_eq!(roots["roots"][0]["totals"]["complete"], false);
+        let (alerts, _) = ok("alerts.list", call(svc, "alerts.list", json!({})));
+        let growth = alerts["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["kind"] == "fast_growth")
+            .unwrap();
+        assert_eq!(growth["coverage"], "partial", "{growth:?}");
+        assert!(
+            !growth["note"]
+                .as_str()
+                .unwrap()
+                .contains("No completed scan"),
+            "{growth:?}"
+        );
+        drop(claim);
+        assert_eq!(
+            settle(svc, &start(svc, &lab.root, "full"))["coverage"],
+            "complete"
+        );
+        assert_eq!(f3_wait_live(svc)["index_state"], "current");
+    }
 }
 
 #[cfg(windows)]
@@ -7594,6 +7654,106 @@ fn a_send_time_rejected_chunk_never_publishes_a_complete_listing() {
     }
 }
 
+/// #781: a drained budget stop records a partial sample, without globally reconciling absence.
+#[test]
+fn a_limited_run_records_partial_history_and_keeps_pending_absence() {
+    use loomward_engine::scan::source::{IdBasis, ListOutcome, OpenedIdentity};
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let (root, grant) = register(&svc, 7);
+    let dir = crate::db::active_root_dir(&svc.inner.db(), root)
+        .unwrap()
+        .unwrap();
+    let id = RootId::new(svc.inner.root_id(root)).unwrap();
+    let sink = &svc.inner.scan;
+    sink.bind(&id, grant, dir);
+    let identity = OpenedIdentity {
+        id: None,
+        basis: IdBasis::None,
+        volume_guid: None,
+        volume_serial: None,
+        attributes: 0x10,
+        reparse_tag: None,
+    };
+    let publish = |run, ticket, entries| {
+        sink.consume(
+            &id,
+            ScanMessage::DirListing {
+                run,
+                ticket,
+                entries,
+            },
+        )
+        .unwrap();
+        sink.consume(
+            &id,
+            ScanMessage::ListingDone {
+                run,
+                ticket,
+                outcome: ListOutcome::Complete,
+            },
+        )
+        .unwrap();
+    };
+    sink.begin_run(&id, 40, &RunScope::FullRoot).unwrap();
+    let seed = sink.prepare_listing(&id, 40, None, &[], identity).unwrap();
+    publish(40, seed, vec![entry("unseen", 0, true)]);
+    let name: Vec<u16> = "unseen".encode_utf16().collect();
+    let child = sink
+        .prepare_listing(&id, 40, Some(seed.dir), &name, identity)
+        .unwrap();
+    publish(40, child, vec![entry("kept.bin", 7, false)]);
+    sink.finish_run(&id, 40, &RunScope::FullRoot, true).unwrap();
+
+    sink.begin_run(&id, 41, &RunScope::FullRoot).unwrap();
+    let ticket = sink.prepare_listing(&id, 41, None, &[], identity).unwrap();
+    publish(41, ticket, vec![entry("observed.bin", 13, false)]);
+    // Individual complete listings may mark an unseen directory absent_pending. Even if the
+    // catalogue looks traversed, the engine's limit veto must prevent global retirement.
+    sink.finish_traversal(&id, 41, &RunScope::FullRoot, false, false, true)
+        .unwrap();
+    let conn = svc.inner.db();
+    let (run, state, finished, complete): (i64, String, Option<i64>, Option<bool>) = conn
+        .query_row(
+            "SELECT id,state,finished_at_ns,json_extract(counters_json,'$.complete') FROM main.scan_run ORDER BY id DESC LIMIT 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!((state.as_str(), complete), ("completed", Some(false)));
+    assert!(finished.is_some());
+    let (generation, state): (Option<i64>, String) = conn
+        .query_row(
+            "SELECT generation,state FROM main.root WHERE id=?1",
+            [root],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((generation, state.as_str()), (Some(run), "partial"));
+    let kept: (String, i64) = conn
+        .query_row(
+            "SELECT listing_state,(SELECT count(*) FROM main.file WHERE dir_id=?1 AND name='kept.bin') FROM main.dir WHERE id=?1",
+            [child.dir as i64],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((kept.0.as_str(), kept.1), ("absent_pending", 1));
+    drop(conn);
+    let (roots, _) = ok("roots.list", call(&svc, "roots.list", json!({})));
+    let scan = &roots["roots"][0]["scan"];
+    assert_eq!(scan["coverage"], "partial");
+    assert!(!scan["finished_at"].is_null(), "{scan:?}");
+    assert_eq!(scan["generation"], run.to_string());
+    let (alerts, _) = ok("alerts.list", call(&svc, "alerts.list", json!({})));
+    let growth = alerts["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["kind"] == "fast_growth")
+        .unwrap();
+    assert_eq!(growth["coverage"], "partial", "{growth:?}");
+}
+
 /// Parallel workers over a wider tree: every child ticket follows its parent's publication, so
 /// the published totals still equal an independent walk.
 #[cfg(windows)]
@@ -8827,4 +8987,26 @@ fn an_unsettled_deferred_refusal_cannot_end_the_run_completed() {
         )
         .unwrap();
     assert_eq!(state, "cancelled", "the run must not end completed");
+}
+
+/// #781: a budget stop cannot turn an unresolved writer refusal into a completed sample.
+#[test]
+fn an_unsettled_deferred_refusal_cannot_finish_a_limited_sample() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let (id, _) = stage_deferred_refusal(&svc);
+    svc.inner
+        .scan
+        .finish_traversal(&id, 42, &RunScope::FullRoot, false, false, true)
+        .unwrap();
+    let (state, complete): (String, Option<bool>) = svc
+        .inner
+        .db()
+        .query_row(
+            "SELECT state,json_extract(counters_json,'$.complete') FROM main.scan_run ORDER BY id DESC LIMIT 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((state.as_str(), complete), ("cancelled", None));
 }

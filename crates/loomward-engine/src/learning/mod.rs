@@ -39,6 +39,18 @@ pub struct Store {
     dataset: String,
 }
 
+/// Durable feedback replay precedes session resolution. A changed opaque node ID needs a
+/// read-only binding check by the service before the saved result may be returned.
+#[derive(Debug)]
+pub enum FeedbackReplay {
+    Missing,
+    Exact(FeedbackResult),
+    Resolve {
+        object_ref: i64,
+        result: FeedbackResult,
+    },
+}
+
 /// Feature snapshot left on a human event once its root's grant is no longer active.
 const REDACTED: &str = r#"{"name":"","extension":"","context":"","size_bytes":0}"#;
 type QueuePosition = (Option<RootId>, (i64, i64), usize);
@@ -168,19 +180,53 @@ impl Store {
         )
     }
 
-    fn replay(db: &Connection, r: &FeedbackRequest) -> EngineResult<Option<FeedbackResult>> {
-        let saved: Option<(String,String)> = db.query_row("SELECT h.content_digest,r.result_json FROM st.human_feedback h JOIN st.learning_receipt r USING(client_event_id) WHERE h.client_event_id=?1", [r.client_event_id.as_str()], |row| Ok((row.get(0)?,row.get(1)?))).optional().map_err(internal)?;
-        match saved {
-            Some((content, result)) => {
-                if content != fingerprint(r) {
-                    return Err(invalid("client_event_id was used for different content"));
-                }
-                let mut result: FeedbackResult = serde_json::from_str(&result).map_err(internal)?;
-                result.idempotent_replay = true;
-                Ok(Some(result))
-            }
-            None => Ok(None),
+    fn replay(db: &Connection, r: &FeedbackRequest) -> EngineResult<FeedbackReplay> {
+        // Keep the original digest for exact retries, including old opaque IDs and legacy rows.
+        // A missing receipt is not a new event: fail before a caller can create another reference.
+        let saved: Option<(String, Option<String>, i64, String, bool, bool)> = db
+            .query_row(
+                "SELECT h.content_digest,r.result_json,h.object_ref_id,h.label,h.retracted,
+                 EXISTS(SELECT 1 FROM st.learning_feature_grant p JOIN st.root_grant g ON g.id=p.grant_id
+                        WHERE p.event_id=h.event_id AND g.state='active')
+                   AND NOT EXISTS(SELECT 1 FROM st.learning_redacted x WHERE x.event_id=h.event_id)
+                   AND h.object_ref_id IN (SELECT id FROM learning_resolved)
+                 FROM st.human_feedback h LEFT JOIN st.learning_receipt r USING(client_event_id)
+                 WHERE h.client_event_id=?1",
+                [r.client_event_id.as_str()],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(internal)?;
+        let Some((content, result, object_ref, label, retracted, can_resolve)) = saved else {
+            return Ok(FeedbackReplay::Missing);
+        };
+        let exact = content == fingerprint(r);
+        let same_content = retracted == r.retract
+            && if r.retract {
+                r.label.is_none()
+            } else {
+                r.label.as_ref().is_some_and(|value| value.as_str() == label)
+            };
+        if !exact && (!same_content || !can_resolve) {
+            return Err(invalid("client_event_id was used for different content"));
         }
+        let result = result.ok_or_else(|| internal("durable feedback receipt missing"))?;
+        let mut result: FeedbackResult = serde_json::from_str(&result).map_err(internal)?;
+        result.idempotent_replay = true;
+        Ok(if exact {
+            FeedbackReplay::Exact(result)
+        } else {
+            FeedbackReplay::Resolve { object_ref, result }
+        })
     }
 }
 
@@ -219,8 +265,9 @@ impl Engine {
         }
         Ok(())
     }
-    /// Durable replay precedes session-local node resolution, including after restart.
-    pub fn learning_replay(&self, r: &FeedbackRequest) -> EngineResult<Option<FeedbackResult>> {
+    /// Exact replay precedes session-local node resolution, including after restart. Resolve
+    /// requires the service to authenticate the new node and prove the same durable binding.
+    pub fn learning_replay(&self, r: &FeedbackRequest) -> EngineResult<FeedbackReplay> {
         Store::replay(&self.learning_store()?.db.lock().unwrap(), r)
     }
 
@@ -268,8 +315,19 @@ impl Engine {
         let tx = db
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(internal)?;
-        if let Some(replay) = Store::replay(&tx, r)? {
-            return Ok(replay);
+        match Store::replay(&tx, r)? {
+            FeedbackReplay::Exact(result) => return Ok(result),
+            FeedbackReplay::Resolve {
+                object_ref: saved,
+                result,
+            } => {
+                return if saved == object_ref {
+                    Ok(result)
+                } else {
+                    Err(invalid("client_event_id was used for different content"))
+                };
+            }
+            FeedbackReplay::Missing => {}
         }
         self.learning_validate_feedback(r)?;
         loomward_learn::features::validate_features(features)
