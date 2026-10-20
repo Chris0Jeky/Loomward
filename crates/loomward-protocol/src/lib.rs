@@ -29,7 +29,9 @@ pub use envelope::{
 pub use error::{ErrorBody, ErrorCode};
 pub use event::{EventEnvelope, EventName};
 pub use response_delivery::{PendingResponse, SerializedResponse};
-pub use response_policy::{ResponseDeliveryPolicy, ResponseDeliveryStamp, ResponseDeliverySuspension};
+pub use response_policy::{
+    ResponseDeliveryPolicy, ResponseDeliveryStamp, ResponseDeliverySuspension,
+};
 pub use service::{
     CallContext, CloseReason, EventStream, NativeDialogs, Principal, RecvOutcome, SaveDialog,
     ViewService,

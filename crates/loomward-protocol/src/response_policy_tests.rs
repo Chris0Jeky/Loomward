@@ -152,6 +152,9 @@ fn retained_privacy_synchronous_response_waits_for_the_forget_decision() {
     pause.resume();
     let result = early.unwrap_or_else(|| received.recv_timeout(Duration::from_secs(5)).unwrap());
     worker.join().unwrap();
-    assert!(early.is_none(), "the synchronous adapter did not wait for the decision");
+    assert!(
+        early.is_none(),
+        "the synchronous adapter did not wait for the decision"
+    );
     assert!(result, "the rejected forget retired a synchronous reply");
 }

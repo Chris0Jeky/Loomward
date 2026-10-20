@@ -1878,9 +1878,7 @@ fn response_waits_for_forget_decision(outcome: ResponseForgetOutcome) {
         if outcome == ResponseForgetOutcome::Unknown {
             svc.inner
                 .db()
-                .execute_batch(
-                    "ALTER TABLE st.root_forgotten RENAME TO hidden_response_marker",
-                )
+                .execute_batch("ALTER TABLE st.root_forgotten RENAME TO hidden_response_marker")
                 .unwrap();
         }
         drop(release);
@@ -1889,9 +1887,7 @@ fn response_waits_for_forget_decision(outcome: ResponseForgetOutcome) {
     if outcome == ResponseForgetOutcome::Unknown {
         svc.inner
             .db()
-            .execute_batch(
-                "ALTER TABLE st.hidden_response_marker RENAME TO root_forgotten",
-            )
+            .execute_batch("ALTER TABLE st.hidden_response_marker RENAME TO root_forgotten")
             .unwrap();
         assert_eq!(count(&svc, "SELECT count(*) FROM st.root_forgotten"), 0);
     }
