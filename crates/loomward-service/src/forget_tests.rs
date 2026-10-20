@@ -1759,10 +1759,13 @@ fn rejected_forget_preserves_pending_replies(writer_failure: bool) {
     if writer_failure {
         // Reject after the writer has changed rows inside its transaction. Rollback must be
         // distinguished from a durable marker followed by a derived catalogue purge failure.
-        svc.inner.db().execute_batch(
-            "CREATE TRIGGER st.reject_response_forget BEFORE INSERT ON root_forgotten
+        svc.inner
+            .db()
+            .execute_batch(
+                "CREATE TRIGGER st.reject_response_forget BEFORE INSERT ON root_forgotten
              BEGIN SELECT RAISE(ABORT, 'synthetic pre-commit forget failure'); END",
-        ).unwrap();
+            )
+            .unwrap();
     }
     let rejected = err(forget(&svc, root, (!writer_failure).then_some(rev + 7)));
     assert_eq!(

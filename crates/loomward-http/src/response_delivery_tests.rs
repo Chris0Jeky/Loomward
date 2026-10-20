@@ -318,10 +318,12 @@ fn rejected_forget_preserves_http_body(writer_failure: bool) {
     let state = rusqlite::Connection::open(dir.path().join("state.db")).unwrap();
     let mut forget = request("roots.forget", json!({"root_id":root}));
     if writer_failure {
-        state.execute_batch(
-            "CREATE TRIGGER reject_response_forget BEFORE INSERT ON root_forgotten
+        state
+            .execute_batch(
+                "CREATE TRIGGER reject_response_forget BEFORE INSERT ON root_forgotten
              BEGIN SELECT RAISE(ABORT, 'synthetic pre-commit forget failure'); END",
-        ).unwrap();
+            )
+            .unwrap();
     } else {
         forget.expected_state_rev = Some(loomward_protocol::Generation(0));
     }
