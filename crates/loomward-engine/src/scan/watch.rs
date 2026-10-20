@@ -1011,6 +1011,8 @@ mod tests {
             }
         }
     }
+    type WatchProbe = Box<dyn Fn() -> EngineResult<()> + Send>;
+
     #[derive(Default)]
     pub(super) struct RecordingSink {
         pub(super) memory: MemorySink,
@@ -1019,7 +1021,7 @@ mod tests {
         stages: Mutex<HashMap<u64, DirectoryRows>>,
         pub(super) scopes: Mutex<Vec<RunScope>>,
         pub(super) finish_change: Mutex<Option<PathBuf>>,
-        pub(super) watch_probe: Mutex<Option<Box<dyn Fn() -> EngineResult<()> + Send>>>,
+        pub(super) watch_probe: Mutex<Option<WatchProbe>>,
         settlement: Mutex<Option<EngineResult<Vec<u64>>>>,
         publications: Mutex<Vec<u64>>,
     }
