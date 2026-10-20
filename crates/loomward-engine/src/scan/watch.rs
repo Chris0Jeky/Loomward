@@ -355,6 +355,9 @@ impl ScanSink for RepairSink {
     fn fence_root(&self, root: &RootId) -> EngineResult<()> {
         self.inner.fence_root(root)
     }
+    fn settle(&self, root: &RootId) -> EngineResult<Vec<u64>> {
+        self.inner.settle(root)
+    }
 }
 
 #[cfg(windows)]
