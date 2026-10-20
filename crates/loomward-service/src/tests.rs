@@ -4493,14 +4493,12 @@ fn scan_start_publishes_a_lab_tree_matching_an_independent_walk_with_live_events
         "initial catalogue totals versus fixture"
     );
     assert_eq!(
-        slice["aggregate_state"],
-        "consistent",
+        slice["aggregate_state"], "consistent",
         "initial catalogue aggregate state: {slice:?}"
     );
     let (roots, _) = ok("roots.list", call(svc, "roots.list", json!({})));
     assert_eq!(
-        roots["roots"][0]["scan"]["coverage"],
-        "complete",
+        roots["roots"][0]["scan"]["coverage"], "complete",
         "roots.list scan coverage"
     );
     assert_eq!(
