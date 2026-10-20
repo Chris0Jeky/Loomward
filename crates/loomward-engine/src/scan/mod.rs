@@ -785,13 +785,13 @@ impl Engine {
                     .take()
                     .expect("scan runner executes once");
                 let source = native_source(&root, io.clone());
-                let report = run_scan(
+                let report = pipeline::run_job_scan(
                     &source,
                     &root,
                     run,
                     sink.clone(),
                     bytes.clone(),
-                    ctx.cancel.clone(),
+                    &ctx,
                     options.clone(),
                 )?;
                 if std::env::var_os("LOOMWARD_SCAN_PROFILE").is_some() {
