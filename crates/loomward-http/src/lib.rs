@@ -18,6 +18,9 @@ mod static_handle;
 #[cfg(test)]
 mod forget_delivery_tests;
 
+#[cfg(test)]
+mod response_delivery_tests;
+
 #[cfg(windows)]
 mod windows_socket;
 #[cfg(windows)]
@@ -32,8 +35,8 @@ use hyper_util::rt::{TokioIo, TokioTimer};
 use loomward_protocol::limits::MAX_REQUEST_BYTES;
 use loomward_protocol::{
     Adapter, CallContext, CloseReason, Command, ErrorBody, ErrorCode, EventDeliveryStamp,
-    EventEnvelope, EventStream, RecvOutcome, RequestEnvelope, ResponseEnvelope, StreamEpoch,
-    ViewService,
+    EventEnvelope, EventStream, PendingResponse, RecvOutcome, RequestEnvelope, ResponseEnvelope,
+    StreamEpoch, ViewService,
 };
 use std::convert::Infallible;
 use std::future::Future;
@@ -701,11 +704,8 @@ async fn call(s: &Shared, headers: &HeaderMap, read: Drained) -> Response<Body> 
         }
     };
     let service = s.service.clone();
-    match tokio::task::spawn_blocking(move || dispatch(&*service, &bytes)).await {
-        Ok(envelope) => json_response(
-            StatusCode::OK,
-            serde_json::to_vec(&envelope).expect("a response envelope always serialises"),
-        ),
+    match tokio::task::spawn_blocking(move || dispatch_pending(&*service, &bytes)).await {
+        Ok(pending) => pending_json_response(pending),
         Err(_) => refuse(StatusCode::INTERNAL_SERVER_ERROR, "the service failed"),
     }
 }
@@ -713,9 +713,26 @@ async fn call(s: &Shared, headers: &HeaderMap, read: Drained) -> Response<Body> 
 /// One call through the protocol's ingress (semantics.md section 1): strict parse, protocol,
 /// command, payload, then the HTTP adapter's availability, then the service.
 pub fn dispatch(service: &dyn ViewService, bytes: &[u8]) -> ResponseEnvelope {
+    dispatch_pending(service, bytes).admit()
+}
+
+fn pending_json_response(pending: PendingResponse) -> Response<Body> {
+    let encoded = pending.serialize();
+    // Construction is not admission: this body may sit unpolled across a root forget. The
+    // first poll chooses the original bytes or the existing nonretryable privacy error envelope.
+    let frame = stream::once(async move { Ok::<_, Infallible>(Bytes::from(encoded.admit())) });
+    let mut response = Response::new(Body::from_stream(frame));
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json; charset=utf-8"),
+    );
+    response
+}
+
+fn dispatch_pending(service: &dyn ViewService, bytes: &[u8]) -> PendingResponse {
     let request = match RequestEnvelope::from_slice(bytes) {
         Ok(r) => r,
-        Err(rejected) => return rejected.into_response(),
+        Err(rejected) => return PendingResponse::unrestricted(rejected.into_response()),
     };
     let offered =
         Command::from_name(&request.command).is_some_and(|c| c.available_on(Adapter::Http));
@@ -725,9 +742,13 @@ pub fn dispatch(service: &dyn ViewService, bytes: &[u8]) -> ResponseEnvelope {
             "this command is not offered over HTTP",
             false,
         );
-        return ResponseEnvelope::error(Some(request.request_id), error, None);
+        return PendingResponse::unrestricted(ResponseEnvelope::error(
+            Some(request.request_id),
+            error,
+            None,
+        ));
     }
-    service.call(request, &CallContext::http())
+    service.call_pending(request, &CallContext::http())
 }
 
 /// `Last-Event-ID: <epoch>.<seq>`. A malformed value resumes from an unknown epoch, so the

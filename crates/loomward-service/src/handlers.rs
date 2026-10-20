@@ -954,10 +954,17 @@ impl Inner {
         let r: RootForgetRequest = req.decode_payload()?;
         let root = self.root_row(&r.root_id)?;
         let _m = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
-        let (grant, grant_state, path) = db::roots(&self.db(), Some(root))
+        let (grant, grant_state, path, volume) = db::roots(&self.db(), Some(root))
             .map_err(sql_error)?
             .first()
-            .map(|r| (r.grant, r.grant_state.clone(), r.display_path.clone()))
+            .map(|r| {
+                (
+                    r.grant,
+                    r.grant_state.clone(),
+                    r.display_path.clone(),
+                    r.volume,
+                )
+            })
             .ok_or_else(|| fail(ErrorCode::NotFound, "unknown root"))?;
         if grant_state != "revoked" {
             return Err(with_reason(
@@ -976,6 +983,7 @@ impl Inner {
         // The state half can commit before the catalogue purge returns. Fence adapter admission
         // for that whole interval without holding a Bus lock over the blocking writer call.
         let _delivery = self.engine.suspend_event_delivery();
+        let _reply_delivery = self.reply_delivery.suspend();
         let written = self.catalog.writer().call(WriteCommand::ForgetGrant {
             grant_id: grant,
             forgotten_at_ns: at,
@@ -995,6 +1003,12 @@ impl Inner {
                 .unwrap_or(true);
         if forgotten {
             self.engine.redact_root_events(r.root_id.as_str());
+            let volume_id = volume.map(|id| self.volume_id(id));
+            self.idem
+                .forget_root(r.root_id.as_str(), volume_id.as_deref());
+            if let Some(volume_id) = volume_id {
+                self.engine.redact_volume_events(&volume_id);
+            }
         }
         written.map_err(|e| match e {
             loomward_catalog::Error::StaleGeneration => stale(
