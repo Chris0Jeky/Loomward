@@ -49,7 +49,10 @@ fn replay_after_restart(retract: bool) {
     drop(svc);
     let svc = open(dir.path(), DatasetClass::Synthetic);
     let new_node = current_node(&svc, 1);
-    assert_ne!(new_node, old_node, "the fixture must really rotate the node ID");
+    assert_ne!(
+        new_node, old_node,
+        "the fixture must really rotate the node ID"
+    );
     let before = durable_counts(&svc);
     let mut events = svc.subscribe(None);
     let mut remapped = request.clone();
@@ -57,10 +60,20 @@ fn replay_after_restart(retract: bool) {
     let (replay, _) = ok("feedback.record", call(&svc, "feedback.record", remapped));
     let mut expected = original;
     expected["idempotent_replay"] = json!(true);
-    assert_eq!(replay, expected, "the complete original receipt must survive");
+    assert_eq!(
+        replay, expected,
+        "the complete original receipt must survive"
+    );
     let (exact, _) = ok("feedback.record", call(&svc, "feedback.record", request));
-    assert_eq!(exact, expected, "the old opaque ID still supports exact replay");
-    assert_eq!(durable_counts(&svc), before, "replay must not write any state");
+    assert_eq!(
+        exact, expected,
+        "the old opaque ID still supports exact replay"
+    );
+    assert_eq!(
+        durable_counts(&svc),
+        before,
+        "replay must not write any state"
+    );
     while let RecvOutcome::Event(event) = events.recv_timeout(Duration::ZERO) {
         assert_ne!(event.event, EventName::LearningUpdated);
     }
