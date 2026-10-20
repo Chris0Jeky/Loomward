@@ -607,6 +607,68 @@ mod tests {
             )
         });
     }
+    /// #763: a deferred stale receipt must make the scan relist through its repair wrapper.
+    #[test]
+    fn repair_settle_relists_deferred_obsolete_directories() {
+        use super::super::tests::{root, Tree};
+        let root = root();
+        let sink = Arc::new(RecordingSink::default());
+        *sink.settlement.lock().unwrap() = Some(Ok(vec![1]));
+        let repair = Arc::new(RepairSink {
+            inner: sink.clone(),
+            valid: Mutex::new(true),
+            reparented: AtomicBool::new(false),
+        });
+        let report = run_scan(
+            &Tree,
+            &root,
+            1,
+            repair,
+            Arc::new(ByteBudget::new(crate::budgets::SCAN_BYTES)),
+            Arc::new(AtomicBool::new(false)),
+            ScanOptions::default(),
+        )
+        .unwrap();
+        assert!(report.complete);
+        assert_eq!(
+            sink.publications
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|dir| **dir == 1)
+                .count(),
+            2,
+            "the root listing must be published again after its deferred refusal"
+        );
+    }
+
+    #[test]
+    fn repair_settle_does_not_hide_a_writer_error() {
+        use super::super::tests::{root, Tree};
+        let sink = Arc::new(RecordingSink::default());
+        *sink.settlement.lock().unwrap() = Some(Err(EngineError::PermissionDenied {
+            message: "synthetic revoked writer".into(),
+        }));
+        let repair = Arc::new(RepairSink {
+            inner: sink,
+            valid: Mutex::new(true),
+            reparented: AtomicBool::new(false),
+        });
+        let result = run_scan(
+            &Tree,
+            &root(),
+            1,
+            repair,
+            Arc::new(ByteBudget::new(crate::budgets::SCAN_BYTES)),
+            Arc::new(AtomicBool::new(false)),
+            ScanOptions::default(),
+        );
+        assert!(matches!(
+            result,
+            Err(EngineError::PermissionDenied { message }) if message == "synthetic revoked writer"
+        ));
+    }
+
     #[test]
     fn repair_reparent_does_not_hide_an_obsolete_run_or_unrelated_ticket() {
         use super::super::tests::{root, Tree};
@@ -955,6 +1017,8 @@ mod tests {
         pub(super) scopes: Mutex<Vec<RunScope>>,
         pub(super) finish_change: Mutex<Option<PathBuf>>,
         pub(super) watch_probe: Mutex<Option<Box<dyn Fn() + Send>>>,
+        settlement: Mutex<Option<EngineResult<Vec<u64>>>>,
+        publications: Mutex<Vec<u64>>,
     }
     impl ScanSink for RecordingSink {
         fn resolve_watch_directory(&self, root: &RootId, path: &[Vec<u16>]) -> Option<u64> {
@@ -1012,6 +1076,7 @@ mod tests {
                 ScanMessage::ListingDone {
                     ticket, outcome, ..
                 } => {
+                    self.publications.lock().unwrap().push(ticket.dir);
                     let stage = self
                         .stages
                         .lock()
@@ -1047,6 +1112,13 @@ mod tests {
         }
         fn fence_root(&self, root: &RootId) -> EngineResult<()> {
             self.memory.fence_root(root)
+        }
+        fn settle(&self, root: &RootId) -> EngineResult<Vec<u64>> {
+            self.settlement
+                .lock()
+                .unwrap()
+                .take()
+                .unwrap_or_else(|| self.memory.settle(root))
         }
     }
     #[test]
