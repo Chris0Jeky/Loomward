@@ -94,7 +94,14 @@ fn a_later_terminal_request_does_not_replace_the_eligible_pending_cause() {
         .unwrap()
         .append(1, 1, Record::Committed)
         .unwrap();
-    fence_waiting(&store, 1, &control, FenceCause::EmergencyStop, Duration::ZERO).unwrap();
+    fence_waiting(
+        &store,
+        1,
+        &control,
+        FenceCause::EmergencyStop,
+        Duration::ZERO,
+    )
+    .unwrap();
     journal_fence(&store, 1, &control).unwrap();
     let rows = store.lock().unwrap().rows(1).unwrap();
     let annotations: Vec<_> = rows
@@ -110,11 +117,22 @@ fn a_later_terminal_request_does_not_replace_the_eligible_pending_cause() {
 fn a_new_terminal_revoke_does_not_invent_a_pending_request() {
     let dir = tempfile::tempdir().unwrap();
     let store = publishing(&dir.path().join("state.db"));
-    store.lock().unwrap().append(1, 1, Record::Committed).unwrap();
+    store
+        .lock()
+        .unwrap()
+        .append(1, 1, Record::Committed)
+        .unwrap();
     let before = store.lock().unwrap().rows(1).unwrap();
     let control = Control::new(false);
     assert_eq!(
-        fence_waiting(&store, 1, &control, FenceCause::GrantRevoked, Duration::ZERO).unwrap(),
+        fence_waiting(
+            &store,
+            1,
+            &control,
+            FenceCause::GrantRevoked,
+            Duration::ZERO
+        )
+        .unwrap(),
         Ack::Settled
     );
     journal_fence(&store, 1, &control).unwrap();
@@ -134,7 +152,14 @@ fn a_terminal_winner_cannot_acknowledge_an_admitted_resident_step() {
         .append(1, 1, Record::Committed)
         .unwrap();
     assert_eq!(
-        fence_waiting(&store, 1, &control, FenceCause::GrantRevoked, Duration::ZERO).unwrap(),
+        fence_waiting(
+            &store,
+            1,
+            &control,
+            FenceCause::GrantRevoked,
+            Duration::ZERO
+        )
+        .unwrap(),
         Ack::PendingInFlightStep
     );
     assert!(
@@ -143,7 +168,14 @@ fn a_terminal_winner_cannot_acknowledge_an_admitted_resident_step() {
     );
     drop(step);
     assert_eq!(
-        fence_waiting(&store, 1, &control, FenceCause::GrantRevoked, Duration::ZERO).unwrap(),
+        fence_waiting(
+            &store,
+            1,
+            &control,
+            FenceCause::GrantRevoked,
+            Duration::ZERO
+        )
+        .unwrap(),
         Ack::Settled
     );
     assert_eq!(status(&store, 1).unwrap().refusal, None);

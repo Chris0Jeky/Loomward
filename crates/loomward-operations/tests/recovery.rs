@@ -38,7 +38,10 @@ fn terminal_annotation_preserves_the_committed_receipt_and_effect_refusals() {
     assert_eq!(after.staging, before.staging);
     assert_eq!(after.publish, before.publish);
     assert_eq!(after.seq, before.seq + 1);
-    assert_eq!(decide(&j, &full_disk().published()).decision, Decision::Settled);
+    assert_eq!(
+        decide(&j, &full_disk().published()).decision,
+        Decision::Settled
+    );
     for record in [
         Record::Fenced {
             cause: FenceCause::EmergencyStop,
@@ -63,8 +66,12 @@ fn terminal_annotation_is_illegal_before_commit_and_at_a_stale_epoch() {
         assert!(j.try_push(1, after_publish("grant_revoked")).is_err());
     }
     let mut committed = run().pop().unwrap();
-    assert!(committed.try_push(0, after_publish("grant_revoked")).is_err());
-    assert!(committed.try_push(2, after_publish("grant_revoked")).is_err());
+    assert!(committed
+        .try_push(0, after_publish("grant_revoked"))
+        .is_err());
+    assert!(committed
+        .try_push(2, after_publish("grant_revoked"))
+        .is_err());
 }
 
 #[test]
