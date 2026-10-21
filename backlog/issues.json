@@ -1229,7 +1229,7 @@
     "title": "[LW-101] Measure enumeration strategies and promote the winner into loomward-windows",
     "milestone": "V3",
     "priority": "P0",
-    "status": "done",
+    "status": "in_progress",
     "depends_on": [
       "LW-002",
       "LW-064"

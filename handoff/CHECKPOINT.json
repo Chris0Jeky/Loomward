@@ -95,6 +95,7 @@
     "windows_performance_claim": false
   },
   "next_local_issues": [
+    "#120 / LW-101: required W0-B cold-cache and strategy/thread/volume measurements; keep in_progress despite completed strategy promotion",
     "#738 / PR814: supported non-elevated Windows/NTFS foreign-Store rename qualification; keep personal copy gate C8 closed",
     "#766: retain the next complete panic and identify the original failing stage; PR812 is diagnostic only",
     "#787: remaining wedged-worker pins, retiring-watch hint coverage and sustained-load churn",
@@ -678,7 +679,6 @@
       814
     ],
     "closed_issues": [
-      120,
       122,
       124,
       176,
@@ -686,6 +686,9 @@
       763,
       781,
       785
+    ],
+    "reopened_issues": [
+      120
     ],
     "evidence": [
       "evidence/v3/backlog-review-2026-10-20.md",
@@ -695,9 +698,8 @@
     "cumulative": {
       "initial_open_issue_count": 191,
       "original_prs_merged": 33,
-      "closed_issue_count": 26,
+      "closed_issue_count": 25,
       "closed_issues": [
-        120,
         122,
         124,
         176,
@@ -724,8 +726,8 @@
         789,
         793
       ],
-      "remaining_open_issue_count": 165,
-      "scope": "Original 18 closures plus this wave's 8 closures; no newly opened issues or blanket completion claim."
+      "remaining_open_issue_count": 166,
+      "scope": "Original 18 closures plus this wave's 7 retained closures; issue120 was reopened after final acceptance review. No newly opened issue or blanket completion claim."
     },
     "previous_top_level_status": {
       "as_of": "2026-10-17",

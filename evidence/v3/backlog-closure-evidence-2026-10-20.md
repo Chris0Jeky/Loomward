@@ -1,16 +1,6 @@
-# Scoped closure evidence — maintenance wave started 20 October 2026
+# Scoped closure and reopening evidence — maintenance wave started 20 October 2026
 
-These are the driver's published issue-completion receipts. Historical tests remain historical; the linked hosted jobs are the execution authority. Broader issue scopes remain open as stated.
-
-## Issue #120
-
-[Published completion receipt](https://github.com/Chris0Jeky/Loomward/issues/120#issuecomment-6304119592)
-
-The enumeration strategy and promotion milestone is complete in [PR #162](https://github.com/Chris0Jeky/Loomward/pull/162). The measured strategy chain is in the production `DirSource`: extended IDs, width-preserving Both fallback, then Find; child opens are handle-relative and post-open identity/attribute checks remain enforced.
-
-The retained [L7 conformance and measurement receipt](https://github.com/Chris0Jeky/Loomward/blob/828ef592eaa10388ce99e760d8985fae865facb8/evidence/v3/scan-l7.md) maps the native tests and mutation checks, records Windows fmt/workspace/clippy/all-feature checks, and contains 20/20 exact S and 20/20 exact M manifest matches with enumeration and sink time reported separately. Raw measurements are linked in that receipt.
-
-Closing this original strategy/promotion milestone. The historical S/M runs used the in-memory sink and warm/uncontrolled conditions; full durable-service 10M/P4, physical ReFS/Cloud Files, hung-volume and broader daily-use qualification remain in #414, #117, #285 and their linked work. No new native measurement is claimed here.
+These are the driver's published receipts for the seven retained issue closures and the corrected reopening of #120. Its earlier closure is explicitly superseded below. Historical tests remain historical; the linked hosted jobs are the execution authority. Broader issue scopes remain open as stated.
 
 ## Issue #122
 
@@ -83,3 +73,29 @@ A retry after restart can recover the original label or retraction receipt when 
 The four original regressions failed before implementation. All ten final portable regressions executed and passed on both Linux and Windows, and all nine jobs in [run 39519053157](https://github.com/Chris0Jeky/Loomward/actions/runs/39519053157) succeeded at head `d894c06f69320dc85f05755a9653dc20e7249cde`, source tree `dc5a981a62f9c69744fa24184e87ffedc2b81576`. The merged source tree is identical. Independent review also checked the proof's read-only and ancestry/incarnation boundaries.
 
 This closes the restart/idempotency defect reported here. It introduces no schema or protocol change and makes no new native filesystem, 10M-readiness or capability-gate claim.
+
+## Issue #120 — reopened; earlier closure superseded
+
+The original issue incorporates W0-B measurement acceptance; required cold-cache and full strategy/thread/volume qualification remain unverified. Warm HDD measurements exist in PR118.
+
+### Earlier closure receipt (superseded)
+
+[Historical public receipt](https://github.com/Chris0Jeky/Loomward/issues/120#issuecomment-6304119592)
+
+The enumeration strategy and promotion milestone is complete in [PR #162](https://github.com/Chris0Jeky/Loomward/pull/162). The measured strategy chain is in the production `DirSource`: extended IDs, width-preserving Both fallback, then Find; child opens are handle-relative and post-open identity/attribute checks remain enforced.
+
+The retained [L7 conformance and measurement receipt](https://github.com/Chris0Jeky/Loomward/blob/828ef592eaa10388ce99e760d8985fae865facb8/evidence/v3/scan-l7.md) maps the native tests and mutation checks, records Windows fmt/workspace/clippy/all-feature checks, and contains 20/20 exact S and 20/20 exact M manifest matches with enumeration and sink time reported separately. Raw measurements are linked in that receipt.
+
+Closing this original strategy/promotion milestone. The historical S/M runs used the in-memory sink and warm/uncontrolled conditions; full durable-service 10M/P4, physical ReFS/Cloud Files, hung-volume and broader daily-use qualification remain in #414, #117, #285 and their linked work. No new native measurement is claimed here.
+
+### Reopening correction (current)
+
+[Published reopening receipt](https://github.com/Chris0Jeky/Loomward/issues/120#issuecomment-6313742953)
+
+Reopened after [the final checkpoint review](https://github.com/Chris0Jeky/Loomward/pull/816#discussion_r4335679013). My earlier closure treated this as an implementation/promotion milestone, but this issue explicitly incorporates both W0-B measurement and L7 acceptance. That narrower interpretation was incorrect.
+
+The promoted strategy chain and retained S/M conformance work in [#162](https://github.com/Chris0Jeky/Loomward/pull/162) remain valid implementation progress. The outstanding acceptance is the required per-strategy, 1–16-thread measurement matrix across the specified fast/slow volumes in warm and cold conditions, as stated in [W0-B](https://github.com/Chris0Jeky/Loomward/blob/132e10e8c43a963658d03cbeaec34d8f20a6c0a8/docs/43-v03-lanes.md#L72).
+
+The retained evidence does not complete that matrix: [#111](https://github.com/Chris0Jeky/Loomward/pull/111) leaves cold-cache and HDD qualification unverified; [#118](https://github.com/Chris0Jeky/Loomward/pull/118) adds warm NVMe/HDD measurements but explicitly leaves true cold-cache measurements open. The [L7 receipt](https://github.com/Chris0Jeky/Loomward/blob/132e10e8c43a963658d03cbeaec34d8f20a6c0a8/evidence/v3/scan-l7.md#L96-L106) also retains its warm/uncontrolled qualification.
+
+Both the GitHub issue and LW-101 stay **in progress** until the required measurements exist. The checkpoint will retain the earlier closure receipt as superseded history, remove this issue from current closure totals, and keep the original acceptance criteria intact.

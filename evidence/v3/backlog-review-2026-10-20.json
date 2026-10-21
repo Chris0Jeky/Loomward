@@ -13,7 +13,6 @@
   ],
   "scope": "All 173 initial open issue bodies and the four initial open PRs were reviewed. Relevant comments, source, review findings and CI were checked before scoped changes or closures. A retained-open outcome is not a new acceptance claim.",
   "closed_issues": [
-    120,
     122,
     124,
     176,
@@ -661,9 +660,8 @@
   "cumulative": {
     "initial_open_issue_count": 191,
     "original_prs_merged": 33,
-    "closed_issue_count": 26,
+    "closed_issue_count": 25,
     "closed_issues": [
-      120,
       122,
       124,
       176,
@@ -690,8 +688,8 @@
       789,
       793
     ],
-    "remaining_open_issue_count": 165,
-    "scope": "Original 18 closures plus this wave's 8 closures; no newly opened issues or blanket completion claim."
+    "remaining_open_issue_count": 166,
+    "scope": "Original 18 closures plus this wave's 7 retained closures; issue120 was reopened after final acceptance review. No newly opened issue or blanket completion claim."
   },
   "review_thread_audit": {
     "scope": "Read-only inline review thread audit of 33 original merged PRs plus #797–#813; no thread resolutions or GitHub writes.",
@@ -767,11 +765,6 @@
   },
   "closure_evidence": [
     {
-      "number": 120,
-      "url": "https://github.com/Chris0Jeky/Loomward/issues/120#issuecomment-6304119592",
-      "body": "The enumeration strategy and promotion milestone is complete in [PR #162](https://github.com/Chris0Jeky/Loomward/pull/162). The measured strategy chain is in the production `DirSource`: extended IDs, width-preserving Both fallback, then Find; child opens are handle-relative and post-open identity/attribute checks remain enforced.\n\nThe retained [L7 conformance and measurement receipt](https://github.com/Chris0Jeky/Loomward/blob/828ef592eaa10388ce99e760d8985fae865facb8/evidence/v3/scan-l7.md) maps the native tests and mutation checks, records Windows fmt/workspace/clippy/all-feature checks, and contains 20/20 exact S and 20/20 exact M manifest matches with enumeration and sink time reported separately. Raw measurements are linked in that receipt.\n\nClosing this original strategy/promotion milestone. The historical S/M runs used the in-memory sink and warm/uncontrolled conditions; full durable-service 10M/P4, physical ReFS/Cloud Files, hung-volume and broader daily-use qualification remain in #414, #117, #285 and their linked work. No new native measurement is claimed here."
-    },
-    {
       "number": 122,
       "url": "https://github.com/Chris0Jeky/Loomward/issues/122#issuecomment-6304120233",
       "body": "The v3 protocol/DTO/generated-TypeScript milestone is complete in [PR #133](https://github.com/Chris0Jeky/Loomward/pull/133), following the contract in #110. Its receipt covers all 45 commands, 174 DTO definitions, 123 valid and 46 negative complete-envelope examples, exact decoding and deterministic TS output, with the driver-rerun Rust/Python gates recorded.\n\nCurrent source retains [contract validation and round-trip tests](https://github.com/Chris0Jeky/Loomward/blob/828ef592eaa10388ce99e760d8985fae865facb8/crates/loomward-protocol/tests/contract.rs), the [deterministic generator and --check](https://github.com/Chris0Jeky/Loomward/blob/828ef592eaa10388ce99e760d8985fae865facb8/scripts/gen_contracts_ts.py), and the [generated app contract](https://github.com/Chris0Jeky/Loomward/blob/828ef592eaa10388ce99e760d8985fae865facb8/app/src/lib/contracts.gen.ts).\n\nClosing the original L1 milestone. The older v2 ownership/disposition decision in #10 and aggregate errata/service/provider acceptance in #117 remain separate; this does not establish those broader gates."
@@ -807,6 +800,28 @@
       "body": "Completed by merged [PR #811](https://github.com/Chris0Jeky/Loomward/pull/811), merge `dc783190cdaced24d06da37d3ae7ce32fb193c7f`.\n\nA retry after restart can recover the original label or retraction receipt when a single read-only proof authenticates the same current durable object, effective published reference, grant and visible ancestry. The original fingerprint fast path remains for exact and legacy retries. Conflicts and missing receipts fail before any new reference/event/revision write; dirty catalogue roots are not repaired during replay validation.\n\nThe four original regressions failed before implementation. All ten final portable regressions executed and passed on both Linux and Windows, and all nine jobs in [run 39519053157](https://github.com/Chris0Jeky/Loomward/actions/runs/39519053157) succeeded at head `d894c06f69320dc85f05755a9653dc20e7249cde`, source tree `dc5a981a62f9c69744fa24184e87ffedc2b81576`. The merged source tree is identical. Independent review also checked the proof's read-only and ancestry/incarnation boundaries.\n\nThis closes the restart/idempotency defect reported here. It introduces no schema or protocol change and makes no new native filesystem, 10M-readiness or capability-gate claim."
     }
   ],
+  "reopened_issues": [
+    {
+      "number": 120,
+      "state": "open",
+      "reason": "The original issue incorporates W0-B measurement acceptance; required cold-cache and full strategy/thread/volume qualification remain unverified. Warm HDD measurements exist in PR118.",
+      "previous_closure": {
+        "url": "https://github.com/Chris0Jeky/Loomward/issues/120#issuecomment-6304119592",
+        "body": "The enumeration strategy and promotion milestone is complete in [PR #162](https://github.com/Chris0Jeky/Loomward/pull/162). The measured strategy chain is in the production `DirSource`: extended IDs, width-preserving Both fallback, then Find; child opens are handle-relative and post-open identity/attribute checks remain enforced.\n\nThe retained [L7 conformance and measurement receipt](https://github.com/Chris0Jeky/Loomward/blob/828ef592eaa10388ce99e760d8985fae865facb8/evidence/v3/scan-l7.md) maps the native tests and mutation checks, records Windows fmt/workspace/clippy/all-feature checks, and contains 20/20 exact S and 20/20 exact M manifest matches with enumeration and sink time reported separately. Raw measurements are linked in that receipt.\n\nClosing this original strategy/promotion milestone. The historical S/M runs used the in-memory sink and warm/uncontrolled conditions; full durable-service 10M/P4, physical ReFS/Cloud Files, hung-volume and broader daily-use qualification remain in #414, #117, #285 and their linked work. No new native measurement is claimed here."
+      },
+      "reopening": {
+        "url": "https://github.com/Chris0Jeky/Loomward/issues/120#issuecomment-6313742953",
+        "body": "Reopened after [the final checkpoint review](https://github.com/Chris0Jeky/Loomward/pull/816#discussion_r4335679013). My earlier closure treated this as an implementation/promotion milestone, but this issue explicitly incorporates both W0-B measurement and L7 acceptance. That narrower interpretation was incorrect.\n\nThe promoted strategy chain and retained S/M conformance work in [#162](https://github.com/Chris0Jeky/Loomward/pull/162) remain valid implementation progress. The outstanding acceptance is the required per-strategy, 1–16-thread measurement matrix across the specified fast/slow volumes in warm and cold conditions, as stated in [W0-B](https://github.com/Chris0Jeky/Loomward/blob/132e10e8c43a963658d03cbeaec34d8f20a6c0a8/docs/43-v03-lanes.md#L72).\n\nThe retained evidence does not complete that matrix: [#111](https://github.com/Chris0Jeky/Loomward/pull/111) leaves cold-cache and HDD qualification unverified; [#118](https://github.com/Chris0Jeky/Loomward/pull/118) adds warm NVMe/HDD measurements but explicitly leaves true cold-cache measurements open. The [L7 receipt](https://github.com/Chris0Jeky/Loomward/blob/132e10e8c43a963658d03cbeaec34d8f20a6c0a8/evidence/v3/scan-l7.md#L96-L106) also retains its warm/uncontrolled qualification.\n\nBoth the GitHub issue and LW-101 stay **in progress** until the required measurements exist. The checkpoint will retain the earlier closure receipt as superseded history, remove this issue from current closure totals, and keep the original acceptance criteria intact."
+      }
+    }
+  ],
+  "checkpoint_review": {
+    "pr": 816,
+    "reviewed_head": "1a5c8f4c3e48334a9139de3f08de895c0d22ef50",
+    "finding_url": "https://github.com/Chris0Jeky/Loomward/pull/816#discussion_r4335679013",
+    "issue_reopened": 120,
+    "correction": "Retain LW-101 in_progress, reopen #120, preserve the superseded closure and record its outstanding measurement acceptance."
+  },
   "issues": [
     {
       "number": 3,
@@ -1669,8 +1684,8 @@
       "url": "https://github.com/Chris0Jeky/Loomward/issues/120",
       "initial_state": "open",
       "body_reviewed": true,
-      "outcome": "closed",
-      "assessment": "Closed the original enumeration strategy/promotion milestone using PR162 and retained S/M conformance; broader service/10M/filesystem acceptance stays open."
+      "outcome": "reopened",
+      "assessment": "Reopened after final acceptance review: PR162 implements the strategy promotion, but W0-B cold-cache and full strategy/thread/volume measurement acceptance remain unverified. PR118 contains warm HDD measurements. LW-101 stays in_progress."
     },
     {
       "number": 122,

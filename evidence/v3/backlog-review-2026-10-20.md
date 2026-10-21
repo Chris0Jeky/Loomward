@@ -4,9 +4,9 @@ Updated: 2026-10-21. Baseline: [`828ef592eaa10388ce99e760d8985fae865facb8`](http
 
 ## Scope and outcome
 
-Reviewed all **173** issues open at the start and the four initial open PRs (#802–#805). This record contains **13 merged PRs**, **1 remaining PR**, and **8 closed issues** before this documentation checkpoint.
+Reviewed all **173** issues open at the start and the four initial open PRs (#802–#805). This record contains **13 merged PRs**, **1 remaining PR**, and **7 closed issues** before this documentation checkpoint.
 Relevant issue comments, source, PR reviews and hosted CI were checked during triage. Closures are limited to acceptance already supported by retained or newly executed evidence. The complete per-issue inventory is below and in the adjacent JSON record.
-The preceding wave merged all **33 original PRs** and closed **18 issues**. Together the waves have closed **26 of the original 191 issues**, leaving **165 open** at this checkpoint. Those earlier eighteen closures are recorded separately in the JSON and are not counted again in this wave's 173-issue inventory. The earlier integration and repair PRs #797–#801 are also retained in that preceding-wave record.
+The preceding wave merged all **33 original PRs** and closed **18 issues**. Together the waves retain **25 closed issues of the original 191**, leaving **166 open** at this checkpoint. Issue #120 was reopened during final acceptance review because its required cold-cache measurement acceptance remains unverified; its earlier closure is preserved as superseded history. The earlier eighteen closures are recorded separately in the JSON and are not counted again in this wave's 173-issue inventory. The earlier integration and repair PRs #797–#801 are also retained in that preceding-wave record.
 
 ## Pull requests
 
@@ -47,7 +47,7 @@ The inline-thread audit covers all 33 original merged PRs and the 17 merged inte
 
 ## Closed milestones and limits
 
-The [closure evidence](backlog-closure-evidence-2026-10-20.md) retains exact public receipts and the scope left open. Local backlog records LW-101, LW-103, LW-105 and LW-125 are synchronized to done; the other 126 records retain their previous status.
+The [closure and reopening evidence](backlog-closure-evidence-2026-10-20.md) retains exact public receipts and the scope left open. Local backlog records LW-103, LW-105 and LW-125 are synchronized to done; the other 127 records retain their previous status. LW-101 remains in_progress, and #120 is reopened because its own W0-B measurement acceptance is incomplete. The existing warm HDD evidence and completed strategy promotion are preserved without waiving the required cold-cache matrix.
 
 The remaining native #738 fixture must run on supported non-elevated Windows/NTFS. An elevated-host setup failure is not success. C8 stays closed. Full durable-service 10M work, continuous 72-hour readiness, required power-cut/restore proof, real teacher confinement and manual accessibility/owner UX acceptance remain open.
 
@@ -150,7 +150,7 @@ The remaining native #738 fixture must run on supported non-elevated Windows/NTF
 | [#104 — [LW-099] Cache extraction results under bounded invalidation and budgets](https://github.com/Chris0Jeky/Loomward/issues/104) | left open | Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave. |
 | [#105 — [LW-100] Gate release claims against executable capability evidence](https://github.com/Chris0Jeky/Loomward/issues/105) | left open | Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave. |
 | [#117 — v0.3 architecture errata (binding): verification findings for implementing lanes](https://github.com/Chris0Jeky/Loomward/issues/117) | left open | Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave. |
-| [#120 — [LW-101] Measure enumeration strategies and promote the winner into loomward-windows](https://github.com/Chris0Jeky/Loomward/issues/120) | closed | Closed the original enumeration strategy/promotion milestone using PR162 and retained S/M conformance; broader service/10M/filesystem acceptance stays open. |
+| [#120 — [LW-101] Measure enumeration strategies and promote the winner into loomward-windows](https://github.com/Chris0Jeky/Loomward/issues/120) | reopened | Reopened after final acceptance review: PR162 implements the strategy promotion, but W0-B cold-cache and full strategy/thread/volume measurement acceptance remain unverified. PR118 contains warm HDD measurements. LW-101 stays in_progress. |
 | [#122 — [LW-103] v3 view-service contract, protocol crate and generated TS types](https://github.com/Chris0Jeky/Loomward/issues/122) | closed | Closed the original v3 DTO/protocol/generated-TS milestone using PR133; v2 disposition and aggregate errata remain separate. |
 | [#124 — [LW-105] Woven-atlas treemap, Observatory sunburst and gauge modules](https://github.com/Chris0Jeky/Loomward/issues/124) | closed | Closed the original Atlas/Observatory/gauge module milestone using PR136, PR155 and retained UI/WebView2 receipts; manual accessibility and field acceptance remain. |
 | [#125 — [LW-106] Loopback HTTP and SSE adapter (loomward-serve)](https://github.com/Chris0Jeky/Loomward/issues/125) | left open | Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave. |
