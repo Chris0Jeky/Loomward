@@ -878,7 +878,8 @@ impl Engine {
             Err(EngineError::unavailable(Component::Scan))
         }
     }
-    /// Immediate cancellation acknowledgement; no waiting for directory I/O or writer joins.
+    /// Acknowledge cancellation without waiting for directory I/O or writer joins. Once final
+    /// publication is admitted, return the current job state; that outcome completes or fails.
     pub fn scan_cancel(&self, id: &JobId) -> EngineResult<Job> {
         if self.job_status(id)?.kind != JobKind::Scan {
             return Err(EngineError::InvalidRequest {

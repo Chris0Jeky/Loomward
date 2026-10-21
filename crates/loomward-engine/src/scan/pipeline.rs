@@ -1066,6 +1066,14 @@ pub(super) fn run_job_scan<S: DirSource>(
     )
 }
 
+/// Claim the terminal publication outcome without keeping a cancellation gate across sink I/O.
+/// This commits the decision to finish, not a successful write: a later sink error still fails
+/// the job. Once claimed, cancellation returns the current job state without acknowledging a
+/// cancellation that the catalogue can no longer honor. All workers are drained before this call.
+fn admit_final_publication(job: &crate::jobs::JobContext) -> EngineResult<bool> {
+    job.commit_if_not_cancelled(|| Ok(()))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_scan_inner<S: DirSource>(
     source: &S,
@@ -1075,7 +1083,7 @@ fn run_scan_inner<S: DirSource>(
     bytes: Arc<ByteBudget>,
     cancel: Arc<AtomicBool>,
     options: ScanOptions,
-    _job: Option<&crate::jobs::JobContext>,
+    job: Option<&crate::jobs::JobContext>,
 ) -> EngineResult<ScanReport> {
     if !(1..=32).contains(&options.workers)
         || options.max_dirs == 0
@@ -1494,9 +1502,22 @@ fn run_scan_inner<S: DirSource>(
     let complete = slot.complete && settled;
     let limited = drained && limit_hit;
     #[cfg(test)]
-    if _job.is_some() {
+    if job.is_some() {
         before_publish("run_scan_finish");
     }
+    // The flag snapshot is only evidence. A job must also win terminal admission against
+    // scan.cancel before it can publish completion, freshness, or a finished partial sample.
+    let admitted = if settled || limited {
+        match job {
+            Some(job) => admit_final_publication(job)?,
+            None => true,
+        }
+    } else {
+        false
+    };
+    let complete = complete && admitted;
+    let settled = settled && admitted;
+    let limited = limited && admitted;
     let aggregation = Instant::now();
     let finish = sink.finish_traversal(
         root.root_id(),

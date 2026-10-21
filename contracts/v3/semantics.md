@@ -126,7 +126,15 @@ q-11 opens the local student only, and the teacher's personal conditions (q-5) a
 `retract` is true; a retraction with no prior human label is `invalid_request`. It stores the
 withdrawn label at the next human revision. The durable receipt preserves the original complete
 result across restart, including its learning status; replay changes only `idempotent_replay`.
-Replay is checked before resolving the session-local node ID. Human events are stored only in
+An exact replay is checked before resolving the session-local node ID and retains the original
+request digest. A retry with a new session node ID must authenticate that ID and prove that its
+current native continuity tuple and published binding name the same existing resolved durable
+reference, with unchanged label/retraction content. This check creates no reference, event,
+receipt, node alias or revision and emits no learning update. The original snapshot grant must
+still be active and its features must not have been redacted. Legacy events without snapshot
+provenance, retired/unresolved targets and revoked snapshots retain exact-request replay only;
+a missing saved receipt is an error, never permission to record another event under that key.
+Human events are stored only in
 `human_feedback`; teacher rows remain separate and never enter this lane's refit. Unresolved human
 events are excluded and counted in `learning.status.unresolved_human_events`.
 
