@@ -438,7 +438,8 @@ def live_personal_scan(browser, exe: Path) -> None:
     changes no file, and revoking the root redacts the report.
 
     The folder lives under target/test-roots, not the system temp folder: a profile's AppData is never eligible.
-    On an elevated host the grant is refused (identity_unavailable) and the server does not start; that is checked."""
+    When native identity is unavailable (for example on an unsupported or elevated host), the grant is refused
+    and the server does not start; that refusal is checked without claiming a native scan."""
     roots = ROOT / 'target' / 'test-roots'
     roots.mkdir(parents=True, exist_ok=True)
     fixture = tempfile.TemporaryDirectory(prefix='lw-live-personal-', dir=roots)
@@ -456,8 +457,8 @@ def live_personal_scan(browser, exe: Path) -> None:
         url = (proc.stdout.readline() if proc.stdout else '').strip()
         if not url:
             err = proc.communicate(timeout=10)[1]
-            check('identity_unavailable' in err, f'personal: the server refused the grant only because this host is elevated: {err.strip()}')
-            print('PASS personal: an elevated host refuses the grant (identity_unavailable); the scan leg needs a non-elevated host')
+            check('identity_unavailable' in err, f'personal: the server refused the grant with identity_unavailable: {err.strip()}')
+            print('PASS personal grant refusal (identity_unavailable); native scan and duplicate-read leg UNVERIFIED on this host')
             return
         check('/#token=' in url, 'a personal loomward-serve is up with one granted folder')
         _, token = url.split('/#token=')

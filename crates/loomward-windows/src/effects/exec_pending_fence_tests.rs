@@ -659,3 +659,90 @@ fn a_request_retained_before_replay_cannot_move_to_a_different_operation() {
         .unwrap()
         .has_fence_cause(FenceCause::EmergencyStop));
 }
+
+#[test]
+fn a_qualified_annotation_does_not_discard_a_distinct_unknown_cause() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let store = publishing(&path);
+    let control = Control::new(false).with_hook(|_, _| panic!("metadata retry ran an effect"));
+    pending(&store, &control);
+    let mut foreign = Store::open(&path).unwrap();
+    foreign.append(1, 1, Record::Committed).unwrap();
+    let before = foreign.rows(1).unwrap();
+    let failed = with_unavailable_head(&path, || {
+        fence_waiting(
+            &store,
+            1,
+            &control,
+            FenceCause::EmergencyStop,
+            Duration::ZERO,
+        )
+    });
+    assert!(matches!(failed, Err(Fault::Journal(_))));
+    assert!(retry_pending_fence(&store, 1, &control).is_err());
+    assert!(control.has_pending_fence());
+    let after = foreign.rows(1).unwrap();
+    assert_eq!(&after[..before.len()], before.as_slice());
+    assert_eq!(after.len(), before.len() + 1);
+    let annotation: Entry = serde_json::from_str(&after.last().unwrap().body).unwrap();
+    assert_eq!(annotation.epoch, 1);
+    assert!(matches!(
+        annotation.record,
+        Record::RevokedAfterPublish {
+            cause: FenceCause::GrantRevoked
+        }
+    ));
+    let r = replay(&store, 1).unwrap();
+    assert_eq!(r.state, OpState::Committed);
+    assert_eq!(r.epoch, 1);
+    assert!(r.has_fence_cause(FenceCause::GrantRevoked));
+    assert!(!r.has_fence_cause(FenceCause::EmergencyStop));
+    for cause in [FenceCause::EmergencyStop, FenceCause::GrantRevoked] {
+        assert!(fence_waiting(&store, 1, &control, cause, Duration::ZERO).is_err());
+        assert!(control.has_pending_fence());
+        assert_eq!(control.unjournaled.lock().unwrap().len(), 1);
+        assert_eq!(foreign.rows(1).unwrap(), after);
+    }
+}
+
+#[test]
+fn an_unknown_request_cannot_acknowledge_an_admitted_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let store = publishing(&path);
+    let control = Control::new(false);
+    let step = control.admit().ok().unwrap();
+    let failed = with_unavailable_head(&path, || {
+        fence_waiting(
+            &store,
+            1,
+            &control,
+            FenceCause::GrantRevoked,
+            Duration::ZERO,
+        )
+    });
+    assert!(matches!(failed, Err(Fault::Journal(_))));
+    Store::open(&path)
+        .unwrap()
+        .append(1, 1, Record::Committed)
+        .unwrap();
+    let before = store.lock().unwrap().rows(1).unwrap();
+    assert!(!retry_pending_fence(&store, 1, &control).unwrap());
+    assert!(store.try_lock().is_ok(), "retry must not wait while holding Store");
+    assert_eq!(
+        fence_waiting(
+            &store,
+            1,
+            &control,
+            FenceCause::GrantRevoked,
+            Duration::ZERO,
+        )
+        .unwrap(),
+        Ack::PendingInFlightStep
+    );
+    drop(step);
+    assert!(retry_pending_fence(&store, 1, &control).is_err());
+    assert!(control.has_pending_fence());
+    assert_eq!(store.lock().unwrap().rows(1).unwrap(), before);
+}
