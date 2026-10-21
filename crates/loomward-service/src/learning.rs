@@ -2,6 +2,7 @@
 //! Personal sessions learn locally from owner labels on active grants (q-11); the teacher stays gated.
 use crate::{catalog_error, fail, sql_error, with_reason, Inner, Out};
 use loomward_catalog::{NodeDetail, NodeKey, Reader, WriteCommand, WriteReply};
+use loomward_engine::learning::FeedbackReplay;
 use loomward_protocol::*;
 use serde_json::{json, Value};
 
@@ -60,8 +61,13 @@ impl Inner {
     }
     pub(crate) fn feedback_record(&self, r: FeedbackRequest) -> Result<Out, ErrorBody> {
         let _permit = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(replay) = self.engine.learning_replay(&r).map_err(ErrorBody::from)? {
-            return self.learning_out(replay);
+        match self.engine.learning_replay(&r).map_err(ErrorBody::from)? {
+            FeedbackReplay::Exact(result) => return self.learning_out(result),
+            FeedbackReplay::Resolve { object_ref, result } => {
+                self.feedback_replay_reference(&r.node_id, object_ref)?;
+                return self.learning_out(result);
+            }
+            FeedbackReplay::Missing => {}
         }
         self.engine
             .learning_validate_feedback(&r)
@@ -153,6 +159,83 @@ impl Inner {
             .learning_feedback(&r, reference, &features, Some(grant))
             .map_err(ErrorBody::from)?;
         self.learning_out(result)
+    }
+
+    /// Authenticate a replacement session ID without creating or reconciling a reference.
+    /// The saved receipt is an observation of an earlier action, not another label mutation.
+    fn feedback_replay_reference(&self, node: &NodeId, reference: i64) -> Result<(), ErrorBody> {
+        let (key, born) = self
+            .ids
+            .open(node.as_str(), &self.instance)
+            .map_err(|e| crate::id_refusal(e, "unknown node"))?;
+        let (kind, row, table, directory) = match key {
+            NodeKey::File(row) => ("file", row, "file", "n.dir_id"),
+            NodeKey::Dir(row) => ("dir", row, "dir", "n.id"),
+            _ => {
+                return Err(fail(
+                    ErrorCode::InvalidRequest,
+                    "client_event_id was used for different content",
+                ))
+            }
+        };
+        // Ordinary Reader methods can repair committed dirty aggregates. A receipt replay needs
+        // no aggregate values, so prove visibility, exclusions and identity in one SELECT instead.
+        // UNION also bounds malformed ancestor cycles; a same-root path must reach its root.
+        // A committed publication can overlay row/birth before its state-side fold. Check the
+        // effective binding and native continuity tuple together; paths and row IDs alone do
+        // not establish identity, and an unresolved or retired reference is never reattached.
+        let matches: bool = self
+            .db()
+            .query_row(
+                &format!(
+                    "WITH RECURSIVE ancestry(id,parent_id,root_id,listing_state) AS (
+                       SELECT d.id,d.parent_id,d.root_id,d.listing_state
+                       FROM main.{table} n JOIN main.dir d ON d.id={directory} WHERE n.id=?1
+                       UNION
+                       SELECT d.id,d.parent_id,d.root_id,d.listing_state
+                       FROM main.dir d JOIN ancestry a ON d.id=a.parent_id AND d.root_id=a.root_id
+                     ) SELECT EXISTS(
+                     SELECT 1 FROM st.object_ref o
+                     LEFT JOIN st.pending_reference p ON p.object_ref_id=o.id
+                       AND p.catalog_instance=?4
+                       AND p.publication_token=(SELECT value FROM main.meta WHERE key='reference_publication')
+                     JOIN main.{table} n ON n.id=?1
+                     JOIN main.dir d ON d.id={directory}
+                     JOIN main.root rt ON rt.id=d.root_id
+                     JOIN main.volume v ON v.id=rt.volume_id
+                     JOIN st.root_grant g ON g.id=rt.grant_id AND g.state='active'
+                     WHERE o.id=?5 AND o.kind=?2 AND o.state='resolved' AND o.retired=0
+                       AND o.catalog_instance=?4
+                       AND ?4=(SELECT value FROM main.meta WHERE key='instance_id')
+                       AND CASE WHEN p.object_ref_id IS NULL THEN o.row_id ELSE p.row_id END=?1
+                       AND CASE WHEN p.object_ref_id IS NULL THEN o.born_run ELSE p.born_run END=?3
+                       AND n.born_run=?3 AND o.volume_key=v.volume_key
+                       AND o.file_id=n.file_id AND o.creation_ft=n.created_ft
+                       AND v.filesystem IN ('NTFS','ReFS')
+                       AND (v.filesystem!='ReFS' OR length(n.file_id)=16)
+                       AND n.flags & ~?6 = 0
+                       AND EXISTS(SELECT 1 FROM ancestry a WHERE a.parent_id IS NULL AND a.root_id=rt.id)
+                       AND NOT EXISTS(SELECT 1 FROM ancestry
+                                      WHERE listing_state IN ('absent_pending','excluded')))"
+                ),
+                rusqlite::params![
+                    row,
+                    kind,
+                    born,
+                    self.instance,
+                    reference,
+                    loomward_catalog::HARDLINK_SUSPECTED
+                ],
+                |r| r.get(0),
+            )
+            .map_err(sql_error)?;
+        if !matches {
+            return Err(fail(
+                ErrorCode::InvalidRequest,
+                "client_event_id was used for different content",
+            ));
+        }
+        Ok(())
     }
     pub(crate) fn learning_refit(&self) -> Result<Out, ErrorBody> {
         let _permit = self.mutation.lock().unwrap_or_else(|e| e.into_inner());

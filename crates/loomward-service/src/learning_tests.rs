@@ -1,5 +1,8 @@
 use crate::tests::*;
 
+#[path = "learning_replay_tests.rs"]
+mod replay;
+
 fn learning_node(svc: &Service) -> String {
     fixture(svc, 3);
     let conn = svc.inner.db();
