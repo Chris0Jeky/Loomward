@@ -480,20 +480,15 @@ fn terminal_fence_wait_releases_store_until_the_resident_step_returns() {
     });
 }
 
-
 /// A real SQLite query failure, restored before the assertions. WAL permits ordinary readers
 /// during another connection's write transaction, so a writer lock is not a read-error fixture.
 fn with_unavailable_head<T>(path: &Path, during: impl FnOnce() -> T) -> T {
     let raw = rusqlite::Connection::open(path).unwrap();
-    raw.execute_batch(
-        "ALTER TABLE op_journal_head RENAME TO pending_fence_unavailable_head",
-    )
-    .unwrap();
+    raw.execute_batch("ALTER TABLE op_journal_head RENAME TO pending_fence_unavailable_head")
+        .unwrap();
     let result = during();
-    raw.execute_batch(
-        "ALTER TABLE pending_fence_unavailable_head RENAME TO op_journal_head",
-    )
-    .unwrap();
+    raw.execute_batch("ALTER TABLE pending_fence_unavailable_head RENAME TO op_journal_head")
+        .unwrap();
     result
 }
 
@@ -531,7 +526,10 @@ fn a_first_replay_error_keeps_the_original_request_for_the_workers_commit() {
     assert_eq!(outcome.state, OpState::Committed);
     assert_eq!(outcome.items_verified, 1);
     assert_eq!(outcome.refusal, Some((Refusal::GrantRevoked, None)));
-    assert!(retained, "the initial read error was not retained for service retry");
+    assert!(
+        retained,
+        "the initial read error was not retained for service retry"
+    );
     assert!(!control.has_pending_fence());
     let rows = reopened.lock().unwrap().rows(1).unwrap();
     let records: Vec<Entry> = rows
