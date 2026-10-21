@@ -139,8 +139,8 @@ mod pending_fence_tests {
     use crate::{CallContext, Config, Service};
     use loomward_operations::{
         store::fault::{Kind as FaultKind, Stage},
-        Destination, Entry, FenceCause, Identity, Manifest, ManifestItem, ObjectId, OpState, Record,
-        Refusal, Replay, Store,
+        Destination, Entry, FenceCause, Identity, Manifest, ManifestItem, ObjectId, OpState,
+        Record, Refusal, Replay, Store,
     };
     use loomward_windows::{
         effects::exec,
@@ -640,7 +640,10 @@ mod pending_fence_tests {
                 .lock()
                 .unwrap()
                 .is_empty());
-            assert!(control.strong_count() > 0, "reaping lost the unread request");
+            assert!(
+                control.strong_count() > 0,
+                "reaping lost the unread request"
+            );
             let admission = fixture.admission_error();
             assert_eq!(admission.code, ErrorCode::Busy);
             pending(admission);
@@ -673,7 +676,11 @@ mod pending_fence_tests {
                 assert!(!committed.has_fence_cause(FenceCause::GrantRevoked));
                 let before = fixture.store().lock().unwrap().rows(OP).unwrap();
                 assert_eq!(fixture.status()["state"], "committed");
-                assert_eq!(control.strong_count(), 0, "resolved request was not retired");
+                assert_eq!(
+                    control.strong_count(),
+                    0,
+                    "resolved request was not retired"
+                );
                 assert_eq!(fixture.admission_error().code, ErrorCode::NotFound);
                 fixture.revoke().unwrap();
                 assert_eq!(fixture.store().lock().unwrap().rows(OP).unwrap(), before);

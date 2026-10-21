@@ -729,7 +729,10 @@ fn an_unknown_request_cannot_acknowledge_an_admitted_step() {
         .unwrap();
     let before = store.lock().unwrap().rows(1).unwrap();
     assert!(!retry_pending_fence(&store, 1, &control).unwrap());
-    assert!(store.try_lock().is_ok(), "retry must not wait while holding Store");
+    assert!(
+        store.try_lock().is_ok(),
+        "retry must not wait while holding Store"
+    );
     assert_eq!(
         fence_waiting(
             &store,
