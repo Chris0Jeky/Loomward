@@ -1229,7 +1229,7 @@
     "title": "[LW-101] Measure enumeration strategies and promote the winner into loomward-windows",
     "milestone": "V3",
     "priority": "P0",
-    "status": "in_progress",
+    "status": "done",
     "depends_on": [
       "LW-002",
       "LW-064"
@@ -1252,7 +1252,7 @@
     "title": "[LW-103] v3 view-service contract, protocol crate and generated TS types",
     "milestone": "V3",
     "priority": "P0",
-    "status": "in_progress",
+    "status": "done",
     "depends_on": [
       "LW-016"
     ],
@@ -1272,7 +1272,7 @@
     "title": "[LW-105] Woven-atlas treemap, Observatory sunburst and gauge modules",
     "milestone": "V3",
     "priority": "P0",
-    "status": "in_progress",
+    "status": "done",
     "depends_on": [
       "LW-104"
     ],
@@ -1516,7 +1516,7 @@
     "title": "[LW-125] Retire the legacy browser UI and freeze the Python reference",
     "milestone": "M1",
     "priority": "P1",
-    "status": "planned",
+    "status": "done",
     "depends_on": [
       "LW-018",
       "LW-104"
