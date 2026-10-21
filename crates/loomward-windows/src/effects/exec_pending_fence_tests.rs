@@ -945,7 +945,9 @@ fn a_late_fence_is_journaled_before_worker_cancel_settlement() {
             CANCEL_SETTLEMENT_OBSERVER.with(|slot| {
                 *slot.borrow_mut() = Some(Box::new(move || {
                     settling.send(()).unwrap();
-                    worker_released.recv_timeout(Duration::from_secs(5)).unwrap();
+                    worker_released
+                        .recv_timeout(Duration::from_secs(5))
+                        .unwrap();
                 }));
             });
             finish(&store, 1, &plan, &control, control.check())
@@ -960,8 +962,12 @@ fn a_late_fence_is_journaled_before_worker_cancel_settlement() {
                         .unwrap()
                         .first()
                         .and_then(|request| request.epoch);
-                    qualified.send((control.has_pending_fence(), epoch)).unwrap();
-                    fencer_released.recv_timeout(Duration::from_secs(5)).unwrap();
+                    qualified
+                        .send((control.has_pending_fence(), epoch))
+                        .unwrap();
+                    fencer_released
+                        .recv_timeout(Duration::from_secs(5))
+                        .unwrap();
                 }));
             });
             fence_waiting(
