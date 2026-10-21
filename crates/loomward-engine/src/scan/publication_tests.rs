@@ -29,7 +29,8 @@ impl ScanSink for PublicationSink {
         name: &[u16],
         identity: OpenedIdentity,
     ) -> EngineResult<ListingTicket> {
-        self.memory.prepare_listing(root, run, parent, name, identity)
+        self.memory
+            .prepare_listing(root, run, parent, name, identity)
     }
 
     fn refresh_listing(
