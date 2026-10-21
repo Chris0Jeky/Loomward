@@ -66,7 +66,7 @@ The send-time-rejected listing/chunk fence in item 2 was already addressed by #7
 
 Completed by [#808](https://github.com/Chris0Jeky/Loomward/pull/808) and the reviewed late-cancellation follow-up [#813](https://github.com/Chris0Jeky/Loomward/pull/813).
 
-A scan that drains its configured budget now records a finished partial result while keeping coverage unknown; it does not authorize absence or freshness. Final publication admission is serialized with cancellation, and the admission gate is released before sink I/O. Cancellation that wins first suppresses publication; cancellation arriving after publication admission preserves the admitted decision.
+A scan that drains its configured budget now records a finished partial result while keeping coverage unknown; it does not authorize absence or freshness. Final publication admission is serialized with cancellation, and the admission gate is released before sink I/O. Cancellation that wins first suppresses completion, freshness and finished-partial publication; cancellation arriving after publication admission preserves the admitted decision.
 
 Both new cancellation regressions failed before implementation on Linux and Windows. Final head `484a46808af970cb9083366208008c117655272c`, tree `6bd2f4142db1aa595e8f722eae273cc8282eb751`, passed all nine jobs in [run 39521167880](https://github.com/Chris0Jeky/Loomward/actions/runs/39521167880). Actual CI checkout `21ced095a07b19cb7f4c9b829376303eb3101ca9` and merge `9e33052b1a54ccb6d79a2d7adb88ec532c1230a2` have that same source tree.
 

@@ -749,3 +749,287 @@ fn an_unknown_request_cannot_acknowledge_an_admitted_step() {
     assert!(control.has_pending_fence());
     assert_eq!(store.lock().unwrap().rows(1).unwrap(), before);
 }
+
+// The observer is thread-local and consumed once, so unrelated concurrent fence tests are untouched.
+type FencePublicationObserver = Box<dyn FnOnce(&Control)>;
+std::thread_local! {
+    static FENCE_PUBLICATION_OBSERVER: std::cell::RefCell<Option<FencePublicationObserver>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+pub(super) fn after_fence_publication(control: &Control) {
+    let observer = FENCE_PUBLICATION_OBSERVER.with(|slot| slot.borrow_mut().take());
+    if let Some(observer) = observer {
+        observer(control);
+    }
+}
+
+#[test]
+fn a_worker_observing_a_fence_already_has_a_retained_request() {
+    use std::sync::mpsc;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let store = publishing(&path);
+    store
+        .lock()
+        .unwrap()
+        .append(1, 1, Record::PublishWithdrawn)
+        .unwrap();
+    let control = Control::new(false);
+    // Cancel/finish takes only metadata paths: the intent is withdrawn and staging removal is off.
+    // Neither synthetic path exists, and this test must not open either one.
+    let plan = Plan {
+        operation_id: "cp_fence_registration".into(),
+        source_root: dir.path().join("source-must-not-exist"),
+        source_root_id: [1; 16],
+        source_root_volume: 1,
+        source_root_guid: None,
+        source_root_attributes: 0,
+        destination: dir.path().join("destination-must-not-exist"),
+        destination_key: identity::ObjectKey {
+            volume_serial: "1".into(),
+            file_id: [2; 16],
+            quality: identity::IdentityQuality::FileId128,
+            creation_time: "2".into(),
+            reparse_tag: 0,
+        },
+        destination_root: (1, [2; 16]),
+        destination_root_guid: None,
+        grants: vec![],
+        manifest: Manifest {
+            destination: loomward_operations::Destination {
+                grant: 1,
+                parent: loomward_operations::Identity {
+                    volume: 1,
+                    file_id: [2; 16],
+                },
+                folder_name: "Loomward copy".into(),
+            },
+            root: None,
+            items: vec![],
+        },
+        sources: vec![],
+    };
+    let (published, publication) = mpsc::sync_channel(1);
+    let (release, released) = mpsc::sync_channel(1);
+    let (observed, observation) = mpsc::sync_channel(1);
+    let (retained, refused, outcome) = std::thread::scope(|scope| {
+        let fencer = scope.spawn(|| {
+            FENCE_PUBLICATION_OBSERVER.with(|slot| {
+                *slot.borrow_mut() = Some(Box::new(move |control| {
+                    published.send(control.has_pending_fence()).unwrap();
+                    released.recv_timeout(Duration::from_secs(5)).unwrap();
+                }));
+            });
+            fence_waiting(
+                &store,
+                1,
+                &control,
+                FenceCause::GrantRevoked,
+                Duration::ZERO,
+            )
+        });
+        let retained = publication.recv_timeout(Duration::from_secs(5)).unwrap();
+        let worker = scope.spawn(|| {
+            let refused = matches!(control.admit(), Err(Stop::Cancel));
+            observed.send(refused).unwrap();
+            finish(&store, 1, &plan, &control, Err(Stop::Cancel))
+        });
+        let refused = observation.recv_timeout(Duration::from_secs(5)).unwrap();
+        // Always release the production fencer before making assertions or joining either worker.
+        release.send(()).unwrap();
+        fencer.join().unwrap().unwrap();
+        let outcome = worker.join().unwrap().unwrap();
+        (retained, refused, outcome)
+    });
+    assert!(
+        refused,
+        "the real worker did not observe the published fence"
+    );
+    assert!(
+        retained,
+        "a worker observed the fence before its request was retained"
+    );
+    assert_eq!(outcome.state, OpState::Cancelled);
+    let reopened = Mutex::new(Store::open(&path).unwrap());
+    let receipt = status(&reopened, 1).unwrap();
+    assert_eq!(receipt.state, OpState::Cancelled);
+    assert_eq!(receipt.refusal, Some((Refusal::GrantRevoked, None)));
+    assert!(replay(&reopened, 1)
+        .unwrap()
+        .has_fence_cause(FenceCause::GrantRevoked));
+    assert!(!control.has_pending_fence());
+    assert!(!plan.source_root.exists());
+    assert!(!plan.destination.exists());
+}
+
+type CancelSettlementObserver = Box<dyn FnOnce()>;
+type FenceJournalObserver = Box<dyn FnOnce(&Control)>;
+
+std::thread_local! {
+    static CANCEL_SETTLEMENT_OBSERVER: std::cell::RefCell<Option<CancelSettlementObserver>> =
+        const { std::cell::RefCell::new(None) };
+    static FENCE_JOURNAL_OBSERVER: std::cell::RefCell<Option<FenceJournalObserver>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+pub(super) fn before_fence_journal(control: &Control) {
+    let observer = FENCE_JOURNAL_OBSERVER.with(|slot| slot.borrow_mut().take());
+    if let Some(observer) = observer {
+        observer(control);
+    }
+}
+
+pub(super) fn before_cancel_settlement() {
+    let observer = CANCEL_SETTLEMENT_OBSERVER.with(|slot| slot.borrow_mut().take());
+    if let Some(observer) = observer {
+        observer();
+    }
+}
+
+#[test]
+fn a_late_fence_is_journaled_before_worker_cancel_settlement() {
+    use std::sync::mpsc;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let store = publishing(&path);
+    store
+        .lock()
+        .unwrap()
+        .append(1, 1, Record::PublishWithdrawn)
+        .unwrap();
+    let control = Control::new(false);
+    // The worker stops for an earlier owner cancellation, before any fence exists. Its finish
+    // queue check is therefore empty; the late fencer must also be serialized with settlement.
+    control.cancel();
+    let plan = Plan {
+        operation_id: "cp_cancel_settlement".into(),
+        source_root: dir.path().join("source-must-not-exist"),
+        source_root_id: [1; 16],
+        source_root_volume: 1,
+        source_root_guid: None,
+        source_root_attributes: 0,
+        destination: dir.path().join("destination-must-not-exist"),
+        destination_key: identity::ObjectKey {
+            volume_serial: "1".into(),
+            file_id: [2; 16],
+            quality: identity::IdentityQuality::FileId128,
+            creation_time: "2".into(),
+            reparse_tag: 0,
+        },
+        destination_root: (1, [2; 16]),
+        destination_root_guid: None,
+        grants: vec![],
+        manifest: Manifest {
+            destination: loomward_operations::Destination {
+                grant: 1,
+                parent: loomward_operations::Identity {
+                    volume: 1,
+                    file_id: [2; 16],
+                },
+                folder_name: "Loomward copy".into(),
+            },
+            root: None,
+            items: vec![],
+        },
+        sources: vec![],
+    };
+    let (settling, settlement) = mpsc::sync_channel(1);
+    let (release_worker, worker_released) = mpsc::sync_channel(1);
+    let (qualified, qualification) = mpsc::sync_channel(1);
+    let (release_fencer, fencer_released) = mpsc::sync_channel(1);
+    let (retained, epoch, worker_result, fencer_result) = std::thread::scope(|scope| {
+        let worker = scope.spawn(|| {
+            CANCEL_SETTLEMENT_OBSERVER.with(|slot| {
+                *slot.borrow_mut() = Some(Box::new(move || {
+                    settling.send(()).unwrap();
+                    worker_released
+                        .recv_timeout(Duration::from_secs(5))
+                        .unwrap();
+                }));
+            });
+            finish(&store, 1, &plan, &control, control.check())
+        });
+        settlement.recv_timeout(Duration::from_secs(5)).unwrap();
+        let fencer = scope.spawn(|| {
+            FENCE_JOURNAL_OBSERVER.with(|slot| {
+                *slot.borrow_mut() = Some(Box::new(move |control| {
+                    let epoch = control
+                        .unjournaled
+                        .lock()
+                        .unwrap()
+                        .first()
+                        .and_then(|request| request.epoch);
+                    qualified
+                        .send((control.has_pending_fence(), epoch))
+                        .unwrap();
+                    fencer_released
+                        .recv_timeout(Duration::from_secs(5))
+                        .unwrap();
+                }));
+            });
+            fence_waiting(
+                &store,
+                1,
+                &control,
+                FenceCause::GrantRevoked,
+                Duration::ZERO,
+            )
+        });
+        let (retained, epoch) = qualification.recv_timeout(Duration::from_secs(5)).unwrap();
+        // Neither observer holds Store. Let the real worker's terminal append
+        // finish before the fencer drains, then release the fencer before inspecting either result.
+        release_worker.send(()).unwrap();
+        let worker_result = worker.join();
+        release_fencer.send(()).unwrap();
+        let fencer_result = fencer.join();
+        (retained, epoch, worker_result, fencer_result)
+    });
+    assert_eq!(fencer_result.unwrap().unwrap(), Ack::Settled);
+    assert!(retained);
+    assert_eq!(epoch, Some(1));
+    let reopened = Mutex::new(Store::open(&path).unwrap());
+    let receipt = status(&reopened, 1).unwrap();
+    assert_eq!(
+        receipt.refusal,
+        Some((Refusal::GrantRevoked, None)),
+        "a pending revocation must be durable before a worker terminal append"
+    );
+    assert_eq!(receipt.state, OpState::Cancelled);
+    assert_eq!(worker_result.unwrap().unwrap().state, OpState::Cancelled);
+    assert!(!control.has_pending_fence());
+    let entries: Vec<Entry> = reopened
+        .lock()
+        .unwrap()
+        .rows(1)
+        .unwrap()
+        .iter()
+        .map(|row| serde_json::from_str(&row.body).unwrap())
+        .collect();
+    let fenced = entries
+        .iter()
+        .position(|entry| matches!(entry.record, Record::Fenced { .. }))
+        .unwrap();
+    let cancelled = entries
+        .iter()
+        .position(|entry| {
+            matches!(
+                entry.record,
+                Record::Transition {
+                    to: OpState::Cancelled,
+                    ..
+                }
+            )
+        })
+        .unwrap();
+    assert!(fenced < cancelled);
+    assert_eq!(entries[fenced].epoch, 2);
+    // Cancellation is an existing epoch-exempt record. Preserve the worker's original epoch;
+    // the journal still validates the transition instead of being given refreshed authority.
+    assert_eq!(entries[cancelled].epoch, 1);
+    assert_eq!(replay(&reopened, 1).unwrap().epoch, 2);
+    assert!(!plan.source_root.exists());
+    assert!(!plan.destination.exists());
+}

@@ -3,7 +3,7 @@
   "schema_version": 2,
   "as_of": "2026-10-21",
   "version": "0.3.0-dev",
-  "base_commit": "8e57bc7d01a592a18fc0ac92d3aeb3f69aeb18c9",
+  "base_commit": "132e10e8c43a963658d03cbeaec34d8f20a6c0a8",
   "branch": "main",
   "phase": "Maintenance reconciliation of open issues and PRs; scoped source fixes and retained acceptance evidence; C8 remains closed",
   "read_first": [
@@ -95,7 +95,6 @@
     "windows_performance_claim": false
   },
   "next_local_issues": [
-    "#738 / PR815: finish exact-head validation of request-registration and cancellation-settlement receipt ordering before merging",
     "#738 / PR814: supported non-elevated Windows/NTFS foreign-Store rename qualification; keep personal copy gate C8 closed",
     "#766: retain the next complete panic and identify the original failing stage; PR812 is diagnostic only",
     "#787: remaining wedged-worker pins, retiring-watch hint coverage and sustained-load churn",
@@ -652,7 +651,7 @@
   "maintenance_2026_10_20": {
     "updated_at": "2026-10-21",
     "baseline_main": "828ef592eaa10388ce99e760d8985fae865facb8",
-    "checkpoint_parent": "8e57bc7d01a592a18fc0ac92d3aeb3f69aeb18c9",
+    "checkpoint_parent": "132e10e8c43a963658d03cbeaec34d8f20a6c0a8",
     "reviewed_open_issues": 173,
     "initial_open_prs": [
       802,
@@ -672,11 +671,11 @@
       810,
       811,
       812,
-      813
+      813,
+      815
     ],
     "remaining_prs": [
-      814,
-      815
+      814
     ],
     "closed_issues": [
       120,

@@ -3,7 +3,7 @@
   "started_at": "2026-10-20",
   "updated_at": "2026-10-21",
   "baseline_main": "828ef592eaa10388ce99e760d8985fae865facb8",
-  "checkpoint_parent": "8e57bc7d01a592a18fc0ac92d3aeb3f69aeb18c9",
+  "checkpoint_parent": "132e10e8c43a963658d03cbeaec34d8f20a6c0a8",
   "initial_open_issue_count": 173,
   "initial_open_prs": [
     802,
@@ -213,34 +213,65 @@
     {
       "number": 814,
       "url": "https://github.com/Chris0Jeky/Loomward/pull/814",
-      "head": "0f643206ffcef5807c119b11e6df85cf79100f16",
-      "tree": "694e84e816298f57d021a075231e4bec5ed931cc",
+      "head": "1c68ae2a952d71882b6fb6ad7d46d5cf414cd385",
+      "tree": "e9cb1789534daced6423223dfdf199332601344b",
       "status": "draft_native_qualification",
-      "depends_on": 809,
+      "depends_on": 815,
       "issue": 738,
       "summary": "Add a strict real native foreign-commit regression and unverified qualification receipt; supported non-elevated Windows execution remains required.",
-      "run": 39577743320,
+      "run": 39581627089,
       "prior_fmt_run": 39521527391,
       "ci_conclusion": "failure",
+      "qualification": "UNVERIFIED: the strict native test failed the non-elevated Windows fixture prerequisite after formatting, compilation, 18 metadata tests and 5 service tests passed. Native ordering did not execute. Subsequent Windows scan/workspace/all-features/Clippy steps were skipped. The other eight jobs passed.",
+      "previous_hosted_attempts": [
+        {
+          "head": "0f643206ffcef5807c119b11e6df85cf79100f16",
+          "tree": "694e84e816298f57d021a075231e4bec5ed931cc",
+          "run": 39577743320,
+          "ci_conclusion": "failure",
+          "ci_jobs_succeeded": 8,
+          "ci_jobs_failed": 1,
+          "actual_ci_checkout": "06ab2f85783ebfc126dc0ca748413fc940aa1a96",
+          "checkout_tree": "694e84e816298f57d021a075231e4bec5ed931cc",
+          "strict_job": 119147380529,
+          "qualification": "UNVERIFIED: strict native test failed the non-elevated Windows fixture prerequisite; native ordering did not execute. Formatting, compilation, 16 metadata tests and 5 service tests passed; subsequent Windows workspace/all-features/Clippy steps were skipped."
+        }
+      ],
       "ci_jobs_succeeded": 8,
       "ci_jobs_failed": 1,
-      "actual_ci_checkout": "06ab2f85783ebfc126dc0ca748413fc940aa1a96",
-      "checkout_tree": "694e84e816298f57d021a075231e4bec5ed931cc",
-      "strict_job": 119147380529,
-      "qualification": "UNVERIFIED: strict native test failed the non-elevated Windows fixture prerequisite; native ordering did not execute. Formatting, compilation, 16 metadata tests and 5 service tests passed; subsequent Windows workspace/all-features/Clippy steps were skipped.",
-      "ci_url": "https://github.com/Chris0Jeky/Loomward/actions/runs/39577743320"
+      "actual_ci_checkout": "5e2362bc9c2517aefd3a40938a4e548b225bfe7e",
+      "checkout_tree": "e9cb1789534daced6423223dfdf199332601344b",
+      "strict_job": 119160359240,
+      "metadata_tests": {
+        "passed": 18,
+        "failed": 0,
+        "ignored": 0
+      },
+      "service_tests": {
+        "passed": 5,
+        "failed": 0,
+        "ignored": 0
+      },
+      "strict_native_tests": {
+        "passed": 0,
+        "failed": 1,
+        "ignored": 0,
+        "filtered_out": 285
+      },
+      "reviewed_implementation_parent": "66c3ec61dba0a47de3f4b8134a88a271e300cc95",
+      "ci_url": "https://github.com/Chris0Jeky/Loomward/actions/runs/39581627089"
     },
     {
       "number": 815,
       "url": "https://github.com/Chris0Jeky/Loomward/pull/815",
       "head": "66c3ec61dba0a47de3f4b8134a88a271e300cc95",
       "tree": "d0eace0f30f0150880f95945e6069d8f78c3901c",
-      "status": "reviewed_implementation_ci_pending",
+      "status": "merged",
       "depends_on": 809,
       "issue": 738,
-      "summary": "Retain fence requests before worker visibility and serialize cancellation settlement with the pending receipt queue; deterministic regressions and implementation are being validated.",
+      "summary": "Retain fence requests before worker visibility and serialize cancellation settlement with the pending receipt queue.",
       "prior_fmt_run": 39578186888,
-      "validation": "Both intended regressions failed on the tests-only head after formatting and compilation passed. The independent-reviewed repair retains identical test bytes; final exact-head CI is queued.",
+      "validation": "Both intended regressions failed on the tests-only head after formatting and compilation passed. The independently reviewed repair retains identical test bytes. All nine final jobs passed, including 18 metadata tests, five service tests, two scan-publication tests, the full Windows workspace, all-features suite and both Clippy gates. Ignored or unsupported native fixtures are not native qualification.",
       "prior_fmt_runs": [
         39578186888,
         39579269111
@@ -256,6 +287,16 @@
         "failed": 2,
         "ignored": 0
       },
+      "merge": "132e10e8c43a963658d03cbeaec34d8f20a6c0a8",
+      "merged_at": "2026-10-21T10:17:22Z",
+      "ci_conclusion": "success",
+      "ci_jobs_succeeded": 9,
+      "actual_ci_checkout": "45c04410de528d27292b6c73aafbe9354536c298",
+      "checkout_tree": "d0eace0f30f0150880f95945e6069d8f78c3901c",
+      "followups": [
+        814
+      ],
+      "review_url": "https://github.com/Chris0Jeky/Loomward/pull/815#issuecomment-6313074664",
       "ci_url": "https://github.com/Chris0Jeky/Loomward/actions/runs/39579965994"
     }
   ],
@@ -652,6 +693,78 @@
     "remaining_open_issue_count": 165,
     "scope": "Original 18 closures plus this wave's 8 closures; no newly opened issues or blanket completion claim."
   },
+  "review_thread_audit": {
+    "scope": "Read-only inline review thread audit of 33 original merged PRs plus #797–#813; no thread resolutions or GitHub writes.",
+    "prs": [
+      720,
+      740,
+      742,
+      744,
+      752,
+      756,
+      767,
+      768,
+      745,
+      747,
+      748,
+      761,
+      764,
+      779,
+      784,
+      790,
+      792,
+      746,
+      757,
+      759,
+      765,
+      772,
+      773,
+      778,
+      783,
+      786,
+      788,
+      791,
+      794,
+      735,
+      750,
+      771,
+      769,
+      797,
+      798,
+      799,
+      800,
+      801,
+      802,
+      803,
+      804,
+      805,
+      806,
+      807,
+      808,
+      809,
+      810,
+      811,
+      812,
+      813
+    ],
+    "pr_count": 50,
+    "thread_count": 21,
+    "resolved_count": 20,
+    "unresolved_count": 1,
+    "unresolved": [
+      {
+        "pr": 750,
+        "thread_id": "PRRT_kwDOVC3gtM6txQls",
+        "original_comment": 4309902619,
+        "url": "https://github.com/Chris0Jeky/Loomward/pull/750#discussion_r4309902619",
+        "state": "kept_open",
+        "reason": "Supported non-elevated native foreign-Store ordering remains unverified in PR814.",
+        "progress_reply_url": "https://github.com/Chris0Jeky/Loomward/pull/750#discussion_r4335622383",
+        "issue_progress_url": "https://github.com/Chris0Jeky/Loomward/issues/738#issuecomment-6313577099",
+        "progress": "Merged #809 and #815 implementation receipts recorded; #814 strict native setup failure remains unqualified, so the thread and #738 stay open."
+      }
+    ]
+  },
   "closure_evidence": [
     {
       "number": 120,
@@ -686,7 +799,7 @@
     {
       "number": 781,
       "url": "https://github.com/Chris0Jeky/Loomward/issues/781#issuecomment-6313080792",
-      "body": "Completed by [#808](https://github.com/Chris0Jeky/Loomward/pull/808) and the reviewed late-cancellation follow-up [#813](https://github.com/Chris0Jeky/Loomward/pull/813).\n\nA scan that drains its configured budget now records a finished partial result while keeping coverage unknown; it does not authorize absence or freshness. Final publication admission is serialized with cancellation, and the admission gate is released before sink I/O. Cancellation that wins first suppresses publication; cancellation arriving after publication admission preserves the admitted decision.\n\nBoth new cancellation regressions failed before implementation on Linux and Windows. Final head `484a46808af970cb9083366208008c117655272c`, tree `6bd2f4142db1aa595e8f722eae273cc8282eb751`, passed all nine jobs in [run 39521167880](https://github.com/Chris0Jeky/Loomward/actions/runs/39521167880). Actual CI checkout `21ced095a07b19cb7f4c9b829376303eb3101ca9` and merge `9e33052b1a54ccb6d79a2d7adb88ec532c1230a2` have that same source tree.\n\nThis closes the reported budget-completion defect and its reviewed cancellation window. The tests exercise the real scan pipeline and job registry at a MemorySink-backed publication boundary; they do not establish native directory enumeration, sustained 10M service readiness or broader host qualification."
+      "body": "Completed by [#808](https://github.com/Chris0Jeky/Loomward/pull/808) and the reviewed late-cancellation follow-up [#813](https://github.com/Chris0Jeky/Loomward/pull/813).\n\nA scan that drains its configured budget now records a finished partial result while keeping coverage unknown; it does not authorize absence or freshness. Final publication admission is serialized with cancellation, and the admission gate is released before sink I/O. Cancellation that wins first suppresses completion, freshness and finished-partial publication; cancellation arriving after publication admission preserves the admitted decision.\n\nBoth new cancellation regressions failed before implementation on Linux and Windows. Final head `484a46808af970cb9083366208008c117655272c`, tree `6bd2f4142db1aa595e8f722eae273cc8282eb751`, passed all nine jobs in [run 39521167880](https://github.com/Chris0Jeky/Loomward/actions/runs/39521167880). Actual CI checkout `21ced095a07b19cb7f4c9b829376303eb3101ca9` and merge `9e33052b1a54ccb6d79a2d7adb88ec532c1230a2` have that same source tree.\n\nThis closes the reported budget-completion defect and its reviewed cancellation window. The tests exercise the real scan pipeline and job registry at a MemorySink-backed publication boundary; they do not establish native directory enumeration, sustained 10M service readiness or broader host qualification."
     },
     {
       "number": 785,
@@ -2160,7 +2273,7 @@
       "initial_state": "open",
       "body_reviewed": true,
       "outcome": "left_open",
-      "assessment": "PR803 preserves the contract/reproducer; PR809 advances terminal metadata and service retention. PR815 is validating request-registration and cancellation-settlement receipt ordering. PR814 still requires supported non-elevated Windows native qualification, so the issue stays open."
+      "assessment": "PR803 preserves the contract/reproducer; PR809 advances terminal metadata and service retention; PR815 covers request-registration and cancellation-settlement receipt ordering. PR814 still requires actual supported non-elevated Windows native qualification, so the issue stays open."
     },
     {
       "number": 749,
