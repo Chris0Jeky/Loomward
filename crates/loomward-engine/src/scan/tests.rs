@@ -1186,6 +1186,7 @@ struct OrderProbe {
     outcomes: std::sync::Mutex<Vec<ListOutcome>>,
     published: std::sync::Mutex<Vec<u64>>,
     early: std::sync::Mutex<Vec<u64>>,
+    finishes: std::sync::Mutex<Vec<(bool, bool, bool)>>,
 }
 impl ScanSink for OrderProbe {
     fn recover_interrupted(&self) -> crate::EngineResult<()> {
@@ -1234,6 +1235,21 @@ impl ScanSink for OrderProbe {
         scope: &RunScope,
         complete: bool,
     ) -> crate::EngineResult<()> {
+        self.sink.finish_run(root, run, scope, complete)
+    }
+    fn finish_traversal(
+        &self,
+        root: &RootId,
+        run: u64,
+        scope: &RunScope,
+        complete: bool,
+        settled: bool,
+        limited: bool,
+    ) -> crate::EngineResult<()> {
+        self.finishes
+            .lock()
+            .unwrap()
+            .push((complete, settled, limited));
         self.sink.finish_run(root, run, scope, complete)
     }
     fn fence_root(&self, root: &RootId) -> crate::EngineResult<()> {
@@ -1360,6 +1376,69 @@ fn directory_limit_does_not_hide_child_io_errors() {
     assert_eq!(report.failed, 1);
     assert!(!sink.sweep_allowed(root.root_id()));
 }
+/// #781: a budget stop is a finished sample, but does not settle freshness or permit absence.
+#[test]
+fn a_limit_finishes_the_sample_without_settling_freshness_or_absence() {
+    for options in [
+        ScanOptions {
+            max_entries: 1,
+            ..ScanOptions::default()
+        },
+        ScanOptions {
+            max_dirs: 1,
+            ..ScanOptions::default()
+        },
+    ] {
+        let root = root();
+        let sink = Arc::new(OrderProbe::default());
+        let report = run_scan(
+            &Tree,
+            &root,
+            1,
+            sink.clone(),
+            Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES)),
+            Arc::new(AtomicBool::new(false)),
+            options,
+        )
+        .unwrap();
+        assert!(report.limit_hit && !report.complete);
+        assert_eq!(*sink.finishes.lock().unwrap(), vec![(false, false, true)]);
+        assert!(!sink.sink.sweep_allowed(root.root_id()));
+    }
+}
+
+/// A cancellation at the publication boundary must override even a drained budget stop.
+#[test]
+fn cancellation_at_publication_does_not_finish_a_limited_sample() {
+    let root = root();
+    let sink = Arc::new(OrderProbe::default());
+    let cancel = Arc::new(AtomicBool::new(false));
+    let cancelled = cancel.clone();
+    super::pipeline::BEFORE_PUBLISH.with_borrow_mut(|hook| {
+        *hook = Some(Box::new(move |point| {
+            assert_eq!(point, "run_scan");
+            cancelled.store(true, Ordering::Release);
+        }));
+    });
+    let result = run_scan(
+        &Tree,
+        &root,
+        1,
+        sink.clone(),
+        Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES)),
+        cancel,
+        ScanOptions {
+            max_dirs: 1,
+            ..ScanOptions::default()
+        },
+    );
+    super::pipeline::BEFORE_PUBLISH.with_borrow_mut(|hook| *hook = None);
+    let report = result.unwrap();
+    assert!(report.limit_hit && !report.complete);
+    assert_eq!(*sink.finishes.lock().unwrap(), vec![(false, false, false)]);
+    assert!(!sink.sink.sweep_allowed(root.root_id()));
+}
+
 /// The directory-slot cap names itself (`directory_limit`), so a client never reads a capped scan
 /// as a generic stop with no cause.
 #[test]
@@ -3283,8 +3362,8 @@ fn slow_grant_open_allows_state_writes_and_rechecks_the_grant() {
         }
     }
 }
-/// h2-scan finding 1, as far as it reaches the engine: a revocation that lands after coverage
-/// was computed but before it was published still ends the job `Cancelled`, never `Complete`.
+/// h2-scan finding 1, as far as it reaches the engine: a revocation that lands at the final
+/// publication boundary still ends the job `Cancelled`, never `Complete`.
 /// The durable writer separately refuses that late finish (`EndRun` requires an active grant,
 /// and revocation commits durably before it cancels); the memory sink here has no grant.
 pub(super) fn revoke_at_publication(
