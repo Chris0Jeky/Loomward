@@ -749,3 +749,108 @@ fn an_unknown_request_cannot_acknowledge_an_admitted_step() {
     assert!(control.has_pending_fence());
     assert_eq!(store.lock().unwrap().rows(1).unwrap(), before);
 }
+
+// The observer is thread-local and consumed once, so unrelated concurrent fence tests are untouched.
+type FencePublicationObserver = Box<dyn FnOnce(&Control)>;
+std::thread_local! {
+    static FENCE_PUBLICATION_OBSERVER: std::cell::RefCell<Option<FencePublicationObserver>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+pub(super) fn after_fence_publication(control: &Control) {
+    let observer = FENCE_PUBLICATION_OBSERVER.with(|slot| slot.borrow_mut().take());
+    if let Some(observer) = observer {
+        observer(control);
+    }
+}
+
+#[test]
+fn a_worker_observing_a_fence_already_has_a_retained_request() {
+    use std::sync::mpsc;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let store = publishing(&path);
+    store
+        .lock()
+        .unwrap()
+        .append(1, 1, Record::PublishWithdrawn)
+        .unwrap();
+    let control = Control::new(false);
+    // Cancel/finish takes only metadata paths: the intent is withdrawn and staging removal is off.
+    // Neither synthetic path exists, and this test must not open either one.
+    let plan = Plan {
+        operation_id: "cp_fence_registration".into(),
+        source_root: dir.path().join("source-must-not-exist"),
+        source_root_id: [1; 16],
+        source_root_volume: 1,
+        source_root_guid: None,
+        source_root_attributes: 0,
+        destination: dir.path().join("destination-must-not-exist"),
+        destination_key: identity::ObjectKey {
+            volume_serial: "1".into(),
+            file_id: [2; 16],
+            quality: identity::IdentityQuality::FileId128,
+            creation_time: "2".into(),
+            reparse_tag: 0,
+        },
+        destination_root: (1, [2; 16]),
+        destination_root_guid: None,
+        grants: vec![],
+        manifest: Manifest {
+            destination: loomward_operations::Destination {
+                grant: 1,
+                parent: loomward_operations::Identity {
+                    volume: 1,
+                    file_id: [2; 16],
+                },
+                folder_name: "Loomward copy".into(),
+            },
+            root: None,
+            items: vec![],
+        },
+        sources: vec![],
+    };
+    let (published, publication) = mpsc::sync_channel(1);
+    let (release, released) = mpsc::sync_channel(1);
+    let (observed, observation) = mpsc::sync_channel(1);
+    let (retained, refused, outcome) = std::thread::scope(|scope| {
+        let fencer = scope.spawn(|| {
+            FENCE_PUBLICATION_OBSERVER.with(|slot| {
+                *slot.borrow_mut() = Some(Box::new(move |control| {
+                    published.send(control.has_pending_fence()).unwrap();
+                    released.recv_timeout(Duration::from_secs(5)).unwrap();
+                }));
+            });
+            fence_waiting(&store, 1, &control, FenceCause::GrantRevoked, Duration::ZERO)
+        });
+        let retained = publication.recv_timeout(Duration::from_secs(5)).unwrap();
+        let worker = scope.spawn(|| {
+            let refused = matches!(control.admit(), Err(Stop::Cancel));
+            observed.send(refused).unwrap();
+            finish(&store, 1, &plan, &control, Err(Stop::Cancel))
+        });
+        let refused = observation.recv_timeout(Duration::from_secs(5)).unwrap();
+        // Always release the production fencer before making assertions or joining either worker.
+        release.send(()).unwrap();
+        fencer.join().unwrap().unwrap();
+        let outcome = worker.join().unwrap().unwrap();
+        (retained, refused, outcome)
+    });
+    assert!(refused, "the real worker did not observe the published fence");
+    assert!(
+        retained,
+        "a worker observed the fence before its request was retained"
+    );
+    assert_eq!(outcome.state, OpState::Cancelled);
+    let reopened = Mutex::new(Store::open(&path).unwrap());
+    let receipt = status(&reopened, 1).unwrap();
+    assert_eq!(receipt.state, OpState::Cancelled);
+    assert_eq!(receipt.refusal, Some((Refusal::GrantRevoked, None)));
+    assert!(replay(&reopened, 1)
+        .unwrap()
+        .has_fence_cause(FenceCause::GrantRevoked));
+    assert!(!control.has_pending_fence());
+    assert!(!plan.source_root.exists());
+    assert!(!plan.destination.exists());
+}

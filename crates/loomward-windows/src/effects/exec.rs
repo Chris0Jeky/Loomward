@@ -1745,6 +1745,8 @@ fn fence_waiting(
         // stopped worker cannot commit/cancel without first resolving it under this Store lock.
         let s = store.lock().unwrap_or_else(|e| e.into_inner());
         control.fenced.store(true, Ordering::SeqCst);
+        #[cfg(test)]
+        pending_fence_tests::after_fence_publication(control);
         let mut pending = control
             .unjournaled
             .lock()
