@@ -4479,15 +4479,33 @@ fn scan_start_publishes_a_lab_tree_matching_an_independent_walk_with_live_events
     let mut events = svc.subscribe(None);
     let job = start(svc, &lab.root, "full");
     let done = settle(svc, &job);
-    assert_eq!(done["state"], "completed", "{done:?}");
-    assert_eq!(done["coverage"], "complete");
+    assert_eq!(done["state"], "completed", "initial scan state: {done:?}");
+    assert_eq!(done["coverage"], "complete", "initial scan coverage");
     let slice = lab_slice(svc, &lab.root);
-    assert_eq!(slice_totals(&slice), walk(&lab.path));
-    assert_eq!(slice_totals(&slice), (5, 3, 165));
-    assert_eq!(slice["aggregate_state"], "consistent", "{slice:?}");
+    assert_eq!(
+        slice_totals(&slice),
+        walk(&lab.path),
+        "initial catalogue totals versus independent walk"
+    );
+    assert_eq!(
+        slice_totals(&slice),
+        (5, 3, 165),
+        "initial catalogue totals versus fixture"
+    );
+    assert_eq!(
+        slice["aggregate_state"], "consistent",
+        "initial catalogue aggregate state: {slice:?}"
+    );
     let (roots, _) = ok("roots.list", call(svc, "roots.list", json!({})));
-    assert_eq!(roots["roots"][0]["scan"]["coverage"], "complete");
-    assert_eq!(roots["roots"][0]["scan"]["last_job_id"], json!(job));
+    assert_eq!(
+        roots["roots"][0]["scan"]["coverage"], "complete",
+        "roots.list scan coverage"
+    );
+    assert_eq!(
+        roots["roots"][0]["scan"]["last_job_id"],
+        json!(job),
+        "roots.list last_job_id"
+    );
     // Events: catalogue revisions arrive before the job's terminal state, each after its commit.
     let mut seen = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -4498,7 +4516,11 @@ fn scan_start_publishes_a_lab_tree_matching_an_independent_walk_with_live_events
                 e.validate().unwrap();
                 if e.event == EventName::TreeInvalidated {
                     assert!(e.catalog_rev.is_some());
-                    assert_eq!(e.data["root_id"], lab.root.as_str());
+                    assert_eq!(
+                        e.data["root_id"],
+                        lab.root.as_str(),
+                        "tree.invalidated root_id"
+                    );
                 }
                 let terminal =
                     e.event == EventName::JobState && e.data["job"]["state"] == "completed";
@@ -4520,9 +4542,14 @@ fn scan_start_publishes_a_lab_tree_matching_an_independent_walk_with_live_events
     // A refresh scans the same root again to the same totals.
     assert_eq!(
         settle(svc, &start(svc, &lab.root, "refresh"))["state"],
-        "completed"
+        "completed",
+        "refresh scan state"
     );
-    assert_eq!(slice_totals(&lab_slice(svc, &lab.root)), (5, 3, 165));
+    assert_eq!(
+        slice_totals(&lab_slice(svc, &lab.root)),
+        (5, 3, 165),
+        "refreshed catalogue totals versus fixture"
+    );
 }
 
 #[cfg(windows)]
