@@ -2220,6 +2220,198 @@ fn a_pending_fence_during_rename_commits_annotated() {
     assert_eq!(durable.refusal, Some((Refusal::GrantRevoked, None)));
 }
 
+/// #738: the admitted native rename finishes, then a different Store confirms and commits while
+/// the resident worker is parked before its own confirmation. Its genuinely pending cause must
+/// become metadata after that foreign commit, without reopening any effect or cleanup authority.
+/// Qualification requires the supported non-elevated Windows lab; an unsupported setup is not a pass.
+#[test]
+fn another_store_committing_a_pending_rename_keeps_the_annotation() {
+    use std::sync::mpsc::{channel, Sender};
+    struct ReleaseStep(Sender<()>);
+    impl Drop for ReleaseStep {
+        fn drop(&mut self) {
+            let _ = self.0.send(());
+        }
+    }
+    let mut lab =
+        Lab::new().expect("#738 qualification requires the supported non-elevated Windows lab");
+    tree_fixture(&lab.src());
+    let source_before = source_snapshot(&lab.src());
+    let op = lab.start(&["top"]);
+    let plan = lab.plan(op);
+    let other = Mutex::new(Store::open(&lab.tmp.path().join("state/state.db")).unwrap());
+    let (entered, parked) = channel();
+    let (release_rename, rename_resume) = channel();
+    let rename_resume = Mutex::new(rename_resume);
+    let (renamed, published) = channel();
+    let (release_finish, finish_resume) = channel();
+    let finish_resume = Mutex::new(finish_resume);
+    let foreign_committed = std::sync::Arc::new(AtomicBool::new(false));
+    let terminal = foreign_committed.clone();
+    let control = Control::new(false).with_hook(move |point, _| {
+        if matches!(
+            point,
+            Point::CheckedStaging
+                | Point::Checked(_)
+                | Point::CheckedStream(_)
+                | Point::CheckedPublish
+                | Point::CheckedMetadata
+                | Point::CheckedRemoval
+        ) {
+            assert!(
+                !terminal.load(Ordering::SeqCst),
+                "native effect admitted after the foreign commit: {point:?}"
+            );
+        }
+        if point == Point::CheckedPublish {
+            entered.send(()).unwrap();
+            rename_resume
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(30))
+                .expect("#738 rename fixture was not released");
+        }
+        if point == Point::AfterPublish {
+            renamed.send(()).unwrap();
+            finish_resume
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(30))
+                .expect("#738 finish fixture was not released");
+        }
+        Flow::Continue
+    });
+    let (foreign, prefix) = std::thread::scope(|scope| {
+        // Drop releases both gates before scope joins a worker, even if a handoff assertion fails.
+        let release_rename = ReleaseStep(release_rename);
+        let release_finish = ReleaseStep(release_finish);
+        let worker = scope.spawn(|| run(&lab.store, op, &control));
+        parked
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the admitted rename step was not entered");
+        assert_eq!(
+            fence_waiting(
+                &lab.store,
+                op,
+                &control,
+                loomward_operations::FenceCause::GrantRevoked,
+                Duration::ZERO,
+            )
+            .unwrap(),
+            Ack::PendingInFlightStep
+        );
+        let observed = replay(&lab.store, op).unwrap();
+        assert_eq!(observed.state, OpState::Publishing);
+        assert!(control.has_pending_fence());
+        assert!(!observed.has_fence_cause(loomward_operations::FenceCause::GrantRevoked));
+        release_rename.0.send(()).unwrap();
+        published
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the native rename did not return");
+        // Actual recovery performs the native post-publish confirmation. A refusal here is a
+        // fixture/qualification failure, never evidence that terminal annotation was exercised.
+        let confirmed = recover(&other, op, &Control::new(false)).unwrap();
+        assert_eq!(confirmed.state, OpState::Committed, "{confirmed:?}");
+        assert_eq!(confirmed.items_verified, confirmed.items_total);
+        assert_eq!(confirmed.refusal, None);
+        let foreign = replay(&other, op).unwrap();
+        let prefix = other.lock().unwrap().rows(op).unwrap();
+        assert_eq!(foreign.epoch, observed.epoch);
+        assert_eq!(foreign.staging, observed.staging);
+        assert_eq!(foreign.publish, observed.publish);
+        assert_eq!(foreign.items, observed.items);
+        assert!(!foreign.has_fence_cause(loomward_operations::FenceCause::GrantRevoked));
+        assert!(control.has_pending_fence(), "the resident cause is still outstanding");
+        foreign_committed.store(true, Ordering::SeqCst);
+        release_finish.0.send(()).unwrap();
+        let resident = worker.join().unwrap().unwrap();
+        assert_eq!(resident.state, OpState::Committed, "{resident:?}");
+        assert_eq!(resident.items_verified, confirmed.items_verified);
+        assert_eq!(resident.items_total, confirmed.items_total);
+        assert_eq!(resident.refusal, Some((Refusal::GrantRevoked, None)));
+        (foreign, prefix)
+    });
+    assert!(matches!(control.admit(), Err(Stop::Cancel)));
+    assert!(!control.has_pending_fence());
+    let after = replay(&lab.store, op).unwrap();
+    assert_eq!(after.state, OpState::Committed);
+    assert_eq!(after.epoch, foreign.epoch);
+    assert_eq!(after.digest, foreign.digest);
+    assert_eq!(after.items, foreign.items);
+    assert_eq!(after.staging, foreign.staging);
+    assert_eq!(after.publish, foreign.publish);
+    assert_eq!(after.fenced, foreign.fenced);
+    assert_eq!(after.cancelled, foreign.cancelled);
+    let rows = lab.store.lock().unwrap().rows(op).unwrap();
+    assert_eq!(rows.len(), prefix.len() + 1);
+    assert_eq!(&rows[..prefix.len()], prefix.as_slice());
+    let annotation: loomward_operations::Entry =
+        serde_json::from_str(&rows.last().unwrap().body).unwrap();
+    assert_eq!(annotation.epoch, foreign.epoch);
+    assert!(matches!(
+        annotation.record,
+        Record::RevokedAfterPublish {
+            cause: loomward_operations::FenceCause::GrantRevoked
+        }
+    ));
+    // Exercise the real, warmed Guard used by the resident worker, including cleanup states.
+    // The callbacks themselves are harmless: any admission is a failed safety assertion.
+    let journal = Journal {
+        store: &lab.store,
+        op,
+        epoch: foreign.epoch,
+    };
+    for state in [
+        OpState::Preparing,
+        OpState::Copying,
+        OpState::Publishing,
+        OpState::Cancelling,
+        OpState::NeedsAttention,
+    ] {
+        let invoked = std::cell::Cell::new(false);
+        let denied = journal.while_in(state, || {
+            invoked.set(true);
+            Ok(())
+        });
+        assert!(matches!(denied, Err(Stop::Superseded)), "{state:?}");
+        assert!(!invoked.get(), "terminal metadata admitted a {state:?} effect");
+    }
+    assert_eq!(lab.dest_names(), ["top"]);
+    let report = tree::compare(&c1(&lab.src().join("top")), &c1(&lab.dest().join("top")));
+    assert!(report.equal(), "{report:#?}");
+    assert_eq!(source_snapshot(&lab.src()), source_before);
+    let destination_before = source_snapshot(&lab.dest());
+    lab.reopen();
+    let durable = status(&lab.store, op).unwrap();
+    assert_eq!(durable.state, OpState::Committed);
+    assert_eq!(durable.refusal, Some((Refusal::GrantRevoked, None)));
+    assert_eq!(durable.items_verified, durable.items_total);
+    // Even the opt-in staging-removal policy cannot touch a committed result. Native effect
+    // checkpoints must remain unreachable through recovery, a fresh run, or explicit abandon.
+    let no_effects = Control::new(true).with_hook(|point, _| {
+        panic!("post-terminal executor checkpoint reached: {point:?}")
+    });
+    assert_eq!(recover(&lab.store, op, &no_effects).unwrap().state, OpState::Committed);
+    assert_eq!(cancel(&lab.store, op, &plan, &no_effects).unwrap().state, OpState::Committed);
+    assert!(matches!(run(&lab.store, op, &no_effects), Err(Fault::Journal(_))));
+    assert_eq!(
+        fence(
+            &lab.store,
+            op,
+            &no_effects,
+            loomward_operations::FenceCause::EmergencyStop,
+        )
+        .unwrap(),
+        Ack::Settled
+    );
+    assert!(retry_pending_fence(&lab.store, op, &control).unwrap());
+    assert_eq!(lab.store.lock().unwrap().rows(op).unwrap(), rows);
+    assert_eq!(source_snapshot(&lab.dest()), destination_before);
+    assert_eq!(source_snapshot(&lab.src()), source_before);
+    let report = tree::compare(&c1(&lab.src().join("top")), &c1(&lab.dest().join("top")));
+    assert!(report.equal(), "{report:#?}");
+}
+
 /// A real process exit loses the pending in-memory fence, without running `finish`.
 #[test]
 fn a_process_dying_with_a_pending_fence_reopens_without_effects() {
