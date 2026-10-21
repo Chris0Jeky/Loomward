@@ -1,6 +1,6 @@
 //! Journal storage in `state.db`. Every append validates the record against the replayed journal inside one
 //! `BEGIN IMMEDIATE` transaction, so a rejected record (stale epoch, illegal step) is never stored.
-use crate::journal::{Entry, Invalid, Record, Replay, Row};
+use crate::journal::{Entry, FenceCause, Invalid, Record, Replay, Row};
 use crate::manifest::Admitted;
 use crate::recovery::{from_replay, Disk, Recovery};
 use rusqlite::{
@@ -21,6 +21,14 @@ pub enum AppendError {
     Sql(rusqlite::Error),
     /// The record does not follow from the journal (or the journal itself does not replay).
     Rejected(Invalid),
+}
+
+/// Outcome of settling an eligible in-memory cause after a foreign Store committed (#738).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FenceAnnotation {
+    Recorded,
+    AlreadyPresent,
+    Ineligible,
 }
 
 impl From<rusqlite::Error> for AppendError {
@@ -327,6 +335,61 @@ impl Store {
         Ok(row.seq)
     }
 
+    /// Preserve a cause the caller actually observed while this operation was nonterminal. The
+    /// resident Control binds that observation to `op` and `observed_epoch`; a new terminal revoke
+    /// must never call this method. Deduplication, receipt validation, row and head are one write
+    /// transaction, including retries after a lost acknowledgement and competing Store instances.
+    pub fn annotate_pending_fence(
+        &mut self,
+        op: u64,
+        observed_epoch: u64,
+        cause: FenceCause,
+    ) -> Result<FenceAnnotation, AppendError> {
+        let tx = immediate(&self.conn)?;
+        checked_tail(&tx, op)??;
+        // This rare terminal path fully validates history, including middle-row damage even if an
+        // ordinary append populated a matching cached tail before the damage occurred.
+        let rows = load(&tx, op)?;
+        let mut replay = Replay::from_rows(op, &rows)?;
+        let observed = rows.iter().any(|row| {
+            serde_json::from_str::<Entry>(&row.body).is_ok_and(|entry| {
+                entry.epoch == observed_epoch
+                    && !matches!(
+                        entry.record,
+                        Record::Committed | Record::RevokedAfterPublish { .. }
+                    )
+            })
+        });
+        if replay.state != crate::state::OpState::Committed
+            || replay.publish.is_none()
+            || replay.staging.is_none()
+            || observed_epoch > replay.epoch
+            || !observed
+        {
+            return Ok(FenceAnnotation::Ineligible);
+        }
+        if replay.has_fence_cause(cause) {
+            return Ok(FenceAnnotation::AlreadyPresent);
+        }
+        let entry = Entry {
+            epoch: replay.epoch,
+            record: Record::RevokedAfterPublish { cause },
+        };
+        let row = replay.row_for(&entry);
+        replay.apply(&row)?;
+        #[cfg(feature = "fault-injection")]
+        fault::fire(&mut self.fault, &entry.record, fault::Stage::Row)?;
+        insert_row(&tx, op, &row)?;
+        #[cfg(feature = "fault-injection")]
+        fault::fire(&mut self.fault, &entry.record, fault::Stage::Head)?;
+        insert_head(&tx, op, &row)?;
+        tx.commit()?;
+        #[cfg(feature = "fault-injection")]
+        fault::fire(&mut self.fault, &entry.record, fault::Stage::Ack)?;
+        self.cache.insert(op, replay);
+        Ok(FenceAnnotation::Recorded)
+    }
+
     /// Record the executor's plan for `op`, once. Written after `started` and before any effect; a second
     /// write is refused, so recovery always reads the plan the run used.
     pub fn set_plan(&mut self, op: u64, plan: &str) -> rusqlite::Result<()> {
@@ -508,6 +571,10 @@ fn insert_head(conn: &Connection, op: u64, row: &Row) -> rusqlite::Result<()> {
     )?;
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "store_terminal_tests.rs"]
+mod terminal_tests;
 
 #[cfg(test)]
 mod tests {

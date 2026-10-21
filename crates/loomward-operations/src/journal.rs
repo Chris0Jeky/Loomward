@@ -131,6 +131,12 @@ pub enum Record {
     Fenced {
         cause: FenceCause,
     },
+    /// A cause observed while nonterminal, recorded after another Store committed first (#738).
+    /// Metadata only: preserves the terminal state, fence epoch, identities and effect restrictions.
+    /// Older record decoders refuse this kind; they must not silently skip it on rollback.
+    RevokedAfterPublish {
+        cause: FenceCause,
+    },
     /// Intent: rename staging to this final single-component name without replace. `staged -> publishing`.
     PublishIntent {
         final_name: String,
@@ -242,6 +248,7 @@ pub struct Replay {
     pub chain: [u8; 32],
     names: HashMap<String, u32>,
     seen: HashSet<ObjectId>,
+    fence_causes: Vec<FenceCause>,
 }
 
 pub(crate) fn component_ok(s: &str) -> bool {
@@ -290,6 +297,7 @@ impl Replay {
             chain: [0; 32],
             names: HashMap::new(),
             seen: HashSet::new(),
+            fence_causes: Vec::new(),
         }
     }
 
@@ -375,7 +383,7 @@ impl Replay {
         }
         // Fence epochs (doc 47 section 5, revocation rules 1 and 6).
         match &record {
-            Record::Fenced { .. } => {
+            Record::Fenced { cause } => {
                 if self.state.is_terminal() {
                     return Err("fence on a finished operation");
                 }
@@ -384,6 +392,9 @@ impl Replay {
                 }
                 self.epoch = epoch;
                 self.fenced = true;
+                if !self.fence_causes.contains(cause) {
+                    self.fence_causes.push(*cause);
+                }
                 return Ok(());
             }
             r if r.epoch_exempt() => {
@@ -415,6 +426,15 @@ impl Replay {
         match record {
             Record::Started { .. } => return Err("started twice"),
             Record::Fenced { .. } => unreachable!(),
+            Record::RevokedAfterPublish { cause } => {
+                if self.state != Committed || self.publish.is_none() || self.staging.is_none() {
+                    return Err("terminal annotation without a committed publish identity");
+                }
+                if self.has_fence_cause(cause) {
+                    return Err("revocation cause already journaled");
+                }
+                self.fence_causes.push(cause);
+            }
             Record::StagingIntent { token } => {
                 if self.state != Preparing || self.staging.is_some() {
                     return Err("staging intent outside preparing");
@@ -655,6 +675,12 @@ impl Replay {
                 planned_ft: it.planned_ft,
             })
         })
+    }
+
+    /// A durable cause, whether recorded as a live fence or terminal metadata. This is attribution,
+    /// not admission: terminal metadata never sets `fenced` or changes the epoch.
+    pub fn has_fence_cause(&self, cause: FenceCause) -> bool {
+        self.fence_causes.contains(&cause)
     }
 }
 
