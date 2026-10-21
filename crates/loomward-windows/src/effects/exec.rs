@@ -791,6 +791,16 @@ struct Journal<'a> {
 impl Journal<'_> {
     fn log(&self, record: Record) -> Result<(), Stop> {
         #[cfg(test)]
+        if matches!(
+            &record,
+            Record::Transition {
+                to: OpState::Cancelled,
+                ..
+            }
+        ) {
+            pending_fence_tests::before_cancel_settlement();
+        }
+        #[cfg(test)]
         crash::record("before", &record);
         #[cfg(test)]
         let after = record.clone();
@@ -1816,6 +1826,8 @@ fn fence_waiting(
     if settled && !pending {
         return Ok(Ack::Settled);
     }
+    #[cfg(test)]
+    pending_fence_tests::before_fence_journal(control);
     let r = journal_fence(store, op, control)?;
     if r.state.is_terminal() {
         return Ok(if r.state == OpState::Committed {
