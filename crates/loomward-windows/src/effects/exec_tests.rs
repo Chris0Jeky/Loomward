@@ -2321,7 +2321,10 @@ fn another_store_committing_a_pending_rename_keeps_the_annotation() {
         assert_eq!(foreign.publish, observed.publish);
         assert_eq!(foreign.items, observed.items);
         assert!(!foreign.has_fence_cause(loomward_operations::FenceCause::GrantRevoked));
-        assert!(control.has_pending_fence(), "the resident cause is still outstanding");
+        assert!(
+            control.has_pending_fence(),
+            "the resident cause is still outstanding"
+        );
         foreign_committed.store(true, Ordering::SeqCst);
         release_finish.0.send(()).unwrap();
         let resident = worker.join().unwrap().unwrap();
@@ -2374,7 +2377,10 @@ fn another_store_committing_a_pending_rename_keeps_the_annotation() {
             Ok(())
         });
         assert!(matches!(denied, Err(Stop::Superseded)), "{state:?}");
-        assert!(!invoked.get(), "terminal metadata admitted a {state:?} effect");
+        assert!(
+            !invoked.get(),
+            "terminal metadata admitted a {state:?} effect"
+        );
     }
     assert_eq!(lab.dest_names(), ["top"]);
     let report = tree::compare(&c1(&lab.src().join("top")), &c1(&lab.dest().join("top")));
@@ -2388,12 +2394,20 @@ fn another_store_committing_a_pending_rename_keeps_the_annotation() {
     assert_eq!(durable.items_verified, durable.items_total);
     // Even the opt-in staging-removal policy cannot touch a committed result. Native effect
     // checkpoints must remain unreachable through recovery, a fresh run, or explicit abandon.
-    let no_effects = Control::new(true).with_hook(|point, _| {
-        panic!("post-terminal executor checkpoint reached: {point:?}")
-    });
-    assert_eq!(recover(&lab.store, op, &no_effects).unwrap().state, OpState::Committed);
-    assert_eq!(cancel(&lab.store, op, &plan, &no_effects).unwrap().state, OpState::Committed);
-    assert!(matches!(run(&lab.store, op, &no_effects), Err(Fault::Journal(_))));
+    let no_effects = Control::new(true)
+        .with_hook(|point, _| panic!("post-terminal executor checkpoint reached: {point:?}"));
+    assert_eq!(
+        recover(&lab.store, op, &no_effects).unwrap().state,
+        OpState::Committed
+    );
+    assert_eq!(
+        cancel(&lab.store, op, &plan, &no_effects).unwrap().state,
+        OpState::Committed
+    );
+    assert!(matches!(
+        run(&lab.store, op, &no_effects),
+        Err(Fault::Journal(_))
+    ));
     assert_eq!(
         fence(
             &lab.store,

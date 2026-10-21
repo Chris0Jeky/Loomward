@@ -308,7 +308,8 @@ then fences later messages. The copy run follows the same pattern, with one addi
 2. **Revocation.** Revoking a source grant, or pressing emergency stop, runs in this order:
    1. for a grant revocation, first commit it in `state.db`, making the approval unusable;
    2. under the Store mutex, raise the run's in-memory fence, closing admission to later effect steps,
-      then bind the cause to the replayed nonterminal operation and epoch before releasing Store;
+      and retain the operation and cause before the first fallible journal read; a validated
+      nonterminal replay supplies the observed epoch before Store is released;
    3. release the Store mutex and wait for the admitted step to return; a worker may need Store before it
       can release its admission lock;
    4. once the step has returned, journal `Fenced` with a new run epoch, determine the run's position
@@ -352,8 +353,8 @@ An identity change that ends a source or destination grant fences its copies und
 mutation lock as revocation. It uses the same journal cause and receipt annotation, `grant_revoked`:
 before rename the run cancels; after rename it confirms and commits with the annotation.
 
-**A different Store commits first (#738).** A resident pending cause binds the operation and the
-nonterminal epoch at which the request was observed. A later request first observed after a terminal
+**A different Store commits first (#738).** A resident cause with validated provenance binds the
+operation and the nonterminal epoch at which the request was observed. A later request first observed after a terminal
 decision cannot create or overwrite that history. Once the admitted step returns, a cause that loses
 the race to another Store's `Committed` is appended as `RevokedAfterPublish { cause }`. This is a
 metadata record, legal only on `Committed` with its publish and staging identities retained. It changes
@@ -375,13 +376,35 @@ Status reaping, the end of revocation, and Cancel/Abandon joining a finished wor
 cause after a journal error. This also covers a revocation made without a resident worker. Status
 only transfers or retires Controls using a nonblocking pending flag; it does not retry journal writes
 or wait for an admitted step. Explicit revocation/cancellation retries retain the original operation,
-epoch and cause until a durable row or equivalent existing fence acknowledges it. The pending retry
+cause and observed epoch when known until the request can be resolved. A qualified cause drains only
+after a durable row or equivalent existing fence acknowledges it. The pending retry
 itself only writes journal metadata and grants no copy, resume or cleanup authority; the explicit
 command's existing nonterminal cancellation behavior is unchanged. Successfully drained Controls are
 retired. While any retained cause remains, new `copy.start` admission returns retryable
 `busy`/`copy_fence_pending`, checked both before consuming approval and under the registration lock.
 Persistent journal failures therefore retain the existing operation set instead of accumulating
 causes behind new lab copies or evicting old requests.
+
+**The first journal read fails.** Retention begins before that read, with an unknown epoch. A later
+validated nonterminal replay can qualify the original same-operation request; both the worker commit
+and worker finish paths resolve retained requests before writing their own terminal decision. A
+request whose first read succeeds as terminal remains settled without an annotation. A request
+retained after a failed first read is different: if its first later successful observation is terminal,
+that receipt cannot distinguish an already-terminal request from a request that preceded a foreign
+commit. Loomward therefore retains it, returns a retryable journal error (`copy_fence_pending` at the
+service), and keeps new copy admission closed. It does not invent an epoch from the Control's fence
+or rename flags and does not silently discard the request. Repeating a same-cause request cannot
+reset this uncertainty. A known cause may be acknowledged while another cause remains unknown;
+partial success does not clear the remaining request or its service retention flag.
+
+A later nonterminal observation can qualify an unknown request. A durable acknowledgement or
+equivalent existing fence can resolve a qualified request.
+An unknown request first observed successfully only after terminal state may remain blocked for the
+rest of the live service; repeating the terminal replay cannot establish its lost provenance. Status
+still reports the existing durable receipt without attribution that has not been proved. No new
+recovery authority, effect, cleanup or restart-durable intent is implied by this retention. The
+[initial-read evidence record](../evidence/v3/copy-initial-replay-error-738.md) names the deterministic
+metadata regressions and their execution boundary.
 
 **Rollback/read compatibility.** The row format gains the `revoked_after_publish` kind; SQL tables and
 existing rows do not change. Binaries predating this record refuse it as an unknown kind and cannot
@@ -392,12 +415,15 @@ refusing future unknown kinds too. This is an explicit fail-closed rollback poli
 copy journal, not backward-readable metadata.
 
 This retention lasts for the live service; it is not a durable outbox. If the service or process ends
-before any durable fence or annotation, its volatile eligible request remains lost; a new terminal
+before any durable fence or annotation, its volatile request, including unknown provenance, remains
+lost; a new terminal
 request must not reconstruct it. The operation stays committed and no automatic effect or cleanup
 follows. Process-exit tests cover reopening on each side of the metadata commit; they are not
 power-loss evidence. Service metadata tests cover finished-worker reaping, cancellation joining,
-no-worker revocation, persistent Row/Head faults and acknowledgement loss without invoking native
-copy effects or requiring an elevation-dependent lab. C8 and the native copy safety gates are unchanged.
+no-worker revocation, persistent Row/Head faults, acknowledgement loss, and initial replay failures
+without invoking native copy effects or requiring an elevation-dependent lab. First-read regressions
+also cover partial draining of mixed qualified/unknown causes and service retention after worker exit.
+C8 and the native copy safety gates are unchanged.
 
 Cancel and Abandon request cooperative cancellation and wait up to 30 s for the worker to finish.
 If a source read is still stuck, they return `busy` with reason `pending_in_flight_step`, release the

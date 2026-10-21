@@ -479,3 +479,273 @@ fn terminal_fence_wait_releases_store_until_the_resident_step_returns() {
         );
     });
 }
+
+/// A real SQLite query failure, restored before the assertions. WAL permits ordinary readers
+/// during another connection's write transaction, so a writer lock is not a read-error fixture.
+fn with_unavailable_head<T>(path: &Path, during: impl FnOnce() -> T) -> T {
+    let raw = rusqlite::Connection::open(path).unwrap();
+    raw.execute_batch("ALTER TABLE op_journal_head RENAME TO pending_fence_unavailable_head")
+        .unwrap();
+    let result = during();
+    raw.execute_batch("ALTER TABLE pending_fence_unavailable_head RENAME TO op_journal_head")
+        .unwrap();
+    result
+}
+
+#[test]
+fn a_first_replay_error_keeps_the_original_request_for_the_workers_commit() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let store = publishing(&path);
+    let control = Control::new(false).with_hook(|_, _| panic!("metadata retry ran an effect"));
+    let (failed, retained) = with_unavailable_head(&path, || {
+        let result = fence_waiting(
+            &store,
+            1,
+            &control,
+            FenceCause::GrantRevoked,
+            Duration::ZERO,
+        );
+        (result, control.has_pending_fence())
+    });
+    assert!(matches!(failed, Err(Fault::Journal(_))));
+    assert!(control.fenced());
+    assert!(matches!(control.admit(), Err(Stop::Cancel)));
+    // This is the production worker commit path. Its first valid replay must qualify and persist
+    // the original request before its own terminal record; it must not silently commit unannotated.
+    Journal {
+        store: &store,
+        op: 1,
+        epoch: 1,
+    }
+    .commit(&control)
+    .ok()
+    .unwrap();
+    let reopened = Mutex::new(Store::open(&path).unwrap());
+    let outcome = status(&reopened, 1).unwrap();
+    assert_eq!(outcome.state, OpState::Committed);
+    assert_eq!(outcome.items_verified, 1);
+    assert_eq!(outcome.refusal, Some((Refusal::GrantRevoked, None)));
+    assert!(
+        retained,
+        "the initial read error was not retained for service retry"
+    );
+    assert!(!control.has_pending_fence());
+    let rows = reopened.lock().unwrap().rows(1).unwrap();
+    let records: Vec<Entry> = rows
+        .iter()
+        .map(|row| serde_json::from_str(&row.body).unwrap())
+        .collect();
+    assert!(matches!(
+        records[records.len() - 2].record,
+        Record::Fenced {
+            cause: FenceCause::GrantRevoked
+        }
+    ));
+    assert!(matches!(records.last().unwrap().record, Record::Committed));
+    assert!(retry_pending_fence(&reopened, 1, &control).unwrap());
+    assert_eq!(reopened.lock().unwrap().rows(1).unwrap(), rows);
+}
+
+#[test]
+fn a_first_read_error_cannot_classify_a_foreign_terminal_winner() {
+    // These histories are indistinguishable after the failed first read. Keep the uncertainty
+    // retryable and retained in both cases: neither invent history nor silently reopen admission.
+    for already_terminal in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        let store = publishing(&path);
+        let mut foreign = Store::open(&path).unwrap();
+        if already_terminal {
+            foreign.append(1, 1, Record::Committed).unwrap();
+        }
+        let control = Control::new(false).with_hook(|_, _| panic!("unknown fence ran an effect"));
+        let failed = with_unavailable_head(&path, || {
+            fence_waiting(
+                &store,
+                1,
+                &control,
+                FenceCause::GrantRevoked,
+                Duration::ZERO,
+            )
+        });
+        assert!(matches!(failed, Err(Fault::Journal(_))));
+        if !already_terminal {
+            foreign.append(1, 1, Record::Committed).unwrap();
+        }
+        let before = foreign.rows(1).unwrap();
+        assert!(
+            retry_pending_fence(&store, 1, &control).is_err(),
+            "a terminal replay cannot establish the unknown request's provenance"
+        );
+        assert!(control.has_pending_fence());
+        assert!(matches!(control.admit(), Err(Stop::Cancel)));
+        assert!(
+            fence_waiting(
+                &store,
+                1,
+                &control,
+                FenceCause::EmergencyStop,
+                Duration::ZERO,
+            )
+            .is_err(),
+            "a later terminal request must not erase the earlier uncertainty"
+        );
+        assert_eq!(control.unjournaled.lock().unwrap().len(), 1);
+        assert_eq!(foreign.rows(1).unwrap(), before);
+        let outcome = status(&store, 1).unwrap();
+        assert_eq!(outcome.state, OpState::Committed);
+        assert_eq!(outcome.refusal, None);
+        assert_eq!(outcome.items_verified, 1);
+    }
+}
+
+#[test]
+fn a_request_retained_before_replay_cannot_move_to_a_different_operation() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let store = publishing(&path);
+    let control = Control::new(false);
+    let failed = with_unavailable_head(&path, || {
+        fence_waiting(
+            &store,
+            1,
+            &control,
+            FenceCause::GrantRevoked,
+            Duration::ZERO,
+        )
+    });
+    assert!(matches!(failed, Err(Fault::Journal(_))));
+    let before = store.lock().unwrap().rows(1).unwrap();
+    let raw = rusqlite::Connection::open(&path).unwrap();
+    let mut second = Replay::new(2);
+    for original in &before {
+        let row = second.row_for(&serde_json::from_str::<Entry>(&original.body).unwrap());
+        second.apply(&row).unwrap();
+        raw.execute(
+            "INSERT INTO op_journal(op_id,seq,body,chain) VALUES(2,?1,?2,?3)",
+            rusqlite::params![row.seq as i64, row.body, row.chain],
+        )
+        .unwrap();
+    }
+    raw.execute(
+        "INSERT INTO op_journal_head(op_id,seq,chain) VALUES(2,?1,?2)",
+        rusqlite::params![second.seq as i64, second.chain.to_vec()],
+    )
+    .unwrap();
+    store
+        .lock()
+        .unwrap()
+        .append(2, 1, Record::Committed)
+        .unwrap();
+    let other_before = store.lock().unwrap().rows(2).unwrap();
+    assert!(fence_waiting(
+        &store,
+        2,
+        &control,
+        FenceCause::EmergencyStop,
+        Duration::ZERO,
+    )
+    .is_err());
+    assert!(control.has_pending_fence());
+    assert_eq!(store.lock().unwrap().rows(1).unwrap(), before);
+    assert_eq!(store.lock().unwrap().rows(2).unwrap(), other_before);
+    assert!(retry_pending_fence(&store, 1, &control).unwrap());
+    assert!(!control.has_pending_fence());
+    assert!(replay(&store, 1)
+        .unwrap()
+        .has_fence_cause(FenceCause::GrantRevoked));
+    assert!(!replay(&store, 1)
+        .unwrap()
+        .has_fence_cause(FenceCause::EmergencyStop));
+}
+
+#[test]
+fn a_qualified_annotation_does_not_discard_a_distinct_unknown_cause() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let store = publishing(&path);
+    let control = Control::new(false).with_hook(|_, _| panic!("metadata retry ran an effect"));
+    pending(&store, &control);
+    let mut foreign = Store::open(&path).unwrap();
+    foreign.append(1, 1, Record::Committed).unwrap();
+    let before = foreign.rows(1).unwrap();
+    let failed = with_unavailable_head(&path, || {
+        fence_waiting(
+            &store,
+            1,
+            &control,
+            FenceCause::EmergencyStop,
+            Duration::ZERO,
+        )
+    });
+    assert!(matches!(failed, Err(Fault::Journal(_))));
+    assert!(retry_pending_fence(&store, 1, &control).is_err());
+    assert!(control.has_pending_fence());
+    let after = foreign.rows(1).unwrap();
+    assert_eq!(&after[..before.len()], before.as_slice());
+    assert_eq!(after.len(), before.len() + 1);
+    let annotation: Entry = serde_json::from_str(&after.last().unwrap().body).unwrap();
+    assert_eq!(annotation.epoch, 1);
+    assert!(matches!(
+        annotation.record,
+        Record::RevokedAfterPublish {
+            cause: FenceCause::GrantRevoked
+        }
+    ));
+    let r = replay(&store, 1).unwrap();
+    assert_eq!(r.state, OpState::Committed);
+    assert_eq!(r.epoch, 1);
+    assert!(r.has_fence_cause(FenceCause::GrantRevoked));
+    assert!(!r.has_fence_cause(FenceCause::EmergencyStop));
+    for cause in [FenceCause::EmergencyStop, FenceCause::GrantRevoked] {
+        assert!(fence_waiting(&store, 1, &control, cause, Duration::ZERO).is_err());
+        assert!(control.has_pending_fence());
+        assert_eq!(control.unjournaled.lock().unwrap().len(), 1);
+        assert_eq!(foreign.rows(1).unwrap(), after);
+    }
+}
+
+#[test]
+fn an_unknown_request_cannot_acknowledge_an_admitted_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let store = publishing(&path);
+    let control = Control::new(false);
+    let step = control.admit().ok().unwrap();
+    let failed = with_unavailable_head(&path, || {
+        fence_waiting(
+            &store,
+            1,
+            &control,
+            FenceCause::GrantRevoked,
+            Duration::ZERO,
+        )
+    });
+    assert!(matches!(failed, Err(Fault::Journal(_))));
+    Store::open(&path)
+        .unwrap()
+        .append(1, 1, Record::Committed)
+        .unwrap();
+    let before = store.lock().unwrap().rows(1).unwrap();
+    assert!(!retry_pending_fence(&store, 1, &control).unwrap());
+    assert!(
+        store.try_lock().is_ok(),
+        "retry must not wait while holding Store"
+    );
+    assert_eq!(
+        fence_waiting(
+            &store,
+            1,
+            &control,
+            FenceCause::GrantRevoked,
+            Duration::ZERO,
+        )
+        .unwrap(),
+        Ack::PendingInFlightStep
+    );
+    drop(step);
+    assert!(retry_pending_fence(&store, 1, &control).is_err());
+    assert!(control.has_pending_fence());
+    assert_eq!(store.lock().unwrap().rows(1).unwrap(), before);
+}

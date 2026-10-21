@@ -424,12 +424,13 @@ fn hit(label: &str) {
 
 type Hook = Box<dyn Fn(Point, &Control) -> Flow + Send + Sync>;
 
-/// Only an observation of a nonterminal operation can create this eligible pending cause. Keeping
-/// its operation and epoch prevents a later terminal request from manufacturing or replacing it.
+/// A request is retained before its first fallible read. Only a validated nonterminal observation
+/// supplies an epoch and makes it eligible for a terminal annotation. An unknown epoch is never
+/// inferred from a later terminal receipt or from this Control's fence/rename flags.
 #[derive(Clone, Copy)]
 struct PendingFence {
     op: u64,
-    epoch: u64,
+    epoch: Option<u64>,
     cause: loomward_operations::FenceCause,
 }
 
@@ -452,8 +453,9 @@ pub struct Control {
     admission: Mutex<()>,
     /// Set inside the rename step when the rename succeeded: the run is on the published side.
     renamed: AtomicBool,
-    /// Causes observed while nonterminal and not yet journaled: at most one per cause. The fencer
-    /// or the run journals them once the step returns. A new terminal request never replaces them.
+    /// Requests not yet resolved: at most one per cause, including unknown provenance after an
+    /// initial read failure. The fencer or run qualifies them only while nonterminal, then journals
+    /// them once the step returns. A new terminal request never replaces an earlier request.
     unjournaled: Mutex<Vec<PendingFence>>,
     /// Retention hint for the service's reaper. Reading it must not wait on a journal transaction
     /// holding `unjournaled`; only that mutex's owner changes it. It conveys no effect authority.
@@ -559,9 +561,10 @@ impl Control {
     pub fn fenced(&self) -> bool {
         self.fenced.load(Ordering::SeqCst)
     }
-    /// An eligible cause still needs a durable fence or terminal annotation. A finished worker can
-    /// leave this true after a retryable journal error; its owner must retain this Control for retry.
-    /// This nonblocking query is a lifetime hint, never permission to run or clean an operation.
+    /// A request still needs classification or a durable fence/terminal annotation. A finished
+    /// worker can leave this true after a retryable journal error, including a failed first read;
+    /// its owner must retain this Control. Unknown provenance first seen later at terminal state
+    /// stays unresolved. This nonblocking lifetime hint never permits an effect or cleanup.
     pub fn has_pending_fence(&self) -> bool {
         self.pending_fence.load(Ordering::Acquire)
     }
@@ -1738,27 +1741,10 @@ fn fence_waiting(
     wait: Duration,
 ) -> Result<Ack, Fault> {
     let (settled, pending) = {
-        // `journal_fence` takes this same lock. Raise admission before reading the journal, and
-        // record an eligible nonterminal observation before releasing Store to a stopped worker.
+        // `journal_fence` takes this same lock. Retain the request before the fallible read so a
+        // stopped worker cannot commit/cancel without first resolving it under this Store lock.
         let s = store.lock().unwrap_or_else(|e| e.into_inner());
         control.fenced.store(true, Ordering::SeqCst);
-        let r = match s.replay(op).map_err(|e| Fault::Journal(e.to_string()))? {
-            Ok(r) => r,
-            // Only a refused tail is inert for every store; a middle-row fault stays retryable.
-            Err(_)
-                if s.tail_refused(op)
-                    .map_err(|e| Fault::Journal(e.to_string()))? =>
-            {
-                // The refused tail stops the next step, not a call already admitted. Release Store
-                // before waiting: the worker may need it in order to leave its admission guard.
-                drop(s);
-                return Ok(match control.fence(wait) {
-                    Some(_) => Ack::Unreplayable,
-                    None => Ack::PendingInFlightStep,
-                });
-            }
-            Err(e) => return Err(Fault::Journal(format!("{e:?}"))),
-        };
         let mut pending = control
             .unjournaled
             .lock()
@@ -1768,13 +1754,55 @@ fn fence_waiting(
                 "pending fence belongs to another operation".into(),
             ));
         }
-        if !r.state.is_terminal() && !pending.iter().any(|p| p.cause == cause) {
+        let fresh = !pending.iter().any(|p| p.cause == cause);
+        if fresh {
             pending.push(PendingFence {
                 op,
-                epoch: r.epoch,
+                epoch: None,
                 cause,
             });
             control.pending_fence.store(true, Ordering::Release);
+        }
+        let r = match s.replay(op).map_err(|e| Fault::Journal(e.to_string()))? {
+            Ok(r) => r,
+            // Only a refused tail is inert for every store; a middle-row fault stays retryable.
+            Err(_)
+                if s.tail_refused(op)
+                    .map_err(|e| Fault::Journal(e.to_string()))? =>
+            {
+                // Preserve the existing inert-tail exception for a fresh request. Earlier unresolved
+                // requests are not erased by this branch. A transient read error above retains even
+                // this fresh request, because it has not established an inert or terminal operation.
+                if fresh {
+                    let _ = pending.pop();
+                    control
+                        .pending_fence
+                        .store(!pending.is_empty(), Ordering::Release);
+                }
+                // The refused tail stops the next step, not a call already admitted. Release both
+                // locks before waiting: the worker may need them to leave its admission guard.
+                drop(pending);
+                drop(s);
+                return Ok(match control.fence(wait) {
+                    Some(_) => Ack::Unreplayable,
+                    None => Ack::PendingInFlightStep,
+                });
+            }
+            Err(e) => return Err(Fault::Journal(format!("{e:?}"))),
+        };
+        if r.state.is_terminal() {
+            // Only this call's newly inserted request has a first observation that is terminal.
+            // A same-cause retry after a failed read is not fresh and must remain unresolved.
+            if fresh {
+                let _ = pending.pop();
+                control
+                    .pending_fence
+                    .store(!pending.is_empty(), Ordering::Release);
+            }
+        } else {
+            for request in pending.iter_mut() {
+                let _ = request.epoch.get_or_insert(r.epoch);
+            }
         }
         (r.state.is_terminal(), !pending.is_empty())
     };
@@ -1804,9 +1832,10 @@ fn fence_waiting(
     })
 }
 
-/// Retry only causes this Control already observed while nonterminal. This does not observe a new
-/// request, inspect native paths, resume a run, or authorize cleanup. A still-admitted step returns
-/// `false` immediately, without holding Store or waiting; the caller keeps the Control for retry.
+/// Retry only this Control's retained requests, qualifying an unknown epoch only if the validated
+/// replay is still nonterminal. Unknown provenance observed only after terminal state returns an
+/// error and stays retained. This creates no new request, inspects no native paths and authorizes no
+/// effect or cleanup. A still-admitted step returns `false` immediately without holding Store.
 pub fn retry_pending_fence(
     store: &Mutex<Store>,
     op: u64,
@@ -1839,8 +1868,25 @@ fn journal_fence_locked(s: &mut Store, op: u64, control: &Control) -> Result<Rep
         .replay(op)
         .map_err(|e| Fault::Journal(e.to_string()))?
         .map_err(|e| Fault::Journal(format!("{e:?}")))?;
+    if unjournaled.iter().any(|pending| pending.op != op) {
+        return Err(Fault::Journal(
+            "pending fence does not match this operation".into(),
+        ));
+    }
+    if !r.state.is_terminal() {
+        // Bind every retained request to this actual nonterminal observation before appending;
+        // a foreign terminal winner may follow as soon as replay releases its read snapshot.
+        for pending in unjournaled.iter_mut() {
+            let _ = pending.epoch.get_or_insert(r.epoch);
+        }
+    }
     while let Some(pending) = unjournaled.first().copied() {
-        if pending.op != op || pending.epoch > r.epoch {
+        let epoch = pending.epoch.ok_or_else(|| {
+            Fault::Journal(
+                "pending fence provenance is unknown after terminal state; request retained".into(),
+            )
+        })?;
+        if epoch > r.epoch {
             return Err(Fault::Journal(
                 "pending fence does not match this operation".into(),
             ));
@@ -1852,7 +1898,7 @@ fn journal_fence_locked(s: &mut Store, op: u64, control: &Control) -> Result<Rep
             #[cfg(test)]
             crash::record("before", &record);
             let outcome = s
-                .annotate_pending_fence(op, pending.epoch, cause)
+                .annotate_pending_fence(op, epoch, cause)
                 .map_err(|e| Fault::Journal(format!("{e:?}")))?;
             if outcome == loomward_operations::store::FenceAnnotation::Ineligible {
                 return Err(Fault::Journal(
@@ -1920,7 +1966,8 @@ fn finish(
     control: &Control,
     stopped: Result<(), Stop>,
 ) -> Result<Outcome, Fault> {
-    // A fence answered `PendingInFlightStep` becomes durable now that the step has returned.
+    // Resolve every retained request before this worker can settle, including a first-read error.
+    // A validated nonterminal replay supplies missing provenance; a terminal replay cannot.
     let unjournaled = !control
         .unjournaled
         .lock()

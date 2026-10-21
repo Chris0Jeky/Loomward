@@ -2,13 +2,18 @@
 
 **Status: drafted test and execution instructions; native execution is UNVERIFIED.**
 This follow-up does not close [#738](https://github.com/Chris0Jeky/Loomward/issues/738), open C8,
-or change any production capability, staging-removal default, fixture guard or CI gate.
+or change any production capability, staging-removal default or fixture guard.
+All existing CI checks remain in place.
 
 ## Source and scope
 
-The implementation baseline is [PR #809](https://github.com/Chris0Jeky/Loomward/pull/809) at
+The initial implementation snapshot used to prepare this fixture was
+[PR #809](https://github.com/Chris0Jeky/Loomward/pull/809) at
 `9192e97a259923ac021c3de71342b76f4ddc0d89`. Its native executor test file has Git blob
-`8ae287622e2e2a36831e49bae5f8c8abf62ec91f`.
+`8ae287622e2e2a36831e49bae5f8c8abf62ec91f`, unchanged in the later implementation candidate.
+This follow-up is now integrated over `105e7851b65344d8115a31fae646883ce36ec71c`, which includes
+the reviewed initial-read provenance correction and inline service tests. The final qualifying head
+must still be recorded from actual supported-host execution.
 
 The new test promotes and strengthens the
 [preserved native reproducer from PR #803](https://github.com/Chris0Jeky/Loomward/blob/40fceaca208ee407ef71a4504653f37e3c7e575a/evidence/v3/known-failure-738-native.patch)
@@ -17,7 +22,9 @@ The historical unapplied patch and its negative evidence remain unchanged. The m
 service retention, fault handling and old-reader policy belong to #809 and
 [docs/47](../../docs/47-copy-and-verify.md).
 
-This PR adds one native regression and this qualification record. It does not alter production code
+This PR adds one native regression, a focused Windows CI invocation and this qualification record.
+The focused invocation retains every existing check and fails on unsupported setup; it cannot count
+an elevated-host refusal as a native pass. This PR does not alter production code
 or provide a durable outbox for a pending request lost when its service/process ends.
 
 ## Ordering the fixture must establish
