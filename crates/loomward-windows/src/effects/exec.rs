@@ -791,6 +791,16 @@ struct Journal<'a> {
 impl Journal<'_> {
     fn log(&self, record: Record) -> Result<(), Stop> {
         #[cfg(test)]
+        if matches!(
+            &record,
+            Record::Transition {
+                to: OpState::Cancelled,
+                ..
+            }
+        ) {
+            pending_fence_tests::before_cancel_settlement();
+        }
+        #[cfg(test)]
         crash::record("before", &record);
         #[cfg(test)]
         let after = record.clone();
@@ -805,8 +815,23 @@ impl Journal<'_> {
     }
 
     fn commit(&self, control: &Control) -> Result<(), Stop> {
+        self.settle(control, Record::Committed)
+    }
+
+    fn settle(&self, control: &Control, record: Record) -> Result<(), Stop> {
+        #[cfg(test)]
+        if matches!(
+            &record,
+            Record::Transition {
+                to: OpState::Cancelled,
+                ..
+            }
+        ) {
+            pending_fence_tests::before_cancel_settlement();
+        }
         let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
-        // Serialize the pending annotation with commit so a fence cannot slip between them.
+        // Serialize retained requests with the terminal append. A same-store fencer takes Store
+        // before pending, so it cannot register between this drain and the terminal decision.
         let pending_fence = !control
             .unjournaled
             .lock()
@@ -817,13 +842,15 @@ impl Journal<'_> {
                 .map_err(|e| Stop::Journal(format!("{e:?}")))?;
         }
         #[cfg(test)]
-        crash::record("before", &Record::Committed);
+        crash::record("before", &record);
+        #[cfg(test)]
+        let after = record.clone();
         store
-            .append(self.op, self.epoch, Record::Committed)
+            .append(self.op, self.epoch, record)
             .map_err(|e| Stop::Journal(format!("{e:?}")))?;
         drop(store);
         #[cfg(test)]
-        crash::record("after", &Record::Committed);
+        crash::record("after", &after);
         Ok(())
     }
     fn replay(&self) -> Result<Replay, Stop> {
@@ -1741,15 +1768,16 @@ fn fence_waiting(
     wait: Duration,
 ) -> Result<Ack, Fault> {
     let (settled, pending) = {
-        // `journal_fence` takes this same lock. Retain the request before the fallible read so a
-        // stopped worker cannot commit/cancel without first resolving it under this Store lock.
+        // Keep the Store -> pending lock order used by `journal_fence`. Retain the request before
+        // publishing the fence so a worker stopped by it cannot find an empty queue in `finish`.
+        // Hold the pending guard through publication and the first fallible read.
         let s = store.lock().unwrap_or_else(|e| e.into_inner());
-        control.fenced.store(true, Ordering::SeqCst);
         let mut pending = control
             .unjournaled
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         if pending.iter().any(|p| p.op != op) {
+            control.fenced.store(true, Ordering::SeqCst);
             return Err(Fault::Journal(
                 "pending fence belongs to another operation".into(),
             ));
@@ -1763,6 +1791,9 @@ fn fence_waiting(
             });
             control.pending_fence.store(true, Ordering::Release);
         }
+        control.fenced.store(true, Ordering::SeqCst);
+        #[cfg(test)]
+        pending_fence_tests::after_fence_publication(control);
         let r = match s.replay(op).map_err(|e| Fault::Journal(e.to_string()))? {
             Ok(r) => r,
             // Only a refused tail is inert for every store; a middle-row fault stays retryable.
@@ -1814,6 +1845,8 @@ fn fence_waiting(
     if settled && !pending {
         return Ok(Ack::Settled);
     }
+    #[cfg(test)]
+    pending_fence_tests::before_fence_journal(control);
     let r = journal_fence(store, op, control)?;
     if r.state.is_terminal() {
         return Ok(if r.state == OpState::Committed {
@@ -2063,12 +2096,12 @@ fn clean(store: &Mutex<Store>, op: u64, plan: &Plan, control: &Control) -> Resul
         code: None,
     };
     let Some(staging_id) = r.staging.filter(|_| !r.staging_removed && !r.staging_left) else {
-        log(cancelled)?;
+        journal.settle(control, cancelled).map_err(fault)?;
         return status(store, op);
     };
     if !control.removal {
         log(Record::StagingLeft { id: staging_id })?;
-        log(cancelled)?;
+        journal.settle(control, cancelled).map_err(fault)?;
         return status(store, op);
     }
     let attention = |log: &dyn Fn(Record) -> Result<(), Fault>| {
@@ -2174,7 +2207,7 @@ fn clean(store: &Mutex<Store>, op: u64, plan: &Plan, control: &Control) -> Resul
         Some(true) => {}
     }
     log(Record::StagingRemoved { id: staging_id })?;
-    log(cancelled)?;
+    journal.settle(control, cancelled).map_err(fault)?;
     status(store, op)
 }
 

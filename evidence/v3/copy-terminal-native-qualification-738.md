@@ -1,6 +1,7 @@
 # Pending terminal revocation: native qualification follow-up (#738)
 
-**Status: drafted test and execution instructions; native execution is UNVERIFIED.**
+**Status: the strict fixture compiled, but the hosted attempt failed its non-elevated-host
+prerequisite. The native rename/foreign-commit ordering remains UNVERIFIED.**
 This follow-up does not close [#738](https://github.com/Chris0Jeky/Loomward/issues/738), open C8,
 or change any production capability, staging-removal default or fixture guard.
 All existing CI checks remain in place.
@@ -11,20 +12,38 @@ The initial implementation snapshot used to prepare this fixture was
 [PR #809](https://github.com/Chris0Jeky/Loomward/pull/809) at
 `9192e97a259923ac021c3de71342b76f4ddc0d89`. Its native executor test file has Git blob
 `8ae287622e2e2a36831e49bae5f8c8abf62ec91f`, unchanged in the later implementation candidate.
-This follow-up is now integrated over `105e7851b65344d8115a31fae646883ce36ec71c`, which includes
-the reviewed initial-read provenance correction and inline service tests. The final qualifying head
-must still be recorded from actual supported-host execution.
+The first hosted attempt used the integration over
+`105e7851b65344d8115a31fae646883ce36ec71c`, including the reviewed initial-read provenance
+correction and inline service tests. Its observed setup failure is recorded below.
+
+This follow-up incorporates the reviewed production settlement repair in
+[PR #815](https://github.com/Chris0Jeky/Loomward/pull/815). Its production source has executor blob
+`83b78734f0160fdd229dc9e5b6bb7a5e2bb0abc6` and metadata-test blob
+`ae061613399a731f5b897ca82a0cf91349f5571b` after three formatter-only method-chain wraps.
+It registers pending requests before publishing the fence and serializes retained requests with
+the resident worker's cancellation settlement.
+The native fixture and strict invocation in this follow-up are unchanged.
+
+**Reviewed production source parent:**
+[`66c3ec61dba0a47de3f4b8134a88a271e300cc95`](https://github.com/Chris0Jeky/Loomward/commit/66c3ec61dba0a47de3f4b8134a88a271e300cc95),
+tree `d0eace0f30f0150880f95945e6069d8f78c3901c`.
+This names #815's reviewed implementation commit. Its own CI receipt and merge decision are tracked
+in #815. Incorporating this source parent here makes no claim that #815 has merged or that its
+remaining checks have completed. This follow-up requires its own exact-head CI receipt and actual
+supported-host execution; the qualifying head must be recorded from that execution.
 
 The new test promotes and strengthens the
 [preserved native reproducer from PR #803](https://github.com/Chris0Jeky/Loomward/blob/40fceaca208ee407ef71a4504653f37e3c7e575a/evidence/v3/known-failure-738-native.patch)
 in the existing [Windows executor fixture module](../../crates/loomward-windows/src/effects/exec_tests.rs).
 The historical unapplied patch and its negative evidence remain unchanged. The metadata contract,
-service retention, fault handling and old-reader policy belong to #809 and
+service retention, fault handling and old-reader policy belong to #809, the resident settlement
+ordering repair belongs to #815, and their contract remains
 [docs/47](../../docs/47-copy-and-verify.md).
 
-This PR adds one native regression, a focused Windows CI invocation and this qualification record.
+Relative to that production source parent, this follow-up adds one native regression, a focused
+Windows CI invocation and this qualification record.
 The focused invocation retains every existing check and fails on unsupported setup; it cannot count
-an elevated-host refusal as a native pass. This PR does not alter production code
+an elevated-host refusal as a native pass. These three additions do not alter production code
 or provide a durable outbox for a pending request lost when its service/process ends.
 
 ## Ordering the fixture must establish
@@ -66,6 +85,48 @@ The regression also requires all of the following:
   and C1 comparison remain unchanged after those terminal calls.
 
 These assertions are test requirements. None has been reported as a native execution result here.
+
+## Hosted execution attempt — 2026-10-21
+
+The strict fixture compiled and was selected, but failed its supported-host prerequisite before
+executing the native rename/foreign-commit ordering. This is unsupported setup. It establishes
+neither the annotation defect nor a passing native qualification. Keep #814 draft, #738 open and
+C8 closed pending actual supported-host evidence.
+
+| Receipt field | Observed value |
+| --- | --- |
+| PR head | `0f643206ffcef5807c119b11e6df85cf79100f16` |
+| PR workflow run | [39577743320](https://github.com/Chris0Jeky/Loomward/actions/runs/39577743320) |
+| Windows native job / complete log | [119147380529](https://github.com/Chris0Jeky/Loomward/actions/runs/39577743320/job/119147380529) |
+| Actual CI checkout | `06ab2f85783ebfc126dc0ca748413fc940aa1a96` |
+| Actual checkout tree | `694e84e816298f57d021a075231e4bec5ed931cc` |
+| Actual checkout parents | `105e7851b65344d8115a31fae646883ce36ec71c`, `0f643206ffcef5807c119b11e6df85cf79100f16` |
+| Toolchain reported in the log | `rustc 1.99.1 (58cf8f9c3 2026-10-13)`; Cargo version was not separately recorded |
+| Hosted Windows formatting / fixture compilation | PASS / PASS |
+| Executor metadata / service retention tests | 16 passed, 0 failed, 0 ignored / 5 passed, 0 failed, 0 ignored |
+| Strict native test | 1 selected; 0 passed, 1 failed, 0 ignored, 283 filtered out; workflow step exit 1 |
+| Failure classification | Unsupported elevated-host setup at `Lab::new().expect(...)` |
+| Native rename/foreign-commit ordering | NOT EXERCISED |
+| Later Windows scan, workspace, full-feature fixture and Clippy steps | SKIPPED after the strict setup failure |
+| Other workflow jobs | 8 succeeded |
+| Qualifying supported-host SHA and native receipt | UNVERIFIED |
+
+The strict invocation was:
+
+```console
+cargo +stable test --locked -p loomward-windows --all-features effects::exec::tests::another_store_committing_a_pending_rename_keeps_the_annotation -- --exact --nocapture --test-threads=1
+```
+
+The log prints `skipped: elevated token (invariant 2)`, then the strict test panics with
+`#738 qualification requires the supported non-elevated Windows lab`. The strict caller reports
+a failure and cannot count the optional fixture's setup refusal as a passing early return.
+Neither the native scenario nor the adjacent same-Store and process-exit scenarios obtained new
+supported-host evidence from this attempt. No fixture guard or assertion was relaxed.
+
+This receipt describes the actual checkout above. It predates the #815 integration, so it supplies
+no runtime result for the reconciled follow-up. The existing passing metadata and service counts
+also predate #815's two additional ordering regressions. A final integrated-head receipt and a
+supported non-elevated host remain required.
 
 ## Supported execution
 
@@ -126,15 +187,15 @@ the qualifying receipt to identify and validate the actual final head.
 
 | Receipt field | Current value |
 | --- | --- |
-| Final follow-up commit SHA | UNVERIFIED |
+| Final integrated follow-up commit SHA | UNVERIFIED; the historical hosted attempt is identified above |
 | Windows version and NTFS fixture host | UNVERIFIED |
 | Non-elevated token confirmed by strict test setup | UNVERIFIED |
 | Rust/Cargo toolchain versions | UNVERIFIED |
-| Native foreign-commit test, complete log and exit code | NOT RUN |
+| Native foreign-commit ordering, complete log and exit code | NOT EXERCISED; historical strict invocation failed unsupported setup |
 | Same-Store pending-rename regression | NOT RUN in this follow-up |
 | Volatile-pending process-exit regression | NOT RUN in this follow-up |
 | Exact-head formatting, workspace and full-feature fixture gates | UNVERIFIED |
-| Remaining failures or unsupported setup | Record verbatim outcomes when measured |
+| Remaining failures or unsupported setup | Historical elevated-token prerequisite failure above; final integrated and supported-host results remain UNVERIFIED |
 
 Keep host-specific paths in the private lab record; published evidence should use anonymized labels
 and aggregate results. Link immutable CI/lab logs or a checked-in anonymized receipt to the exact SHA.
