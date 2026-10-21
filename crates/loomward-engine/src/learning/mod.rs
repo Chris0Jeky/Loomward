@@ -43,10 +43,15 @@ pub struct Store {
 /// read-only binding check by the service before the saved result may be returned.
 #[derive(Debug)]
 pub enum FeedbackReplay {
+    /// No prior receipt exists for this idempotency key.
     Missing,
+    /// The original request fingerprint matches the saved receipt exactly.
     Exact(FeedbackResult),
+    /// Matching feedback semantics require proof of the current object binding.
     Resolve {
+        /// Stable object reference recorded by the original feedback request.
         object_ref: i64,
+        /// Saved result to return only after the binding proof succeeds.
         result: FeedbackResult,
     },
 }
