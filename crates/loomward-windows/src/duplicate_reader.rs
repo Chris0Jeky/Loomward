@@ -193,7 +193,7 @@ fn inspect_with_cancel_hook(
             ..Report::default()
         });
     }
-    let mut reader = native::Reader::new(root, expected, hook)?;
+    let mut reader = native::Reader::new(root, expected, hook)?.with_shared_writes();
     Ok(group(entries, &mut reader, &mut meter))
 }
 

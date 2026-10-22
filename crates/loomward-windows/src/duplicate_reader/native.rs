@@ -36,6 +36,7 @@ pub(super) fn non_elevated() -> Result<(), Reason> {
 pub(super) struct Reader<F> {
     pins: Vec<File>,
     hook: F,
+    content_share: u32,
 }
 struct Opened {
     file: File,
@@ -142,7 +143,16 @@ impl<F: FnMut(Event, usize)> Reader<F> {
         {
             return Err(Reason::ChangedDuringRead);
         }
-        Ok(Self { pins, hook })
+        Ok(Self {
+            pins,
+            hook,
+            content_share: FILE_SHARE_READ | FILE_SHARE_DELETE,
+        })
+    }
+    pub(super) fn with_shared_writes(mut self) -> Self {
+        // Inspection rechecks signatures; copy and tree readers retain their deny-write holds.
+        self.content_share |= FILE_SHARE_WRITE;
+        self
     }
     fn open(&self, entry: &Entry, content: bool, meter: &Meter) -> Result<Opened, Reason> {
         meter.check()?;
@@ -224,7 +234,7 @@ impl<F: FnMut(Event, usize)> Reader<F> {
                 parent,
                 &name,
                 FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-                FILE_SHARE_READ | FILE_SHARE_DELETE,
+                self.content_share,
                 true,
             )
             .map_err(source)?
@@ -477,6 +487,65 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_hash_allows_an_existing_writer_without_changes() {
+        let Some((temp, expected)) = guid_fixture() else {
+            return;
+        };
+        let path = temp.path().join("synthetic");
+        std::fs::write(&path, b"same").unwrap();
+        let entry = Entry {
+            relative: "synthetic".into(),
+            expected: identity::observe(&path).unwrap(),
+        };
+        let _writer = File::options().write(true).open(&path).unwrap();
+        let mut reader = Reader::new(temp.path(), &expected, |_, _| {}).unwrap();
+        assert_eq!(
+            reader.hash(0, &entry, false, &mut Meter::new(Budget::test())),
+            Err(Reason::SharingViolation)
+        );
+        let mut reader = reader.with_shared_writes();
+        assert_eq!(
+            reader.hash(0, &entry, false, &mut Meter::new(Budget::test())),
+            Ok(Sha256::digest(b"same").into())
+        );
+    }
+
+    #[test]
+    fn duplicate_hash_rejects_writes_during_read_with_writer_still_open() {
+        use std::io::Write;
+        for resize in [false, true] {
+            let Some((temp, expected)) = guid_fixture() else {
+                return;
+            };
+            let path = temp.path().join("synthetic");
+            std::fs::write(&path, vec![b'a'; BLOCK * 2]).unwrap();
+            let entry = Entry {
+                relative: "synthetic".into(),
+                expected: identity::observe(&path).unwrap(),
+            };
+            let mut writer = None;
+            let mut reader = Reader::new(temp.path(), &expected, |event, _| {
+                if event == Event::Read && writer.is_none() {
+                    let mut file = File::options().write(true).open(&path).unwrap();
+                    file.write_all(b"changed").unwrap();
+                    if resize {
+                        file.set_len((BLOCK * 2 + 1) as u64).unwrap();
+                    }
+                    writer = Some(file);
+                }
+            })
+            .unwrap()
+            .with_shared_writes();
+            assert_eq!(
+                reader.hash(0, &entry, false, &mut Meter::new(Budget::test())),
+                Err(Reason::ChangedDuringRead),
+                "resize={resize}"
+            );
+            assert!(writer.is_some());
+        }
+    }
+
+    #[test]
     fn content_reader_rejects_cloned_volume_guid_before_descendant_reads() {
         let Some((temp, expected)) = guid_fixture() else {
             return;
@@ -563,6 +632,7 @@ mod tests {
         let mut pending = false;
         let mut reader = Reader {
             pins: vec![],
+            content_share: FILE_SHARE_READ | FILE_SHARE_DELETE,
             hook: |event, _| {
                 if event == Event::PendingRead {
                     pending = true;
@@ -585,6 +655,7 @@ mod tests {
         writer.write_all(b"same").unwrap();
         let mut reader = Reader {
             pins: vec![],
+            content_share: FILE_SHARE_READ | FILE_SHARE_DELETE,
             hook: |_, _| {},
         };
         let mut buffer = [0; 4];
@@ -631,6 +702,7 @@ mod tests {
         let file = unsafe { File::from_raw_handle(handle) };
         let reader = Reader {
             pins: vec![],
+            content_share: FILE_SHARE_READ | FILE_SHARE_DELETE,
             hook: |_, _| {},
         };
         assert_eq!(reader.verify(&file, &[], &entry), Err(Reason::SpecialFile));

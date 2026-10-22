@@ -1049,7 +1049,9 @@ mod native {
             .any(|s| s.entry == 1 && s.reason == Reason::SharingViolation));
     }
     #[test]
-    fn native_existing_writer_is_a_visible_sharing_violation() {
+    fn native_writer_denying_reads_is_a_visible_sharing_violation() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_DELETE, FILE_SHARE_WRITE};
         let Some(temp) = fixture() else { return };
         for n in ["a", "b"] {
             fs::write(temp.path().join(n), b"same").unwrap();
@@ -1057,6 +1059,7 @@ mod native {
         let entries = [entry(temp.path(), "a"), entry(temp.path(), "b")];
         let _writer = fs::OpenOptions::new()
             .write(true)
+            .share_mode(FILE_SHARE_WRITE | FILE_SHARE_DELETE)
             .open(temp.path().join("b"))
             .unwrap();
         let report = run(temp.path(), &entries);
@@ -1066,6 +1069,50 @@ mod native {
             .skipped
             .iter()
             .any(|s| s.entry == 1 && s.reason == Reason::SharingViolation));
+    }
+    #[test]
+    fn native_writer_can_open_during_inspection_and_changes_never_confirm_duplicates() {
+        use std::io::Write;
+        for mutate in [false, true] {
+            let Some(temp) = fixture() else { return };
+            for name in ["a", "b"] {
+                fs::write(temp.path().join(name), vec![b'a'; 128 * 1024]).unwrap();
+            }
+            let entries = [entry(temp.path(), "a"), entry(temp.path(), "b")];
+            let mut writer = None;
+            let report = inspect_with_hook(
+                temp.path(),
+                &root_id(temp.path()),
+                &entries,
+                Budget::test(),
+                |event, index| {
+                    if event == Event::Read && index == 1 && writer.is_none() {
+                        let mut file = fs::OpenOptions::new()
+                            .write(true)
+                            .open(temp.path().join("b"))
+                            .unwrap();
+                        if mutate {
+                            file.write_all(b"changed").unwrap();
+                        }
+                        writer = Some(file);
+                    }
+                },
+            )
+            .unwrap();
+            assert!(writer.is_some());
+            if mutate {
+                assert!(report.groups.is_empty());
+                assert!(report.partial);
+                assert!(report
+                    .skipped
+                    .iter()
+                    .any(|s| s.entry == 1 && s.reason == Reason::ChangedDuringRead));
+            } else {
+                assert_eq!(report.groups, vec![vec![0, 1]]);
+                assert!(!report.partial);
+                assert!(report.skipped.is_empty());
+            }
+        }
     }
     #[test]
     fn native_stream_syntax_is_invalid_path() {
@@ -1115,7 +1162,7 @@ mod native {
             |event, index| {
                 if event == Event::Read && index == 1 {
                     use std::os::windows::fs::OpenOptionsExt;
-                    // Content writers are now excluded; metadata can still change under a read.
+                    // A metadata-only change must also invalidate the read.
                     let file = fs::OpenOptions::new()
                         .access_mode(windows_sys::Win32::Storage::FileSystem::FILE_WRITE_ATTRIBUTES)
                         .open(temp.path().join("b"))
