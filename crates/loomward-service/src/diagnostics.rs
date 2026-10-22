@@ -193,8 +193,17 @@ fn publish_temporary(temporary: &Path, target: &Target) -> std::io::Result<()> {
         std::fs::rename(temporary, &target.path)
     } else {
         // Publish complete bytes atomically, refusing a target created since the check.
-        std::fs::hard_link(temporary, &target.path)?;
-        std::fs::remove_file(temporary)
+        match std::fs::hard_link(temporary, &target.path) {
+            Ok(()) => std::fs::remove_file(temporary),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(e),
+            // ponytail: no hard links (FAT/exFAT): narrow check-then-rename, renameat2 NOREPLACE if it matters.
+            Err(_) => {
+                if std::fs::symlink_metadata(&target.path).is_ok() {
+                    return Err(std::io::ErrorKind::AlreadyExists.into());
+                }
+                std::fs::rename(temporary, &target.path)
+            }
+        }
     }
 }
 
