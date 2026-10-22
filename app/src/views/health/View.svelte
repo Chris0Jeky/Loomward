@@ -302,7 +302,7 @@
               <td class="r num">{formatCount(r.totals?.files)}</td>
               <td class="r num">{formatBytes(r.totals?.logical_bytes)}</td>
               <td class="r num">{formatBytes(r.totals?.allocated_bytes)}</td>
-              <td><button class="btn" type="button" disabled={!rootActive(r)} aria-label={`Revoke… ${escapedName(r.display_path.text)}`} onclick={() => void ask({ kind: 'root', id: r.root_id, label: r.display_path.text })}>Revoke…</button>
+              <td><button class="btn" type="button" disabled={r.grant_state !== 'active' && r.grant_state !== 'identity_changed'} aria-label={`Revoke… ${escapedName(r.display_path.text)}`} onclick={() => void ask({ kind: 'root', id: r.root_id, label: r.display_path.text })}>Revoke…</button>
                 {#if r.grant_state === 'revoked'}
                   <button class="btn small" type="button" aria-label={`Forget… ${escapedName(r.display_path.text)}`} onclick={() => void ask({ kind: 'forget', id: r.root_id, label: r.display_path.text })}>Forget…</button>
                 {/if}</td>
