@@ -125,6 +125,13 @@ fn scan_progress_has_observed_counters_before_final_publication() {
                     .unwrap()
                     .recv_timeout(Duration::from_secs(5))
                     .unwrap();
+            } else {
+                // Observe a file with unknown allocation before pausing at the child directory.
+                Tree.list(&2, &mut |mut entry| {
+                    entry.name = &[102];
+                    entry.allocation_size = None;
+                    sink(entry)
+                });
             }
             Tree.list(dir, sink)
         }
@@ -175,15 +182,21 @@ fn scan_progress_has_observed_counters_before_final_publication() {
         progress.phase,
         loomward_protocol::ScanProgressPhase::Enumerating
     );
-    assert_eq!(progress.examined.get(), 1);
-    assert_eq!(progress.indexed_files.get(), 0);
-    assert_eq!(progress.pending_dirs.get(), 1);
-    let progress = done.progress.unwrap();
-    assert_eq!(progress.phase, loomward_protocol::ScanProgressPhase::Done);
     assert_eq!(progress.examined.get(), 2);
     assert_eq!(progress.indexed_files.get(), 1);
-    assert_eq!(progress.indexed_dirs.get(), 1);
     assert_eq!(progress.logical_bytes.to_string(), "123");
+    assert_eq!(progress.allocated_bytes, None);
+    // The last sample was taken before the parent task retired: active parent + queued child.
+    assert_eq!(progress.pending_dirs.get(), 2);
+    let progress = done.progress.unwrap();
+    assert_eq!(progress.phase, loomward_protocol::ScanProgressPhase::Done);
+    assert_eq!(progress.examined.get(), 3);
+    assert_eq!(progress.indexed_files.get(), 2);
+    assert_eq!(progress.indexed_dirs.get(), 1);
+    assert_eq!(progress.logical_bytes.to_string(), "246");
+    assert_eq!(progress.allocated_bytes, None);
+    assert_eq!(progress.pending_dirs.get(), 0);
+    assert_eq!(progress.writer_queue_depth.get(), 0);
 }
 
 #[test]

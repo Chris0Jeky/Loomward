@@ -102,7 +102,9 @@ pub struct ScanProgress {
     pub logical_bytes: Bytes,
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub allocated_bytes: Option<Bytes>,
+    /// Queued and active tasks at sampling time, possibly including the listing just finished.
     pub pending_dirs: Count,
+    /// Waiting commands, including sender backpressure and deferred commands; excludes processing.
     pub writer_queue_depth: Count,
     pub entries_per_second: Rate,
     pub elapsed_ms: Count,

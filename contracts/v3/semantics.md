@@ -335,6 +335,11 @@ Rules:
   the current traversal pass and can reset for a new pass; `done` carries the existing combined final report.
   `pending_dirs` counts queued and active directory tasks; `writer_queue_depth` counts commands waiting
   for the writer, including sender backpressure and deferred commands. These are sampled independently.
+  A finished-listing sample precedes retirement of its active task, so `pending_dirs` can still include
+  that task alongside its queued children. Snapshots are observations, not a claim that the writer has
+  committed the sampled entries, and do not admit publication or change coverage. Unknown allocation
+  size remains `allocated_bytes: null`; zero means the observed sum is zero. `entries_per_second` is
+  the sampled examined count divided by elapsed time in this traversal pass, not a completion estimate.
   `indexed_dirs` excludes the root and directories refused on open. The catalogue's `dirs` includes
   named denied folders, so one denied folder can make that total one greater than `indexed_dirs`.
   `limit_reason: directory_limit` names the directory arena cap (including its memory reservation);
