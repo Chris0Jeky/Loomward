@@ -187,6 +187,52 @@ else { $cloudDriver | Select-Object Name, State, StartMode, PathName | Format-Li
 & fltmc.exe instances -f CldFlt
 Write-Host "fltmc instances exit code: $LASTEXITCODE"
 Write-Host '::endgroup::'
+# Use the already installed filter's configured default instance, never an altitude override.
+# The hosted image can run CldFlt without attaching it to the fixture's NTFS volume.
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class QualificationCloudInstance {
+    [DllImport("fltlib.dll", CharSet=CharSet.Unicode, ExactSpelling=true)]
+    static extern int FilterInstanceCreate(string filter, string volume, string name, out IntPtr handle);
+    [DllImport("fltlib.dll", ExactSpelling=true)]
+    static extern int FilterInstanceClose(IntPtr handle);
+    [DllImport("fltlib.dll", CharSet=CharSet.Unicode, ExactSpelling=true)]
+    static extern int FilterAttach(string filter, string volume, string name, uint length,
+        StringBuilder createdName);
+    [DllImport("fltlib.dll", CharSet=CharSet.Unicode, ExactSpelling=true)]
+    static extern int FilterDetach(string filter, string volume, string name);
+    static void RequireSuccess(string operation, int result) {
+        if (result != 0) throw new COMException(
+            String.Format("{0} failed: HRESULT=0x{1:x8}", operation, result), result);
+    }
+    static bool Exists(string volume) {
+        IntPtr handle;
+        int result = FilterInstanceCreate("CldFlt", volume, null, out handle);
+        if (result == unchecked((int)0x801F0015)) return false; // ERROR_FLT_INSTANCE_NOT_FOUND
+        RequireSuccess("FilterInstanceCreate", result);
+        RequireSuccess("FilterInstanceClose", FilterInstanceClose(handle));
+        return true;
+    }
+    // Null means a pre-existing instance was reused; only a returned name is ours to detach.
+    public static string Ensure(string volume) {
+        if (Exists(volume)) return null;
+        var name = new StringBuilder(256); // INSTANCE_NAME_MAX_CHARS + terminator
+        int result = FilterAttach("CldFlt", volume, null, (uint)(name.Capacity * 2), name);
+        // A concurrent attachment is reusable only after confirming this filter on this volume.
+        if ((result == unchecked((int)0x801F0011) || result == unchecked((int)0x801F0012))
+            && Exists(volume)) return null;
+        RequireSuccess("FilterAttach", result);
+        return name.ToString();
+    }
+    public static void DetachCreated(string volume, string name) {
+        if (String.IsNullOrWhiteSpace(name))
+            throw new InvalidOperationException("Cannot detach an unnamed filter instance");
+        RequireSuccess("FilterDetach", FilterDetach("CldFlt", volume, name));
+    }
+}
+'@
 $rustc = (& rustup which --toolchain stable rustc).Trim()
 if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve the installed stable compiler.' }
 $toolchain = Split-Path (Split-Path $rustc)
@@ -199,6 +245,8 @@ $process = $null
 $grantedPaths = [Collections.Generic.List[string]]::new()
 $childExit = 1
 $cleanupFailed = $false
+$attachedCloudInstance = $null
+$fixtureVolume = [IO.Path]::GetPathRoot($runnerTemp)
 
 function Set-QualificationGrant {
     param([string]$Path, [string]$Rights)
@@ -208,6 +256,21 @@ function Set-QualificationGrant {
 }
 
 try {
+    if ($null -eq $cloudDriver -or $cloudDriver.State -ne 'Running') {
+        throw 'The installed Cloud Files filter must already be running.'
+    }
+    if ([IO.DriveInfo]::new($fixtureVolume).DriveFormat -ne 'NTFS') {
+        throw 'Cloud Files qualification requires a local NTFS fixture volume.'
+    }
+    $attachedCloudInstance = [QualificationCloudInstance]::Ensure($fixtureVolume)
+    if ($null -eq $attachedCloudInstance) {
+        Write-Host "Reusing an existing CldFlt instance on $fixtureVolume"
+    } else {
+        if ([string]::IsNullOrWhiteSpace($attachedCloudInstance)) {
+            throw 'FilterAttach returned no instance name for cleanup.'
+        }
+        Write-Host "Attached CldFlt instance '$attachedCloudInstance' to $fixtureVolume"
+    }
     New-Item -ItemType Directory -Path $work | Out-Null
     $createdWork = $true
     foreach ($name in @('run', 'run/temp', 'run/cargo', 'toolchain')) {
@@ -297,7 +360,24 @@ try {
                 }
                 Start-Sleep -Milliseconds 500
             }
-        } catch { Write-Warning "Temporary profile cleanup failed: $_"; $cleanupFailed = $true }
+        } catch {
+            Write-Warning "Temporary profile cleanup failed: $_"
+            $cleanupFailed = $true
+            Write-Host '::group::Temporary account profile diagnostics (read only)'
+            try {
+                Get-CimInstance Win32_UserProfile -Filter "SID='$($createdUser.SID.Value)'" -OperationTimeoutSec 5 |
+                    Select-Object SID, LocalPath, Loaded, RefCount, Status | Format-List | Out-Host
+            } catch { Write-Warning "Profile state diagnostics failed: $_" }
+            $processSnapshot = @()
+            try {
+                $processSnapshot = @(Get-Process -IncludeUserName)
+                $accountProcesses = @($processSnapshot | Where-Object { $_.UserName -eq "$env:COMPUTERNAME\$accountName" })
+                if ($accountProcesses.Count -eq 0) { Write-Host 'No remaining processes owned by the temporary account were observed.' }
+                else { $accountProcesses | Select-Object Id, ProcessName, SessionId, UserName | Format-Table -AutoSize | Out-Host }
+            } catch { Write-Warning "Temporary account process diagnostics failed: $_" }
+            finally { foreach ($observedProcess in $processSnapshot) { $observedProcess.Dispose() } }
+            Write-Host '::endgroup::'
+        }
         try { Remove-LocalUser -SID $createdUser.SID }
         catch { Write-Warning "Temporary account cleanup failed: $_"; $cleanupFailed = $true }
         foreach ($path in $grantedPaths) {
@@ -308,6 +388,12 @@ try {
     if ($createdWork -and (Test-Path -LiteralPath $work)) {
         try { Remove-Item -LiteralPath $work -Recurse -Force }
         catch { Write-Warning "Temporary fixture cleanup failed: $_"; $cleanupFailed = $true }
+    }
+    if ($null -ne $attachedCloudInstance) {
+        try {
+            [QualificationCloudInstance]::DetachCreated($fixtureVolume, $attachedCloudInstance)
+            Write-Host "Detached owned CldFlt instance '$attachedCloudInstance' from $fixtureVolume"
+        } catch { Write-Warning "Temporary filter-instance cleanup failed: $_"; $cleanupFailed = $true }
     }
 }
 if ($cleanupFailed) { throw 'Qualification cleanup did not complete.' }
