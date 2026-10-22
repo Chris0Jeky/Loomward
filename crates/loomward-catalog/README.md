@@ -41,19 +41,35 @@ or sparse entries, zero/missing attributes, and all non-Windows hosts stay
 These are scan-time observations, never an assurance that a later open is safe.
 The bit meanings follow [Microsoft's file attribute constants](https://learn.microsoft.com/en-us/windows/win32/fileio/file-attribute-constants).
 
-`Reader::cloud_summary(directory_id)` queries an active directory's recorded file
+`Reader::cloud_summary(directory_id, work_budget)` queries an active directory's recorded file
 entries recursively in one catalogue snapshot. Each of its four state buckets
 contains file-entry count, logical bytes and independently observed allocated
 bytes (`None` if any contributing entry lacks allocation). Empty buckets have
 known zero allocation. Placeholder allocation is never assumed to be zero, nor
 inferred from logical size. Hard links count per name; these are not unique or
-reclaimable totals. Excluded placeholder files are counted here even though the
-normal scan aggregates omit them. Absent directory subtrees and descendants of
-excluded/denied directories are omitted. `partial` records incomplete/stale/live
+reclaimable totals. There is **no file-flag filter**: files marked `cloud_placeholder`,
+`reparse_not_followed`, `excluded_state_dir`, `sensitive_name` or `protected_context`
+are counted when their containing directory is included, even where normal scan
+aggregates omit them. A hydrated reparse placeholder without recall/offline or
+pin/unpin evidence lands in `Unknown`; pin/unpin cases follow the classifier above.
+Absent directory subtrees and descendants of excluded/denied or exclusion-flagged
+directories are omitted. `partial` records incomplete/stale/live
 scan coverage; totals describe recorded files, not all remote provider contents.
-The query observes active grants and existing reader deadlines, with a two-million
-SQLite VM-step budget; exhaustion refuses the result instead of publishing a
-truncated total.
+The query observes active grants and existing reader deadlines. Its caller-supplied
+SQLite VM-step budget refuses exhaustion with `ResourceBudget` instead of publishing
+a truncated total. Deadline cancellation returns `Cancelled`; an unrelated SQLite
+interrupt remains a SQL error.
+
+The suggested default is `Reader::DEFAULT_CLOUD_SUMMARY_STEPS` (32,000,000).
+On Windows, `cloud_query_vm_steps_per_file` measured the production SQL on flat
+synthetic subtrees using `StatementStatus::VmStep`: 1,000 files took 21,080 steps;
+10,000 took 210,080; 100,000 took 2,100,080 (21 steps/file plus 80 fixed steps).
+That implies about 95,200 files at the former 2,000,000-step budget for this revised
+query, or about 1.52 million at the suggested default (sized for 1.5 million flat
+entries). Before removing the unused file-flag column, the query took 22 steps/file
+plus 80, limiting the original budget to about 90,900 files. These are flat-query
+estimates, not universal file limits: root/coverage checks consume budget too,
+directory traversal adds work, and a reader deadline can stop the query sooner.
 
 No migration is needed: Extended/Both enumeration already supplies `FileAttributes`,
 `EndOfFile` and `AllocationSize` (`crates/loomward-windows/src/enumerate/mod.rs`);

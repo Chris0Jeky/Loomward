@@ -1,6 +1,41 @@
 use loomward_catalog::*;
 
+#[cfg(feature = "test-hooks")]
+thread_local! {
+    static INTERRUPT: std::cell::RefCell<Option<rusqlite::InterruptHandle>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(feature = "test-hooks")]
+#[test]
+fn cloud_summary_external_interrupt_is_not_budget_exhaustion() {
+    fn interrupt_walk(event: rusqlite::trace::TraceEvent<'_>) {
+        if let rusqlite::trace::TraceEvent::Stmt(_, sql) = event {
+            if sql.starts_with("WITH RECURSIVE walk(") {
+                INTERRUPT.with(|handle| handle.borrow().as_ref().unwrap().interrupt());
+            }
+        }
+    }
+    let (_tmp, c, _, dir) = fixture_with_skipped(0);
+    let mut reader = c.reader().unwrap();
+    INTERRUPT.with(|handle| *handle.borrow_mut() = Some(reader.interrupt_handle()));
+    reader.trace_statements_for_test(Some(interrupt_walk));
+    let result = reader.cloud_summary(dir, Reader::DEFAULT_CLOUD_SUMMARY_STEPS);
+    reader.trace_statements_for_test(None);
+    INTERRUPT.with(|handle| handle.borrow_mut().take());
+    assert!(matches!(result, Err(Error::Sql(_))), "{result:?}");
+    assert!(
+        !reader
+            .cloud_summary(dir, Reader::DEFAULT_CLOUD_SUMMARY_STEPS)
+            .unwrap()
+            .partial
+    );
+}
+
 fn fixture() -> (tempfile::TempDir, Catalog, i64, i64) {
+    fixture_with_skipped(1)
+}
+
+fn fixture_with_skipped(skipped: u64) -> (tempfile::TempDir, Catalog, i64, i64) {
     let tmp = tempfile::tempdir().unwrap();
     let c = Catalog::open(tmp.path(), "synthetic").unwrap();
     let WriteReply::Root {
@@ -55,7 +90,7 @@ fn fixture() -> (tempfile::TempDir, Catalog, i64, i64) {
             files,
             dirs: vec![],
             state: "complete".into(),
-            skipped: 1,
+            skipped,
             errors: 0,
         }))
         .unwrap();
@@ -70,11 +105,47 @@ fn fixture() -> (tempfile::TempDir, Catalog, i64, i64) {
 }
 
 #[test]
+fn cloud_summary_clean_completed_scan_is_not_partial() {
+    let (_tmp, c, _, dir) = fixture_with_skipped(0);
+    assert!(
+        !c.reader()
+            .unwrap()
+            .cloud_summary(dir, Reader::DEFAULT_CLOUD_SUMMARY_STEPS)
+            .unwrap()
+            .partial
+    );
+}
+
+#[test]
+fn cloud_summary_running_scan_is_partial() {
+    let (_tmp, c, grant, dir) = fixture_with_skipped(0);
+    c.writer()
+        .call(WriteCommand::BeginRun {
+            grant_id: grant,
+            mode: "refresh".into(),
+            strategy: "fixture".into(),
+            started_at_ns: 2,
+        })
+        .unwrap();
+    assert!(
+        c.reader()
+            .unwrap()
+            .cloud_summary(dir, Reader::DEFAULT_CLOUD_SUMMARY_STEPS)
+            .unwrap()
+            .partial
+    );
+}
+
+#[test]
 fn cloud_summary_retains_observed_bytes_across_reopen() {
     let (tmp, c, _, dir) = fixture();
     drop(c);
     let c = Catalog::open(tmp.path(), "synthetic").unwrap();
-    let report = c.reader().unwrap().cloud_summary(dir).unwrap();
+    let report = c
+        .reader()
+        .unwrap()
+        .cloud_summary(dir, Reader::DEFAULT_CLOUD_SUMMARY_STEPS)
+        .unwrap();
     #[cfg(windows)]
     {
         assert_eq!(
@@ -107,11 +178,14 @@ fn cloud_summary_refuses_revoked_and_missing_directories_and_deadlines() {
     let (_tmp, c, grant_id, dir) = fixture();
     let mut reader = c.reader().unwrap();
     assert!(matches!(
-        reader.cloud_summary(i64::MAX),
+        reader.cloud_summary(i64::MAX, Reader::DEFAULT_CLOUD_SUMMARY_STEPS),
         Err(Error::NotFound)
     ));
     reader.set_deadline(std::time::Instant::now());
-    assert!(matches!(reader.cloud_summary(dir), Err(Error::Cancelled)));
+    assert!(matches!(
+        reader.cloud_summary(dir, Reader::DEFAULT_CLOUD_SUMMARY_STEPS),
+        Err(Error::Cancelled)
+    ));
     c.writer()
         .call(WriteCommand::RevokeGrant {
             grant_id,
@@ -119,7 +193,9 @@ fn cloud_summary_refuses_revoked_and_missing_directories_and_deadlines() {
         })
         .unwrap();
     assert!(matches!(
-        c.reader().unwrap().cloud_summary(dir),
+        c.reader()
+            .unwrap()
+            .cloud_summary(dir, Reader::DEFAULT_CLOUD_SUMMARY_STEPS),
         Err(Error::NotFound)
     ));
 }
@@ -163,9 +239,28 @@ fn cloud_summary_recurses_but_hides_absent_and_excluded_subtrees() {
             run_id: run,
             dir_id: dir,
             files: vec![remote],
-            dirs: vec![],
+            dirs: vec![Observation::file("grandchild", 0, None)],
             state: "complete".into(),
             skipped: 1,
+            errors: 0,
+        }))
+        .unwrap();
+    let grandchild = db
+        .query_row("SELECT id FROM dir WHERE name='grandchild'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let mut remote = Observation::file("remote-grandchild", 1200, Some(64));
+    remote.attrs = 0x1000;
+    remote.flags = 1 << 3;
+    c.writer()
+        .call(WriteCommand::DirListing(DirListing {
+            run_id: run,
+            dir_id: grandchild,
+            files: vec![remote],
+            dirs: vec![],
+            state: "complete".into(),
+            skipped: 0,
             errors: 0,
         }))
         .unwrap();
@@ -177,7 +272,9 @@ fn cloud_summary_recurses_but_hides_absent_and_excluded_subtrees() {
         })
         .unwrap();
     let mut reader = c.reader().unwrap();
-    let report = reader.cloud_summary(root).unwrap();
+    let report = reader
+        .cloud_summary(root, Reader::DEFAULT_CLOUD_SUMMARY_STEPS)
+        .unwrap();
     let bucket = if cfg!(windows) {
         &report.cloud_only
     } else {
@@ -186,26 +283,38 @@ fn cloud_summary_recurses_but_hides_absent_and_excluded_subtrees() {
     assert_eq!(
         bucket,
         &CloudBytes {
-            files: 1,
-            logical_bytes: 800,
-            allocated_bytes: Some(32)
+            files: 2,
+            logical_bytes: 2000,
+            allocated_bytes: Some(96)
         }
     );
     assert!(report.partial);
     // Simulate retained observations beneath a directory that is no longer traversable.
     // Only synthetic catalogue rows are changed, never a scanned path.
-    for state in ["excluded", "denied", "absent_pending"] {
+    let mut counts = Vec::new();
+    for (state, flags) in [
+        ("excluded", 0),
+        ("denied", 0),
+        ("complete", EXCLUDED_FLAGS),
+        ("absent_pending", 0),
+    ] {
         db.execute(
-            "UPDATE dir SET listing_state=?1 WHERE id=?2",
-            rusqlite::params![state, dir],
+            "UPDATE dir SET listing_state=?1,flags=?2 WHERE id=?3",
+            rusqlite::params![state, flags, dir],
         )
         .unwrap();
-        let report = reader.cloud_summary(root).unwrap();
-        assert_eq!(report.cloud_only.files + report.unknown.files, 0);
+        let report = reader
+            .cloud_summary(root, Reader::DEFAULT_CLOUD_SUMMARY_STEPS)
+            .unwrap();
+        counts.push(report.cloud_only.files + report.unknown.files);
         if state == "absent_pending" {
-            assert!(matches!(reader.cloud_summary(dir), Err(Error::NotFound)));
+            assert!(matches!(
+                reader.cloud_summary(dir, Reader::DEFAULT_CLOUD_SUMMARY_STEPS),
+                Err(Error::NotFound)
+            ));
         }
     }
+    assert_eq!(counts, [0, 0, 0, 0], "excluded, denied, flagged, absent");
 }
 
 #[test]
@@ -218,13 +327,21 @@ fn cloud_summary_empty_and_unknown_allocation_are_distinct() {
         [],
     )
     .unwrap();
-    let report = c.reader().unwrap().cloud_summary(dir).unwrap();
+    let report = c
+        .reader()
+        .unwrap()
+        .cloud_summary(dir, Reader::DEFAULT_CLOUD_SUMMARY_STEPS)
+        .unwrap();
     if cfg!(windows) {
         assert_eq!(report.cloud_only.logical_bytes, 900);
         assert_eq!(report.cloud_only.allocated_bytes, None);
     }
     db.execute("DELETE FROM file", []).unwrap();
-    let report = c.reader().unwrap().cloud_summary(dir).unwrap();
+    let report = c
+        .reader()
+        .unwrap()
+        .cloud_summary(dir, Reader::DEFAULT_CLOUD_SUMMARY_STEPS)
+        .unwrap();
     for bucket in [
         report.cloud_only,
         report.local,
@@ -254,7 +371,21 @@ fn cloud_summary_bounds_work_instead_of_publishing_truncated_totals() {
     )
     .unwrap();
     assert!(matches!(
-        c.reader().unwrap().cloud_summary(dir),
+        c.reader().unwrap().cloud_summary(dir, 2_000_000),
         Err(Error::ResourceBudget)
     ));
+    let mut reader = c.reader().unwrap();
+    for budget in [0, 1] {
+        assert!(matches!(
+            reader.cloud_summary(dir, budget),
+            Err(Error::ResourceBudget)
+        ));
+    }
+    let report = reader
+        .cloud_summary(dir, Reader::DEFAULT_CLOUD_SUMMARY_STEPS)
+        .unwrap();
+    assert_eq!(
+        report.cloud_only.files + report.local.files + report.pinned.files + report.unknown.files,
+        100_004
+    );
 }
