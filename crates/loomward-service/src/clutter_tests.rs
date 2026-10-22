@@ -250,7 +250,8 @@ fn stale_watcher_hides_sizes_and_retains_recorded_size_order_even_when_limited()
     let Some(lab) = lab() else { return };
     std::fs::write(lab.path.join("Cargo.toml"), b"synthetic manifest").unwrap();
     std::fs::write(lab.path.join("package.json"), b"{}").unwrap();
-    for (name, bytes) in [("target", 1000), ("node_modules", 8000)] {
+    // Larger under the name that sorts later, so size order differs from name/id order.
+    for (name, bytes) in [("target", 8000), ("node_modules", 1000)] {
         std::fs::create_dir(lab.path.join(name)).unwrap();
         std::fs::write(lab.path.join(name).join("synthetic.bin"), vec![0u8; bytes]).unwrap();
     }
@@ -259,7 +260,7 @@ fn stale_watcher_hides_sizes_and_retains_recorded_size_order_even_when_limited()
     lab.svc.inner.freshness.pause_pump();
     let before = clutter(&lab.svc, &lab.root, 50);
     assert_eq!(before["partial"], false);
-    assert_eq!(before["candidates"][0]["name"], "node_modules");
+    assert_eq!(before["candidates"][0]["name"], "target");
     assert_eq!(before["candidates"][0]["logical_bytes"], "8000");
     assert_eq!(before["candidates"][1]["logical_bytes"], "1000");
     let row = lab.svc.inner.root_row(&lab.root).unwrap();
