@@ -120,6 +120,7 @@ fn read_tree_from(
             };
         tree.nodes.insert(path.clone(), Ok(node));
         let mut short_names = None;
+        let short_name_limit = children.len();
         for (name, id, attributes, size, creation, write, change) in children {
             let relative = path.join(std::ffi::OsString::from_wide(&name));
             let result = (|| {
@@ -149,7 +150,14 @@ fn read_tree_from(
                     };
                     let (child, _) = source.open_child(&dir, &raw).map_err(super::source)?;
                     let short = short_name(child.file(), || {
-                        listed_short_name(&dir, child.file(), &name, &mut short_names, &meter)
+                        listed_short_name(
+                            &dir,
+                            child.file(),
+                            &name,
+                            &mut short_names,
+                            &meter,
+                            short_name_limit,
+                        )
                     });
                     pending.push((relative.clone(), child, security, short));
                     return Ok(None);
@@ -187,7 +195,14 @@ fn read_tree_from(
                     return Err(Reason::ChangedDuringRead);
                 }
                 let short = short_name(&opened.file, || {
-                    listed_short_name(&dir, &opened.file, &name, &mut short_names, &meter)
+                    listed_short_name(
+                        &dir,
+                        &opened.file,
+                        &name,
+                        &mut short_names,
+                        &meter,
+                        short_name_limit,
+                    )
                 });
                 let mut node = metadata(
                     &opened.file,
@@ -410,12 +425,14 @@ fn listed_short_name(
     name: &[u16],
     cache: &mut Option<Observation<ShortNames>>,
     meter: &Meter,
+    max_entries: usize,
 ) -> Observation<Vec<u8>> {
     // A 64-bit directory ID cannot establish identity on ReFS (N3).
     if parent.filesystem().eq_ignore_ascii_case("ReFS") {
         return Err("metadata_unreadable");
     }
-    let names = cache.get_or_insert_with(|| directory_short_names(parent.file(), meter));
+    let names =
+        cache.get_or_insert_with(|| directory_short_names(parent.file(), meter, max_entries));
     let (listed_id, short) = names
         .as_ref()
         .map_err(|e| *e)?
@@ -427,14 +444,18 @@ fn listed_short_name(
     Ok(short.clone())
 }
 
-fn directory_short_names(parent: &File, meter: &Meter) -> Observation<ShortNames> {
+fn directory_short_names(
+    parent: &File,
+    meter: &Meter,
+    max_entries: usize,
+) -> Observation<ShortNames> {
     // A used directory handle retains its first search filter. Restart once and select exact
     // native names from a bounded listing, cached per parent rather than rescanned per child.
     let mut buffer = vec![0u64; 2048];
     let mut names = BTreeMap::new();
     let mut first = true;
     let mut entries = 0;
-    loop {
+    while names.len() < max_entries {
         meter.check().map_err(|_| "metadata_unreadable")?;
         let mut status: IO_STATUS_BLOCK = unsafe { std::mem::zeroed() };
         let result = unsafe {
@@ -447,7 +468,8 @@ fn directory_short_names(parent: &File, meter: &Meter) -> Observation<ShortNames
                 buffer.as_mut_ptr().cast(),
                 (buffer.len() * 8) as u32,
                 FileIdBothDirectoryInformation,
-                false,
+                // Do not read ahead past this request's remaining child budget.
+                true,
                 ptr::null(),
                 first,
             )
@@ -466,7 +488,7 @@ fn directory_short_names(parent: &File, meter: &Meter) -> Observation<ShortNames
         loop {
             meter.check().map_err(|_| "metadata_unreadable")?;
             entries += 1;
-            if entries > MAX_TREE_ENTRIES + 2 {
+            if entries > max_entries.saturating_add(2) {
                 // Allow the listing's dot entries.
                 return Err("metadata_unreadable");
             }
@@ -493,7 +515,7 @@ fn directory_short_names(parent: &File, meter: &Meter) -> Observation<ShortNames
                 .collect::<Vec<_>>();
             let id = u64::from_le_bytes(header[96..104].try_into().unwrap());
             let short = header[70..70 + short_length].to_vec();
-            if names.insert(name, (id, short)).is_some() {
+            if name != [46] && name != [46, 46] && names.insert(name, (id, short)).is_some() {
                 return Err("metadata_unreadable");
             }
             if next == 0 {
@@ -502,6 +524,7 @@ fn directory_short_names(parent: &File, meter: &Meter) -> Observation<ShortNames
             offset = offset.checked_add(next).ok_or("metadata_unreadable")?;
         }
     }
+    Ok(names)
 }
 
 fn nt_information(file: &File, class: i32, bytes: usize) -> Result<Vec<u8>, InformationError> {
@@ -761,7 +784,74 @@ mod tests {
     }
 
     #[test]
+    fn native_short_name_fallback_respects_the_requested_entry_budget() {
+        if crate::enumerate::running_elevated() {
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        for index in 0..8 {
+            std::fs::write(temp.path().join(format!("fixture{index}")), b"synthetic").unwrap();
+        }
+        let (parent, expected) = NativeSource::default().open_root(temp.path()).unwrap();
+        let budget = Budget {
+            bytes: 1024,
+            time: Duration::from_secs(30),
+        };
+        let max_entries = 3;
+        let tree = read_tree(
+            temp.path(),
+            &expected,
+            budget,
+            max_entries,
+            Default::default(),
+        )
+        .unwrap()
+        .0;
+        assert_eq!(tree.nodes.len(), max_entries);
+        assert_eq!(
+            tree.nodes[Path::new("")].as_ref().unwrap().children,
+            Err("entry_budget")
+        );
+        let meter = Meter::new(budget);
+        let names = directory_short_names(parent.file(), &meter, max_entries - 1).unwrap();
+        assert_eq!(names.len(), max_entries - 1);
+        assert!(!names.contains_key(&".".encode_utf16().collect::<Vec<_>>()));
+        assert!(!names.contains_key(&"..".encode_utf16().collect::<Vec<_>>()));
+        let mut cache = Some(Ok(names));
+        for index in 0..8 {
+            let name: Vec<_> = format!("fixture{index}").encode_utf16().collect();
+            let file = enumerate::open_relative_mode(
+                parent.file(),
+                &name,
+                FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                SHARE,
+                false,
+            )
+            .unwrap();
+            let listed = cache
+                .as_ref()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .contains_key(&name);
+            let result =
+                short_name_information(Err(InformationError::Status(0xc00000bbu32 as i32)), || {
+                    listed_short_name(&parent, &file, &name, &mut cache, &meter, max_entries - 1)
+                });
+            if listed {
+                assert_eq!(result, Ok(vec![]));
+            } else {
+                assert_eq!(result, Err("metadata_unreadable"));
+            }
+        }
+        assert_eq!(cache.unwrap().unwrap().len(), max_entries - 1);
+    }
+
+    #[test]
     fn native_listing_replacement_cannot_supply_the_open_entries_short_name() {
+        if crate::enumerate::running_elevated() {
+            return;
+        }
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(temp.path().join("fixture"), b"original").unwrap();
         let (parent, _) = NativeSource::default().open_root(temp.path()).unwrap();
@@ -785,7 +875,8 @@ mod tests {
                 &Meter::new(Budget {
                     bytes: 1024,
                     time: Duration::from_secs(30)
-                })
+                }),
+                2,
             ),
             Err("metadata_unreadable")
         );
@@ -793,7 +884,9 @@ mod tests {
 
     #[test]
     fn native_83_file_and_directory_have_no_short_name() {
-        assert!(!crate::enumerate::running_elevated());
+        if crate::enumerate::running_elevated() {
+            return;
+        }
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("root");
         std::fs::create_dir(&root).unwrap();
@@ -811,6 +904,9 @@ mod tests {
 
     #[test]
     fn native_listing_short_names_match_real_alternate_names_without_opens() {
+        if crate::enumerate::running_elevated() {
+            return;
+        }
         let temp = tempfile::tempdir().unwrap();
         let name = "synthetic long fixture.txt";
         std::fs::write(temp.path().join(name), b"synthetic").unwrap();
@@ -868,11 +964,11 @@ mod tests {
         });
         let accesses = enumerate::record_open_accesses(|| {
             assert_eq!(
-                listed_short_name(&parent, &file, &wide, &mut cache, &meter),
+                listed_short_name(&parent, &file, &wide, &mut cache, &meter, 2),
                 Ok(alias.clone())
             );
             assert_eq!(
-                listed_short_name(&parent, &other, &wide, &mut cache, &meter),
+                listed_short_name(&parent, &other, &wide, &mut cache, &meter, 2),
                 Err("metadata_unreadable")
             );
             assert_eq!(
@@ -881,7 +977,8 @@ mod tests {
                     &file,
                     &"missing".encode_utf16().collect::<Vec<_>>(),
                     &mut cache,
-                    &meter
+                    &meter,
+                    2,
                 ),
                 Err("metadata_unreadable")
             );
