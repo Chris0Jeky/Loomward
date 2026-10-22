@@ -16,6 +16,64 @@ fn observation() -> RootObservation {
 }
 
 #[test]
+fn legacy_node_id_key_is_removed_on_open() {
+    let temp = tempfile::tempdir().unwrap();
+    let catalog = Catalog::open(temp.path(), "synthetic").unwrap();
+    register_root(&catalog);
+    drop(catalog);
+    let state = Connection::open(temp.path().join("state.db")).unwrap();
+    state.execute_batch("INSERT INTO meta(key,value) VALUES ('node_id_key','obsolete'),('unrelated','keep'); UPDATE revision SET state_rev=41 WHERE id=1").unwrap();
+    let metadata = || {
+        state
+            .prepare("SELECT key,value FROM meta WHERE key!='node_id_key' ORDER BY key")
+            .unwrap()
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    };
+    let before = metadata();
+    let grants = || {
+        let mut stmt = state
+            .prepare("SELECT * FROM root_grant ORDER BY id")
+            .unwrap();
+        let columns = stmt.column_count();
+        stmt.query_map([], |r| {
+            (0..columns)
+                .map(|i| r.get::<_, rusqlite::types::Value>(i))
+                .collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap()
+    };
+    let before_grants = grants();
+    for _ in 0..2 {
+        let catalog = Catalog::open(temp.path(), "synthetic").unwrap();
+        assert_eq!(
+            state
+                .query_row(
+                    "SELECT count(*) FROM meta WHERE key='node_id_key'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+            0
+        );
+        assert_eq!(metadata(), before);
+        assert_eq!(
+            state
+                .query_row("SELECT state_rev FROM revision WHERE id=1", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            41
+        );
+        assert_eq!(grants(), before_grants);
+        drop(catalog);
+    }
+}
+
+#[test]
 fn grant_filesystem_survives_catalogue_rebuild() {
     for filesystem in [
         Some("NTFS"),
