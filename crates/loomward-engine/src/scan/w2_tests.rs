@@ -298,7 +298,10 @@ mod native {
         // acknowledge cancellation of that historical result, but must fence all future work.
         let published = sink.memory.sweep_allowed(root.root_id());
         let revoked = revoke_plain_while_paused(&engine, &root, resume);
-        assert!(published, "the paused plain scan had not published completion");
+        assert!(
+            published,
+            "the paused plain scan had not published completion"
+        );
         assert_eq!(revoked.len(), 1);
         assert_eq!(revoked[0].job_id, job.job_id);
         assert_eq!(revoked[0].state, JobState::Running);
