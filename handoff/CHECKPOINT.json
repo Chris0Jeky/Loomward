@@ -1,11 +1,11 @@
 {
   "project": "Loomward",
   "schema_version": 2,
-  "as_of": "2026-10-17",
+  "as_of": "2026-10-21",
   "version": "0.3.0-dev",
-  "base_commit": "0b27935",
+  "base_commit": "132e10e8c43a963658d03cbeaec34d8f20a6c0a8",
   "branch": "main",
-  "phase": "v0.3 wave 10: copy-and-verify C1-C5 and C7 built and lab-only (personal gate C8 closed); Find & Ask F1 and F2 (ranked index gated off); readiness rows 1, 3-7 advanced (row 4 PASS; 72-hour soak running); alerts; first session on the KRASPYON laptop",
+  "phase": "Maintenance reconciliation of open issues and PRs; scoped source fixes and retained acceptance evidence; C8 remains closed",
   "read_first": [
     "AGENTS.md",
     "handoff/START-HERE.md",
@@ -95,19 +95,20 @@
     "windows_performance_claim": false
   },
   "next_local_issues": [
-    "G5 power-cut proof (needs owner Q2) and G9 proven restore before any personal copy; remaining #526 items (window before Committed, refusal code naming, resume) and #567/#569 residuals",
-    "#409 Ask chat panel (LW-118, in progress) on the #556 local broker and #541 grants; Ask Q3/Q4 posed",
-    "#520 before enabling the ranked index; #552 search and writer perf hypotheses (measure at 10M first); #550 F3 identity-gap check cost",
-    "the 72-hour soak result (docs/45 row 7; legacy receipt, wall clock not checked)",
-    "#495 Linux catalogue hang cause (watchdog now prints thread state); #386 P14 200 B/entry with the trigram index"
+    "#120 / LW-101: required W0-B cold-cache and strategy/thread/volume measurements; keep in_progress despite completed strategy promotion",
+    "#738 / PR814: supported non-elevated Windows/NTFS foreign-Store rename qualification; keep personal copy gate C8 closed",
+    "#766: retain the next complete panic and identify the original failing stage; PR812 is diagnostic only",
+    "#787: remaining wedged-worker pins, retiring-watch hint coverage and sustained-load churn",
+    "#414: actual durable-service 10M qualification, a new continuous 72-hour pass, required effect power-cut/restore evidence and owner UX acceptance",
+    "#4 and #24/#101: missing original reference witness and manual Windows accessibility/field acceptance"
   ],
   "optional_independent_starts": [
     "LW-065",
     "LW-068"
   ],
-  "backlog_count": 112,
+  "backlog_count": 130,
   "remote_publication": true,
-  "independent_subagents_used": false,
+  "independent_subagents_used": true,
   "hard_gates": [
     "No user-file or process effects (one owner-initiated exception: diagnostics.save writes the previewed redacted bundle to a file the owner picks and confirms, ADR-V3-24)",
     "No automatic installs, elevation, model downloads or account connections",
@@ -142,7 +143,10 @@
     "evidence/v3/telemetry-bughunt.md",
     "evidence/v3/gate-184-closeout.md",
     "evidence/v3/scan-followups-180.md",
-    "evidence/v3/duplicate-reader-bughunt.md"
+    "evidence/v3/duplicate-reader-bughunt.md",
+    "evidence/v3/backlog-review-2026-10-20.md",
+    "evidence/v3/backlog-review-2026-10-20.json",
+    "evidence/v3/backlog-closure-evidence-2026-10-20.md"
   ],
   "estate": {
     "repository": "Chris0Jeky/Loomward (public)",
@@ -644,5 +648,101 @@
       "#506 LOW API items",
       "#409 Ask chat panel (in progress)"
     ]
+  },
+  "maintenance_2026_10_20": {
+    "updated_at": "2026-10-21",
+    "baseline_main": "828ef592eaa10388ce99e760d8985fae865facb8",
+    "checkpoint_parent": "132e10e8c43a963658d03cbeaec34d8f20a6c0a8",
+    "reviewed_open_issues": 173,
+    "initial_open_prs": [
+      802,
+      803,
+      804,
+      805
+    ],
+    "merged_prs": [
+      802,
+      803,
+      804,
+      805,
+      806,
+      807,
+      808,
+      809,
+      810,
+      811,
+      812,
+      813,
+      815
+    ],
+    "remaining_prs": [
+      814
+    ],
+    "closed_issues": [
+      122,
+      124,
+      176,
+      416,
+      763,
+      781,
+      785
+    ],
+    "reopened_issues": [
+      120
+    ],
+    "evidence": [
+      "evidence/v3/backlog-review-2026-10-20.md",
+      "evidence/v3/backlog-review-2026-10-20.json",
+      "evidence/v3/backlog-closure-evidence-2026-10-20.md"
+    ],
+    "cumulative": {
+      "initial_open_issue_count": 191,
+      "original_prs_merged": 33,
+      "closed_issue_count": 25,
+      "closed_issues": [
+        122,
+        124,
+        176,
+        416,
+        675,
+        696,
+        700,
+        710,
+        722,
+        723,
+        733,
+        739,
+        751,
+        753,
+        758,
+        760,
+        763,
+        775,
+        776,
+        777,
+        781,
+        782,
+        785,
+        789,
+        793
+      ],
+      "remaining_open_issue_count": 166,
+      "scope": "Original 18 closures plus this wave's 7 retained closures; issue120 was reopened after final acceptance review. No newly opened issue or blanket completion claim."
+    },
+    "previous_top_level_status": {
+      "as_of": "2026-10-17",
+      "base_commit": "0b27935",
+      "phase": "v0.3 wave 10: copy-and-verify C1-C5 and C7 built and lab-only (personal gate C8 closed); Find & Ask F1 and F2 (ranked index gated off); readiness rows 1, 3-7 advanced (row 4 PASS; 72-hour soak running); alerts; first session on the KRASPYON laptop",
+      "next_local_issues": [
+        "G5 power-cut proof (needs owner Q2) and G9 proven restore before any personal copy; remaining #526 items (window before Committed, refusal code naming, resume) and #567/#569 residuals",
+        "#409 Ask chat panel (LW-118, in progress) on the #556 local broker and #541 grants; Ask Q3/Q4 posed",
+        "#520 before enabling the ranked index; #552 search and writer perf hypotheses (measure at 10M first); #550 F3 identity-gap check cost",
+        "the 72-hour soak result (docs/45 row 7; legacy receipt, wall clock not checked)",
+        "#495 Linux catalogue hang cause (watchdog now prints thread state); #386 P14 200 B/entry with the trigram index"
+      ],
+      "backlog_count": 112,
+      "independent_subagents_used": false
+    },
+    "verification_scope": "Exact-head hosted CI and independent source review; native qualifications and historical measurements retain their stated limits."
   }
 }

@@ -1,0 +1,2390 @@
+{
+  "schema_version": 1,
+  "started_at": "2026-10-20",
+  "updated_at": "2026-10-21",
+  "baseline_main": "828ef592eaa10388ce99e760d8985fae865facb8",
+  "checkpoint_parent": "132e10e8c43a963658d03cbeaec34d8f20a6c0a8",
+  "initial_open_issue_count": 173,
+  "initial_open_prs": [
+    802,
+    803,
+    804,
+    805
+  ],
+  "scope": "All 173 initial open issue bodies and the four initial open PRs were reviewed. Relevant comments, source, review findings and CI were checked before scoped changes or closures. A retained-open outcome is not a new acceptance claim.",
+  "closed_issues": [
+    122,
+    124,
+    176,
+    416,
+    763,
+    781,
+    785
+  ],
+  "pull_requests": [
+    {
+      "number": 802,
+      "url": "https://github.com/Chris0Jeky/Loomward/pull/802",
+      "head": "720134290d3dced8077d72699d364c5222b6ef2f",
+      "merge": "448eba59a40968a71c8107a371819c6ee86adde1",
+      "tree": "aedfeb29d4a6ad9394396baece980de5af2cb15b",
+      "run": 39305102437,
+      "status": "merged",
+      "summary": "Protect forgotten volume metadata and retained replies.",
+      "ci_url": "https://github.com/Chris0Jeky/Loomward/actions/runs/39305102437"
+    },
+    {
+      "number": 803,
+      "url": "https://github.com/Chris0Jeky/Loomward/pull/803",
+      "head": "540e7fe24d075035b20a6a6d2f5220cc667e8f1d",
+      "tree": "7e3438333ae43706684d1a3e449f11ab15aaccd9",
+      "run": 39515070090,
+      "status": "merged_with_followup",
+      "depends_on": 808,
+      "summary": "Retain terminal-annotation contract and unapplied native known-failure reproducer; implementation in809.",
+      "issue": 738,
+      "merge": "2cf1be0df9eff1a7e61c19e89842acf005488e3c",
+      "followup": 809,
+      "ci_url": "https://github.com/Chris0Jeky/Loomward/actions/runs/39515070090"
+    },
+    {
+      "number": 804,
+      "url": "https://github.com/Chris0Jeky/Loomward/pull/804",
+      "head": "a0098f4d6ee0f8e4c47ff77f3e494210963d7ed9",
+      "merge": "97325793adfe6ce13126753cd414195def003219",
+      "tree": "58f410a3f63ab70dddc724b0a642ccc622f8e806",
+      "run": 39307232018,
+      "status": "merged",
+      "summary": "Drive process-strip fake timers deterministically while retaining all assertions.",
+      "ci_url": "https://github.com/Chris0Jeky/Loomward/actions/runs/39307232018"
+    },
+    {
+      "number": 805,
+      "url": "https://github.com/Chris0Jeky/Loomward/pull/805",
+      "head": "916af7572db5250bf9768b2de1dc245eea58f8cd",
+      "tree": "7e2e0f6c6bd426ca2e81a317352fc20c6803b365",
+      "run": 39513494094,
+      "status": "merged",
+      "summary": "Generate source manifest only inside ZIP, preserve checkout data and portable entry ordering.",
+      "merge": "a7f26ccb72afffb52bb42192c830df1637450d6b",
+      "ci_url": "https://github.com/Chris0Jeky/Loomward/actions/runs/39513494094"
+    },
+    {
+      "number": 806,
+      "url": "https://github.com/Chris0Jeky/Loomward/pull/806",
+      "head": "7cab56355d5b00ba3957861e1fc03b7880c1a236",
+      "tree": "5a6407511a898f921fb468155826ce4a2375c583",
+      "run": 39515037125,
+      "status": "merged",
+      "depends_on": 807,
+      "summary": "Resume retained successful replies after a confirmed rejected forget.",
+      "merge": "365a2b5d9a522bc9ff68c586919a1130957956b0",
+      "ci_url": "https://github.com/Chris0Jeky/Loomward/actions/runs/39515037125"
+    },
+    {
+      "number": 807,
+      "url": "https://github.com/Chris0Jeky/Loomward/pull/807",
+      "head": "5b199736dc6efb4b4402a6e7c4e7a72df19c0c84",
+      "tree": "b2493529e760222d4efb8886b6108d63a1c05b4a",
+      "run": 39514520589,
+      "status": "merged",
+      "depends_on": 805,
+      "summary": "Forward deferred writer settlement through scan wrappers.",
+      "issue": 763,
+      "merge": "f3c19a2208a74f54c267d28ab0cc58cf3f4859ad",
+      "ci_url": "https://github.com/Chris0Jeky/Loomward/actions/runs/39514520589"
+    },
+    {
+      "number": 808,
+      "url": "https://github.com/Chris0Jeky/Loomward/pull/808",
+      "head": "d971328431d60f5eeb34bc05adf7845bf03d5786",
+      "tree": "315b0874b77e93ddee605b1a8c112d419078dfa0",
+      "run": 39515063245,
+      "status": "merged_with_followup",
+      "depends_on": 806,
+      "summary": "Record a drained budget-limited scan as finished partial without authorizing absence.",
+      "issue": 781,
+      "merge": "bfa97157740fe88854eaca63ba096f7803b41fe2",
+      "followup": 813,
+      "ci_url": "https://github.com/Chris0Jeky/Loomward/actions/runs/39515063245"
+    },
+    {
+      "number": 809,
+      "url": "https://github.com/Chris0Jeky/Loomward/pull/809",
+      "head": "105e7851b65344d8115a31fae646883ce36ec71c",
+      "tree": "367811a57baf7ecafe5921bea0fd7f6490a849f0",
+      "status": "merged_with_followups",
+      "summary": "Record pending revocation after a foreign commit and retain eligible Controls across service worker retirement; native qualification remains open.",
+      "issue": 738,
+      "depends_on": 813,
+      "red_run": 39515992771,
+      "prior_fmt_run": 39517761545,
+      "prior_compile_run": 39519057700,
+      "run": 39523064768,
+      "initial_read_red_run": 39522083187,
+      "initial_read_fmt_run": 39521874730,
+      "initial_read_red_job": 118968401260,
+      "integrated_fmt_run": 39522800222,
+      "merge": "8e57bc7d01a592a18fc0ac92d3aeb3f69aeb18c9",
+      "ci_conclusion": "success",
+      "ci_jobs_succeeded": 9,
+      "actual_ci_checkout": "02121d2a9b9dd664430a1997fcc415d404f3647c",
+      "checkout_tree": "367811a57baf7ecafe5921bea0fd7f6490a849f0",
+      "followups": [
+        815,
+        814
+      ],
+      "ci_url": "https://github.com/Chris0Jeky/Loomward/actions/runs/39523064768"
+    },
+    {
+      "number": 810,
+      "url": "https://github.com/Chris0Jeky/Loomward/pull/810",
+      "head": "7851240f4c4962ad28b567ce4682a33ea97d04bd",
+      "tree": "a1cb6db0aa5053c1f0f69415f1b9344f06ed879b",
+      "status": "merged",
+      "depends_on": 812,
+      "summary": "Preserve a live watch when the initial scan-start sink probe fails.",
+      "issue": 787,
+      "red_run": 39515120028,
+      "run": 39516911087,
+      "merge": "a12663b97fd686de86301a83b518ca945f092bad",
+      "ci_url": "https://github.com/Chris0Jeky/Loomward/actions/runs/39516911087"
+    },
+    {
+      "number": 811,
+      "url": "https://github.com/Chris0Jeky/Loomward/pull/811",
+      "head": "d894c06f69320dc85f05755a9653dc20e7249cde",
+      "tree": "dc5a981a62f9c69744fa24184e87ffedc2b81576",
+      "status": "merged",
+      "summary": "Replay labels and retractions across session node changes through a read-only durable binding proof.",
+      "issue": 785,
+      "prior_fmt_run": 39515789743,
+      "depends_on": 810,
+      "red_run": 39516759331,
+      "prior_compile_run": 39518343077,
+      "run": 39519053157,
+      "merge": "dc783190cdaced24d06da37d3ae7ce32fb193c7f",
+      "ci_url": "https://github.com/Chris0Jeky/Loomward/actions/runs/39519053157"
+    },
+    {
+      "number": 812,
+      "url": "https://github.com/Chris0Jeky/Loomward/pull/812",
+      "head": "a6c0d4483a28be4c4cf55ce017dfa31d4d546740",
+      "tree": "5cedbb589381fd4fd80256ea987257a2d9c0b952",
+      "status": "merged",
+      "depends_on": 803,
+      "summary": "Label ten existing scan-publication equality assertions without changing operands or timing.",
+      "issue": 766,
+      "prior_fmt_run": 39515885074,
+      "run": 39516782960,
+      "merge": "7851240f4c4962ad28b567ce4682a33ea97d04bd",
+      "integrated_via": 810,
+      "validated_run": 39516911087,
+      "validated_head": "7851240f4c4962ad28b567ce4682a33ea97d04bd",
+      "integration_merge": "a12663b97fd686de86301a83b518ca945f092bad",
+      "validated_tree": "a1cb6db0aa5053c1f0f69415f1b9344f06ed879b",
+      "ci_url": "https://github.com/Chris0Jeky/Loomward/actions/runs/39516911087"
+    },
+    {
+      "number": 813,
+      "url": "https://github.com/Chris0Jeky/Loomward/pull/813",
+      "head": "484a46808af970cb9083366208008c117655272c",
+      "tree": "6bd2f4142db1aa595e8f722eae273cc8282eb751",
+      "status": "merged",
+      "depends_on": 811,
+      "issue": 781,
+      "summary": "Serialize final scan publication admission against cancellation without holding a gate across sink I/O.",
+      "prior_fmt_run": 39518431082,
+      "prior_red_run": 39519061578,
+      "red_run": 39519479624,
+      "red_jobs": [
+        118959867558,
+        118959867323
+      ],
+      "run": 39521167880,
+      "merge": "9e33052b1a54ccb6d79a2d7adb88ec532c1230a2",
+      "ci_conclusion": "success",
+      "ci_jobs_succeeded": 9,
+      "actual_ci_checkout": "21ced095a07b19cb7f4c9b829376303eb3101ca9",
+      "checkout_tree": "6bd2f4142db1aa595e8f722eae273cc8282eb751",
+      "ci_url": "https://github.com/Chris0Jeky/Loomward/actions/runs/39521167880"
+    },
+    {
+      "number": 814,
+      "url": "https://github.com/Chris0Jeky/Loomward/pull/814",
+      "head": "1c68ae2a952d71882b6fb6ad7d46d5cf414cd385",
+      "tree": "e9cb1789534daced6423223dfdf199332601344b",
+      "status": "draft_native_qualification",
+      "depends_on": 815,
+      "issue": 738,
+      "summary": "Add a strict real native foreign-commit regression and unverified qualification receipt; supported non-elevated Windows execution remains required.",
+      "run": 39581627089,
+      "prior_fmt_run": 39521527391,
+      "ci_conclusion": "failure",
+      "qualification": "UNVERIFIED: the strict native test failed the non-elevated Windows fixture prerequisite after formatting, compilation, 18 metadata tests and 5 service tests passed. Native ordering did not execute. Subsequent Windows scan/workspace/all-features/Clippy steps were skipped. The other eight jobs passed.",
+      "previous_hosted_attempts": [
+        {
+          "head": "0f643206ffcef5807c119b11e6df85cf79100f16",
+          "tree": "694e84e816298f57d021a075231e4bec5ed931cc",
+          "run": 39577743320,
+          "ci_conclusion": "failure",
+          "ci_jobs_succeeded": 8,
+          "ci_jobs_failed": 1,
+          "actual_ci_checkout": "06ab2f85783ebfc126dc0ca748413fc940aa1a96",
+          "checkout_tree": "694e84e816298f57d021a075231e4bec5ed931cc",
+          "strict_job": 119147380529,
+          "qualification": "UNVERIFIED: strict native test failed the non-elevated Windows fixture prerequisite; native ordering did not execute. Formatting, compilation, 16 metadata tests and 5 service tests passed; subsequent Windows workspace/all-features/Clippy steps were skipped."
+        }
+      ],
+      "ci_jobs_succeeded": 8,
+      "ci_jobs_failed": 1,
+      "actual_ci_checkout": "5e2362bc9c2517aefd3a40938a4e548b225bfe7e",
+      "checkout_tree": "e9cb1789534daced6423223dfdf199332601344b",
+      "strict_job": 119160359240,
+      "metadata_tests": {
+        "passed": 18,
+        "failed": 0,
+        "ignored": 0
+      },
+      "service_tests": {
+        "passed": 5,
+        "failed": 0,
+        "ignored": 0
+      },
+      "strict_native_tests": {
+        "passed": 0,
+        "failed": 1,
+        "ignored": 0,
+        "filtered_out": 285
+      },
+      "reviewed_implementation_parent": "66c3ec61dba0a47de3f4b8134a88a271e300cc95",
+      "ci_url": "https://github.com/Chris0Jeky/Loomward/actions/runs/39581627089"
+    },
+    {
+      "number": 815,
+      "url": "https://github.com/Chris0Jeky/Loomward/pull/815",
+      "head": "66c3ec61dba0a47de3f4b8134a88a271e300cc95",
+      "tree": "d0eace0f30f0150880f95945e6069d8f78c3901c",
+      "status": "merged",
+      "depends_on": 809,
+      "issue": 738,
+      "summary": "Retain fence requests before worker visibility and serialize cancellation settlement with the pending receipt queue.",
+      "prior_fmt_run": 39578186888,
+      "validation": "Both intended regressions failed on the tests-only head after formatting and compilation passed. The independently reviewed repair retains identical test bytes. All nine final jobs passed, including 18 metadata tests, five service tests, two scan-publication tests, the full Windows workspace, all-features suite and both Clippy gates. Ignored or unsupported native fixtures are not native qualification.",
+      "prior_fmt_runs": [
+        39578186888,
+        39579269111
+      ],
+      "run": 39579965994,
+      "red_run": 39579546882,
+      "red_job": 119153737314,
+      "red_head": "c5ebc0222fed37a6902883f484138f6535e90098",
+      "red_tree": "f3d092198e1485d4699750f5f4e62e27a343f6c6",
+      "red_checkout": "942a4d2f58aaa53ea5c6629acdbfa3c1a7426e24",
+      "red_result": {
+        "passed": 16,
+        "failed": 2,
+        "ignored": 0
+      },
+      "merge": "132e10e8c43a963658d03cbeaec34d8f20a6c0a8",
+      "merged_at": "2026-10-21T10:17:22Z",
+      "ci_conclusion": "success",
+      "ci_jobs_succeeded": 9,
+      "actual_ci_checkout": "45c04410de528d27292b6c73aafbe9354536c298",
+      "checkout_tree": "d0eace0f30f0150880f95945e6069d8f78c3901c",
+      "followups": [
+        814
+      ],
+      "review_url": "https://github.com/Chris0Jeky/Loomward/pull/815#issuecomment-6313074664",
+      "ci_url": "https://github.com/Chris0Jeky/Loomward/actions/runs/39579965994"
+    }
+  ],
+  "preceding_wave": {
+    "initial_open_issue_count": 191,
+    "original_prs": [
+      {
+        "number": 720,
+        "head": "e044221c3062dbf63ed1bb0a9820763707af95f1",
+        "merge": "bbb27236cfed545cdb59b7cd8d3c2e7c9bd3951d",
+        "merged_at": "2026-10-19T17:13:15Z"
+      },
+      {
+        "number": 740,
+        "head": "dff55417745c78b03a49bb319f0a55acf2e80023",
+        "merge": "bbb27236cfed545cdb59b7cd8d3c2e7c9bd3951d",
+        "merged_at": "2026-10-19T17:13:15Z"
+      },
+      {
+        "number": 742,
+        "head": "a632be2dff3c83233a48501550ca8d844d8bebcb",
+        "merge": "bbb27236cfed545cdb59b7cd8d3c2e7c9bd3951d",
+        "merged_at": "2026-10-19T17:13:15Z"
+      },
+      {
+        "number": 744,
+        "head": "c00f5628175a9a22dd7e697ab86533d28c3b862d",
+        "merge": "bbb27236cfed545cdb59b7cd8d3c2e7c9bd3951d",
+        "merged_at": "2026-10-19T17:13:15Z"
+      },
+      {
+        "number": 752,
+        "head": "202753db767eabd6b51a30104ec5b2ce2769a231",
+        "merge": "bbb27236cfed545cdb59b7cd8d3c2e7c9bd3951d",
+        "merged_at": "2026-10-19T17:13:15Z"
+      },
+      {
+        "number": 756,
+        "head": "51cb9ad57498fb7ecef7141d7be23af0f32b6d24",
+        "merge": "bbb27236cfed545cdb59b7cd8d3c2e7c9bd3951d",
+        "merged_at": "2026-10-19T17:13:14Z"
+      },
+      {
+        "number": 767,
+        "head": "775e862cdf4a616bc38ef6320e2f1803ea8c0c96",
+        "merge": "bbb27236cfed545cdb59b7cd8d3c2e7c9bd3951d",
+        "merged_at": "2026-10-19T17:13:14Z"
+      },
+      {
+        "number": 768,
+        "head": "4ef901dde82f3a2d7e942a7b816d3389ede8b672",
+        "merge": "bbb27236cfed545cdb59b7cd8d3c2e7c9bd3951d",
+        "merged_at": "2026-10-19T17:13:15Z"
+      },
+      {
+        "number": 745,
+        "head": "6b72d1d0c95ef4000cbc672170b89e167e3ab4ab",
+        "merge": "5f142088c612d7f96be68623241836f5ce701539",
+        "merged_at": "2026-10-19T17:13:15Z"
+      },
+      {
+        "number": 747,
+        "head": "3cd16219b55578f437f388be37b82b29564541ff",
+        "merge": "5f142088c612d7f96be68623241836f5ce701539",
+        "merged_at": "2026-10-19T17:13:15Z"
+      },
+      {
+        "number": 748,
+        "head": "e0baaa8e2f7a5b0afbd7418bdcb1da4ccdcebd4b",
+        "merge": "5f142088c612d7f96be68623241836f5ce701539",
+        "merged_at": "2026-10-19T17:13:14Z"
+      },
+      {
+        "number": 761,
+        "head": "57948db7d878aa30959879ecef7eb1575570371b",
+        "merge": "5f142088c612d7f96be68623241836f5ce701539",
+        "merged_at": "2026-10-19T17:13:14Z"
+      },
+      {
+        "number": 764,
+        "head": "560748c2f31f859b1bfb318b8d2382f1eee361c1",
+        "merge": "5f142088c612d7f96be68623241836f5ce701539",
+        "merged_at": "2026-10-19T17:13:15Z"
+      },
+      {
+        "number": 779,
+        "head": "dda0220b7c1031d89caa0a3201ca5af8178909ff",
+        "merge": "5f142088c612d7f96be68623241836f5ce701539",
+        "merged_at": "2026-10-19T17:13:14Z"
+      },
+      {
+        "number": 784,
+        "head": "6c8172826143b9cbed7e53df1f24b497985d0039",
+        "merge": "5f142088c612d7f96be68623241836f5ce701539",
+        "merged_at": "2026-10-19T17:13:14Z"
+      },
+      {
+        "number": 790,
+        "head": "6788658257dea3eb0b4b0170298176318abd7e38",
+        "merge": "5f142088c612d7f96be68623241836f5ce701539",
+        "merged_at": "2026-10-19T17:13:14Z"
+      },
+      {
+        "number": 792,
+        "head": "8eea3e078c31b46b743c9361486e463231f192ac",
+        "merge": "5f142088c612d7f96be68623241836f5ce701539",
+        "merged_at": "2026-10-19T17:13:14Z"
+      },
+      {
+        "number": 746,
+        "head": "e1efa731b201c6067a7af044369b3f7044391839",
+        "merge": "61a87dccfb186c007cb1ffe9ecc2c2a7e3f55b6e",
+        "merged_at": "2026-10-19T17:13:15Z"
+      },
+      {
+        "number": 757,
+        "head": "b8da6de01e28b8cbacb1d2b34277451e27861520",
+        "merge": "61a87dccfb186c007cb1ffe9ecc2c2a7e3f55b6e",
+        "merged_at": "2026-10-19T17:13:14Z"
+      },
+      {
+        "number": 759,
+        "head": "caebc393e9e319ba2898903214eb73cf594f631b",
+        "merge": "61a87dccfb186c007cb1ffe9ecc2c2a7e3f55b6e",
+        "merged_at": "2026-10-19T17:13:14Z"
+      },
+      {
+        "number": 765,
+        "head": "2b66f256d9df63061e89e793be1b3361d2a350bc",
+        "merge": "61a87dccfb186c007cb1ffe9ecc2c2a7e3f55b6e",
+        "merged_at": "2026-10-19T17:13:14Z"
+      },
+      {
+        "number": 772,
+        "head": "2f5e85fd02540ef615a0652218f468cd50b1f11b",
+        "merge": "61a87dccfb186c007cb1ffe9ecc2c2a7e3f55b6e",
+        "merged_at": "2026-10-19T17:13:14Z"
+      },
+      {
+        "number": 773,
+        "head": "23afb9af0bb2828007369cb2bb82e2b235697592",
+        "merge": "61a87dccfb186c007cb1ffe9ecc2c2a7e3f55b6e",
+        "merged_at": "2026-10-19T17:13:14Z"
+      },
+      {
+        "number": 778,
+        "head": "b4a3694291c89057a10870196624f5688077b639",
+        "merge": "61a87dccfb186c007cb1ffe9ecc2c2a7e3f55b6e",
+        "merged_at": "2026-10-19T17:13:14Z"
+      },
+      {
+        "number": 783,
+        "head": "8fddd3592fadc7d9a20d4166cee1743177b25a1c",
+        "merge": "61a87dccfb186c007cb1ffe9ecc2c2a7e3f55b6e",
+        "merged_at": "2026-10-19T17:13:14Z"
+      },
+      {
+        "number": 786,
+        "head": "bbc8875edb9209ed083905597e355acfaa480093",
+        "merge": "61a87dccfb186c007cb1ffe9ecc2c2a7e3f55b6e",
+        "merged_at": "2026-10-19T17:13:14Z"
+      },
+      {
+        "number": 788,
+        "head": "1c37f2ac8fe3da29035b2990cb272b402ddefe64",
+        "merge": "61a87dccfb186c007cb1ffe9ecc2c2a7e3f55b6e",
+        "merged_at": "2026-10-19T17:13:14Z"
+      },
+      {
+        "number": 791,
+        "head": "838354e527d3f1b23e06e03661d5f2fc56c2f80f",
+        "merge": "61a87dccfb186c007cb1ffe9ecc2c2a7e3f55b6e",
+        "merged_at": "2026-10-19T17:13:14Z"
+      },
+      {
+        "number": 794,
+        "head": "1d0dd83ed9e080dd5400b3d48a01d86ca54b657a",
+        "merge": "61a87dccfb186c007cb1ffe9ecc2c2a7e3f55b6e",
+        "merged_at": "2026-10-19T17:13:14Z"
+      },
+      {
+        "number": 735,
+        "head": "46108ca7b62b9c1473c1705278a4550362f1e285",
+        "merge": "7a0f89a10249d72dbfbf5d835ad30f4d3ad9877a",
+        "merged_at": "2026-10-19T18:42:06Z"
+      },
+      {
+        "number": 750,
+        "head": "1c35676aa60f428ec9d54dfce957603792309e2a",
+        "merge": "7a0f89a10249d72dbfbf5d835ad30f4d3ad9877a",
+        "merged_at": "2026-10-19T18:42:07Z"
+      },
+      {
+        "number": 771,
+        "head": "801cfbb9f810b33e7ba0025fca2c32a36077401e",
+        "merge": "7a0f89a10249d72dbfbf5d835ad30f4d3ad9877a",
+        "merged_at": "2026-10-19T18:42:06Z"
+      },
+      {
+        "number": 769,
+        "head": "50406afacd69cc188804196751061bfda76219ce",
+        "merge": "52359d657def5a086cbf0cc09d74511e3bf97775",
+        "merged_at": "2026-10-19T18:45:25Z"
+      }
+    ],
+    "original_pr_count": 33,
+    "integration_and_repair_prs": [
+      {
+        "number": 797,
+        "url": "https://github.com/Chris0Jeky/Loomward/pull/797",
+        "title": "Integrate 29 reviewed PRs and repair cross-PR regressions",
+        "head": "2e428a017509de2ec85f63c8f49cd18fa409728d",
+        "merge": "0a4a92b1382dc5f1d8c35a427d2749ae43fe310c",
+        "merged_at": "2026-10-19T17:13:12Z"
+      },
+      {
+        "number": 798,
+        "url": "https://github.com/Chris0Jeky/Loomward/pull/798",
+        "title": "Integrate copy safety repairs and wait for live-step quiescence",
+        "head": "0c6235d7ae8b8c544038bfb2750bb06971241feb",
+        "merge": "57815162a1fa221e464630f32346bd3fcdb0a29e",
+        "merged_at": "2026-10-19T18:42:04Z"
+      },
+      {
+        "number": 799,
+        "url": "https://github.com/Chris0Jeky/Loomward/pull/799",
+        "title": "Cover pending-fence crash recovery and keep normal commits to one transaction",
+        "head": "412d9bd22e9883ea8fc8bc28e5a498bbcfff4138",
+        "merge": "9aa2d5bfe70884ce59f5a2302ad2a9ce49cf86a4",
+        "merged_at": "2026-10-19T18:44:01Z"
+      },
+      {
+        "number": 800,
+        "url": "https://github.com/Chris0Jeky/Loomward/pull/800",
+        "title": "Keep forget retries usable after a failed status check on a new session",
+        "head": "f6f1dbafc2dbf72bdd033163e3f870f0062e57e5",
+        "merge": "828ef592eaa10388ce99e760d8985fae865facb8",
+        "merged_at": "2026-10-19T18:46:48Z"
+      },
+      {
+        "number": 801,
+        "url": "https://github.com/Chris0Jeky/Loomward/pull/801",
+        "title": "Repair forgotten-root event privacy through HTTP and native delivery",
+        "head": "78df7837000fcb08b1ae9a948d94404cb1dbfd45",
+        "merge": "028b4a6e517882725f4c787015fa05ba7573f901",
+        "merged_at": "2026-10-19T18:45:22Z"
+      }
+    ],
+    "closed_issues": [
+      {
+        "number": 710,
+        "state": "closed",
+        "closed_at": "2026-10-19T17:13:15Z",
+        "url": "https://github.com/Chris0Jeky/Loomward/issues/710"
+      },
+      {
+        "number": 722,
+        "state": "closed",
+        "closed_at": "2026-10-19T17:13:15Z",
+        "url": "https://github.com/Chris0Jeky/Loomward/issues/722"
+      },
+      {
+        "number": 739,
+        "state": "closed",
+        "closed_at": "2026-10-19T17:13:16Z",
+        "url": "https://github.com/Chris0Jeky/Loomward/issues/739"
+      },
+      {
+        "number": 753,
+        "state": "closed",
+        "closed_at": "2026-10-19T17:13:13Z",
+        "url": "https://github.com/Chris0Jeky/Loomward/issues/753"
+      },
+      {
+        "number": 696,
+        "state": "closed",
+        "closed_at": "2026-10-19T17:13:16Z",
+        "url": "https://github.com/Chris0Jeky/Loomward/issues/696"
+      },
+      {
+        "number": 733,
+        "state": "closed",
+        "closed_at": "2026-10-19T17:13:16Z",
+        "url": "https://github.com/Chris0Jeky/Loomward/issues/733"
+      },
+      {
+        "number": 700,
+        "state": "closed",
+        "closed_at": "2026-10-19T17:13:16Z",
+        "url": "https://github.com/Chris0Jeky/Loomward/issues/700"
+      },
+      {
+        "number": 675,
+        "state": "closed",
+        "closed_at": "2026-10-19T17:13:16Z",
+        "url": "https://github.com/Chris0Jeky/Loomward/issues/675"
+      },
+      {
+        "number": 793,
+        "state": "closed",
+        "closed_at": "2026-10-19T17:13:14Z",
+        "url": "https://github.com/Chris0Jeky/Loomward/issues/793"
+      },
+      {
+        "number": 723,
+        "state": "closed",
+        "closed_at": "2026-10-19T17:13:16Z",
+        "url": "https://github.com/Chris0Jeky/Loomward/issues/723"
+      },
+      {
+        "number": 758,
+        "state": "closed",
+        "closed_at": "2026-10-19T17:13:16Z",
+        "url": "https://github.com/Chris0Jeky/Loomward/issues/758"
+      },
+      {
+        "number": 760,
+        "state": "closed",
+        "closed_at": "2026-10-19T17:13:16Z",
+        "url": "https://github.com/Chris0Jeky/Loomward/issues/760"
+      },
+      {
+        "number": 775,
+        "state": "closed",
+        "closed_at": "2026-10-19T17:13:16Z",
+        "url": "https://github.com/Chris0Jeky/Loomward/issues/775"
+      },
+      {
+        "number": 776,
+        "state": "closed",
+        "closed_at": "2026-10-19T17:13:16Z",
+        "url": "https://github.com/Chris0Jeky/Loomward/issues/776"
+      },
+      {
+        "number": 777,
+        "state": "closed",
+        "closed_at": "2026-10-19T17:13:16Z",
+        "url": "https://github.com/Chris0Jeky/Loomward/issues/777"
+      },
+      {
+        "number": 782,
+        "state": "closed",
+        "closed_at": "2026-10-19T17:13:16Z",
+        "url": "https://github.com/Chris0Jeky/Loomward/issues/782"
+      },
+      {
+        "number": 789,
+        "state": "closed",
+        "closed_at": "2026-10-19T17:13:16Z",
+        "url": "https://github.com/Chris0Jeky/Loomward/issues/789"
+      },
+      {
+        "number": 751,
+        "state": "closed",
+        "closed_at": "2026-10-19T18:44:03Z",
+        "url": "https://github.com/Chris0Jeky/Loomward/issues/751"
+      }
+    ],
+    "closed_issue_count": 18,
+    "scope": "Preceding work completed before this 173-issue maintenance inventory. Original PRs were integrated with preserved ancestry; historical validation remains in their linked PR receipts."
+  },
+  "cumulative": {
+    "initial_open_issue_count": 191,
+    "original_prs_merged": 33,
+    "closed_issue_count": 25,
+    "closed_issues": [
+      122,
+      124,
+      176,
+      416,
+      675,
+      696,
+      700,
+      710,
+      722,
+      723,
+      733,
+      739,
+      751,
+      753,
+      758,
+      760,
+      763,
+      775,
+      776,
+      777,
+      781,
+      782,
+      785,
+      789,
+      793
+    ],
+    "remaining_open_issue_count": 166,
+    "scope": "Original 18 closures plus this wave's 7 retained closures; issue120 was reopened after final acceptance review. No newly opened issue or blanket completion claim."
+  },
+  "review_thread_audit": {
+    "scope": "Read-only inline review thread audit of 33 original merged PRs plus #797–#813; no thread resolutions or GitHub writes.",
+    "prs": [
+      720,
+      740,
+      742,
+      744,
+      752,
+      756,
+      767,
+      768,
+      745,
+      747,
+      748,
+      761,
+      764,
+      779,
+      784,
+      790,
+      792,
+      746,
+      757,
+      759,
+      765,
+      772,
+      773,
+      778,
+      783,
+      786,
+      788,
+      791,
+      794,
+      735,
+      750,
+      771,
+      769,
+      797,
+      798,
+      799,
+      800,
+      801,
+      802,
+      803,
+      804,
+      805,
+      806,
+      807,
+      808,
+      809,
+      810,
+      811,
+      812,
+      813
+    ],
+    "pr_count": 50,
+    "thread_count": 21,
+    "resolved_count": 20,
+    "unresolved_count": 1,
+    "unresolved": [
+      {
+        "pr": 750,
+        "thread_id": "PRRT_kwDOVC3gtM6txQls",
+        "original_comment": 4309902619,
+        "url": "https://github.com/Chris0Jeky/Loomward/pull/750#discussion_r4309902619",
+        "state": "kept_open",
+        "reason": "Supported non-elevated native foreign-Store ordering remains unverified in PR814.",
+        "progress_reply_url": "https://github.com/Chris0Jeky/Loomward/pull/750#discussion_r4335622383",
+        "issue_progress_url": "https://github.com/Chris0Jeky/Loomward/issues/738#issuecomment-6313577099",
+        "progress": "Merged #809 and #815 implementation receipts recorded; #814 strict native setup failure remains unqualified, so the thread and #738 stay open."
+      }
+    ]
+  },
+  "closure_evidence": [
+    {
+      "number": 122,
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/122#issuecomment-6304120233",
+      "body": "The v3 protocol/DTO/generated-TypeScript milestone is complete in [PR #133](https://github.com/Chris0Jeky/Loomward/pull/133), following the contract in #110. Its receipt covers all 45 commands, 174 DTO definitions, 123 valid and 46 negative complete-envelope examples, exact decoding and deterministic TS output, with the driver-rerun Rust/Python gates recorded.\n\nCurrent source retains [contract validation and round-trip tests](https://github.com/Chris0Jeky/Loomward/blob/828ef592eaa10388ce99e760d8985fae865facb8/crates/loomward-protocol/tests/contract.rs), the [deterministic generator and --check](https://github.com/Chris0Jeky/Loomward/blob/828ef592eaa10388ce99e760d8985fae865facb8/scripts/gen_contracts_ts.py), and the [generated app contract](https://github.com/Chris0Jeky/Loomward/blob/828ef592eaa10388ce99e760d8985fae865facb8/app/src/lib/contracts.gen.ts).\n\nClosing the original L1 milestone. The older v2 ownership/disposition decision in #10 and aggregate errata/service/provider acceptance in #117 remain separate; this does not establish those broader gates."
+    },
+    {
+      "number": 124,
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/124#issuecomment-6304120928",
+      "body": "The Atlas, Observatory and gauge implementation milestone is complete through [PR #136](https://github.com/Chris0Jeky/Loomward/pull/136) and the inspector/retry/backoff/unknown-VRAM follow-up [#155](https://github.com/Chris0Jeky/Loomward/pull/155). The implementation includes canvas modules, text equivalents and unknown/provisional rendering.\n\nRetained [UI evidence](https://github.com/Chris0Jeky/Loomward/blob/828ef592eaa10388ce99e760d8985fae865facb8/evidence/v3/ui-signature-pass.md) records the later browser/accessibility checks, including the 2,500-node Atlas slice. The [native WebView2 receipt](https://github.com/Chris0Jeky/Loomward/blob/828ef592eaa10388ce99e760d8985fae865facb8/evidence/v3/native/README.md) records five synthetic P9 runs with a 17.5 ms median against the 50 ms target.\n\nClosing the original view/module milestone. Manual Narrator, scaling, multiple-monitor and real field acceptance stay in #24, #101 and #414. These are retained execution receipts, not new measurements from this session."
+    },
+    {
+      "number": 176,
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/176#issuecomment-6304119002",
+      "body": "Both named spike defects are fixed by [PR #291](https://github.com/Chris0Jeky/Loomward/pull/291): the child publishes its report through `.partial` plus rename, and log read/UTF-8 failures are retained as explicit `read_error` values. [Current example source](https://github.com/Chris0Jeky/Loomward/blob/828ef592eaa10388ce99e760d8985fae865facb8/crates/loomward-lab/examples/teacher_sandbox/windows.rs) contains regression coverage for atomic publication, missing logs and invalid UTF-8.\n\nThe [later reconciliation receipt](https://github.com/Chris0Jeky/Loomward/blob/828ef592eaa10388ce99e760d8985fae865facb8/evidence/v3/teacher-followups-293.md) ties both fixes to #291 and records 14 passing standalone Windows example tests. Its blocked Cargo all-targets checks remain explicitly unverified.\n\nClosing these two spike-only items. Production teacher runtime, stage/provenance enforcement, provider qualification and personal-teacher gates remain in #128, #130 and #293; this is not a new live confinement or console-kill qualification."
+    },
+    {
+      "number": 416,
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/416#issuecomment-6304118330",
+      "body": "The original q-40 retirement milestone is complete in [PR #424](https://github.com/Chris0Jeky/Loomward/pull/424). Its parity checklist accounts for every retired legacy surface and preserves deliberately delegated gaps in their existing issues. The Python reference is marked frozen, and all 80 admission fixtures remain pinned by `AdmissionOracleFixtureTests`.\n\nThe exact PR head `ec8d0e02bf940054d99b259264a7670f58de55b3` has [nine successful hosted jobs](https://github.com/Chris0Jeky/Loomward/actions/runs/38196055909), including Windows desktop build/test/clippy/self-test, both native workspace legs, the four Python variants and app checks. PR #424 also records its local Windows browser suite. The retained checklist is in [docs/30](https://github.com/Chris0Jeky/Loomward/blob/828ef592eaa10388ce99e760d8985fae865facb8/docs/30-interface-and-workspace-spec.md).\n\nClosing this maintenance milestone. Activity/export, durable Decision desk, providers, resource scheduling and manual Windows accessibility remain tracked in #25, #26, #93, #76, #70, #37, #82, #83, #24 and #101. This closure adds no new qualification claim."
+    },
+    {
+      "number": 763,
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/763#issuecomment-6304465897",
+      "body": "Both listed items are now accounted for. [PR #807](https://github.com/Chris0Jeky/Loomward/pull/807), merged as f3c19a2208a74f54c267d28ab0cc58cf3f4859ad, forwards settlement through RepairSink and ProbeWriter. Its tests-only [Linux run](https://github.com/Chris0Jeky/Loomward/actions/runs/39513590898/job/118940280426) failed the expected obsolete-directory relist and swallowed-writer-error assertions; the implementation then passed all nine jobs in [run 39514520589](https://github.com/Chris0Jeky/Loomward/actions/runs/39514520589), including both native platforms.\n\nThe send-time-rejected listing/chunk fence in item 2 was already addressed by #790 and was checked during the initial source review. This closure is limited to those two sink-wrapper/rejection items."
+    },
+    {
+      "number": 781,
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/781#issuecomment-6313080792",
+      "body": "Completed by [#808](https://github.com/Chris0Jeky/Loomward/pull/808) and the reviewed late-cancellation follow-up [#813](https://github.com/Chris0Jeky/Loomward/pull/813).\n\nA scan that drains its configured budget now records a finished partial result while keeping coverage unknown; it does not authorize absence or freshness. Final publication admission is serialized with cancellation, and the admission gate is released before sink I/O. Cancellation that wins first suppresses completion, freshness and finished-partial publication; cancellation arriving after publication admission preserves the admitted decision.\n\nBoth new cancellation regressions failed before implementation on Linux and Windows. Final head `484a46808af970cb9083366208008c117655272c`, tree `6bd2f4142db1aa595e8f722eae273cc8282eb751`, passed all nine jobs in [run 39521167880](https://github.com/Chris0Jeky/Loomward/actions/runs/39521167880). Actual CI checkout `21ced095a07b19cb7f4c9b829376303eb3101ca9` and merge `9e33052b1a54ccb6d79a2d7adb88ec532c1230a2` have that same source tree.\n\nThis closes the reported budget-completion defect and its reviewed cancellation window. The tests exercise the real scan pipeline and job registry at a MemorySink-backed publication boundary; they do not establish native directory enumeration, sustained 10M service readiness or broader host qualification."
+    },
+    {
+      "number": 785,
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/785#issuecomment-6304961813",
+      "body": "Completed by merged [PR #811](https://github.com/Chris0Jeky/Loomward/pull/811), merge `dc783190cdaced24d06da37d3ae7ce32fb193c7f`.\n\nA retry after restart can recover the original label or retraction receipt when a single read-only proof authenticates the same current durable object, effective published reference, grant and visible ancestry. The original fingerprint fast path remains for exact and legacy retries. Conflicts and missing receipts fail before any new reference/event/revision write; dirty catalogue roots are not repaired during replay validation.\n\nThe four original regressions failed before implementation. All ten final portable regressions executed and passed on both Linux and Windows, and all nine jobs in [run 39519053157](https://github.com/Chris0Jeky/Loomward/actions/runs/39519053157) succeeded at head `d894c06f69320dc85f05755a9653dc20e7249cde`, source tree `dc5a981a62f9c69744fa24184e87ffedc2b81576`. The merged source tree is identical. Independent review also checked the proof's read-only and ancestry/incarnation boundaries.\n\nThis closes the restart/idempotency defect reported here. It introduces no schema or protocol change and makes no new native filesystem, 10M-readiness or capability-gate claim."
+    }
+  ],
+  "reopened_issues": [
+    {
+      "number": 120,
+      "state": "open",
+      "reason": "The original issue incorporates W0-B measurement acceptance; required cold-cache and full strategy/thread/volume qualification remain unverified. Warm HDD measurements exist in PR118.",
+      "previous_closure": {
+        "url": "https://github.com/Chris0Jeky/Loomward/issues/120#issuecomment-6304119592",
+        "body": "The enumeration strategy and promotion milestone is complete in [PR #162](https://github.com/Chris0Jeky/Loomward/pull/162). The measured strategy chain is in the production `DirSource`: extended IDs, width-preserving Both fallback, then Find; child opens are handle-relative and post-open identity/attribute checks remain enforced.\n\nThe retained [L7 conformance and measurement receipt](https://github.com/Chris0Jeky/Loomward/blob/828ef592eaa10388ce99e760d8985fae865facb8/evidence/v3/scan-l7.md) maps the native tests and mutation checks, records Windows fmt/workspace/clippy/all-feature checks, and contains 20/20 exact S and 20/20 exact M manifest matches with enumeration and sink time reported separately. Raw measurements are linked in that receipt.\n\nClosing this original strategy/promotion milestone. The historical S/M runs used the in-memory sink and warm/uncontrolled conditions; full durable-service 10M/P4, physical ReFS/Cloud Files, hung-volume and broader daily-use qualification remain in #414, #117, #285 and their linked work. No new native measurement is claimed here."
+      },
+      "reopening": {
+        "url": "https://github.com/Chris0Jeky/Loomward/issues/120#issuecomment-6313742953",
+        "body": "Reopened after [the final checkpoint review](https://github.com/Chris0Jeky/Loomward/pull/816#discussion_r4335679013). My earlier closure treated this as an implementation/promotion milestone, but this issue explicitly incorporates both W0-B measurement and L7 acceptance. That narrower interpretation was incorrect.\n\nThe promoted strategy chain and retained S/M conformance work in [#162](https://github.com/Chris0Jeky/Loomward/pull/162) remain valid implementation progress. The outstanding acceptance is the required per-strategy, 1–16-thread measurement matrix across the specified fast/slow volumes in warm and cold conditions, as stated in [W0-B](https://github.com/Chris0Jeky/Loomward/blob/132e10e8c43a963658d03cbeaec34d8f20a6c0a8/docs/43-v03-lanes.md#L72).\n\nThe retained evidence does not complete that matrix: [#111](https://github.com/Chris0Jeky/Loomward/pull/111) leaves cold-cache and HDD qualification unverified; [#118](https://github.com/Chris0Jeky/Loomward/pull/118) adds warm NVMe/HDD measurements but explicitly leaves true cold-cache measurements open. The [L7 receipt](https://github.com/Chris0Jeky/Loomward/blob/132e10e8c43a963658d03cbeaec34d8f20a6c0a8/evidence/v3/scan-l7.md#L96-L106) also retains its warm/uncontrolled qualification.\n\nBoth the GitHub issue and LW-101 stay **in progress** until the required measurements exist. The checkpoint will retain the earlier closure receipt as superseded history, remove this issue from current closure totals, and keep the original acceptance criteria intact."
+      }
+    }
+  ],
+  "checkpoint_review": {
+    "pr": 816,
+    "reviewed_head": "1a5c8f4c3e48334a9139de3f08de895c0d22ef50",
+    "finding_url": "https://github.com/Chris0Jeky/Loomward/pull/816#discussion_r4335679013",
+    "issue_reopened": 120,
+    "correction": "Retain LW-101 in_progress, reopen #120, preserve the superseded closure and record its outstanding measurement acceptance."
+  },
+  "issues": [
+    {
+      "number": 3,
+      "title": "Fix pre-existing defects found by the v0.2 import reviews",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/3",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "PR805 fixes the source-archive manifest mutation and repeat-packaging edge; the broader repository hygiene issue remains open."
+    },
+    {
+      "number": 4,
+      "title": "[LW-001] Verify the reference workbench on Windows",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/4",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Kept open: the original selected-root scan and first-sample CPU witness is not fully established by this review."
+    },
+    {
+      "number": 10,
+      "title": "[LW-016] Standardise the exact v2 wire protocol",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/10",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 11,
+      "title": "[LW-005] Build the local native catalogue and migration harness",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/11",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 12,
+      "title": "[LW-006] Add bounded native scan jobs and cancellation",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/12",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 13,
+      "title": "[LW-007] Implement optional USN catch-up with gap recovery",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/13",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 14,
+      "title": "[LW-008] Implement watcher overflow reconciliation",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/14",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 15,
+      "title": "[LW-009] Separate logical, allocated and unique-object accounting",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/15",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 16,
+      "title": "[LW-010] Detect project anchors and confirm atomic groups",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/16",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 17,
+      "title": "[LW-011] Implement paginated native queries and large explorer",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/17",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 18,
+      "title": "[LW-012] Port duplicate inspection behind the native identity boundary",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/18",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 19,
+      "title": "[LW-013] Explain duplicate groups and reclaimability uncertainty",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/19",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 20,
+      "title": "[LW-014] Build a sandboxed bounded extraction worker",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/20",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 21,
+      "title": "[LW-015] Add safe previews without shell-handler loading",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/21",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 22,
+      "title": "[LW-017] Implement authenticated per-user native IPC",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/22",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 23,
+      "title": "[LW-018] Connect the Tauri shell to read-only native view models",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/23",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 24,
+      "title": "[LW-019] Complete Windows accessibility and scaling QA",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/24",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 25,
+      "title": "[LW-020] Implement private state retention and export controls",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/25",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 26,
+      "title": "[LW-021] Add feedback correction, retraction and bounded training windows",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/26",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 27,
+      "title": "[LW-022] Build a versioned user taxonomy editor",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/27",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 28,
+      "title": "[LW-023] Integrate the optional teacher into a review queue",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/28",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 29,
+      "title": "[LW-024] Evaluate embeddings against the token student",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/29",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 31,
+      "title": "[LW-026] Implement interruption budgets and active review selection",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/31",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 32,
+      "title": "[LW-027] Implement model promotion, drift and rollback",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/32",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 33,
+      "title": "[LW-028] Add explicit usage observation with coverage semantics",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/33",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 34,
+      "title": "[LW-029] Train and evaluate a bounded access-heat model",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/34",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 35,
+      "title": "[LW-030] Build the storage simulator and small exact oracle",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/35",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 36,
+      "title": "[LW-031] Plan bidirectional tiering with hysteresis",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/36",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 37,
+      "title": "[LW-032] Schedule storage work under device and foreground budgets",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/37",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 38,
+      "title": "[LW-033] Define path continuity and provider relocation contracts",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/38",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 39,
+      "title": "[LW-034] Manage owned model leases and memory budgets",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/39",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 40,
+      "title": "[LW-035] Implement a typed backup-provider adapter",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/40",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 41,
+      "title": "[LW-036] Verify backup restore and Windows metadata fidelity",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/41",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 42,
+      "title": "[LW-037] Design explicit retention and source-retirement policies",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/42",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 43,
+      "title": "[LW-038] Bind consent to exact canonical plans",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/43",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 46,
+      "title": "[LW-040] Implement copy-only supported-file transactions",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/46",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 47,
+      "title": "[LW-041] Run the Windows crash and fault-injection matrix",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/47",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 48,
+      "title": "[LW-042] Gate the first narrowly supported approved move",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/48",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 49,
+      "title": "[LW-043] Implement conflict-aware undo as a fresh plan",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/49",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 50,
+      "title": "[LW-044] Resolve known folders and desktop ownership",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/50",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 51,
+      "title": "[LW-045] Inspect shortcut health without execution",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/51",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 52,
+      "title": "[LW-046] Build virtual desktop workspaces and session views",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/52",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 54,
+      "title": "[LW-048] Offer usage-qualified application cleanup advice",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/54",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 55,
+      "title": "[LW-049] Design a reviewed provider-specific uninstall handoff",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/55",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 56,
+      "title": "[LW-050] Implement native read-only process telemetry",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/56",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 57,
+      "title": "[LW-051] Add resource trends and evidence-led explanations",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/57",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 58,
+      "title": "[LW-052] Budget Loomward-owned workers with Job Objects",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/58",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 59,
+      "title": "[LW-053] Add reversible process policies with expiry",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/59",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 60,
+      "title": "[LW-054] Define process-control identity and protection gates",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/60",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 61,
+      "title": "[LW-055] Create redacted diagnostic bundles",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/61",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 62,
+      "title": "[LW-056] Benchmark against current specialist tools fairly",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/62",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 63,
+      "title": "[LW-057] Create reviewed Windows distributables and release provenance",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/63",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 64,
+      "title": "[LW-058] Expose a read-only external-agent API",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/64",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 65,
+      "title": "[LW-059] Explore semantic and perceptual similarity safely",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/65",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 66,
+      "title": "[LW-060] Prototype capacity-growth and anomaly forecasts",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/66",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 67,
+      "title": "[LW-061] Add explicit developer-workspace providers",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/67",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 68,
+      "title": "[LW-062] Run an observation-only personal field trial",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/68",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 69,
+      "title": "[LW-063] Confirm name, licence and public repository governance",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/69",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 70,
+      "title": "[LW-065] Run a real-host dual-era MCP compatibility matrix",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/70",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 71,
+      "title": "[LW-066] Adopt a production MCP SDK behind the bounded ToolService",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/71",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 72,
+      "title": "[LW-067] Persist and revoke per-client disclosure grants",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/72",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 73,
+      "title": "[LW-068] Replace full-state explorer loads with paged reference views",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/73",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 74,
+      "title": "[LW-069] Port scoped catalogue projections to the native query layer",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/74",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 75,
+      "title": "[LW-070] Represent group lineage and evidence in relational projections",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/75",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 76,
+      "title": "[LW-071] Build an opt-in provider registry and descriptor validator",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/76",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 77,
+      "title": "[LW-072] Implement transactional provider inbox and outbox",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/77",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 78,
+      "title": "[LW-073] Create the provider replay and contract conformance kit",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/78",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 79,
+      "title": "[LW-074] Add a read-only Estate Console host-summary adapter",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/79",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 80,
+      "title": "[LW-075] Prepare Taskdeck review proposals without approval authority",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/80",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 81,
+      "title": "[LW-076] Import Agent Harness activity and worktree-lease evidence",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/81",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 82,
+      "title": "[LW-077] Connect admission decisions to Loomward-owned worker launch",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/82",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 83,
+      "title": "[LW-078] Move resource leases into one authenticated native authority",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/83",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 84,
+      "title": "[LW-079] Measure demand estimates against actual owned-worker usage",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/84",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 85,
+      "title": "[LW-080] Port the v2 allocation portfolio and oracle fixtures to Rust",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/85",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "The Rust allocation port already exists; the wider production/interoperability acceptance remains separate."
+    },
+    {
+      "number": 86,
+      "title": "[LW-081] Improve large-instance allocation under explicit search budgets",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/86",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 87,
+      "title": "[LW-082] Add recall reservations and explicit active-work windows",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/87",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 88,
+      "title": "[LW-083] Validate dependency groups before placement proposals",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/88",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 89,
+      "title": "[LW-084] Normalise backup evidence without equating success to recovery",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/89",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 90,
+      "title": "[LW-085] Add creative-source and derivative manifests",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/90",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 91,
+      "title": "[LW-086] Add a cooperative model-host lifecycle provider",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/91",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 92,
+      "title": "[LW-087] Estimate regeneration cost for explicit build-cache providers",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/92",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 93,
+      "title": "[LW-088] Persist decision notes with evidence-bound review history",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/93",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 94,
+      "title": "[LW-089] Expose bounded MCP proposal preparation without approve/apply",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/94",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 95,
+      "title": "[LW-090] Evaluate a read-only MCP Apps evidence view",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/95",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 96,
+      "title": "[LW-091] Threat-model optional remote MCP transport and authentication",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/96",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 97,
+      "title": "[LW-092] Prototype conflict-aware preference sync only",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/97",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 98,
+      "title": "[LW-093] Measure information-value question selection",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/98",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 99,
+      "title": "[LW-094] Propagate feedback retraction through derived model state",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/99",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 100,
+      "title": "[LW-095] Exercise provider isolation and diagnostic privacy failures",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/100",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 101,
+      "title": "[LW-096] Verify all workbench states with keyboard, zoom and large data",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/101",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 102,
+      "title": "[LW-097] Benchmark end-to-end resource and energy effects",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/102",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 103,
+      "title": "[LW-098] Preserve disclosure suppression across views and exports",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/103",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 104,
+      "title": "[LW-099] Cache extraction results under bounded invalidation and budgets",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/104",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 105,
+      "title": "[LW-100] Gate release claims against executable capability evidence",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/105",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 117,
+      "title": "v0.3 architecture errata (binding): verification findings for implementing lanes",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/117",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 120,
+      "title": "[LW-101] Measure enumeration strategies and promote the winner into loomward-windows",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/120",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "reopened",
+      "assessment": "Reopened after final acceptance review: PR162 implements the strategy promotion, but W0-B cold-cache and full strategy/thread/volume measurement acceptance remain unverified. PR118 contains warm HDD measurements. LW-101 stays in_progress."
+    },
+    {
+      "number": 122,
+      "title": "[LW-103] v3 view-service contract, protocol crate and generated TS types",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/122",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "closed",
+      "assessment": "Closed the original v3 DTO/protocol/generated-TS milestone using PR133; v2 disposition and aggregate errata remain separate."
+    },
+    {
+      "number": 124,
+      "title": "[LW-105] Woven-atlas treemap, Observatory sunburst and gauge modules",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/124",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "closed",
+      "assessment": "Closed the original Atlas/Observatory/gauge module milestone using PR136, PR155 and retained UI/WebView2 receipts; manual accessibility and field acceptance remain."
+    },
+    {
+      "number": 125,
+      "title": "[LW-106] Loopback HTTP and SSE adapter (loomward-serve)",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/125",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 126,
+      "title": "[LW-107] Read-only system, GPU and disk telemetry samplers",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/126",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 128,
+      "title": "[LW-109] Codex teacher runner, synthetic-only, with single-use grants",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/128",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 130,
+      "title": "[LW-111] OS-enforced teacher confinement and enforcement canaries",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/130",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 131,
+      "title": "[LW-112] Wave-3 service integration and grant policy",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/131",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 148,
+      "title": "Catalogue P4: reach 250k rows/s insert throughput (currently 15.5k after revision 2)",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/148",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 160,
+      "title": "Telemetry P12: lease overhead 3.1% of one core above idle (target <= 1%)",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/160",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 176,
+      "title": "L15b teacher-sandbox spike follow-ups (Codex on #174)",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/176",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "closed",
+      "assessment": "Closed the two teacher-spike defects using PR291 and retained 14-test standalone Windows evidence; production teacher qualification remains."
+    },
+    {
+      "number": 182,
+      "title": "native: Dependabot alert 1 (glib 0.18.5 VariantStrIter unsoundness) is a Linux-only transitive Tauri dependency",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/182",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 198,
+      "title": "app: Explorer falls back to its starting points when a breadcrumb node ID is not_found after resync",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/198",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 247,
+      "title": "duplicate reader: the content-read gate is a convention guard under feature unification; revocation wording; dead reason (#244 review)",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/247",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 260,
+      "title": "shell follow-ups: parser branch bugs from the Muse bug hunt and #257 review LOWs",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/260",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 285,
+      "title": "containment (#269) LOWs: a root opened with different case; normalized NT path query on FAT, exFAT and RAM-disk filesystems",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/285",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 286,
+      "title": "service fences after #284: OS profiles directory (MEDIUM, before personal scans open); health.get counts; bus allowlist; child-test guard",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/286",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 293,
+      "title": "Teacher confinement follow-ups from the #291 security review",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/293",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 309,
+      "title": "catalogue writer and watch repair LOWs (from the #306 review and #303)",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/309",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 320,
+      "title": "tests: wall-clock budgets fail under parallel load (duplicate reader 100 ms deadline; http duplicate Content-Length)",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/320",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 349,
+      "title": "backup evidence (LW-084) follow-ups from the #347 review: wiring-wave items",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/349",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 352,
+      "title": "placement follow-ups from the #350 review (save digest after excluded_volumes, mock drift, older-service tolerance)",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/352",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 359,
+      "title": "LOWs from the #358 security review (duplicates gate order, stop precedence, drain hold, empty disclosure pages, wall-clock http tests)",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/359",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 370,
+      "title": "personal learning follow-ups from the #368 review (sweep misses pending rebinds, swallowed redact errors, test gaps, dead gate code)",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/370",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 375,
+      "title": "FAT/exFAT follow-ups from the #372 review (re-grant keeps NULL filesystem, CLI flag on restart, confirmation text, destination placement, weak test)",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/375",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 378,
+      "title": "personal duplicates LOWs from the #376 review (share-write on content opens, stale doc text, gate order, content_read capability flag)",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/378",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 384,
+      "title": "desktop picker and grant button follow-ups from Codex on #379 and #380",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/384",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 386,
+      "title": "first-scan bulk load follow-ups: P14 catalogue size regresses 155 -> 230 bytes/entry (freed build pages), savepoint-rollback bulk map, failed first scan keeps nothing",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/386",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 391,
+      "title": "forget follow-ups from the #382 review: migration copy deleted when another grant shares the path, silent best-effort backup cleanup, preserve_catalog copies untouched",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/391",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "PR802 and PR806 improve forgotten metadata/reply handling; this broader retention/cleanup follow-up remains open."
+    },
+    {
+      "number": 398,
+      "title": "sqlite_dir follow-ups: non-ASCII cutoff, verbatim-only components, test hang, upstream report (#397)",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/398",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 404,
+      "title": "[LW-113] Build the live full-text and substring search index over granted roots",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/404",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 405,
+      "title": "[LW-114] Integrate Everything as an optional whole-volume search backend",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/405",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 406,
+      "title": "[LW-115] Design an optional elevated NTFS-metadata search helper behind its own gate",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/406",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 407,
+      "title": "[LW-116] Add a local semantic (embedding) search layer with consented model download",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/407",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 408,
+      "title": "[LW-117] Define the Ask provider interface for local, cloud and bundled models",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/408",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 410,
+      "title": "[LW-119] Surface developer clutter: build outputs, package caches, model files and stale worktrees",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/410",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 411,
+      "title": "[LW-120] Add cloud and sync awareness without triggering recall",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/411",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 412,
+      "title": "[LW-121] Add growth and low-space monitoring with alerts",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/412",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 413,
+      "title": "[LW-122] Publish a rolling nightly channel and an opt-in updater",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/413",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 414,
+      "title": "[LW-123] Define and evidence the daily-use readiness bar",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/414",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Kept open: complete durable-service 10M readiness, continuous 72-hour evidence, required effect gates and owner UX acceptance are not established by this wave."
+    },
+    {
+      "number": 415,
+      "title": "[LW-124] Gate the first real effect: approved copy-and-verify",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/415",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 416,
+      "title": "[LW-125] Retire the legacy browser UI and freeze the Python reference",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/416",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "closed",
+      "assessment": "Closed the original UI retirement/frozen Python oracle milestone using PR424, parity mapping and its nine passing hosted jobs."
+    },
+    {
+      "number": 417,
+      "title": "[LW-126] Prepare package channels: winget, Scoop bucket, Microsoft Store and a signing hook",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/417",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 418,
+      "title": "[LW-127] Nice-to-have: NAS shares as granted roots",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/418",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 419,
+      "title": "[LW-128] Nice-to-have: paired machines with a read-only LAN view",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/419",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 420,
+      "title": "[LW-129] Nice-to-have: cloud sync design (design only)",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/420",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 421,
+      "title": "[LW-130] Observe-only Linux port after the Windows daily-use bar",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/421",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 433,
+      "title": "Find & Ask design follow-ups: MCP handles and projection, budget and wording items (#426)",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/433",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 434,
+      "title": "Forget VACUUM main: RAM via temp_store=MEMORY, silent retry on failure, sweep evidence gaps (#427)",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/434",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "The broader forget RAM, scrub-retry and sweep-evidence work remains open; no 10M performance claim is added."
+    },
+    {
+      "number": 437,
+      "title": "Diagnostics bundle follow-ups: honest cancel reasons, root cap reason, save tracker scope, real-window checks (#399)",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/437",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 506,
+      "title": "C2 primitives: recovery and post-publish API for C5 (attach to journaled staging, re-hash after publish, list streams/entries) (review of #503)",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/506",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 515,
+      "title": "developer clutter: bound the detector's join shape before exposing it (review of #514)",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/515",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "The reported detector join cost remains a measurement task; no speculative performance rewrite was made."
+    },
+    {
+      "number": 520,
+      "title": "Find F2 follow-up: enable the ranked-search token index only with a 10M baseline, a bulk-aware swap and a measured migration",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/520",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 526,
+      "title": "C5 follow-ups before C8: revocation wiring, admission lock, cancel-aware publish retry, residual windows (review of #522)",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/526",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 550,
+      "title": "Find F3 catch-up: identity-gap check scans every directory row; unidentifiable folders make the root stale on any volume event (review of #548)",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/550",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 552,
+      "title": "Find: search N+1 hypotheses (FTS keyset rescan, per-hit ancestor walk, per-component path resolve) — measure at 10M (Muse perf lens)",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/552",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 583,
+      "title": "Muse wave 7: freshness claim TOCTOU, refresh attempts never reset, duplicates discards refresh work, Ask loopback trust and sanitizer (to verify)",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/583",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 601,
+      "title": "Build: investigate engine test executable mismatch in shared target pool",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/601",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 636,
+      "title": "copy: LOW follow-ups from the #634 deep review (durable stop coverage, sticky needs_attention, unreplayable journal blocks revoke)",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/636",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 646,
+      "title": "catalog: recover the end-to-end first-scan publication throughput lost to file-backed scratch (~22% through EndRun)",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/646",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 649,
+      "title": "soak: the 72 h run (started 2026-10-17 03:39) stopped at 18.1 h on one 30 s scan timeout under host saturation; rerun on a quiet host",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/649",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 663,
+      "title": "process: merge queue merged PRs whose CI ran on an older main (semantic skew broke main's test build, fixed in #662)",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/663",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 672,
+      "title": "copy: preallocation and chunk writes are not serialized with a cross-store fence (#670 follow-up)",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/672",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 687,
+      "title": "windows: H2 named-stream hold no longer blocks publish after the 2026-10-18 Windows update (KRASPYON 26100.9711)",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/687",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 690,
+      "title": "copy: GUID-bind recovery clean/confirm and pin the service's destination_root_guid wiring (#688 review LOWs)",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/690",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 719,
+      "title": "scan limit_hit:true carries limit_reason:null; jobs.get progress null; scan.last_job_id null",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/719",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 730,
+      "title": "service lib test process aborted once with 0xc0000409 under load (KRASPYON)",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/730",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 738,
+      "title": "copy: a pending fence is dropped when a stuck rename then commits, so the copy commits without its grant_revoked annotation",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/738",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "PR803 preserves the contract/reproducer; PR809 advances terminal metadata and service retention; PR815 covers request-registration and cancellation-settlement receipt ordering. PR814 still requires actual supported non-elevated Windows native qualification, so the issue stays open."
+    },
+    {
+      "number": 749,
+      "title": "catalog: validate_stores can roll back a hot rollback journal before a refused start (state no longer byte-identical after refusal)",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/749",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    },
+    {
+      "number": 754,
+      "title": "Muse retro review of wave 12 merges: tracked LOW/MEDIUM findings",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/754",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Existing fixes and residual hypotheses were separated; no duplicate error-filter fix is claimed."
+    },
+    {
+      "number": 762,
+      "title": "Muse lenses over open wave 12 PRs: MEDIUM follow-ups (#742, #743, #744, #745)",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/762",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "The suggested bulk-file orphan was not reproduced in source review: the relevant deletion cascades. Other aggregate findings remain open."
+    },
+    {
+      "number": 763,
+      "title": "scan sink: RepairSink/ProbeWriter do not forward settle; a send-time-rejected chunk reuses its seq (review of #761)",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/763",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "closed",
+      "assessment": "PR807 fixes wrapper settlement; the rejected-listing fence was already covered by PR790. Both listed items are accounted for."
+    },
+    {
+      "number": 766,
+      "title": "watch: scan_start_publishes_a_lab_tree_matching_an_independent_walk_with_live_events failed once (assert_eq) on the #761 branch",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/766",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "PR812 labels the ten existing equality assertions. The original failure is unidentified; the issue remains open for a complete panic and diagnosis."
+    },
+    {
+      "number": 770,
+      "title": "volume_binding_handles_guid_path_longer_than_initial_buffer fails on KRASPYON (OS error 534)",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/770",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "The Windows long-GUID-path failure remains host-specific and unreproduced here."
+    },
+    {
+      "number": 781,
+      "title": "scan: a run stopped by a budget limit is stored cancelled, so finished_at stays null (follow-up to #774)",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/781",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "closed",
+      "assessment": "Closed after PR808 recorded partial completion honestly and PR813 repaired the separately reviewed late-cancellation admission window, with observed failing regressions followed by passing Linux and Windows gates."
+    },
+    {
+      "number": 785,
+      "title": "labels: a label cannot be retried after a restart under the same client event id (node ids change per session)",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/785",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "closed",
+      "assessment": "PR811 proves the current durable binding before replaying saved feedback across changed session node IDs; broad schema/protocol behavior is unchanged."
+    },
+    {
+      "number": 787,
+      "title": "watch follow-ups from the Muse lens on #773 (wedged-worker pins, probe ordering, retiring-watch hints)",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/787",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "PR810 fixes item 2, preserving a live watch across a failed initial sink probe. Worker pins, retiring hints and sustained-load churn remain separate."
+    },
+    {
+      "number": 796,
+      "title": "service test: second-root volume-space observation intermittently returns unknown in the workspace suite",
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/796",
+      "initial_state": "open",
+      "body_reviewed": true,
+      "outcome": "left_open",
+      "assessment": "Reviewed; no complete acceptance evidence or reviewed fix was established for this issue in this maintenance wave."
+    }
+  ],
+  "limits": [
+    "Rust execution receipts in this maintenance record are the linked hosted jobs.",
+    "Windows jobs that compile or early-return from an unsupported fixture are not real native-effect qualification.",
+    "C8 remains closed; no new personal file or process effects are authorized.",
+    "No full durable-service 10M, continuous 72-hour, power-cut/restore, real teacher confinement or manual accessibility completion is claimed."
+  ]
+}

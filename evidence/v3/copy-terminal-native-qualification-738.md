@@ -1,7 +1,8 @@
 # Pending terminal revocation: native qualification follow-up (#738)
 
-**Status: the strict fixture compiled, but the hosted attempt failed its non-elevated-host
-prerequisite. The native rename/foreign-commit ordering remains UNVERIFIED.**
+**Status: two strict hosted attempts compiled, then failed the non-elevated-host prerequisite.
+A standard-user CI invocation is now prepared; its runtime result and the native ordering remain
+UNVERIFIED until actual execution is recorded.**
 This follow-up does not close [#738](https://github.com/Chris0Jeky/Loomward/issues/738), open C8,
 or change any production capability, staging-removal default or fixture guard.
 All existing CI checks remain in place.
@@ -27,9 +28,12 @@ The native fixture and strict invocation in this follow-up are unchanged.
 **Reviewed production source parent:**
 [`66c3ec61dba0a47de3f4b8134a88a271e300cc95`](https://github.com/Chris0Jeky/Loomward/commit/66c3ec61dba0a47de3f4b8134a88a271e300cc95),
 tree `d0eace0f30f0150880f95945e6069d8f78c3901c`.
-This names #815's reviewed implementation commit. Its own CI receipt and merge decision are tracked
-in #815. Incorporating this source parent here makes no claim that #815 has merged or that its
-remaining checks have completed. This follow-up requires its own exact-head CI receipt and actual
+That reviewed implementation passed all nine jobs in
+[run 39579965994](https://github.com/Chris0Jeky/Loomward/actions/runs/39579965994) and merged at
+`132e10e8c43a963658d03cbeaec34d8f20a6c0a8` with the identical source tree. Current main
+`cd726e0581bfd9f18fe2d9e8f1931216cfb6d697` also contains the subsequent documentation checkpoint
+and desktop broker prerequisite. The qualification overlay is reconciled with that main and changes
+no production Rust file. This follow-up still requires its own exact-head CI receipt and actual
 supported-host execution; the qualifying head must be recorded from that execution.
 
 The new test promotes and strengthens the
@@ -40,11 +44,12 @@ service retention, fault handling and old-reader policy belong to #809, the resi
 ordering repair belongs to #815, and their contract remains
 [docs/47](../../docs/47-copy-and-verify.md).
 
-Relative to that production source parent, this follow-up adds one native regression, a focused
-Windows CI invocation and this qualification record.
-The focused invocation retains every existing check and fails on unsupported setup; it cannot count
-an elevated-host refusal as a native pass. These three additions do not alter production code
-or provide a durable outbox for a pending request lost when its service/process ends.
+Relative to current main, this follow-up adds one native regression, the Windows standard-user
+invocation and its bounded runner script, and this qualification record. All original Windows test
+commands remain in the script; Linux, formatting, Clippy and other workflow jobs retain their checks.
+Required focused native invocations fail on setup refusal or missing test execution. These additions
+do not alter production code or provide a durable outbox for a pending request lost when its
+service/process ends.
 
 ## Ordering the fixture must establish
 
@@ -127,6 +132,53 @@ This receipt describes the actual checkout above. It predates the #815 integrati
 no runtime result for the reconciled follow-up. The existing passing metadata and service counts
 also predate #815's two additional ordering regressions. A final integrated-head receipt and a
 supported non-elevated host remain required.
+
+## Integrated hosted execution attempt — 2026-10-21
+
+The subsequent integrated attempt is also retained as unsupported setup, with no native pass.
+
+| Receipt field | Observed value |
+| --- | --- |
+| PR head | `1c68ae2a952d71882b6fb6ad7d46d5cf414cd385` |
+| PR workflow run | [39581627089](https://github.com/Chris0Jeky/Loomward/actions/runs/39581627089) |
+| Windows native job / complete log | [119160359240](https://github.com/Chris0Jeky/Loomward/actions/runs/39581627089/job/119160359240) |
+| Actual CI checkout | `5e2362bc9c2517aefd3a40938a4e548b225bfe7e` |
+| Complete checkout tree | `e9cb1789534daced6423223dfdf199332601344b` |
+| Executor metadata / service retention tests | 18 passed, 0 failed, 0 ignored / 5 passed, 0 failed, 0 ignored |
+| Strict native test | 1 selected; 0 passed, 1 failed, 0 ignored, 285 filtered out |
+| Failure classification | Elevated-token refusal at the strict lab prerequisite |
+| Native rename/foreign-commit ordering | NOT EXERCISED |
+| Later Windows scan, workspace, all-feature tests and Clippy | SKIPPED after the setup failure |
+| Other workflow jobs | 8 succeeded |
+
+The two additional metadata tests from #815 executed successfully in this attempt. That is evidence
+for their metadata schedules, not for the strict native scenario that could not start.
+
+## Hosted standard-user invocation — prepared 2026-10-22
+
+[GitHub documents that its Windows VMs run as administrators with UAC disabled](https://docs.github.com/en/actions/reference/runners/github-hosted-runners#administrative-privileges).
+The fixture requires a real non-elevated token. The
+[qualification runner](../../scripts/test_windows_standard_user.ps1) therefore creates a temporary
+standard local account on this repository's disposable GitHub-hosted Windows VM and launches the
+unchanged tests with that account's credentials and loaded profile. It requests no elevation and
+changes no UAC policy or fixture guard.
+
+Before running Cargo, the child proves its expected SID, absence of Administrator membership,
+`TokenElevation: 0`, a loaded profile and an NTFS temporary volume. Public Rust toolchain/registry
+inputs are copied into the task directory; the runner account's credentials and profile are not
+shared. The child receives read access to the checkout and write access to the build and disposable
+fixture directories. Its process, temporary account/profile and access entries have bounded cleanup.
+
+The wrapper runs all existing Windows metadata, service, scan, workspace and full-feature tests.
+It also selects the strict foreign-commit test, the adjacent same-Store and process-exit scenarios,
+and the second-root volume-space regression from #796 by exact name. Focused invocations require
+actual passing test counts; the native witnesses reject setup-skip output. All failures and timeouts
+propagate to CI. The full suites use the same standard-user context because they also select the
+strict test. Formatting, Clippy, Linux, app, desktop and Python checks remain required.
+
+This is a source-reviewed invocation prepared for hosted validation. No result from the new wrapper
+is assumed here. A successful focused #796 run would establish that fixture on this host; it would
+not by itself reproduce or diagnose the original shared-host intermittency.
 
 ## Supported execution
 

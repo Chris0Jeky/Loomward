@@ -414,3 +414,9 @@ Counts (Windows, KRASPYON, at `4b05fd6`, `RUST_TEST_THREADS=3`):
 - The owner-initiated diagnostic export remains the only write that can touch an existing owner file.
 - Copy-and-verify writes, renames and (only if enabled) removes its own staging, but only for synthetic sessions on registered lab roots.
 - The Ask broker is the first outbound-network code: it contacts only a loopback endpoint the owner configures, never by default.
+
+## Maintenance reconciliation — 20–21 October 2026
+
+Reviewed the 173 initially open issues and four open PRs against current source, review comments and execution evidence. The [wave record](../evidence/v3/backlog-review-2026-10-20.md) lists 13 merged PRs, 1 remaining PR and 7 scoped closures before this documentation checkpoint; its JSON companion preserves exact heads, trees and hosted runs.
+
+The changes advance forgotten-response handling, source packaging, scan settlement/history/cancellation, watch probing, durable feedback replay, terminal metadata and diagnostics as detailed in that record. Historical counts and receipts above are retained unchanged. This wave adds no claim of complete 10M service readiness, a continuous 72-hour pass, real native foreign-rename qualification, required power-cut/restore proof, teacher confinement or manual accessibility acceptance. C8 remains closed.
