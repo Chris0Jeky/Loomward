@@ -141,4 +141,24 @@ describe('developer clutter view', () => {
     expect(source).toContain('Rebuild cost: not assessed yet.');
     expect(source).toContain('Not assessed yet');
   });
+
+  it('describes retained recorded ordering when watcher staleness hides every size', () => {
+    expect(source).toContain('Candidate folders in recorded size order; current sizes may be unknown.');
+    expect(source).toContain('When watcher data is stale, sizes are unknown and the recorded order is retained.');
+    expect(source).not.toContain('Only the largest');
+  });
+
+  it('renders sizes per candidate without computing or displaying a cross-provider total', async () => {
+    const c = client();
+    const [first] = await rootIds(c);
+    const { result } = await c.call('clutter.developer', { root_id: first!, limit: 50 });
+    expect(Object.keys(result).sort()).toEqual([
+      'budget_hit', 'budget_note', 'candidates', 'generation', 'not_assessed',
+      'partial', 'root_id', 'rules_version', 'truncated',
+    ]);
+    expect(source).toContain('{sizeText(c)}');
+    expect(source).toContain('{allocatedText(c)}');
+    expect(source).not.toMatch(/<tfoot|\.reduce\s*\(|\b(?:grand_total|total_bytes|total_logical_bytes|total_allocated_bytes)\b/i);
+    expect(source).not.toMatch(/\b(?:grand|combined) total\s*[:{]/i);
+  });
 });
