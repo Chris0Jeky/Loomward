@@ -851,12 +851,16 @@ mod tests {
             .encode_wide()
             .flat_map(u16::to_le_bytes)
             .collect();
-        assert_ne!(
-            alias,
-            name.encode_utf16()
+        if alias
+            == name
+                .encode_utf16()
                 .flat_map(u16::to_le_bytes)
                 .collect::<Vec<_>>()
-        );
+        {
+            // 8.3 name creation is disabled on this volume: there is no alias to read back.
+            eprintln!("skipped: the temp volume creates no 8.3 aliases");
+            return;
+        }
         let mut cache = None;
         let meter = Meter::new(Budget {
             bytes: 1024,
