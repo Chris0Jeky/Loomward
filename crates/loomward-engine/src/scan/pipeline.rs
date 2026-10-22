@@ -1068,8 +1068,9 @@ pub(super) fn run_job_scan<S: DirSource>(
 
 /// Claim the terminal publication outcome without keeping a cancellation gate across sink I/O.
 /// This commits the decision to finish, not a successful write: a later sink error still fails
-/// the job. Once claimed, cancellation returns the current job state without acknowledging a
-/// cancellation that the catalogue can no longer honor. All workers are drained before this call.
+/// the job. Once claimed, ordinary cancellation returns the current job state without acknowledging
+/// cancellation that the catalogue can no longer honor. Root revocation still withdraws the job's
+/// coverage. All workers are drained before this call.
 fn admit_final_publication(job: &crate::jobs::JobContext) -> EngineResult<bool> {
     job.commit_if_not_cancelled(|| Ok(()))
 }
