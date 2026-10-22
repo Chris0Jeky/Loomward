@@ -331,6 +331,8 @@ Rules:
   `job.state` snapshots so a late progress event cannot overwrite a newer revision.
 - Scan jobs publish an initial `enumerating` snapshot and sampled observations from finished directory
   listings through `jobs.get` and events; counters can lag enumeration and are replaced on relisting.
+  Early samples carry the configured `strategy` until a directory listing's actual strategy is observed;
+  subsequent samples retain the least capable strategy observed across the traversal.
   They count observed work, not a known total or a percentage. Watched reconciliation snapshots describe
   the current traversal pass and can reset for a new pass; `done` carries the existing combined final report.
   `pending_dirs` counts queued and active directory tasks; `writer_queue_depth` counts commands waiting

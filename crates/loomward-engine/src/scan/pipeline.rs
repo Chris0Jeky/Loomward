@@ -20,7 +20,7 @@ use std::{
     sync::{
         atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
         mpsc::{self, Receiver, SyncSender, TrySendError},
-        Arc, Condvar, Mutex,
+        Arc, Condvar, Mutex, TryLockError,
     },
     time::{Duration, Instant},
 };
@@ -443,7 +443,15 @@ impl<S: DirSource> Shared<'_, S> {
         let Some(job) = self.progress else {
             return Ok(());
         };
-        let mut last = self.last_progress.lock().unwrap();
+        let mut last = if force {
+            self.last_progress.lock().unwrap()
+        } else {
+            match self.last_progress.try_lock() {
+                Ok(last) => last,
+                Err(TryLockError::WouldBlock) => return Ok(()),
+                Err(TryLockError::Poisoned(error)) => panic!("{error}"),
+            }
+        };
         if !force && last.is_some_and(|at| at.elapsed() < Duration::from_millis(100)) {
             return Ok(());
         }
