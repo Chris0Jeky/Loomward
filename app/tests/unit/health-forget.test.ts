@@ -1,8 +1,14 @@
 import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import ts from 'typescript';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { compile } from 'svelte/compiler';
+import type { Component } from 'svelte';
 import { render } from 'svelte/server';
 import View from '../../src/views/health/View.svelte';
+import VisibleName from '../../src/lib/ui/VisibleName.svelte';
+import { formatBytes } from '../../src/lib/format/bytes';
+import { formatCount } from '../../src/lib/format/time';
 import { session } from '../../src/lib/stores/session.svelte';
 import { grantPicker as picker } from '../../src/lib/stores/grant.svelte';
 import { forget } from '../../src/lib/stores/forget.svelte';
@@ -10,7 +16,7 @@ import { scans } from '../../src/lib/stores/scan.svelte';
 import { Say } from '../../src/lib/ui/say.svelte';
 import { LoomwardError, TransportError, Client } from '../../src/lib/transport/client';
 import type { Transport } from '../../src/lib/transport/transport';
-import type { EventEnvelope, SessionInfo } from '../../src/lib/contracts.gen';
+import type { EventEnvelope, Root, SessionInfo } from '../../src/lib/contracts.gen';
 
 const identity = <T>(value: T) => value;
 
@@ -29,7 +35,7 @@ function mount() {
     }
     return node.getText(file);
   }).join('\n');
-  const compiled = ts.transpileModule(`${code}\nreturn { ask, confirm, cancel, stopWaiting, evaluate: expression => eval(expression) };`, {
+  const compiled = ts.transpileModule(`${code}\nreturn { load, ask, confirm, cancel, stopWaiting, evaluate: expression => eval(expression) };`, {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
   }).outputText;
   let cleanup: (() => void) | undefined;
@@ -42,13 +48,27 @@ function mount() {
     formatTime: identity, escapedName: identity,
   };
   const view = new Function('state', `with (state) { return (() => { ${compiled} })(); }`)(state) as {
-    ask(p: { kind: 'forget'; id: string; label: string }): Promise<void>;
+    load(): Promise<void>;
+    ask(p: { kind: 'root' | 'forget'; id: string; label: string }): Promise<void>;
     confirm(): Promise<void>;
     cancel(): Promise<void>;
     stopWaiting(): Promise<void>;
     evaluate(expression: string): unknown;
   };
   return { ...view, flushEffects: () => { for (const effect of effects) effect(); }, unmount: () => cleanup?.() };
+}
+
+/** Render the real roots table with the instance script's loaded state. */
+function rootsTable(view: ReturnType<typeof mount>) {
+  const source = readFileSync(new URL('../../src/views/health/View.svelte', import.meta.url), 'utf8');
+  const table = source.match(/<table class="tbl">[\s\S]*?<\/table>/)![0];
+  const { js } = compile(`<script>let { roots, rootActive, escapedName, ask, VisibleName, formatBytes, formatCount } = $props();</script>${table}`, { generate: 'server' });
+  const code = ts.transpileModule(js.code, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText;
+  const exports = {} as { default: Component<Record<string, unknown>> };
+  new Function('require', 'exports', code)(createRequire(import.meta.url), exports);
+  return render(exports.default, { props: {
+    ...view.evaluate('({ roots, rootActive, escapedName, ask })') as Record<string, unknown>, VisibleName, formatBytes, formatCount,
+  } }).body;
 }
 
 function client() {
@@ -64,6 +84,53 @@ const completed = { root_id: 'rt_fixture', forgotten_at: '2026-10-18T00:00:00Z' 
 const reply = (r: { request_id: string }, result: unknown) => ({ protocol: 'loomward/3', request_id: r.request_id, ok: true, result, meta: {} });
 beforeEach(() => { Object.assign(forget, { pending: null, working: false, unknown: false, done: '', problem: '', stopped: false }); });
 afterEach(() => { session.client = null; session.info = null; vi.restoreAllMocks(); });
+
+it.each(['active', 'identity_changed'] as const)('offers revoke then forget for an %s root (#391)', async initialState => {
+  let root: Root | null = {
+    root_id: 'rt_fixture', display_path: { text: 'Synthetic', truncated: false },
+    origin: 'fixture', dataset_class: 'synthetic', volume_id: null,
+    granted_at: '2026-10-18T00:00:00Z', granted_via: 'fixture', grant_state: initialState,
+    scan: { state: 'never_scanned', last_job_id: null, generation: null, finished_at: null, coverage: 'unknown' }, totals: null,
+  };
+  const call = client().mockImplementation(async r => {
+    switch (r.command) {
+      case 'roots.list': return reply(r, { roots: root ? [{ ...root }] : [] });
+      case 'roots.revoke':
+        root = { ...root!, grant_state: 'revoked' };
+        return reply(r, { root_id: 'rt_fixture', revoked_at: completed.forgotten_at, purged: false });
+      case 'roots.forget':
+        expect(root?.grant_state).toBe('revoked');
+        root = null;
+        return reply(r, completed);
+      default: return reply(r, { grants: [], jobs: [] });
+    }
+  });
+  const view = mount();
+  try {
+    await view.load();
+    const before = rootsTable(view);
+    expect(before).toContain('aria-label="Revoke… Synthetic"');
+    expect(before).not.toContain('disabled');
+    expect(before).not.toContain('Forget…');
+    await view.ask({ ...request, kind: 'root' });
+    expect(call.mock.calls.some(([r]) => r.command === 'roots.revoke')).toBe(false);
+    await view.confirm();
+    expect(call.mock.calls.find(([r]) => r.command === 'roots.revoke')![0].payload)
+      .toEqual({ root_id: 'rt_fixture', purge_catalog: false });
+    const revoked = rootsTable(view);
+    expect(revoked).toMatch(/<button[^>]*disabled[^>]*aria-label="Revoke… Synthetic"/);
+    expect(revoked).toContain('aria-label="Forget… Synthetic"');
+    await view.ask(request);
+    expect(call.mock.calls.some(([r]) => r.command === 'roots.forget')).toBe(false);
+    await view.confirm();
+    expect(call.mock.calls.find(([r]) => r.command === 'roots.forget')![0].payload).toEqual({ root_id: 'rt_fixture' });
+    expect(rootsTable(view)).not.toContain('Synthetic');
+    expect(rootsTable(view)).toContain('No roots granted.');
+    expect(view.evaluate('roots.roots')).toEqual([]);
+  } finally {
+    view.unmount();
+  }
+});
 
 it.each(['connection epoch', 'session info', 'client'])('a definite status failure after a new %s retains a usable retry prompt', async change => {
   const first = client().mockRejectedValueOnce(unknown);
