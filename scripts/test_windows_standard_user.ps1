@@ -42,6 +42,44 @@ public static class QualificationToken {
 }
 '@
     if ([QualificationToken]::IsElevated()) { throw 'The qualification child is elevated.' }
+    # Read-only Cloud Files probes diagnose whether the existing filter supports each volume.
+    # They never classify an API failure as "not synced" or change the actual fixture location.
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class QualificationCloudProbe {
+    [StructLayout(LayoutKind.Sequential)]
+    struct PlatformInfo { public uint Build, Revision, Integration; }
+    [DllImport("cldapi.dll")]
+    static extern int CfGetPlatformInfo(out PlatformInfo info);
+    [DllImport("cldapi.dll")]
+    static extern int CfGetSyncRootInfoByHandle(IntPtr file, int kind, out long info,
+        uint length, out uint returned);
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+    static extern IntPtr CreateFileW(string path, uint access, uint share, IntPtr security,
+        uint disposition, uint flags, IntPtr template);
+    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+    public static string Platform() {
+        PlatformInfo info;
+        int result = CfGetPlatformInfo(out info);
+        return String.Format("CfGetPlatformInfo HRESULT=0x{0:x8}; build={1}; revision={2}; integration={3}",
+            result, info.Build, info.Revision, info.Integration);
+    }
+    public static string SyncRoot(string path) {
+        // FILE_READ_ATTRIBUTES, share read/write/delete, OPEN_EXISTING, backup/reparse semantics.
+        IntPtr file = CreateFileW(path, 0x80, 7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero);
+        if (file == new IntPtr(-1))
+            return "CreateFileW error=" + Marshal.GetLastWin32Error();
+        try {
+            long info;
+            uint returned;
+            int result = CfGetSyncRootInfoByHandle(file, 0, out info, 8, out returned);
+            return String.Format("CfGetSyncRootInfoByHandle HRESULT=0x{0:x8}; returned={1}",
+                result, returned);
+        } finally { CloseHandle(file); }
+    }
+}
+'@
     $childProfile = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
     if (-not $childProfile -or -not (Test-Path -LiteralPath $childProfile -PathType Container)) {
         throw 'The standard-user profile was not loaded.'
@@ -72,6 +110,19 @@ public static class QualificationToken {
     Write-Host "Qualification identity: $($identity.Name); SID: $($identity.User.Value)"
     Write-Host 'Administrator membership: false; TokenElevation: 0; fixture filesystem: NTFS'
     Write-Host "Windows: $([Environment]::OSVersion.VersionString)"
+    Write-Host '::group::Read-only Cloud Files prerequisite diagnostics'
+    Write-Host ([QualificationCloudProbe]::Platform())
+    Write-Host "Fixture temp $($config.temp): $([QualificationCloudProbe]::SyncRoot($config.temp))"
+    $profileProbe = Join-Path $childProfile ('LoomwardCloudProbe-' + [Guid]::NewGuid().ToString('N'))
+    $createdProfileProbe = $false
+    try {
+        New-Item -ItemType Directory -Path $profileProbe | Out-Null
+        $createdProfileProbe = $true
+        Write-Host "Profile temp ${profileProbe}: $([QualificationCloudProbe]::SyncRoot($profileProbe))"
+    } finally {
+        if ($createdProfileProbe) { Remove-Item -LiteralPath $profileProbe }
+    }
+    Write-Host '::endgroup::'
     & $config.rustc --version
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     & $config.cargo --version
@@ -129,6 +180,13 @@ $parentPrincipal = [Security.Principal.WindowsPrincipal]::new($parentIdentity)
 if (-not $parentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     throw 'The hosted bootstrap must already have account-management rights; it never elevates.'
 }
+Write-Host '::group::Installed Cloud Files filter diagnostics (read only)'
+$cloudDriver = Get-CimInstance Win32_SystemDriver -Filter "Name='CldFlt'" -OperationTimeoutSec 10
+if ($null -eq $cloudDriver) { Write-Host 'CldFlt system-driver registration: absent' }
+else { $cloudDriver | Select-Object Name, State, StartMode, PathName | Format-List | Out-Host }
+& fltmc.exe instances -f CldFlt
+Write-Host "fltmc instances exit code: $LASTEXITCODE"
+Write-Host '::endgroup::'
 $rustc = (& rustup which --toolchain stable rustc).Trim()
 if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve the installed stable compiler.' }
 $toolchain = Split-Path (Split-Path $rustc)
@@ -199,6 +257,8 @@ try {
         }
     }
     $childExit = $process.ExitCode
+    if ($childExit -isnot [int]) { throw 'The qualification child did not provide an integer exit code.' }
+    Write-Host "Standard-user qualification child exit code: $childExit"
 } finally {
     if ($null -ne $process -and -not $process.HasExited) {
         try {
@@ -216,7 +276,27 @@ try {
     if ($null -ne $createdUser) {
         # Remove only this generated SID's profile/account and this invocation's access rules.
         try {
-            Get-CimInstance Win32_UserProfile -Filter "SID='$($createdUser.SID.Value)'" | Remove-CimInstance
+            # Process exit does not prove that Windows has finished releasing the profile.
+            $profileCleanupDeadline = [DateTime]::UtcNow.AddSeconds(30)
+            $lastProfileRemovalError = $null
+            while ($true) {
+                $secondsLeft = [int][Math]::Ceiling(($profileCleanupDeadline - [DateTime]::UtcNow).TotalSeconds)
+                if ($secondsLeft -le 0) {
+                    if ($null -ne $lastProfileRemovalError) { throw $lastProfileRemovalError }
+                    throw 'The temporary profile did not become removable within 30 seconds.'
+                }
+                $temporaryProfile = Get-CimInstance Win32_UserProfile -Filter "SID='$($createdUser.SID.Value)'" -OperationTimeoutSec $secondsLeft
+                if ($null -eq $temporaryProfile) { break }
+                if (-not $temporaryProfile.Loaded) {
+                    $secondsLeft = [int][Math]::Ceiling(($profileCleanupDeadline - [DateTime]::UtcNow).TotalSeconds)
+                    if ($secondsLeft -le 0) { continue }
+                    try {
+                        $temporaryProfile | Remove-CimInstance -OperationTimeoutSec $secondsLeft
+                        break
+                    } catch { $lastProfileRemovalError = $_ }
+                }
+                Start-Sleep -Milliseconds 500
+            }
         } catch { Write-Warning "Temporary profile cleanup failed: $_"; $cleanupFailed = $true }
         try { Remove-LocalUser -SID $createdUser.SID }
         catch { Write-Warning "Temporary account cleanup failed: $_"; $cleanupFailed = $true }
