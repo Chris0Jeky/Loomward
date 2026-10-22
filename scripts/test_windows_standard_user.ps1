@@ -160,6 +160,7 @@ public static class QualificationCloudProbe {
     }
     Invoke-QualificationCargo -CargoArguments @('test', '--locked', '-p', 'loomward-service', '--lib', 'tests::volumes_list_observes_space_through_a_second_root_when_the_first_is_unobservable', '--', '--exact', '--nocapture') -MinimumPassed 1 -NoSetupSkip
     Invoke-QualificationCargo -CargoArguments @('test', '--locked', '-p', 'loomward-engine', 'publication_tests') -MinimumPassed 2
+    Invoke-QualificationCargo -CargoArguments @('test', '--locked', '-p', 'loomward-engine', '--lib', 'scan::pipeline::w2_tests::native::', '--', '--nocapture', '--test-threads=1') -MinimumPassed 4 -NoSetupSkip
     Invoke-QualificationCargo -CargoArguments @('test', '--workspace')
     Invoke-QualificationCargo -CargoArguments @('test', '--locked', '-p', 'loomward-windows', '--all-features')
     exit 0
@@ -230,6 +231,82 @@ public static class QualificationCloudInstance {
         if (String.IsNullOrWhiteSpace(name))
             throw new InvalidOperationException("Cannot detach an unnamed filter instance");
         RequireSuccess("FilterDetach", FilterDetach("CldFlt", volume, name));
+    }
+}
+'@
+# Account-owned brokers can outlive the qualification process without being descendants.
+# Recheck the exact created SID through the same stable handle used to stop each candidate.
+Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Security.Principal;
+public static class QualificationAccountProcess {
+    [DllImport("kernel32.dll", SetLastError=true)]
+    static extern IntPtr OpenProcess(uint access, bool inherit, int processId);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    static extern bool TerminateProcess(IntPtr process, uint exitCode);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+    [DllImport("advapi32.dll", SetLastError=true)]
+    static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+    [DllImport("advapi32.dll", SetLastError=true)]
+    static extern bool GetTokenInformation(IntPtr token, int kind, IntPtr info,
+        uint length, out uint returned);
+    static bool HasExited(IntPtr process) {
+        uint result = WaitForSingleObject(process, 0);
+        if (result == 0) return true; // WAIT_OBJECT_0
+        if (result == 258) return false; // WAIT_TIMEOUT
+        throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot inspect process exit");
+    }
+    public static string StopCandidate(int processId, string createdSid, int milliseconds) {
+        if (milliseconds <= 0) throw new TimeoutException("Temporary account process cleanup expired");
+        var expected = new SecurityIdentifier(createdSid);
+        // SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE; no inheritance.
+        IntPtr process = OpenProcess(0x00101001, false, processId);
+        if (process == IntPtr.Zero) {
+            int error = Marshal.GetLastWin32Error();
+            if (error == 87) return "already exited"; // ERROR_INVALID_PARAMETER: PID disappeared
+            throw new Win32Exception(error, "Cannot open temporary account process " + processId);
+        }
+        try {
+            if (HasExited(process)) return "already exited";
+            IntPtr token;
+            if (!OpenProcessToken(process, 8, out token)) { // TOKEN_QUERY
+                int error = Marshal.GetLastWin32Error();
+                if (HasExited(process)) return "already exited";
+                throw new Win32Exception(error, "Cannot verify process owner SID");
+            }
+            bool owned;
+            try {
+                uint required;
+                bool measured = GetTokenInformation(token, 1, IntPtr.Zero, 0, out required);
+                int error = Marshal.GetLastWin32Error();
+                if (measured || error != 122 || required < IntPtr.Size + 4)
+                    throw new Win32Exception(error, "Cannot size TokenUser information");
+                IntPtr info = Marshal.AllocHGlobal(checked((int)required));
+                try {
+                    uint returned;
+                    if (!GetTokenInformation(token, 1, info, required, out returned))
+                        throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot read TokenUser");
+                    if (returned < IntPtr.Size + 4 || returned > required)
+                        throw new InvalidOperationException("Invalid TokenUser information length");
+                    // TOKEN_USER starts with SID_AND_ATTRIBUTES, whose first field is the SID pointer.
+                    owned = new SecurityIdentifier(Marshal.ReadIntPtr(info)).Equals(expected);
+                } finally { Marshal.FreeHGlobal(info); }
+            } finally { CloseHandle(token); }
+            if (!owned) return "different SID; left untouched";
+            if (!TerminateProcess(process, 1)) {
+                int error = Marshal.GetLastWin32Error();
+                if (HasExited(process)) return "already exited";
+                throw new Win32Exception(error, "Cannot stop temporary account process " + processId);
+            }
+            uint wait = WaitForSingleObject(process, (uint)milliseconds);
+            if (wait == 0) return "stopped after exact SID verification";
+            if (wait == 258) throw new TimeoutException("Temporary account process did not stop: " + processId);
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot wait for temporary account process");
+        } finally { CloseHandle(process); }
     }
 }
 '@
@@ -337,6 +414,34 @@ try {
         }
     }
     if ($null -ne $createdUser) {
+        # The account was created by this invocation, so its brokers and tool daemons are ours.
+        # The name selects candidates only; TokenUser SID verification is the termination authority.
+        try {
+            $accountCleanupClock = [Diagnostics.Stopwatch]::StartNew()
+            while ($true) {
+                if ($accountCleanupClock.ElapsedMilliseconds -ge 10000) {
+                    throw 'Temporary account processes did not stop within 10 seconds.'
+                }
+                $cleanupSnapshot = @()
+                try {
+                    $cleanupSnapshot = @(Get-Process -IncludeUserName)
+                    $ownedCandidates = @($cleanupSnapshot | Where-Object { $_.UserName -eq "$env:COMPUTERNAME\$accountName" })
+                    if ($ownedCandidates.Count -eq 0) {
+                        Write-Host 'No remaining temporary-account processes were observed after cleanup.'
+                        break
+                    }
+                    foreach ($candidate in $ownedCandidates) {
+                        $millisecondsLeft = [int](10000 - $accountCleanupClock.ElapsedMilliseconds)
+                        $result = [QualificationAccountProcess]::StopCandidate($candidate.Id, $createdUser.SID.Value, $millisecondsLeft)
+                        Write-Host "Temporary account process $($candidate.Id): $result"
+                    }
+                } finally { foreach ($observedProcess in $cleanupSnapshot) { $observedProcess.Dispose() } }
+                Start-Sleep -Milliseconds 100
+            }
+        } catch {
+            Write-Warning "Temporary account process cleanup failed: $_"
+            $cleanupFailed = $true
+        }
         # Remove only this generated SID's profile/account and this invocation's access rules.
         try {
             # Process exit does not prove that Windows has finished releasing the profile.
