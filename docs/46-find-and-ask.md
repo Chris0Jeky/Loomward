@@ -590,8 +590,10 @@ holds a provider credential or links an HTTP client", and Ask needs no exception
    downloaded [F24]. A model whose name ends in `:cloud`, or that dialect metadata marks as remote (no such
    field was documented at fetch time [F22]), is classed `cloud` whatever the endpoint. The profile records
    the owner's `OLLAMA_NO_CLOUD` posture [F23] when it is readable. Loomward cannot prove a loopback server
-   does not forward data elsewhere. The `local` class is therefore the owner's declaration plus these
-   checks, and the UI says exactly that.
+   does not forward data elsewhere. The configured loopback endpoint is unauthenticated: another local
+   process occupying that port can receive the approved request. The `local` class is therefore the
+   owner's declaration plus these checks, and the UI states both limitations before the owner grants
+   access or asks a question.
 
 **Degraded modes:** if the tool probe fails, Ask runs **find-assist only**. The model turns a question into
 one structured search through JSON output (where supported) and Loomward runs it, with no multi-step tools.

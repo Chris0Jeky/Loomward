@@ -116,7 +116,8 @@
 <section class="panel" aria-labelledby="ask-provider">
   <h2 id="ask-provider">Model</h2>
   <p><span class="tag" class:ok={provider.tone === 'ok'} class:bad={provider.tone === 'bad'} class:unk={provider.tone === 'unk'} data-testid="ask-provider">{provider.label}</span> <span class="muted">{provider.detail}</span></p>
-  {#if status?.profile_digest}<p class="muted small">Profile digest <code title={status.profile_digest}>{shortDigest(status.profile_digest)}</code>, bound into every record below. Loomward checks the endpoint is loopback and the model name is not a cloud model; it cannot prove the server keeps your data on this machine.</p>{/if}
+  {#if status?.profile_digest}<p class="muted small">Profile digest <code title={status.profile_digest}>{shortDigest(status.profile_digest)}</code>, bound into every record below.</p>{/if}
+  <p class="muted small">The configured loopback endpoint is unauthenticated. Another local process occupying that port can receive the approved request. Loomward checks the endpoint is loopback and the model name is not a cloud model; it cannot prove the server keeps your data on this machine.</p>
   {#if desktop}
     <form class="controls" onsubmit={(e) => { e.preventDefault(); void owner(() => session.client!.call('ask.configure', { profile: { base_url: profileUrl.trim(), model: profileModel.trim() } }), 'Model saved. Nothing is contacted until you ask a question.'); }}>
       <label class="lw-field"><span class="lbl">Endpoint (loopback, with port)</span><input type="text" bind:value={profileUrl} maxlength="160" autocomplete="off" spellcheck="false" /></label>
