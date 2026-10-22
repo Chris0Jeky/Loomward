@@ -483,12 +483,32 @@ try {
             finally { foreach ($observedProcess in $processSnapshot) { $observedProcess.Dispose() } }
             Write-Host '::endgroup::'
         }
+        # Remove only this invocation's explicit Allow rules, in reverse grant order.
+        # Use the returned rule objects so their exact rights and inheritance flags are retained.
+        for ($grantIndex = $grantedPaths.Count - 1; $grantIndex -ge 0; $grantIndex--) {
+            $grantPath = $grantedPaths[$grantIndex]
+            try {
+                $grantAcl = Get-Acl -LiteralPath $grantPath
+                $ownedRules = @($grantAcl.GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier]) | Where-Object {
+                    $_.IdentityReference.Value -eq $createdUser.SID.Value -and
+                    $_.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow
+                })
+                foreach ($rule in $ownedRules) { $grantAcl.RemoveAccessRuleSpecific($rule) }
+                if ($ownedRules.Count -ne 0) { Set-Acl -LiteralPath $grantPath -AclObject $grantAcl }
+                $verifiedAcl = Get-Acl -LiteralPath $grantPath
+                $remainingRules = @($verifiedAcl.GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier]) | Where-Object {
+                    $_.IdentityReference.Value -eq $createdUser.SID.Value -and
+                    $_.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow
+                })
+                if ($remainingRules.Count -ne 0) { throw 'The temporary account still has explicit Allow rules.' }
+                Write-Host "Temporary ACL cleanup verified for '$grantPath': removed $($ownedRules.Count) explicit Allow rules."
+            } catch {
+                Write-Warning "Temporary ACL cleanup failed for '$grantPath': $_"
+                $cleanupFailed = $true
+            }
+        }
         try { Remove-LocalUser -SID $createdUser.SID }
         catch { Write-Warning "Temporary account cleanup failed: $_"; $cleanupFailed = $true }
-        foreach ($path in $grantedPaths) {
-            & icacls.exe $path /remove:g "*$($createdUser.SID.Value)" /Q | Out-Null
-            if ($LASTEXITCODE -ne 0) { $cleanupFailed = $true }
-        }
     }
     if ($createdWork -and (Test-Path -LiteralPath $work)) {
         try { Remove-Item -LiteralPath $work -Recurse -Force }
