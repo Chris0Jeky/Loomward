@@ -187,10 +187,30 @@ pub(crate) fn check_target_for_session(target: &Path, elevated: bool) -> Result<
     })
 }
 
+#[cfg(not(windows))]
+fn publish_temporary(temporary: &Path, target: &Target) -> std::io::Result<()> {
+    if target.exists {
+        std::fs::rename(temporary, &target.path)
+    } else {
+        // Publish complete bytes atomically, refusing a target created since the check.
+        match std::fs::hard_link(temporary, &target.path) {
+            Ok(()) => std::fs::remove_file(temporary),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(e),
+            // ponytail: no hard links (FAT/exFAT): narrow check-then-rename, renameat2 NOREPLACE if it matters.
+            Err(_) => {
+                if std::fs::symlink_metadata(&target.path).is_ok() {
+                    return Err(std::io::ErrorKind::AlreadyExists.into());
+                }
+                std::fs::rename(temporary, &target.path)
+            }
+        }
+    }
+}
+
 /// Writes `bytes` to a checked target, never half-written: a new temporary file in the resolved
-/// folder, flushed, then renamed over the target. A rename replaces the directory entry, so it
-/// never follows a link the target became meanwhile; a failure leaves the target as it was and
-/// removes the temporary file. The caller has the owner confirm a replace first.
+/// folder, flushed, then published without replacing a new arrival. Only an owner-confirmed
+/// replacement uses a replacing rename, which never follows a link the target became meanwhile.
+/// Failed publication removes the temporary file. The caller has the owner confirm a replace first.
 pub(crate) fn write_to(target: &Target, bytes: &[u8]) -> Result<(), Why> {
     let mut nonce = [0u8; 8];
     getrandom::fill(&mut nonce).map_err(|_| Why::WriteFailed)?;
@@ -221,12 +241,7 @@ pub(crate) fn write_to(target: &Target, bytes: &[u8]) -> Result<(), Why> {
             file.write_all(bytes)?;
             file.sync_all()?;
             drop(file);
-            // A file that appeared since the check was never confirmed for replacement: leave it.
-            // shortcut: the portable fallback still races; add native no-replace support before shipping it.
-            if !target.exists && std::fs::symlink_metadata(&target.path).is_ok() {
-                return Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists));
-            }
-            std::fs::rename(&temporary, &target.path)
+            publish_temporary(&temporary, target)
         })();
         if written.is_err() {
             let _ = std::fs::remove_file(&temporary);
@@ -512,5 +527,43 @@ impl Inner {
             Ok(()) => answer(DiagnosticsSaveOutcome::Saved, Some(bytes.len()), None),
             Err(why) => answer(DiagnosticsSaveOutcome::Refused, None, Some(why)),
         }
+    }
+}
+
+#[cfg(all(test, not(windows)))]
+mod portable_tests {
+    use super::*;
+
+    #[test]
+    fn diagnostics_publish_refuses_a_target_created_before_publication() {
+        let tmp = crate::tests::temp_root();
+        let path = tmp.path().join("report.json");
+        let target = check_target(&path).unwrap();
+        assert!(!target.exists);
+        let temporary = tmp.path().join("preview.partial");
+        std::fs::write(&temporary, b"previewed").unwrap();
+        // Simulate creation after the last existence check, immediately before publication.
+        std::fs::write(&path, b"keep").unwrap();
+
+        assert_eq!(
+            publish_temporary(&temporary, &target).unwrap_err().kind(),
+            std::io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"keep");
+        assert_eq!(std::fs::read(&temporary).unwrap(), b"previewed");
+    }
+
+    #[test]
+    fn diagnostics_publish_creates_a_new_target_and_removes_the_temporary() {
+        let tmp = crate::tests::temp_root();
+        let path = tmp.path().join("report.json");
+        let target = check_target(&path).unwrap();
+        assert!(!target.exists);
+        let temporary = tmp.path().join("preview.partial");
+        std::fs::write(&temporary, b"previewed").unwrap();
+
+        publish_temporary(&temporary, &target).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"previewed");
+        assert!(!temporary.exists());
     }
 }
