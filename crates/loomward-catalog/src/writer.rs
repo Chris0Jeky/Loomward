@@ -1245,7 +1245,8 @@ fn prepare_state(
             {
                 return Err(Error::Invalid("ReFS root needs 128-bit identity"));
             }
-            let tx = conn.transaction()?;
+            // Provenance and grant reads must not precede admission to the state writer lock.
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             let lab: Option<i64> = if o.origin == "lab_generated" {
                 Some(
                     tx.query_row(
@@ -1318,7 +1319,7 @@ fn prepare_state(
             Ok(None)
         }
         WriteCommand::GrantIdentityChanged { grant_id } => {
-            let tx = conn.transaction()?;
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             if !tx.query_row(
                 "SELECT EXISTS(SELECT 1 FROM st.root_grant WHERE id=?1)",
                 [grant_id],
@@ -1622,7 +1623,9 @@ fn retire_selected(
         &format!("INSERT OR IGNORE INTO retiring_reference {select}"),
         values,
     )?;
-    let tx = conn.transaction()?;
+    // Admit before reading the token: a later state commit would make a deferred upgrade BUSY_SNAPSHOT.
+    // Like forget_state and service writers, IMMEDIATE locks catalog (main) before state (st).
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let token: String = tx.query_row("SELECT coalesce((SELECT publication_token FROM st.pending_reference LIMIT 1),lower(hex(randomblob(16))))", [], |r| r.get(0))?;
     tx.execute("INSERT OR REPLACE INTO st.pending_reference(object_ref_id,catalog_instance,publication_token) SELECT id,catalog_instance,?1 FROM st.object_ref WHERE id IN (SELECT id FROM retiring_reference)", [token])?;
     tx.commit()?;
@@ -2611,6 +2614,8 @@ pub(crate) fn rollup(conn: &Connection, root: i64, clean: bool) -> Result<()> {
 }
 #[cfg(test)]
 mod bulk_tests;
+#[cfg(test)]
+mod concurrency_tests;
 #[cfg(test)]
 mod full_disk_tests;
 #[cfg(test)]
