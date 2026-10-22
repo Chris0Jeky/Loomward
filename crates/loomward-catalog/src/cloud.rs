@@ -60,17 +60,23 @@ pub struct CloudSummary {
     pub partial: bool,
 }
 
-const CLOUD_SUMMARY_SQL: &str = "WITH RECURSIVE walk(id,listing_state,flags) AS (
-                    SELECT id,listing_state,flags FROM dir WHERE id=?1
+const CLOUD_SUMMARY_SQL: &str = "WITH RECURSIVE walk(id,listing_state,coverage,flags) AS (
+                    SELECT id,listing_state,
+                      coalesce(listing_outcome,CASE listing_state WHEN 'unlisted' THEN 'unscanned' WHEN 'incomplete' THEN 'partial' ELSE listing_state END),flags
+                    FROM dir WHERE id=?1
                     UNION ALL
-                    SELECT d.id,d.listing_state,d.flags FROM dir d JOIN walk w ON d.parent_id=w.id
+                    SELECT d.id,d.listing_state,
+                      coalesce(d.listing_outcome,CASE d.listing_state WHEN 'unlisted' THEN 'unscanned' WHEN 'incomplete' THEN 'partial' ELSE d.listing_state END),d.flags
+                    FROM dir d JOIN walk w ON d.parent_id=w.id
                     WHERE d.root_id=?2 AND d.listing_state!='absent_pending'
-                      AND w.listing_state NOT IN ('excluded','denied') AND w.flags & ?3=0
+                      AND w.listing_state NOT IN ('excluded','denied')
+                      AND w.coverage NOT IN ('excluded','denied') AND w.flags & ?3=0
                 ) SELECT f.attrs,f.logical,f.allocated FROM file f JOIN walk w ON f.dir_id=w.id
-                  WHERE w.listing_state NOT IN ('excluded','denied') AND w.flags & ?3=0";
+                  WHERE w.listing_state NOT IN ('excluded','denied')
+                    AND w.coverage NOT IN ('excluded','denied') AND w.flags & ?3=0";
 
 impl Reader {
-    /// Suggested VM-step budget for cloud summaries: about 1.5M files in a flat subtree.
+    /// Suggested VM-step budget for cloud summaries: about 1.18M files in a flat subtree.
     /// Measured with `cloud_query_vm_steps_per_file`; directory traversal costs extra.
     pub const DEFAULT_CLOUD_SUMMARY_STEPS: u64 = 32_000_000;
 

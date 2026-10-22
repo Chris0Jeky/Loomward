@@ -201,6 +201,122 @@ fn cloud_summary_refuses_revoked_and_missing_directories_and_deadlines() {
 }
 
 #[test]
+fn cloud_summary_omits_retained_files_after_denied_relisting_and_is_partial() {
+    let (tmp, c, grant, root) = fixture_with_skipped(0);
+    let db = rusqlite::Connection::open(tmp.path().join("catalog.db")).unwrap();
+    let mut reader = c.reader().unwrap();
+    let child = Observation::file("child", 0, None);
+    let mut remote = Observation::file("remote", 100, Some(32));
+    remote.attrs = 0x1000;
+    let bucket = |report: CloudSummary| {
+        if cfg!(windows) {
+            report.cloud_only
+        } else {
+            report.unknown
+        }
+    };
+    let mut denied_dir = 0;
+    for denied in [false, true] {
+        let WriteReply::Run(run) = c
+            .writer()
+            .call(WriteCommand::BeginRun {
+                grant_id: grant,
+                mode: "refresh".into(),
+                strategy: "fixture".into(),
+                started_at_ns: if denied { 4 } else { 2 },
+            })
+            .unwrap()
+        else {
+            panic!()
+        };
+        c.writer()
+            .call(WriteCommand::DirListing(DirListing {
+                run_id: run,
+                dir_id: root,
+                files: vec![remote.clone()],
+                dirs: vec![child.clone()],
+                state: "complete".into(),
+                skipped: 0,
+                errors: 0,
+            }))
+            .unwrap();
+        denied_dir = db
+            .query_row("SELECT id FROM dir WHERE name='child'", [], |r| r.get(0))
+            .unwrap();
+        if denied {
+            c.writer()
+                .call(WriteCommand::ListingDone {
+                    run_id: run,
+                    dir_id: denied_dir,
+                    outcome: ListingOutcome::Incomplete("denied".into()),
+                    skipped: 0,
+                    errors: 1,
+                })
+                .unwrap();
+        } else {
+            c.writer()
+                .call(WriteCommand::DirListing(DirListing {
+                    run_id: run,
+                    dir_id: denied_dir,
+                    files: vec![remote.clone()],
+                    dirs: vec![Observation::file("grandchild", 0, None)],
+                    state: "complete".into(),
+                    skipped: 0,
+                    errors: 0,
+                }))
+                .unwrap();
+            let grandchild = db
+                .query_row("SELECT id FROM dir WHERE name='grandchild'", [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            c.writer()
+                .call(WriteCommand::DirListing(DirListing {
+                    run_id: run,
+                    dir_id: grandchild,
+                    files: vec![remote.clone()],
+                    dirs: vec![],
+                    state: "complete".into(),
+                    skipped: 0,
+                    errors: 0,
+                }))
+                .unwrap();
+        }
+        c.writer()
+            .call(WriteCommand::EndRun {
+                run_id: run,
+                state: "completed".into(),
+                finished_at_ns: if denied { 5 } else { 3 },
+            })
+            .unwrap();
+        let report = reader
+            .cloud_summary(root, Reader::DEFAULT_CLOUD_SUMMARY_STEPS)
+            .unwrap();
+        assert_eq!(report.partial, denied);
+        assert_eq!(
+            bucket(report),
+            CloudBytes {
+                files: if denied { 1 } else { 3 },
+                logical_bytes: if denied { 100 } else { 300 },
+                allocated_bytes: Some(if denied { 32 } else { 96 }),
+            }
+        );
+    }
+    let report = reader
+        .cloud_summary(denied_dir, Reader::DEFAULT_CLOUD_SUMMARY_STEPS)
+        .unwrap();
+    assert!(report.partial);
+    for bucket in [
+        report.cloud_only,
+        report.local,
+        report.pinned,
+        report.unknown,
+    ] {
+        assert_eq!(bucket, CloudBytes::default());
+    }
+}
+
+#[test]
 fn cloud_summary_recurses_but_hides_absent_and_excluded_subtrees() {
     let (tmp, c, grant, root) = fixture();
     let WriteReply::Run(run) = c

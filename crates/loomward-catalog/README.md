@@ -53,8 +53,10 @@ are counted when their containing directory is included, even where normal scan
 aggregates omit them. A hydrated reparse placeholder without recall/offline or
 pin/unpin evidence lands in `Unknown`; pin/unpin cases follow the classifier above.
 Absent directory subtrees and descendants of excluded/denied or exclusion-flagged
-directories are omitted. `partial` records incomplete/stale/live
-scan coverage; totals describe recorded files, not all remote provider contents.
+directories are omitted, including retained descendants after a denied re-listing.
+The effective listing outcome is used alongside the stored listing state. `partial`
+records incomplete/stale/live scan coverage, including skipped denied subtrees;
+totals describe recorded files, not all remote provider contents.
 The query observes active grants and existing reader deadlines. Its caller-supplied
 SQLite VM-step budget refuses exhaustion with `ResourceBudget` instead of publishing
 a truncated total. Deadline cancellation returns `Cancelled`; an unrelated SQLite
@@ -62,12 +64,11 @@ interrupt remains a SQL error.
 
 The suggested default is `Reader::DEFAULT_CLOUD_SUMMARY_STEPS` (32,000,000).
 On Windows, `cloud_query_vm_steps_per_file` measured the production SQL on flat
-synthetic subtrees using `StatementStatus::VmStep`: 1,000 files took 21,080 steps;
-10,000 took 210,080; 100,000 took 2,100,080 (21 steps/file plus 80 fixed steps).
-That implies about 95,200 files at the former 2,000,000-step budget for this revised
-query, or about 1.52 million at the suggested default (sized for 1.5 million flat
-entries). Before removing the unused file-flag column, the query took 22 steps/file
-plus 80, limiting the original budget to about 90,900 files. These are flat-query
+synthetic subtrees using `StatementStatus::VmStep`: 1,000 files took 27,102 steps;
+10,000 took 270,102; 100,000 took 2,700,102 (27 steps/file plus 102 fixed steps).
+That implies about 74,000 files at the former 2,000,000-step budget for this revised
+query, or about 1.18 million at the suggested default. Before checking the effective
+listing outcome, the query took 21 steps/file plus 80. These are flat-query
 estimates, not universal file limits: root/coverage checks consume budget too,
 directory traversal adds work, and a reader deadline can stop the query sooner.
 
