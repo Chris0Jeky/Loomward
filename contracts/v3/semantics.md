@@ -928,7 +928,10 @@ that anything is safe to remove.
 - **Sizes.** `logical_bytes` and `allocated_bytes` are what the catalogue observed under the directory, or `null`
   (unknown) when the directory is partial, stale, unscanned or has an unknown allocation: never zero. Observed bytes
   are not reclaimable bytes (a shared store, hard links or unique content change what a removal would free), so the
-  report carries no total. Candidates are ordered by known logical size, largest first, then unknown sizes.
+  report carries no total across providers until a cross-provider identity and deduplication contract exists.
+  Candidates are ordered by known recorded logical size, largest first, then unknown sizes. When unresolved
+  watcher changes make a root stale, both sizes become `null` and coverage becomes `stale`; selection and
+  ordering (including the limit) retain that recorded-size ranking, not a ranking of current sizes.
 - **Honest limits.** `partial` is true when the root is mid-scan, stale or not fully covered, or any listed size is
   not fully known: projects may be missing. `truncated` is true when more than `limit` candidates exist.
   `budget_hit` is true when the detector reached its work budget; `candidates` is then empty and means nothing
