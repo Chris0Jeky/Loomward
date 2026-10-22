@@ -207,7 +207,14 @@ pub fn compare(source: &Tree, destination: &Tree) -> Report {
                     let missing = Err("metadata_not_observed");
                     let left = a.metadata.get(&class).unwrap_or(&missing);
                     let right = b.metadata.get(&class).unwrap_or(&missing);
-                    let equal = observe(&mut report, &path, Field::Metadata(class), left, right);
+                    // The roots' names belong to their parents, outside the compared grants.
+                    // Keep the observations in reported_metadata, including unreadable evidence.
+                    let equal = if path.as_os_str().is_empty() && class == MetadataClass::ShortName
+                    {
+                        None
+                    } else {
+                        observe(&mut report, &path, Field::Metadata(class), left, right)
+                    };
                     match class.policy() {
                         Policy::Preserved if equal == Some(false) => {
                             report.differences.push(Difference {
@@ -405,6 +412,54 @@ mod tests {
     #[test]
     fn equal_control_passes() {
         assert!(compare(&tree(), &tree()).equal());
+    }
+
+    #[test]
+    fn root_short_name_is_reported_outside_comparison_but_child_unknowns_still_block() {
+        let left = tree();
+        let mut right = tree();
+        right
+            .nodes
+            .get_mut(Path::new(""))
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .metadata
+            .insert(MetadataClass::ShortName, Err("metadata_unreadable"));
+        let report = compare(&left, &right);
+        assert!(report.equal(), "{report:?}");
+        assert!(report
+            .reported_metadata
+            .iter()
+            .any(|m| m.path == Path::new("")
+                && m.class == MetadataClass::ShortName
+                && m.source == Ok(vec![])
+                && m.destination == Err("metadata_unreadable")));
+        right
+            .nodes
+            .get_mut(Path::new("same"))
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .metadata
+            .insert(MetadataClass::ShortName, Err("metadata_unreadable"));
+        let report = compare(&left, &right);
+        assert!(!report.equal());
+        assert_eq!(report.unknowns.len(), 1);
+        assert_eq!(report.unknowns[0].path, Path::new("same"));
+        right
+            .nodes
+            .get_mut(Path::new(""))
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .metadata
+            .insert(MetadataClass::CreationTime, Ok(vec![1]));
+        assert!(compare(&left, &right)
+            .differences
+            .iter()
+            .any(|d| d.path == Path::new("")
+                && d.kind == DifferenceKind::Metadata(MetadataClass::CreationTime)));
     }
 
     #[test]

@@ -5,7 +5,8 @@ use loomward_operations::tree::{Kind, MetadataClass as Class, Node, Observation,
 use std::{collections::BTreeMap, mem::ManuallyDrop, os::windows::ffi::OsStringExt};
 use windows_sys::{
     Wdk::Storage::FileSystem::{
-        FileAlternateNameInformation, FileEaInformation, NtQueryInformationFile,
+        FileAlternateNameInformation, FileEaInformation, FileIdBothDirectoryInformation,
+        NtQueryDirectoryFile, NtQueryInformationFile,
     },
     Win32::Security::*,
 };
@@ -68,19 +69,27 @@ fn read_tree_from(
         SHARE,
     )
     .map(|mut files| files.pop().unwrap());
-    let mut pending = vec![(PathBuf::new(), dir, root_security)];
+    // The root's parent is outside the grant; never enumerate it for an alternate name.
+    let root_short = short_name(dir.file(), || Err("metadata_unreadable"));
+    let mut pending = vec![(PathBuf::new(), dir, root_security, root_short)];
     let mut directories = Vec::new();
     let mut reserved = 1;
-    while let Some((path, dir, security)) = pending.pop() {
+    while let Some((path, dir, security, short)) = pending.pop() {
         if let Err(reason) = meter.check() {
             tree.nodes.insert(path, Err(reason.as_str()));
-            for (path, _, _) in pending.drain(..) {
+            for (path, _, _, _) in pending.drain(..) {
                 tree.nodes.insert(path, Err(reason.as_str()));
             }
             break;
         }
         let before = observe(dir.file())?;
-        let mut node = metadata(dir.file(), &before, security.as_ref().ok(), Kind::Directory);
+        let mut node = metadata(
+            dir.file(),
+            &before,
+            security.as_ref().ok(),
+            Kind::Directory,
+            short,
+        );
         let mut children = Vec::new();
         let outcome = source.list(&dir, &mut |raw| {
             if meter.check().is_err() || reserved >= max_entries {
@@ -110,6 +119,7 @@ fn read_tree_from(
                 )),
             };
         tree.nodes.insert(path.clone(), Ok(node));
+        let mut short_names = None;
         for (name, id, attributes, size, creation, write, change) in children {
             let relative = path.join(std::ffi::OsString::from_wide(&name));
             let result = (|| {
@@ -138,7 +148,10 @@ fn read_tree_from(
                         last_access: None,
                     };
                     let (child, _) = source.open_child(&dir, &raw).map_err(super::source)?;
-                    pending.push((relative.clone(), child, security));
+                    let short = short_name(child.file(), || {
+                        listed_short_name(&dir, child.file(), &name, &mut short_names, &meter)
+                    });
+                    pending.push((relative.clone(), child, security, short));
                     return Ok(None);
                 }
                 let opened = reader.open_relative(&relative, None, false, &meter)?;
@@ -173,8 +186,16 @@ fn read_tree_from(
                 {
                     return Err(Reason::ChangedDuringRead);
                 }
-                let mut node =
-                    metadata(&opened.file, &observed, security.as_ref().ok(), Kind::File);
+                let short = short_name(&opened.file, || {
+                    listed_short_name(&dir, &opened.file, &name, &mut short_names, &meter)
+                });
+                let mut node = metadata(
+                    &opened.file,
+                    &observed,
+                    security.as_ref().ok(),
+                    Kind::File,
+                    short,
+                );
                 let mut expected = observed;
                 expected.ancestors = reader
                     .pins
@@ -225,7 +246,13 @@ fn legacy_index(file: &File) -> Option<u64> {
         .then_some((u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow))
 }
 
-fn metadata(file: &File, observed: &ObservedIdentity, security: Option<&File>, kind: Kind) -> Node {
+fn metadata(
+    file: &File,
+    observed: &ObservedIdentity,
+    security: Option<&File>,
+    kind: Kind,
+    short: Observation<Vec<u8>>,
+) -> Node {
     let mut values: BTreeMap<_, _> = Class::ALL
         .into_iter()
         .map(|class| (class, Err("unsupported_metadata")))
@@ -280,25 +307,15 @@ fn metadata(file: &File, observed: &ObservedIdentity, security: Option<&File>, k
     );
     values.insert(
         Class::ExtendedAttributes,
-        nt_information(file, FileEaInformation, 8).and_then(|v| {
-            v.get(..4)
-                .map(|b| if b == [0; 4] { vec![] } else { b.to_vec() })
-                .ok_or("malformed_metadata")
-        }),
+        nt_information(file, FileEaInformation, 8)
+            .map_err(InformationError::reason)
+            .and_then(|v| {
+                v.get(..4)
+                    .map(|b| if b == [0; 4] { vec![] } else { b.to_vec() })
+                    .ok_or("malformed_metadata")
+            }),
     );
-    values.insert(
-        Class::ShortName,
-        nt_information(file, FileAlternateNameInformation, 1024).and_then(|v| {
-            if v.len() < 4 {
-                return Err("malformed_metadata");
-            }
-            let len = u32::from_le_bytes(v[..4].try_into().unwrap()) as usize;
-            if len % 2 != 0 {
-                return Err("malformed_metadata");
-            }
-            v.get(4..4 + len).map(Vec::from).ok_or("malformed_metadata")
-        }),
-    );
+    values.insert(Class::ShortName, short);
     values.insert(
         Class::CaseSensitivity,
         if kind == Kind::Directory {
@@ -342,7 +359,152 @@ fn metadata(file: &File, observed: &ObservedIdentity, security: Option<&File>, k
     }
 }
 
-fn nt_information(file: &File, class: i32, bytes: usize) -> Observation<Vec<u8>> {
+#[derive(Debug)]
+enum InformationError {
+    Status(i32),
+    Malformed,
+}
+impl InformationError {
+    fn reason(self) -> &'static str {
+        match self {
+            Self::Status(_) => "metadata_unreadable",
+            Self::Malformed => "malformed_metadata",
+        }
+    }
+}
+
+fn short_name(
+    file: &File,
+    fallback: impl FnOnce() -> Observation<Vec<u8>>,
+) -> Observation<Vec<u8>> {
+    short_name_information(
+        nt_information(file, FileAlternateNameInformation, 1024),
+        fallback,
+    )
+}
+
+fn short_name_information(
+    information: Result<Vec<u8>, InformationError>,
+    fallback: impl FnOnce() -> Observation<Vec<u8>>,
+) -> Observation<Vec<u8>> {
+    let value = match information {
+        Err(InformationError::Status(code)) if code == 0xc00000bbu32 as i32 => return fallback(),
+        result => result.map_err(InformationError::reason)?,
+    };
+    let header = value.get(..4).ok_or("malformed_metadata")?;
+    let len = u32::from_le_bytes(header.try_into().unwrap()) as usize;
+    if len % 2 != 0 {
+        return Err("malformed_metadata");
+    }
+    value
+        .get(4..4 + len)
+        .map(Vec::from)
+        .ok_or("malformed_metadata")
+}
+
+type ShortNames = BTreeMap<Vec<u16>, (u64, Vec<u8>)>;
+
+fn listed_short_name(
+    parent: &enumerate::NativeDir,
+    file: &File,
+    name: &[u16],
+    cache: &mut Option<Observation<ShortNames>>,
+    meter: &Meter,
+) -> Observation<Vec<u8>> {
+    // A 64-bit directory ID cannot establish identity on ReFS (N3).
+    if parent.filesystem().eq_ignore_ascii_case("ReFS") {
+        return Err("metadata_unreadable");
+    }
+    let names = cache.get_or_insert_with(|| directory_short_names(parent.file(), meter));
+    let (listed_id, short) = names
+        .as_ref()
+        .map_err(|e| *e)?
+        .get(name)
+        .ok_or("metadata_unreadable")?;
+    if *listed_id == 0 || legacy_index(file) != Some(*listed_id) {
+        return Err("metadata_unreadable");
+    }
+    Ok(short.clone())
+}
+
+fn directory_short_names(parent: &File, meter: &Meter) -> Observation<ShortNames> {
+    // A used directory handle retains its first search filter. Restart once and select exact
+    // native names from a bounded listing, cached per parent rather than rescanned per child.
+    let mut buffer = vec![0u64; 2048];
+    let mut names = BTreeMap::new();
+    let mut first = true;
+    let mut entries = 0;
+    loop {
+        meter.check().map_err(|_| "metadata_unreadable")?;
+        let mut status: IO_STATUS_BLOCK = unsafe { std::mem::zeroed() };
+        let result = unsafe {
+            NtQueryDirectoryFile(
+                parent.as_raw_handle(),
+                ptr::null_mut(),
+                None,
+                ptr::null(),
+                &mut status,
+                buffer.as_mut_ptr().cast(),
+                (buffer.len() * 8) as u32,
+                FileIdBothDirectoryInformation,
+                false,
+                ptr::null(),
+                first,
+            )
+        };
+        if result == 0x80000006u32 as i32 {
+            // STATUS_NO_MORE_FILES
+            return Ok(names);
+        }
+        if result != 0 || status.Information == 0 || status.Information > buffer.len() * 8 {
+            return Err("metadata_unreadable");
+        }
+        first = false;
+        let bytes =
+            unsafe { std::slice::from_raw_parts(buffer.as_ptr().cast::<u8>(), status.Information) };
+        let mut offset = 0;
+        loop {
+            meter.check().map_err(|_| "metadata_unreadable")?;
+            entries += 1;
+            if entries > MAX_TREE_ENTRIES + 2 {
+                // Allow the listing's dot entries.
+                return Err("metadata_unreadable");
+            }
+            // FILE_ID_BOTH_DIR_INFORMATION: fixed header 104 bytes, ShortName at 70, ID at 96.
+            let header = bytes
+                .get(offset..offset + 104)
+                .ok_or("metadata_unreadable")?;
+            let next = u32::from_le_bytes(header[..4].try_into().unwrap()) as usize;
+            let length = u32::from_le_bytes(header[60..64].try_into().unwrap()) as usize;
+            let short_length = header[68] as usize;
+            if length == 0
+                || length % 2 != 0
+                || short_length > 24
+                || short_length % 2 != 0
+                || (next != 0 && (next % 8 != 0 || next < 104 + length))
+            {
+                return Err("metadata_unreadable");
+            }
+            let name = bytes
+                .get(offset + 104..offset + 104 + length)
+                .ok_or("metadata_unreadable")?
+                .chunks_exact(2)
+                .map(|b| u16::from_le_bytes([b[0], b[1]]))
+                .collect::<Vec<_>>();
+            let id = u64::from_le_bytes(header[96..104].try_into().unwrap());
+            let short = header[70..70 + short_length].to_vec();
+            if names.insert(name, (id, short)).is_some() {
+                return Err("metadata_unreadable");
+            }
+            if next == 0 {
+                break;
+            }
+            offset = offset.checked_add(next).ok_or("metadata_unreadable")?;
+        }
+    }
+}
+
+fn nt_information(file: &File, class: i32, bytes: usize) -> Result<Vec<u8>, InformationError> {
     let mut buffer = vec![0u64; bytes.div_ceil(8)];
     let mut status: IO_STATUS_BLOCK = unsafe { std::mem::zeroed() };
     let result = unsafe {
@@ -358,11 +520,11 @@ fn nt_information(file: &File, class: i32, bytes: usize) -> Observation<Vec<u8>>
         return Ok(vec![0; 4]);
     }
     if result < 0 {
-        return Err("metadata_unreadable");
+        return Err(InformationError::Status(result));
     }
     let length = status.Information;
     if length > bytes {
-        return Err("malformed_metadata");
+        return Err(InformationError::Malformed);
     }
     Ok(unsafe { std::slice::from_raw_parts(buffer.as_ptr().cast::<u8>(), length) }.to_vec())
 }
@@ -563,6 +725,173 @@ mod tests {
     use super::*;
     use crate::enumerate::Strategy;
     use loomward_operations::tree::{compare, DifferenceKind, Field};
+
+    #[test]
+    fn short_name_fallback_is_only_for_the_unsupported_class() {
+        assert_eq!(
+            short_name_information(Err(InformationError::Status(0xc00000bbu32 as i32)), || Ok(
+                vec![1, 0]
+            )),
+            Ok(vec![1, 0])
+        );
+        for code in [0xc0000022u32, 0xc0000003, 0xc000000d, 0xc000003a] {
+            assert_eq!(
+                short_name_information(Err(InformationError::Status(code as i32)), || panic!(
+                    "unexpected fallback"
+                )),
+                Err("metadata_unreadable")
+            );
+        }
+        assert_eq!(
+            short_name_information(Ok(vec![0; 4]), || panic!("unexpected fallback")),
+            Ok(vec![])
+        );
+        for value in [vec![], vec![1, 0, 0, 0, 1], vec![2, 0, 0, 0]] {
+            assert_eq!(
+                short_name_information(Ok(value), || panic!("unexpected fallback")),
+                Err("malformed_metadata")
+            );
+        }
+        assert_eq!(
+            short_name_information(Err(InformationError::Status(0xc00000bbu32 as i32)), || Err(
+                "metadata_unreadable"
+            )),
+            Err("metadata_unreadable")
+        );
+    }
+
+    #[test]
+    fn native_listing_replacement_cannot_supply_the_open_entries_short_name() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("fixture"), b"original").unwrap();
+        let (parent, _) = NativeSource::default().open_root(temp.path()).unwrap();
+        let name: Vec<_> = "fixture".encode_utf16().collect();
+        let file = enumerate::open_relative_mode(
+            parent.file(),
+            &name,
+            FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            SHARE,
+            false,
+        )
+        .unwrap();
+        std::fs::rename(temp.path().join("fixture"), temp.path().join("retained")).unwrap();
+        std::fs::write(temp.path().join("fixture"), b"replacement").unwrap();
+        assert_eq!(
+            listed_short_name(
+                &parent,
+                &file,
+                &name,
+                &mut None,
+                &Meter::new(Budget {
+                    bytes: 1024,
+                    time: Duration::from_secs(30)
+                })
+            ),
+            Err("metadata_unreadable")
+        );
+    }
+
+    #[test]
+    fn native_83_file_and_directory_have_no_short_name() {
+        assert!(!crate::enumerate::running_elevated());
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("root");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("fixture"), b"synthetic").unwrap();
+        std::fs::create_dir(root.join("folder")).unwrap();
+        let tree = snapshot(&root);
+        for path in [Path::new("folder"), Path::new("fixture")] {
+            assert_eq!(
+                tree.nodes[path].as_ref().unwrap().metadata[&Class::ShortName],
+                Ok(vec![]),
+                "{path:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn native_listing_short_names_match_real_alternate_names_without_opens() {
+        let temp = tempfile::tempdir().unwrap();
+        let name = "synthetic long fixture.txt";
+        std::fs::write(temp.path().join(name), b"synthetic").unwrap();
+        std::fs::write(temp.path().join("other"), b"other").unwrap();
+        let (parent, _) = NativeSource::default().open_root(temp.path()).unwrap();
+        let wide: Vec<_> = name.encode_utf16().collect();
+        let file = enumerate::open_relative_mode(
+            parent.file(),
+            &wide,
+            FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            SHARE,
+            false,
+        )
+        .unwrap();
+        let other = enumerate::open_relative_mode(
+            parent.file(),
+            &"other".encode_utf16().collect::<Vec<_>>(),
+            FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            SHARE,
+            false,
+        )
+        .unwrap();
+        let path: Vec<_> = temp
+            .path()
+            .join(name)
+            .as_os_str()
+            .encode_wide()
+            .chain([0])
+            .collect();
+        let mut short = vec![0u16; path.len() + 1];
+        let count =
+            unsafe { GetShortPathNameW(path.as_ptr(), short.as_mut_ptr(), short.len() as u32) };
+        assert!(count > 0 && (count as usize) < short.len());
+        let short_path = PathBuf::from(std::ffi::OsString::from_wide(&short[..count as usize]));
+        let alias: Vec<_> = short_path
+            .file_name()
+            .unwrap()
+            .encode_wide()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        assert_ne!(
+            alias,
+            name.encode_utf16()
+                .flat_map(u16::to_le_bytes)
+                .collect::<Vec<_>>()
+        );
+        let mut cache = None;
+        let meter = Meter::new(Budget {
+            bytes: 1024,
+            time: Duration::from_secs(30),
+        });
+        let accesses = enumerate::record_open_accesses(|| {
+            assert_eq!(
+                listed_short_name(&parent, &file, &wide, &mut cache, &meter),
+                Ok(alias.clone())
+            );
+            assert_eq!(
+                listed_short_name(&parent, &other, &wide, &mut cache, &meter),
+                Err("metadata_unreadable")
+            );
+            assert_eq!(
+                listed_short_name(
+                    &parent,
+                    &file,
+                    &"missing".encode_utf16().collect::<Vec<_>>(),
+                    &mut cache,
+                    &meter
+                ),
+                Err("metadata_unreadable")
+            );
+        });
+        assert!(accesses.is_empty(), "{accesses:?}");
+        assert_eq!(
+            snapshot(temp.path()).nodes[Path::new(name)]
+                .as_ref()
+                .unwrap()
+                .metadata[&Class::ShortName],
+            Ok(alias)
+        );
+    }
+
     fn snapshot(path: &Path) -> Tree {
         let source = NativeSource::default();
         let (_, expected) = source.open_root(path).unwrap();
