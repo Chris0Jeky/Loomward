@@ -1214,10 +1214,10 @@ impl Inner {
         }
     }
 
-    /// Whether a renamed unverified grant's old path is definitely not this folder: it is not
-    /// there or is not a directory (Win32 errors or their NT statuses), or it opens with
-    /// another identity. Any other failure (access denied, not ready, cancelled) proves nothing,
-    /// so the grant stays active and a later re-grant can retire it.
+    /// Whether a renamed unverified grant's old path is definitely not this folder: a missing
+    /// path, a non-directory component (native attribute check, Win32 error or NT status), or an
+    /// opened folder with another identity. Other failures, including attribute or policy
+    /// refusals, prove nothing, so the grant stays active and a later re-grant can retire it.
     fn old_path_is_another_folder(&self, old: &Path, identity: &(String, Vec<u8>, String)) -> bool {
         use loomward_windows::enumerate::SourceError;
         #[cfg(test)]
@@ -1299,6 +1299,8 @@ impl Inner {
         let mutation = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
         let conn = self.db();
         // Recheck consent and candidate identity, state, mode and path after the unlocked probes.
+        // ponytail: no refresh stamp; a rename-back/re-grant during the unlocked probe can still
+        // retire the refreshed grant. This fails closed; the owner must re-grant.
         let existing = db::active_grant(&conn, &volume_key, &file_id, &display_path, &volume_guid)
             .map_err(|_| Refusal::IdentityUnavailable)?;
         let renamed: Vec<i64> =

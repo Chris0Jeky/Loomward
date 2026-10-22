@@ -6951,6 +6951,45 @@ fn a_definitely_non_directory_old_path_retires_the_unverified_grant() {
     }
 }
 
+/// A real file at the old path retires the grant through native attribute validation, not an
+/// injected error; fresh consent for the renamed folder remains active.
+#[cfg(windows)]
+#[test]
+fn a_real_file_at_the_old_path_retires_the_unverified_grant() {
+    if loomward_windows::enumerate::running_elevated() {
+        return;
+    }
+    let tmp = temp_root();
+    let folder = tmp.path().join("fat-folder");
+    std::fs::create_dir(&folder).unwrap();
+    let folder = folder.canonicalize().unwrap();
+    let svc = open(&tmp.path().join("state"), DatasetClass::Personal);
+    *svc.inner.hooks.filesystem.lock().unwrap() = Some("exFAT");
+    let (old, _) = svc.inner.grant(&folder, "cli_flag", true).unwrap();
+    let moved = tmp.path().join("fat-folder-renamed");
+    std::fs::rename(&folder, &moved).unwrap();
+    std::fs::write(&folder, b"synthetic replacement file").unwrap();
+    let moved = moved.canonicalize().unwrap();
+    let (new, fresh) = svc.inner.grant(&moved, "cli_flag", true).unwrap();
+    assert!(fresh && new != old);
+    let states: Vec<(String, String)> = svc
+        .inner
+        .db()
+        .prepare("SELECT identity_mode,state FROM st.root_grant ORDER BY id")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        states,
+        [
+            ("unverified".into(), "identity_changed".into()),
+            ("unverified".into(), "active".into())
+        ]
+    );
+}
+
 /// Holds an old-path observation while the caller exercises concurrent owner state changes.
 #[cfg(windows)]
 fn with_stalled_old_path_probe(test: impl FnOnce(&Service, i64, &Path)) -> Option<String> {

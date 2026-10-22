@@ -474,10 +474,11 @@ fn read_capped_regular_file_with(
 fn validate_directory_attributes(
     attr: FILE_ATTRIBUTE_TAG_INFO,
 ) -> Result<FILE_ATTRIBUTE_TAG_INFO, SourceError> {
-    if refused_attributes(attr.FileAttributes)
-        || attr.FileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0
-    {
+    if refused_attributes(attr.FileAttributes) {
         return Err(SourceError::Refused);
+    }
+    if attr.FileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0 {
+        return Err(SourceError::Io(ERROR_DIRECTORY as i32));
     }
     Ok(attr)
 }
