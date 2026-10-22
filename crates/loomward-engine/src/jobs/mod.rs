@@ -90,7 +90,7 @@ impl JobContext {
     pub fn is_cancelled(&self) -> bool {
         self.cancel.load(Ordering::Acquire)
     }
-    /// Serialize a durable commit with cancellation; after commit the runner must complete.
+    /// Serialize a durable commit with ordinary cancellation; root revocation may still cancel scans.
     pub(crate) fn commit_if_not_cancelled(
         &self,
         commit: impl FnOnce() -> EngineResult<()>,
@@ -486,7 +486,11 @@ impl Registry {
                     emit(events, &r.job);
                 }
             }
-            if r.terminal.is_some() || r.committed || r.job.state == JobState::CancelRequested {
+            // Root revocation withdraws a running scan's coverage even after publication admission.
+            if r.terminal.is_some()
+                || (r.committed && !(revoked && r.job.kind == JobKind::Scan))
+                || r.job.state == JobState::CancelRequested
+            {
                 return Ok(r.job.clone());
             }
             revise(&mut r.job)?;
