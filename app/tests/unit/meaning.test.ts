@@ -125,15 +125,11 @@ it('a store covers a node while a request is in flight or once it answered for i
   expect(meaning.covers('nd_a')).toBe(false);
 });
 
-it('after a failure the inspector fetches for itself, except when the learning gate refused', async () => {
+it('after any failure the inspector can fetch for itself', async () => {
   const failing = new Meaning();
   await failing.load({ call: () => Promise.reject(new Error('boom')) } as unknown as Client, ['nd_a']);
   expect(failing.message).toBe('boom');
   expect(failing.covers('nd_a')).toBe(false);
-  const gated = new Meaning();
-  const refusal = new LoomwardError({ code: 'capability_unavailable', message: 'gated', retryable: false, detail: { reason: 'learning_personal_gated' } });
-  await gated.load({ call: () => Promise.reject(refusal) } as unknown as Client, ['nd_a']);
-  expect(gated.covers('nd_a')).toBe(true);
   const other = new Meaning();
   await other.load({ call: () => Promise.reject(new LoomwardError({ code: 'capability_unavailable', message: 'x', retryable: false, detail: null })) } as unknown as Client, ['nd_a']);
   expect(other.covers('nd_a')).toBe(false);
