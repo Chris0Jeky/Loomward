@@ -189,7 +189,7 @@ try {
     $stdout = Join-Path $work 'stdout.log'
     $stderr = Join-Path $work 'stderr.log'
     $credential = [PSCredential]::new("$env:COMPUTERNAME\$accountName", $password)
-    $process = Start-Process -FilePath (Join-Path $PSHOME 'pwsh.exe') -Credential $credential -LoadUserProfile -UseNewEnvironment -NoNewWindow -PassThru -WorkingDirectory $work -ArgumentList "-NoProfile -NonInteractive -File `"$childScript`" -Child -Configuration `"$configurationPath`" -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+    $process = Start-Process -FilePath (Join-Path $PSHOME 'pwsh.exe') -Credential $credential -LoadUserProfile -UseNewEnvironment -NoNewWindow -PassThru -WorkingDirectory $work -ArgumentList "-NoProfile -NonInteractive -File `"$childScript`" -Child -Configuration `"$configurationPath`"" -RedirectStandardOutput $stdout -RedirectStandardError $stderr
     $deadline = [DateTime]::UtcNow.AddMinutes(35)
     while (-not $process.WaitForExit(1000)) {
         if ([DateTime]::UtcNow -ge $deadline) {
