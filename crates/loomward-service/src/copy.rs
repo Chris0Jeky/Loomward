@@ -73,6 +73,16 @@ pub(crate) struct Copies {
     pub(crate) gate: Mutex<Option<Gate>>,
     #[cfg(all(test, windows))]
     pub(crate) hook: Mutex<Option<RunHook>>,
+    #[cfg(all(test, windows))]
+    pub(crate) prepare_probe: Mutex<Option<PrepareProbe>>,
+}
+
+/// Synthetic GUID observations and the request captured before native preparation; test-only.
+#[cfg(all(test, windows))]
+pub(crate) struct PrepareProbe {
+    pub(crate) source_guid: u128,
+    pub(crate) destination_guid: u128,
+    pub(crate) received: Arc<Mutex<Vec<Option<u128>>>>,
 }
 
 /// The run hook's types, for the copy tests (the primitives stay referenced from this module only).
@@ -824,6 +834,8 @@ impl Copies {
                 gate: Mutex::default(),
                 #[cfg(test)]
                 hook: Mutex::default(),
+                #[cfg(test)]
+                prepare_probe: Mutex::default(),
             }
         }
         #[cfg(not(windows))]
@@ -1073,12 +1085,20 @@ impl Inner {
         for s in sources {
             resolved.push(self.copy_node(s, &mut reader)?);
         }
-        let dest = self.copy_node(destination, &mut reader)?;
+        #[allow(unused_mut)]
+        let mut dest = self.copy_node(destination, &mut reader)?;
         if !dest.is_dir {
             return Err(fail(
                 ErrorCode::InvalidRequest,
                 "the destination must be a folder",
             ));
+        }
+        #[cfg(test)]
+        let probe = self.copies.prepare_probe.lock().unwrap().take();
+        #[cfg(test)]
+        if let Some(probe) = &probe {
+            resolved[0].root_guid = Some(probe.source_guid);
+            dest.root_guid = Some(probe.destination_guid);
         }
         let first = &resolved[0];
         if resolved.iter().any(|r| r.root.root != first.root.root) {
@@ -1095,7 +1115,7 @@ impl Inner {
             .ok()
             .and_then(|v| v.as_str().map(|s| s[..10].to_string()))
             .unwrap_or_default();
-        let (preview, mut plan) = exec::prepare(&exec::Request {
+        let request = exec::Request {
             source_root: &first.root_path,
             selected: &selected,
             destination: &dest_path,
@@ -1106,8 +1126,17 @@ impl Inner {
             // The pinned destination must sit under its own grant's verified root (review of #522).
             destination_root: dest.root_id,
             destination_root_guid: dest.root_guid,
-        })
-        .map_err(|e| {
+        };
+        #[cfg(test)]
+        if let Some(probe) = probe {
+            probe
+                .received
+                .lock()
+                .unwrap()
+                .push(request.destination_root_guid);
+            return Err(fail(ErrorCode::PermissionDenied, "preparation intercepted"));
+        }
+        let (preview, mut plan) = exec::prepare(&request).map_err(|e| {
             with_reason(
                 fail(
                     ErrorCode::PermissionDenied,

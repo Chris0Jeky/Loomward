@@ -384,6 +384,7 @@ pub(crate) fn open_pair_validated(
     conn.execute_batch(
         "PRAGMA st.synchronous=FULL;PRAGMA st.foreign_keys=ON;PRAGMA st.secure_delete=ON",
     )?;
+    conn.execute("DELETE FROM st.meta WHERE key='node_id_key'", [])?;
     if cv >= 2 {
         // Also retries an interrupted migration's backfill; NULL stays unknown without an observation.
         let tx = conn.transaction()?;

@@ -1347,6 +1347,46 @@ mod lab_copy {
         Some((tmp, svc, one, two))
     }
 
+    #[test]
+    fn destination_root_guid_comes_from_the_destination_grant() {
+        let Some((tmp, svc, first, second)) = two_roots() else {
+            return; // two_roots() already printed the elevated-token skip.
+        };
+        let a = child_named(&lab_slice(&svc, &first), "a").unwrap();
+        let c = child_named(&lab_slice(&svc, &second), "c").unwrap();
+        let received = Arc::new(Mutex::new(Vec::new()));
+        *svc.inner.copies.prepare_probe.lock().unwrap() = Some(crate::copy::PrepareProbe {
+            source_guid: 0x1111,
+            destination_guid: 0x2222,
+            received: received.clone(),
+        });
+        let e = err(call(
+            &svc,
+            "copy.preview",
+            json!({"sources": [a], "destination_node_id": c}),
+        ));
+        assert_eq!(e.message.as_str(), "preparation intercepted");
+        assert_eq!(*received.lock().unwrap(), [Some(0x2222)]);
+        assert!(svc
+            .inner
+            .copies
+            .store
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .operations()
+            .unwrap()
+            .is_empty());
+        let destination = tmp.path().join("lab-other/c");
+        assert_eq!(std::fs::read_dir(&destination).unwrap().count(), 1);
+        assert_eq!(std::fs::read(destination.join("1.bin")).unwrap(), [0u8; 7]);
+        assert_eq!(
+            std::fs::read(tmp.path().join("lab-scan/a/1.bin")).unwrap(),
+            [0u8; 10]
+        );
+    }
+
     /// copy_prepare (~374): a selection drawn from two granted roots is refused as one InvalidRequest
     /// before anything is observed. Each source on its own is served.
     #[test]
