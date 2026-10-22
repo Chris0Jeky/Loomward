@@ -69,6 +69,16 @@ fn content_reader_is_feature_gated_and_engine_only() {
         .unwrap()
         .parent()
         .unwrap();
+    // A consumer convention guard; the feature is not an authorization boundary.
+    fn check_manifest(path: &Path) {
+        assert!(
+            !std::fs::read_to_string(path)
+                .unwrap()
+                .contains("content-read"),
+            "content-read enabled outside engine: {}",
+            path.display()
+        );
+    }
     fn check(path: &Path) {
         for entry in std::fs::read_dir(path).unwrap() {
             let path = entry.unwrap().path();
@@ -84,31 +94,37 @@ fn content_reader_is_feature_gated_and_engine_only() {
                     path.display()
                 );
             } else if path.file_name().unwrap() == "Cargo.toml" {
-                assert!(
-                    !std::fs::read_to_string(&path)
-                        .unwrap()
-                        .contains("content-read"),
-                    "content-read enabled outside engine: {}",
-                    path.display()
-                );
+                check_manifest(&path);
             }
         }
     }
-    for entry in std::fs::read_dir(workspace.join("crates")).unwrap() {
-        let path = entry.unwrap().path();
-        if !["loomward-engine", "loomward-windows"]
-            .iter()
-            .any(|name| path.ends_with(name))
-        {
-            check(&path);
+    fn check_workspace(workspace: &Path) {
+        check_manifest(&workspace.join("Cargo.toml"));
+        for entry in std::fs::read_dir(workspace.join("crates")).unwrap() {
+            let path = entry.unwrap().path();
+            if !["loomward-engine", "loomward-windows"]
+                .iter()
+                .any(|name| path.ends_with(name))
+            {
+                check(&path);
+            }
         }
+        check(&workspace.join("native/src"));
+        check_manifest(&workspace.join("native/Cargo.toml"));
     }
-    check(&workspace.join("native/src"));
-    assert!(
-        !std::fs::read_to_string(workspace.join("native/Cargo.toml"))
-            .unwrap()
-            .contains("content-read")
-    );
+    for (manifest, accepted) in [
+        ("[workspace.dependencies]\nserde = \"1\"", true),
+        ("[dependencies]\nloomward-windows = { path = \"crates/loomward-windows\", features = [\"content-read\"] }", false),
+        ("[workspace.dependencies]\nloomward-windows = { path = \"crates/loomward-windows\", features = [\"content-read\"] }", false),
+    ] {
+        let fixture = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(fixture.path().join("crates")).unwrap();
+        std::fs::create_dir_all(fixture.path().join("native/src")).unwrap();
+        std::fs::write(fixture.path().join("native/Cargo.toml"), "").unwrap();
+        std::fs::write(fixture.path().join("Cargo.toml"), manifest).unwrap();
+        assert_eq!(std::panic::catch_unwind(|| check_workspace(fixture.path())).is_ok(), accepted, "root manifest: {manifest}");
+    }
+    check_workspace(workspace);
     assert!(include_str!("../../Cargo.toml").contains("content-read = []"));
     assert!(
         std::fs::read_to_string(workspace.join("crates/loomward-engine/Cargo.toml"))
