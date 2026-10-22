@@ -132,6 +132,10 @@ fn directory_limit_releases_pending_identity_before_parent_relist() {
     let (tx, rx) = mpsc::sync_channel::<Envelope>(32);
     let shared = Shared {
         source: &Tree,
+        progress: None,
+        started: Instant::now(),
+        last_progress: Mutex::new(None),
+        writer_queue: Arc::new(AtomicUsize::new(0)),
         root_identity: identity(1),
         round: AtomicU32::new(1),
         run: 1,
@@ -211,6 +215,7 @@ fn directory_limit_releases_pending_identity_before_parent_relist() {
             .send(Envelope {
                 command: Command::Stop,
                 _permit: None,
+                queued: None,
             })
             .unwrap();
         writer.join().unwrap();
@@ -268,9 +273,20 @@ enum Command {
 struct Envelope {
     command: Command,
     _permit: Option<BytePermit>,
+    queued: Option<Queued>,
+}
+struct Queued(Arc<AtomicUsize>);
+impl Drop for Queued {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 struct Shared<'a, S: DirSource> {
     source: &'a S,
+    progress: Option<&'a crate::jobs::JobContext>,
+    started: Instant,
+    last_progress: Mutex<Option<Instant>>,
+    writer_queue: Arc<AtomicUsize>,
     root_identity: OpenedIdentity,
     round: AtomicU32,
     run: u64,
@@ -341,6 +357,8 @@ impl<S: DirSource> Shared<'_, S> {
         self.cancel.load(Ordering::Acquire) || self.writer_failed.load(Ordering::Acquire)
     }
     fn send(&self, mut envelope: Envelope) -> bool {
+        self.writer_queue.fetch_add(1, Ordering::Relaxed);
+        envelope.queued = Some(Queued(self.writer_queue.clone()));
         loop {
             if self.stopping() {
                 return false;
@@ -373,6 +391,7 @@ impl<S: DirSource> Shared<'_, S> {
                 reply: tx,
             },
             _permit: None,
+            queued: None,
         }) {
             return Err(cancelled());
         }
@@ -391,6 +410,7 @@ impl<S: DirSource> Shared<'_, S> {
         self.send(Envelope {
             command: Command::Message(m),
             _permit: None,
+            queued: None,
         })
     }
     fn finish_slot(
@@ -414,6 +434,59 @@ impl<S: DirSource> Shared<'_, S> {
             && arena[index].dir.take().is_some()
         {
             self.handles.fetch_sub(1, Ordering::Relaxed);
+        }
+        drop(arena);
+        self.publish_progress(false)
+    }
+    /// Use each directory's latest finished listing, so relists replace counts.
+    fn publish_progress(&self, force: bool) -> EngineResult<()> {
+        let Some(job) = self.progress else {
+            return Ok(());
+        };
+        let mut last = self.last_progress.lock().unwrap();
+        if !force && last.is_some_and(|at| at.elapsed() < Duration::from_millis(100)) {
+            return Ok(());
+        }
+        let arena = self.arena.lock().unwrap();
+        let mut sums = Sums::ZERO;
+        let mut counts = [0u64; 3];
+        let mut dirs = 0;
+        for (index, slot) in arena.iter().enumerate() {
+            sums = sums.checked_add(slot.own)?;
+            for (total, count) in counts.iter_mut().zip(slot.counts) {
+                *total += count;
+            }
+            if index != 0 && (slot.listed || slot.counts != [0; 3]) {
+                dirs += 1;
+            }
+        }
+        let tasks = self.tasks.lock().unwrap();
+        let pending = tasks.queue.len() + tasks.active;
+        drop(tasks);
+        drop(arena);
+        let elapsed = self.started.elapsed();
+        let reason = if self.depth_limit_hit.load(Ordering::Acquire) {
+            Some(ScanLimitReason::DepthLimit)
+        } else if self.directory_limit_hit.load(Ordering::Acquire) {
+            Some(ScanLimitReason::DirectoryLimit)
+        } else {
+            None
+        };
+        let mut progress = serde_json::json!({
+            "phase":"enumerating", "strategy": crate::jobs::scan_strategy(*self.strategy.lock().unwrap()),
+            "examined":counts[0], "indexed_files":sums.files, "indexed_dirs":dirs,
+            "skipped":counts[1], "failed":counts[2], "logical_bytes":sums.logical.to_string(),
+            "allocated_bytes":sums.allocated.map(|n| n.to_string()), "pending_dirs":pending,
+            "writer_queue_depth":self.writer_queue.load(Ordering::Relaxed),
+            "entries_per_second":counts[0] as f64 / elapsed.as_secs_f64().max(0.000001),
+            "elapsed_ms":elapsed.as_millis() as u64, "limit_hit":self.limit_hit.load(Ordering::Acquire)
+        });
+        if let Some(reason) = reason {
+            progress["limit_reason"] = serde_json::to_value(reason).unwrap();
+        }
+        job.set_scan_progress(serde_json::from_value(progress).expect("bounded scan progress"))?;
+        if !force {
+            *last = Some(Instant::now());
         }
         Ok(())
     }
@@ -461,6 +534,7 @@ impl<S: DirSource> Shared<'_, S> {
         if !self.send(Envelope {
             command: Command::Barrier(tx),
             _permit: None,
+            queued: None,
         }) {
             return Err(cancelled());
         }
@@ -492,6 +566,7 @@ impl<S: DirSource> Shared<'_, S> {
                 entries: std::mem::take(entries),
             }),
             _permit: permit.take(),
+            queued: None,
         })
     }
     fn visit(&self, task: Task<S::Dir>) -> EngineResult<()> {
@@ -930,7 +1005,8 @@ fn writer(
     let mut dirty = HashSet::new();
     // Prepares, barriers and the stop that a prepare's drain overtook, in arrival order.
     let mut held: VecDeque<Envelope> = VecDeque::new();
-    let mut handle = |e: Envelope| -> bool {
+    let mut handle = |mut e: Envelope| -> bool {
+        drop(e.queued.take());
         if matches!(e.command, Command::Stop) {
             return false;
         }
@@ -1040,7 +1116,24 @@ pub fn run_scan<S: DirSource>(
     cancel: Arc<AtomicBool>,
     options: ScanOptions,
 ) -> EngineResult<ScanReport> {
-    run_scan_inner(source, root, run, sink, bytes, cancel, options, None)
+    run_observed_scan(source, root, run, sink, bytes, cancel, options, None)
+}
+
+/// Observations do not claim the plain job's terminal publication gate.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn run_observed_scan<S: DirSource>(
+    source: &S,
+    root: &GrantedRoot,
+    run: u64,
+    sink: Arc<dyn ScanSink>,
+    bytes: Arc<ByteBudget>,
+    cancel: Arc<AtomicBool>,
+    options: ScanOptions,
+    progress: Option<&crate::jobs::JobContext>,
+) -> EngineResult<ScanReport> {
+    run_scan_inner(
+        source, root, run, sink, bytes, cancel, options, None, progress,
+    )
 }
 
 /// The plain job path; watched repair passes retain their separate publication boundary.
@@ -1063,6 +1156,7 @@ pub(super) fn run_job_scan<S: DirSource>(
         job.cancel.clone(),
         options,
         Some(job),
+        Some(job),
     )
 }
 
@@ -1084,6 +1178,7 @@ fn run_scan_inner<S: DirSource>(
     cancel: Arc<AtomicBool>,
     options: ScanOptions,
     job: Option<&crate::jobs::JobContext>,
+    progress: Option<&crate::jobs::JobContext>,
 ) -> EngineResult<ScanReport> {
     if !(1..=32).contains(&options.workers)
         || options.max_dirs == 0
@@ -1220,6 +1315,10 @@ fn run_scan_inner<S: DirSource>(
         });
     }
     let shared = Shared {
+        progress,
+        started: start,
+        last_progress: Mutex::new(None),
+        writer_queue: Arc::new(AtomicUsize::new(0)),
         root_identity: identity,
         round: AtomicU32::new(1),
         source,
@@ -1310,6 +1409,7 @@ fn run_scan_inner<S: DirSource>(
             });
         }
     }
+    shared.publish_progress(true)?;
     let mut enumeration_wall_seconds = 0.;
     let mut aggregation_seconds = 0.;
     let (worker_result, writer_result, reconciled) = std::thread::scope(|scope| {
@@ -1462,6 +1562,7 @@ fn run_scan_inner<S: DirSource>(
         let _ = shared.tx.send(Envelope {
             command: Command::Stop,
             _permit: None,
+            queued: None,
         });
         (
             result,
@@ -1474,6 +1575,9 @@ fn run_scan_inner<S: DirSource>(
             reconciled,
         )
     });
+    if worker_result.is_ok() && writer_result.is_ok() {
+        shared.publish_progress(true)?;
+    }
     // A worker panic fails the run; recover only to finish it as incomplete, never to resume work.
     let arena = shared
         .arena

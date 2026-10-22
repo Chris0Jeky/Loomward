@@ -4552,6 +4552,57 @@ fn scan_start_publishes_a_lab_tree_matching_an_independent_walk_with_live_events
     );
 }
 
+/// #719: progress is observable before the writer finishes, and final counters remain exact.
+#[cfg(windows)]
+#[test]
+fn scan_jobs_get_reports_progress_while_a_lab_scan_is_running() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    svc.inner.freshness.pause_pump();
+    svc.inner.scan.gate.arm();
+    let id = start(svc, &lab.root, "full");
+    svc.inner.scan.gate.wait_reached();
+    let (during, _) = ok("jobs.get", call(svc, "jobs.get", json!({"job_id":id})));
+    let (roots, _) = ok("roots.list", call(svc, "roots.list", json!({})));
+    // Release before assertions so even the red test leaves no blocked worker.
+    svc.inner.scan.gate.release();
+    let done = settle(svc, &id);
+    assert_eq!(during["job"]["state"], "running");
+    assert_eq!(during["job"]["progress"]["phase"], "enumerating");
+    assert_eq!(roots["roots"][0]["scan"]["last_job_id"], id);
+    assert_eq!(done["progress"]["phase"], "done");
+    assert_eq!(done["progress"]["indexed_files"], 5);
+    assert_eq!(done["progress"]["indexed_dirs"], 3);
+    assert_eq!(done["progress"]["logical_bytes"], "165");
+}
+
+/// #719/#808: a directory-budget stop remains a named, finished partial scan at the service boundary.
+#[cfg(windows)]
+#[test]
+fn scan_directory_cap_reports_a_named_limit_and_partial_history() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    svc.inner.freshness.pause_pump();
+    let (started, _) = ok(
+        "scan.start",
+        call(
+            svc,
+            "scan.start",
+            json!({"root_id":lab.root,"mode":"full","budget":{"max_dirs":1,"threads":1}}),
+        ),
+    );
+    let id = started["job"]["job_id"].as_str().unwrap();
+    let done = settle(svc, id);
+    assert_eq!(done["state"], "completed");
+    assert_eq!(done["coverage"], "partial");
+    assert_eq!(done["progress"]["limit_hit"], true);
+    assert_eq!(done["progress"]["limit_reason"], "directory_limit");
+    let (roots, _) = ok("roots.list", call(svc, "roots.list", json!({})));
+    assert_eq!(roots["roots"][0]["scan"]["last_job_id"], id);
+    assert_eq!(roots["roots"][0]["scan"]["coverage"], "partial");
+    assert!(!roots["roots"][0]["scan"]["finished_at"].is_null());
+}
+
 #[cfg(windows)]
 fn search_freshness_page(lab: &Lab) -> Value {
     let (page, _) = ok(
@@ -4965,6 +5016,9 @@ fn f3_completed_partial_full_scan_is_current_without_claiming_complete_coverage(
     let (roots, _) = ok("roots.list", call(svc, "roots.list", json!({})));
     assert_eq!(roots["roots"][0]["scan"]["coverage"], "partial");
     assert_eq!(roots["roots"][0]["totals"]["complete"], false);
+    assert_eq!(job["progress"]["indexed_dirs"], 1);
+    assert_eq!(roots["roots"][0]["totals"]["dirs"], 2);
+    assert_eq!(job["progress"]["failed"], 1);
 }
 
 /// #774: a full scan that ran to the end around a denied folder is a finished (partial) run, not a

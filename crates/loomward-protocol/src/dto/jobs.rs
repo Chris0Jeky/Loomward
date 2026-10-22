@@ -133,8 +133,8 @@ pub struct Job {
     pub started_at: Option<Timestamp>,
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub finished_at: Option<Timestamp>,
-    /// A scan's counters are published once, with its final report, so a running scan reads `null`
-    /// here. No live counters exist yet; a partial value is never invented in their place.
+    /// Running scans publish snapshots of their latest finished directory listings. Before
+    /// enumeration starts this can be null; `done` carries the exact final report.
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub progress: Option<ScanProgress>,
     #[serde(deserialize_with = "crate::types::required_nullable")]

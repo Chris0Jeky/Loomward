@@ -847,6 +847,7 @@ impl Engine {
                     ctx.cancel.clone(),
                     options.clone(),
                     &watch,
+                    Some(&ctx),
                 )?;
                 if std::env::var_os("LOOMWARD_SCAN_PROFILE").is_some() {
                     eprintln!(
