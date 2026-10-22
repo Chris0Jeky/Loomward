@@ -1215,7 +1215,8 @@ impl Inner {
     }
 
     /// Whether a renamed unverified grant's old path is definitely not this folder: a missing
-    /// path, a non-directory component (native attribute check, Win32 error or NT status), or an
+    /// path, a non-directory component (Win32 error or NT status), a plain file (not a link or other
+    /// reparse point) where the folder was, or an
     /// opened folder with another identity. Other failures, including attribute or policy
     /// refusals, prove nothing, so the grant stays active and a later re-grant can retire it.
     fn old_path_is_another_folder(&self, old: &Path, identity: &(String, Vec<u8>, String)) -> bool {
@@ -1235,6 +1236,19 @@ impl Inner {
                     2 | 3 | 267 | 0xC000_000F | 0xC000_0034 | 0xC000_003A | 0xC000_0103
                 )
             }
+            // The native open refuses any non-directory (and reparse points) without saying which;
+            // only a plain file, never a link or other reparse point, proves the old path is another
+            // object. Everything else stays inconclusive.
+            Err(SourceError::Refused) => std::fs::symlink_metadata(old).is_ok_and(|m| {
+                #[cfg(windows)]
+                let reparse = {
+                    use std::os::windows::fs::MetadataExt;
+                    m.file_attributes() & 0x400 != 0
+                };
+                #[cfg(not(windows))]
+                let reparse = m.file_type().is_symlink();
+                m.is_file() && !reparse
+            }),
             Err(_) => false,
         }
     }
