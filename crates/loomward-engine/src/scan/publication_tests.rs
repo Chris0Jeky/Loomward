@@ -265,3 +265,81 @@ fn admitted_scan_publication_does_not_block_or_acknowledge_cancellation() {
         assert!(!sink.memory.sweep_allowed(&root_id));
     }
 }
+
+#[test]
+fn root_revocation_overrides_admitted_scan_publication() {
+    use super::super::tests::{root, Tree};
+
+    let engine = Arc::new(
+        Engine::open(EngineConfig::new("unused".into(), DatasetClass::Synthetic)).unwrap(),
+    );
+    let root = root();
+    let root_id = root.root_id().clone();
+    let root_key = root.key().clone();
+    let (entered, publishing) = mpsc::channel();
+    let (release, wait) = mpsc::channel();
+    let wait = Mutex::new(wait);
+    let sink = Arc::new(PublicationSink {
+        finish: Some(Box::new(move || {
+            entered.send(()).unwrap();
+            wait.lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap();
+            Ok(())
+        })),
+        ..PublicationSink::default()
+    });
+    engine.set_scan_sink(sink.clone()).unwrap();
+    let worker_sink = sink.clone();
+    engine.register_job_runner(
+        JobKind::Scan,
+        Arc::new(move |ctx, _| {
+            let report = run_job_scan(
+                &Tree,
+                &root,
+                1,
+                worker_sink.clone(),
+                Arc::new(ByteBudget::new(crate::budgets::SCAN_BYTES)),
+                &ctx,
+                ScanOptions::default(),
+            )?;
+            ctx.set_scan_report(&report)?;
+            Ok(if report.coverage_complete() {
+                CoverageState::Complete
+            } else {
+                CoverageState::Partial
+            })
+        }),
+    );
+    let job = engine
+        .job_submit(JobSpec::new(JobKind::Scan, Some(root_id.clone())))
+        .unwrap();
+    publishing.recv_timeout(Duration::from_secs(5)).unwrap();
+    let (revoked, outcome) = mpsc::channel();
+    let requester = engine.clone();
+    let key = root_key.clone();
+    let id = root_id.clone();
+    let revocation = std::thread::spawn(move || {
+        revoked.send(requester.scan_cancel_root(&key, &id)).unwrap();
+    });
+    // Capture the acknowledgement before releasing publication, even if it is incorrectly Running.
+    let early = outcome.recv_timeout(Duration::from_secs(2));
+    release.send(()).unwrap();
+    revocation.join().unwrap();
+    let done = terminal(&engine, &job.job_id);
+    let response = early
+        .expect("root revocation waited for final publication")
+        .unwrap();
+    assert_eq!(response.len(), 1);
+    assert_eq!(response[0].job_id, job.job_id);
+    assert_eq!(response[0].state, JobState::CancelRequested);
+    assert_eq!(done.state, JobState::Cancelled);
+    assert_eq!(done.coverage, Some(CoverageState::Cancelled));
+    assert_eq!(*sink.finishes.lock().unwrap(), vec![(true, true, false)]);
+    engine.scan_writer_fence(&root_key, &root_id).unwrap();
+    assert!(matches!(
+        sink.begin_run(&root_id, 2, &RunScope::FullRoot),
+        Err(EngineError::PermissionDenied { .. })
+    ));
+}
