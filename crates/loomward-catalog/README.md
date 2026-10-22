@@ -25,6 +25,58 @@ The engine owns one `Catalog` and its dataset lock (ADR-V3-01), and retains at m
 four `Reader` handles. The crate records admitted observations; it does not enumerate
 paths, verify OS grants, open user files or perform effects.
 
+## Cloud residency observations (LW-120 slice 1)
+
+`cloud_state(Option<u32>)` is a pure classification of already-listed Windows
+attributes. Recall-on-data-access (`0x00400000`), recall-on-open (`0x00040000`)
+or offline (`0x00001000`) takes precedence over pin preferences and produces
+`CloudOnly`: **not fully local**, possibly partially hydrated. This includes
+offline storage that is not a cloud provider. Pinned (`0x00080000`) without
+recall/offline evidence gives `Pinned`; conflicting pinned/unpinned preferences
+give `Unknown`. Unpinned (`0x00100000`) alone is an eviction preference, not
+proof of eviction: an unpinned reparse entry without recall/offline flags gives
+`Local`. Other ordinary attributes give `Local`; unclassified reparse
+or sparse entries, zero/missing attributes, and all non-Windows hosts stay
+`Unknown`. `Pinned` records a preference, not confirmation of completed hydration.
+These are scan-time observations, never an assurance that a later open is safe.
+The bit meanings follow [Microsoft's file attribute constants](https://learn.microsoft.com/en-us/windows/win32/fileio/file-attribute-constants).
+
+`Reader::cloud_summary(directory_id)` queries an active directory's recorded file
+entries recursively in one catalogue snapshot. Each of its four state buckets
+contains file-entry count, logical bytes and independently observed allocated
+bytes (`None` if any contributing entry lacks allocation). Empty buckets have
+known zero allocation. Placeholder allocation is never assumed to be zero, nor
+inferred from logical size. Hard links count per name; these are not unique or
+reclaimable totals. Excluded placeholder files are counted here even though the
+normal scan aggregates omit them. Absent directory subtrees and descendants of
+excluded/denied directories are omitted. `partial` records incomplete/stale/live
+scan coverage; totals describe recorded files, not all remote provider contents.
+The query observes active grants and existing reader deadlines, with a two-million
+SQLite VM-step budget; exhaustion refuses the result instead of publishing a
+truncated total.
+
+No migration is needed: Extended/Both enumeration already supplies `FileAttributes`,
+`EndOfFile` and `AllocationSize` (`crates/loomward-windows/src/enumerate/mod.rs`);
+the Find fallback supplies attributes and logical size, with unknown allocation
+(`enumerate/native.rs`). The engine copies them into `scan::Entry`; the service
+copies them into `Observation` (`crates/loomward-service/src/sink.rs`); the catalogue
+writer persists `file.attrs`, `file.logical` and nullable `file.allocated`.
+The new query reads these existing columns; old stores need no backfill.
+
+This slice stops at the catalogue API. No protocol DTO, generated app type or UI
+changes are made. Provider identity, sign-in, presence and connection health
+(including absent/offline provider status) **remain unknown**: filesystem OFFLINE
+is file availability evidence, not provider health. No provider API, network,
+content open, sign-in or metadata refresh is added. A later provider-health/UI
+slice must keep this distinction visible.
+
+Proof uses synthetic SQLite observations, reopen tests, and encoded Extended/Both
+enumeration records with a native-open recorder. Recall flags require provider/
+kernel support; the tests do not pretend an ordinary file is a real placeholder.
+Real OneDrive/Dropbox/Google Drive hydration and directory-provider behaviour
+remain unverified. Classification and catalogue queries never open scanned paths;
+the existing no-recall directory traversal guards are unchanged.
+
 ## Developer clutter advice (LW-119 first slice)
 
 `Reader::developer_clutter(root_id, cap)` reads recorded metadata in one snapshot,
