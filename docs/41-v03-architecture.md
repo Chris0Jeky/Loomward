@@ -650,7 +650,8 @@ commit for a 10M-entry scan: 400 MB (P2).
 
 - **Materialised subtree sums** on every `dir` row, published only through `DirFinal` or the repair rollup
   (section 7). Children of any directory are available in size order from `dir_by_logical`/`dir_by_allocated` and
-  `file_by_logical`/`file_by_allocated`, each on `(dir_id, size DESC)` with the implicit rowid (`id`) as the deterministic tie-breaker.
+  `file_by_logical`/`file_by_allocated`, with `id` as the deterministic tie-breaker (explicit in the `dir` indexes, the
+  implicit rowid in the `file` indexes).
 - **Slice algorithm** (`loomward-catalog/src/slice.rs`). Expand the largest directories first from the anchor up
   to `max_nodes` and `depth`; fetch children above `min_share × anchor_size`; fold the remainder into one `other`
   node computed as parent subtree minus listed children. The whole slice is read in **one read transaction**.
