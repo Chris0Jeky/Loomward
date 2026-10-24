@@ -744,6 +744,12 @@ mod tests {
         let out = tmp.path().join("cycles.jsonl");
         fs::write(&out, b"earlier run\n").unwrap();
         let refused = run(&root, &out, Duration::ZERO, Some(1)).unwrap_err();
+        // A checkout under a user profile puts target/ there, which the harness refuses by design.
+        if refused.to_string().contains("profile, credential, browser") {
+            eprintln!("skipped: this checkout's test root is refused: {refused}");
+            assert_eq!(fs::read(&out).unwrap(), b"earlier run\n");
+            return;
+        }
         assert_eq!(refused.kind(), io::ErrorKind::AlreadyExists, "{refused}");
         assert!(
             !root.exists(),
