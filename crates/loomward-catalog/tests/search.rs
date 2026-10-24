@@ -676,6 +676,8 @@ fn a_common_token_budget_cut_must_advance_or_refuse() {
 /// The index holds exactly one entry per non-root folder and per file, keyed as the triggers key them.
 fn assert_index_parity(lab: &Lab) {
     let db = Connection::open(lab.temp.path().join("catalog.db")).unwrap();
+    db.execute_batch("INSERT INTO search_name(search_name,rank) VALUES('integrity-check',1)")
+        .unwrap();
     let keys = |sql: &str| -> Vec<i64> {
         let mut s = db.prepare(sql).unwrap();
         let mut v: Vec<i64> = s
@@ -822,4 +824,138 @@ fn forgetting_a_multi_level_root_leaves_no_index_entry_for_it() {
         .query_row("SELECT count(*) FROM search_name", [], |row| row.get(0))
         .unwrap();
     assert_eq!(left, 1, "only Beta's file is indexed");
+}
+
+// #386: phrase positions are required, per-document token counts are not.
+#[test]
+fn trigram_storage_omits_unused_document_sizes() {
+    let (lab, _) = ranked();
+    let db = Connection::open(lab.temp.path().join("catalog.db")).unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM sqlite_schema WHERE name='search_name_docsize'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    db.execute_batch("INSERT INTO search_name(search_name,rank) VALUES('integrity-check',1)")
+        .unwrap();
+    let mut stmt = db.prepare("EXPLAIN QUERY PLAN SELECT rowid FROM search_name WHERE search_name MATCH ?1 ORDER BY rowid").unwrap();
+    let plan = stmt
+        .query_map(["report"], |r| r.get::<_, String>(3))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap()
+        .join(" ");
+    assert!(
+        plan.contains("VIRTUAL TABLE INDEX") && plan.contains("M"),
+        "{plan}"
+    );
+    assert!(!plan.contains("TEMP B-TREE"), "{plan}");
+}
+
+#[test]
+fn older_trigram_store_compacts_without_losing_rows_or_search_tiers() {
+    let (mut lab, _) = ranked();
+    let expected: Vec<_> = [
+        "report",
+        "report annual",
+        "port nnual",
+        "x",
+        "re",
+        "notes",
+        "",
+    ]
+    .iter()
+    .map(|q| names(&search(&lab, &req(q))))
+    .collect();
+    let dir = lab.temp.path().to_path_buf();
+    drop(lab.c);
+    let db = Connection::open(dir.join("catalog.db")).unwrap();
+    db.execute_batch("DROP TRIGGER search_file_insert; DROP TRIGGER search_file_delete; DROP TRIGGER search_file_rename; DROP TRIGGER search_dir_insert; DROP TRIGGER search_dir_delete; DROP TRIGGER search_dir_rename; DROP TABLE search_name; DROP VIEW IF EXISTS search_name_content;").unwrap();
+    db.execute_batch(include_str!("fixtures/search-name-v1.sql"))
+        .unwrap();
+    db.execute_batch("INSERT INTO search_name(rowid,name) SELECT id,char(1)||replace(replace(name,char(1),' '),char(2),' ')||char(2) FROM dir WHERE parent_id IS NOT NULL; INSERT INTO search_name(rowid,name) SELECT id+281474976710656,char(1)||replace(replace(name,char(1),' '),char(2),' ')||char(2) FROM file;").unwrap();
+    let rows = |db: &Connection| {
+        let mut stmt = db.prepare("SELECT id,dir_id,name,hex(file_id),logical,allocated,created_ft,born_run,seen_run FROM file ORDER BY id").unwrap();
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, i64>(4)?,
+                    r.get::<_, Option<i64>>(5)?,
+                    r.get::<_, Option<i64>>(6)?,
+                    r.get::<_, i64>(7)?,
+                    r.get::<_, i64>(8)?,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        rows
+    };
+    let before = rows(&db);
+    drop(db);
+    lab.c = Catalog::open(&dir, "synthetic").unwrap();
+    let db = Connection::open(dir.join("catalog.db")).unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM sqlite_schema WHERE name='search_name_docsize'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    assert_eq!(rows(&db), before);
+    db.execute_batch("INSERT INTO search_name(search_name,rank) VALUES('integrity-check',1)")
+        .unwrap();
+    for (q, expected) in [
+        "report",
+        "report annual",
+        "port nnual",
+        "x",
+        "re",
+        "notes",
+        "",
+    ]
+    .iter()
+    .zip(expected)
+    {
+        assert_eq!(names(&search(&lab, &req(q))), expected, "{q}");
+    }
+    // A raw writer must keep renamed/deleted terms exact on the migrated store too.
+    db.execute(
+        "UPDATE file SET name='renamed-ledger.txt' WHERE name='report.pdf'",
+        [],
+    )
+    .unwrap();
+    db.execute("DELETE FROM file WHERE name='myreport.txt'", [])
+        .unwrap();
+    db.execute(
+        "UPDATE dir SET name='renamed-folder' WHERE name='report'",
+        [],
+    )
+    .unwrap();
+    db.execute_batch("INSERT INTO search_name(search_name,rank) VALUES('integrity-check',1)")
+        .unwrap();
+    assert_index_parity(&lab);
+    assert!(search(&lab, &req("report.pdf")).hits.is_empty());
+    assert!(search(&lab, &req("myreport")).hits.is_empty());
+    assert_eq!(
+        names(&search(&lab, &req("ledger"))),
+        pairs(&[("token", "renamed-ledger.txt")])
+    );
+    drop(db);
+    drop(lab.c);
+    lab.c = Catalog::open(&dir, "synthetic").unwrap();
+    assert_eq!(
+        names(&search(&lab, &req("ledger"))),
+        pairs(&[("token", "renamed-ledger.txt")])
+    );
 }

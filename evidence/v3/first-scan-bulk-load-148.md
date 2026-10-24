@@ -260,3 +260,239 @@ VACUUM rewrites the catalogue, needs temporary disk space and can increase peak 
 a busy/full/error case leaves compaction undone and the committed scan intact. It runs synchronously,
 so cancellation during EndRun also waits for this maintenance. Physical power-cut and actual IOERR
 injection are not verified by the authorizer fault or SQLite integrity checks.
+
+
+---
+
+## 2026-10-22 - #386 / P14: compact sort keys and trigram document metadata
+Baseline source: `2984f0d7ddd879027ad66ab59852aace8358fb7a`, clean at entry. Windows,
+`rustc 1.97.1`, `cargo 1.97.1`. The baseline was measured before production edits; only
+per-object `dbstat` instrumentation was added to the existing benchmark. No dependencies changed.
+
+**Result: P14 remains open.** The same 1,000,000 files plus 1,001 directories (1,001,001
+entries) now occupy **204,161,024 bytes / 203.957 B per entry**, down from
+**228,241,408 bytes / 228.013 B per entry**: **24,080,384 bytes (10.55%) saved**.
+The remaining gap is **3.957 B per entry**. No query, index access path, search tier or native
+identity encoding was removed. The optional ranked token index remains optional and is absent
+from both variants of this existing workload; this is not a measurement with ranked search enabled.
+
+### Measurements and timing boundary
+
+Build/run commands, from the worktree root:
+
+```powershell
+$env:CARGO_BUILD_JOBS='6'
+$env:RUST_TEST_THREADS='4'
+$env:CARGO_TARGET_DIR=Join-Path (Get-Location) '.loomward/i386/target'
+$env:TEMP=(Resolve-Path .loomward/i386/tmp).Path
+$env:TMP=$env:TEMP
+cargo build --release -p loomward-catalog --example bench
+# Preserve each variant's executable before changing production code.
+& ./.loomward/i386/baseline-bench.exe --rows 1000000
+cargo run --release -p loomward-catalog --example bench -- --rows 1000000
+# The same changed executable, for subsequent alternating runs:
+& ./.loomward/i386/after-bench.exe --rows 1000000
+```
+
+The initial build inherited an external Cargo target directory before it was detected. Subsequent
+builds/tests explicitly used the worktree-local target above; no global configuration was edited.
+The baseline executable was copied in read-only from that initial build. Raw JSON/logs and the
+retained executables are in ignored `.loomward/i386/`. The baseline binary also saved a synthetic
+catalogue copy for isolated SQL probes, after all timed scan/query phases; the permanent benchmark
+still removes its temporary stores. No personal data or real filesystem enumeration was used.
+
+First-scan wall time here means the existing harness's `P4.insert_seconds + finalise_seconds`,
+through the `EndRun` receipt, including index construction, publication, compaction and checkpoint.
+It excludes the later isolated SQL index probe. Build/process startup is outside this interval.
+The first three runs establish the pre-edit baseline; the later runs were serially interleaved
+A1/B1/A2/B2/A3/B3, with no concurrent build or test launched by this job.
+
+| Run | Catalogue bytes | B/entry | Insert s | EndRun s | Through EndRun s |
+|---|---:|---:|---:|---:|---:|
+| Pre-edit 1 | 228,241,408 | 228.013 | 4.593257 | 17.607134 | 22.200391 |
+| Pre-edit 2 | 228,241,408 | 228.013 | 3.505019 | 11.688650 | 15.193669 |
+| Pre-edit 3 | 228,241,408 | 228.013 | 3.001404 | 9.408841 | 12.410245 |
+| A1 baseline | 228,241,408 | 228.013 | 3.009099 | 9.548499 | 12.557597 |
+| B1 changed | 204,161,024 | 203.957 | 3.309164 | 9.821774 | 13.130938 |
+| A2 baseline | 228,241,408 | 228.013 | 3.091493 | 9.394501 | 12.485994 |
+| B2 changed | 204,161,024 | 203.957 | 3.193958 | 9.042618 | 12.236576 |
+| A3 baseline | 228,241,408 | 228.013 | 3.092867 | 15.167842 | 18.260709 |
+| B3 changed | 204,161,024 | 203.957 | 3.080421 | 9.024505 | 12.104926 |
+
+Alternating-run medians: **12.557597 s before, 12.236576 s after (-2.56%)**.
+Individual paired changes were +4.57%, -2.00%, -33.71%;
+all are below the +10% ceiling. These are observations on a shared, warm host, not a causal
+speedup or quiet-host/cold-cache claim. The raw times above retain the slow A3 observation.
+
+All nine runs exited 0, matched the independent count/byte oracle, reported zero freelist pages,
+confirmed all schema indexes and removed their temporary stores. Each retained 1,000,000 files,
+500,000,500,000 logical bytes, 496,873,078,784 known allocated bytes and 10,310 allocation-unknown
+files. The denominator includes the 1,001 directories in both variants.
+
+### Per-table and per-index allocation (rusqlite / bundled SQLite `dbstat`)
+
+The benchmark now reports `P14.objects`: name, kind, owning table, occupied bytes, payload bytes
+and unused bytes. Occupied page bytes below are identical across repeats within each variant.
+Virtual tables/views have no pages of their own; their shadow tables are listed separately.
+`sqlite_schema` is the 20,480-byte remainder between the object sum and the database file size.
+
+| Object | Kind | Before bytes | After bytes | Change bytes |
+|---|---|---:|---:|---:|
+| `bulk_dir` | table | 4,096 | 4,096 | +0 |
+| `bulk_dir_by_allocated` | index | 4,096 | 4,096 | +0 |
+| `bulk_dir_by_logical` | index | 4,096 | 4,096 | +0 |
+| `bulk_dir_by_root` | index | 4,096 | 4,096 | +0 |
+| `bulk_dir_identity` | index | 4,096 | 4,096 | +0 |
+| `bulk_dir_missing_identity` | index | 4,096 | 4,096 | +0 |
+| `bulk_file` | table | 4,096 | 4,096 | +0 |
+| `bulk_file_by_dir` | index | 4,096 | 4,096 | +0 |
+| `dir` | table | 151,552 | 151,552 | +0 |
+| `dir_by_allocated` | index | 20,480 | 20,480 | +0 |
+| `dir_by_logical` | index | 20,480 | 20,480 | +0 |
+| `dir_by_root` | index | 12,288 | 12,288 | +0 |
+| `dir_identity` | index | 32,768 | 32,768 | +0 |
+| `dir_missing_identity` | index | 4,096 | 4,096 | +0 |
+| `ext` | table | 4,096 | 4,096 | +0 |
+| `file` | table | 70,631,424 | 70,631,424 | +0 |
+| `file_by_allocated` | index | 18,829,312 | 14,860,288 | -3,969,024 |
+| `file_by_ext` | index | 12,992,512 | 12,992,512 | +0 |
+| `file_by_logical` | index | 18,866,176 | 14,888,960 | -3,977,216 |
+| `file_identity` | index | 25,161,728 | 25,161,728 | +0 |
+| `meta` | table | 4,096 | 4,096 | +0 |
+| `multilink` | table | 4,096 | 4,096 | +0 |
+| `revision` | table | 4,096 | 4,096 | +0 |
+| `root` | table | 4,096 | 4,096 | +0 |
+| `scan_run` | table | 4,096 | 4,096 | +0 |
+| `search_name` | table | 0 | 0 | +0 |
+| `search_name_config` | table | 4,096 | 4,096 | +0 |
+| `search_name_data` | table | 65,245,184 | 65,245,184 | +0 |
+| `search_name_docsize` | table | 16,134,144 | 0 | -16,134,144 |
+| `search_name_idx` | table | 20,480 | 20,480 | +0 |
+| `sqlite_autoindex_ext_1` | index | 4,096 | 4,096 | +0 |
+| `sqlite_autoindex_meta_1` | index | 4,096 | 4,096 | +0 |
+| `sqlite_autoindex_multilink_1` | index | 4,096 | 4,096 | +0 |
+| `sqlite_autoindex_root_1` | index | 4,096 | 4,096 | +0 |
+| `sqlite_autoindex_stage_entry_1` | index | 4,096 | 4,096 | +0 |
+| `sqlite_autoindex_volume_1` | index | 4,096 | 4,096 | +0 |
+| `sqlite_sequence` | table | 4,096 | 4,096 | +0 |
+| `stage_entry` | table | 4,096 | 4,096 | +0 |
+| `volume` | table | 4,096 | 4,096 | +0 |
+| `search_name_content` | view (new) | 0 | 0 | 0 |
+| `sqlite_schema` | schema table | 20,480 | 20,480 | 0 |
+
+### Separately justified changes
+
+1. **`file_by_logical` and `file_by_allocated`: remove the explicit `id` key column.** SQLite
+   already appends the rowid; `file.id` aliases it. `pragma_index_xinfo` previously showed both
+   `id` and the implicit rowid. It now shows one copy. The indexes still cover `(dir_id, size DESC,
+   id ASC)` pagination, including NULL allocated values. The two measured savings are 3,977,216
+   and 3,969,024 bytes, respectively (7,946,240 combined). `EXPLAIN QUERY PLAN` tests require each
+   covering index and reject a temporary ordering B-tree. Existing keyset/NULL paging tests pass.
+   `file_identity` and `file_by_ext` are retained: identity/reference/reachability queries and the
+   extension-only size-ordered search need them; the latter explicitly uses `INDEXED BY file_by_ext`.
+   New plan assertions cover those retained paths too. No whole file index was dropped.
+2. **`search_name`: external-content view plus `columnsize=0`, retaining full phrase positions.**
+   The view derives exactly the old sentinel-normalised text and the same directory/file keys
+   from `dir`/`file`; it stores no second copy of names. `search_name_docsize` disappears, saving
+   16,134,144 bytes. Total trigram allocation falls from 81,403,904 to 65,269,760 bytes; postings,
+   tokenizer, sentinels, case folding and tier/key ordering are unchanged. No search code uses
+   trigram bm25/token counts. The existing contentless-delete layout cannot use `columnsize=0`
+   (SQLite rejects that combination), so delete/rename triggers now submit the exact old text
+   with the FTS `delete` command. Raw SQL writes and cascading removals remain covered. See
+   [SQLite's column-size and external-content contracts](https://sqlite.org/fts5.html#the_columnsize_option).
+   The source tables retain names, raw UTF-16, identities, timestamps, flags and all observations.
+
+Both are forward-only **derived-layout migrations in the existing open transaction**, following
+this crate's derived-index catch-up pattern; precious-state schema version 11 is unchanged.
+Older child-sort indexes are detected by their explicit `id` column. The old trigram backing table
+identifies the legacy layout; its index/triggers are rebuilt and backfilled atomically from source
+rows. The frozen older-store SQL is `tests/fixtures/search-name-v1.sql` (the pre-edit search layout,
+not application schema v1). Tests retain file metadata/search tiers, exercise raw renames/deletes
+and reopen again. An authorizer rejects trigger creation after the replacement table is created:
+rollback restores the old table/postings, then an unblocked retry succeeds. Existing stores may
+have reusable free pages after rebuilding; this does not promise immediate shrinking on open.
+The measured size is after the existing first-scan compaction, not a new VACUUM-on-open policy.
+
+An external-content table's non-MATCH SELECT reads its source view. Consequently search parity
+and crash-recovery verifiers now also run FTS `integrity-check` with rank 1, checking postings
+against the external text; a source-row listing alone would be insufficient. Existing crash,
+I/O-fault, planted-damage, forget/scrub and byte-for-byte search page/cursor checks remain green.
+
+### Other candidates investigated / stopping point
+
+- **Redundant indexes:** all four file indexes have distinct query uses. Only the two duplicated
+  key columns were removed. Directory indexes are tiny on this workload; no needed index was cut.
+- **`WITHOUT ROWID`:** an isolated copy of the compacted candidate with `file` keyed only by `id`
+  occupied 204,025,856 bytes (203.822 B/entry), only 122,880 bytes below its 204,148,736-byte control.
+  This exploratory SQL probe used Python's SQLite 3.50.4, not the final rusqlite benchmark.
+  It also removes AUTOINCREMENT, so production adoption would require redesigning the shared
+  live/bulk high-water sequences and ID non-reuse guarantee. It still misses 200. Empty
+  `stage_entry`/`multilink` tables and their autoindexes cannot close the multi-megabyte gap.
+- **Narrow encodings:** the million `file` rows already use integer flags/counts; text enums live
+  in the 1,001 directory rows. Native 8/16-byte identity blobs retain their meaning and width.
+  No cheap enum migration affects enough rows to close the remaining gap. Compressing synthetic
+  IDs because they happen to have zero upper bytes would need a general, identity-preserving
+  representation change across equality queries and references; it is not applied here.
+- **FTS merge/tokenizer/name deduplication:** an isolated `optimize` plus VACUUM grew the
+  implicit-rowid control from 220,295,168 to 220,315,648 bytes, so no new automatic FTS merge
+  was added. These synthetic names are unique: a deduplicated-name table would add mappings
+  without reducing the indexed-name count. `detail=column`/`none` removes phrase support,
+  which the existing exact/prefix/token/substring tiers require; it is not an acceptable cut.
+
+**Owner decision / next scope:** keep these measured, capability-preserving reductions and leave
+P14 open at 203.957 B/entry. Dropping a needed index or phrase support to cross 200 violates this
+job's constraints. Further lossless representation work (for example a sparse metadata or custom
+search layout) needs a broader design/proof slice; this work does **not** prove that every possible
+lossless design must exceed 200. No capability trade-off was silently selected.
+
+### Regression and final proving receipt
+
+Before production edits:
+
+```text
+cargo test -p loomward-catalog --test search trigram -- --nocapture
+  1 passed, 2 failed (the two new storage/migration tests)
+cargo test -p loomward-catalog --test open older_child_sort -- --nocapture
+  0 passed, 1 failed (two stored copies of the rowid)
+cargo test -p loomward-catalog --lib trigram_layout_migration -- --nocapture
+  0 passed, 1 failed (the original layout never attempts the replacement DDL)
+```
+
+Afterward, the focused open/search run passed 33 tests and the migration rollback/retry run
+passed 1 test. Final full commands (same worktree-local environment above):
+
+| Command | Result |
+|---|---|
+| `cargo test -p loomward-catalog` | 326 passed, 0 failed, 1 existing ignored |
+| `cargo test -p loomward-catalog --features test-hooks` | 346 passed, 0 failed, 1 existing ignored |
+| `cargo test -p loomward-service` | 510 passed, 0 failed, 2 existing ignored |
+| `cargo fmt --all --check` | exit 0 |
+| `cargo clippy -p loomward-catalog --all-targets -- -D warnings` | exit 0 |
+| `cargo clippy -p loomward-catalog --all-targets --features test-hooks -- -D warnings` | exit 0 |
+| `cargo build --release -p loomward-catalog --example bench` | exit 0 |
+| 1M benchmark commands above | 6 baseline and 3 changed runs, all exit 0 |
+| `git diff --check` | exit 0 |
+
+Existing ignored tests were not changed or newly skipped: catalogue
+`million_row_output_interiors_do_not_increase_detector_work`; service
+`f3_issue782_measure_full_versus_targeted` and `large_sparse_backup_memory_probe`.
+
+File-by-file: `examples/bench.rs` adds per-object accounting; `src/catalog.sql` shrinks sort keys;
+`src/db.rs` applies transactional migrations and tests rollback/retry; `src/search.sql` supplies the
+view/compact FTS layout and exact delete triggers; `src/writer.rs` corrects the deletion/merge
+comment; `tests/open.rs` pins layout and query plans; `tests/search.rs` pins migration, metadata,
+tiers and postings; `tests/crash_sweep.rs` strengthens postings verification;
+`tests/fixtures/search-name-v1.sql` freezes the older layout. This section is the only evidence edit.
+
+The 200 B/entry target is a measured miss. NOT verified: 10M scale, cold-cache/quiet-host performance,
+end-to-end native filesystem scan timing, the optional ranked-index storage footprint, hosted CI,
+and independent PR review. No Git write, commit, push, PR or publication was performed.
+Residual risk: the first open of an older store rebuilds derived indexes synchronously and needs
+working disk space; a rebuild failure rolls back. Source rows and precious state are retained.
+The initial build's inherited external target-directory write is disclosed above.
+
+Intended commits (driver-owned; none created here):
+
+- `Shrink catalogue child-sort index keys`
+- `Omit unused trigram document sizes without changing search tiers`
+- `Record P14 catalogue storage and first-scan measurements`
