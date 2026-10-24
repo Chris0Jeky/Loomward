@@ -31,6 +31,8 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
@@ -40,19 +42,16 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
       - run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
       - run: cargo +stable fmt --all -- --check
-      # These journal/control tests perform no native file effects and never skip for elevation.
-      - name: Copy metadata and pending-fence receipts (Windows)
+      # The fixture guards require a real non-elevated token; the hosted bootstrap is elevated.
+      - name: Windows native gates under a disposable standard user
         if: runner.os == 'Windows'
-        run: cargo +stable test --locked -p loomward-windows --all-features pending_fence_tests
-      - name: Service pending-fence ownership receipts (Windows)
-        if: runner.os == 'Windows'
-        run: cargo +stable test --locked -p loomward-service copy::pending_fence_tests
+        shell: pwsh
+        run: ./scripts/test_windows_standard_user.ps1
       - name: Scan publication cancellation receipts
+        if: runner.os == 'Linux'
         run: cargo +stable test --locked -p loomward-engine publication_tests
-      - run: cargo +stable test --workspace
-      - name: Windows fixture lab tests with all features
-        if: runner.os == 'Windows'
-        run: cargo +stable test --locked -p loomward-windows --all-features
+      - if: runner.os == 'Linux'
+        run: cargo +stable test --workspace
       - name: Windows fixture lab Clippy with all features
         if: runner.os == 'Windows'
         run: cargo +stable clippy --locked -p loomward-windows --all-targets --all-features -- -D warnings
