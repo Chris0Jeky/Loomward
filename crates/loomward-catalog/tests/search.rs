@@ -849,8 +849,9 @@ fn trigram_storage_omits_unused_document_sizes() {
         .collect::<rusqlite::Result<Vec<_>>>()
         .unwrap()
         .join(" ");
+    // The MATCH is consumed by the FTS5 index (plan text "VIRTUAL TABLE INDEX <n>:M1"), not a scan.
     assert!(
-        plan.contains("VIRTUAL TABLE INDEX") && plan.contains("M"),
+        plan.contains("VIRTUAL TABLE INDEX") && plan.contains(":M1"),
         "{plan}"
     );
     assert!(!plan.contains("TEMP B-TREE"), "{plan}");

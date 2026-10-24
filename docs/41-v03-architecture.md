@@ -442,8 +442,8 @@ CREATE TABLE file (
   attrs INTEGER NOT NULL, reparse_tag INTEGER, flags INTEGER NOT NULL DEFAULT 0,
   link_count INTEGER,                                               -- NULL until an accounting pass observes it
   born_run INTEGER NOT NULL, seen_run INTEGER NOT NULL) STRICT;
-CREATE INDEX file_by_logical   ON file(dir_id, logical DESC, id);
-CREATE INDEX file_by_allocated ON file(dir_id, allocated DESC, id);  -- NULLs sort last under DESC
+CREATE INDEX file_by_logical   ON file(dir_id, logical DESC);
+CREATE INDEX file_by_allocated ON file(dir_id, allocated DESC);  -- NULLs sort last under DESC
 CREATE INDEX file_identity     ON file(file_id) WHERE file_id IS NOT NULL;
 CREATE INDEX file_by_ext       ON file(ext_id, logical DESC);        -- first index to drop if P14 fails
 CREATE TABLE multilink (                  -- objects with more than one observed name, rebuilt at finalise
@@ -650,7 +650,8 @@ commit for a 10M-entry scan: 400 MB (P2).
 
 - **Materialised subtree sums** on every `dir` row, published only through `DirFinal` or the repair rollup
   (section 7). Children of any directory are available in size order from `dir_by_logical`/`dir_by_allocated` and
-  `file_by_logical`/`file_by_allocated`, each with `id` as the deterministic tie-breaker.
+  `file_by_logical`/`file_by_allocated`, with `id` as the deterministic tie-breaker (explicit in the `dir` indexes, the
+  implicit rowid in the `file` indexes).
 - **Slice algorithm** (`loomward-catalog/src/slice.rs`). Expand the largest directories first from the anchor up
   to `max_nodes` and `depth`; fetch children above `min_share × anchor_size`; fold the remainder into one `other`
   node computed as parent subtree minus listed children. The whole slice is read in **one read transaction**.
