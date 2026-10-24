@@ -127,7 +127,10 @@ export function viewOf(job: Job, nowMs: number): ScanView {
   const liveStarted = started ?? ms(job.created_at);
   const live = liveStarted === null ? null : Math.max(0, nowMs - liveStarted);
   const finished = ms(job.finished_at);
-  const final = started !== null && finished !== null ? Math.max(0, finished - started) : job.progress?.elapsed_ms ?? null;
+  // A completed scan's final sample carries the engine's exact duration; timestamps are whole seconds.
+  // Otherwise the last sample may be old (#830), so terminal timestamps win where both are readable.
+  const exact = job.state === 'completed' && job.progress?.phase === 'done' ? job.progress.elapsed_ms : null;
+  const final = exact ?? (started !== null && finished !== null ? Math.max(0, finished - started) : job.progress?.elapsed_ms ?? null);
   switch (job.state) {
     case 'queued':
       return { activity: 'queued', active: true, headline: 'Queued', detail: '', elapsedMs: live };

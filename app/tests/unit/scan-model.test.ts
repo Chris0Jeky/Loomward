@@ -196,7 +196,7 @@ describe('what the view says', () => {
 
   it('reports complete coverage only when the service does, with the final counts', () => {
     const v = viewOf(done(), T0 + 60_000);
-    expect(v).toMatchObject({ activity: 'completed', active: false, headline: 'Finished, complete coverage', elapsedMs: 4000 });
+    expect(v).toMatchObject({ activity: 'completed', active: false, headline: 'Finished, complete coverage', elapsedMs: 3200 });
     expect(v.detail).toContain('80 files, 20 folders, 2.00 KiB logical');
   });
 
@@ -232,6 +232,11 @@ describe('what the view says', () => {
 
   it('says a cancelled root is not fully covered', () => {
     expect(viewOf(job('cancelled', { coverage: 'cancelled' }), T0).detail).toContain('not published as a complete scan');
+  });
+
+  it('keeps the exact engine duration of a completed scan, not whole-second timestamps (#839)', () => {
+    const v = viewOf(done({ started_at: '2026-10-10T10:00:01Z', finished_at: '2026-10-10T10:00:02Z', progress: progress({ elapsed_ms: 400 }) }), T0);
+    expect(v.elapsedMs).toBe(400);
   });
 
   it.each(['cancelled', 'failed', 'completed'] as const)('uses the full timestamp duration for a %s job with an old sample', (state) => {
