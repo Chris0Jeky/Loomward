@@ -143,4 +143,31 @@ describe('Updates view state', () => {
     expect(calls.at(-1)).toEqual({ action: 'check', previous: false });
     expect(updates.message).toBe('You have the newest preview build.');
   });
+
+  it('an install while another update action is busy leaves the message unchanged', async () => {
+    const offer = { version: '0.3.1-preview.1', channel: 'preview' as const, notes: '', date: null, previous: false };
+    const offered: UpdateStatus = { ...base, offer };
+    const calls: Record<string, unknown>[] = [];
+    let release: (s: UpdateStatus) => void = () => {};
+    let hold = false;
+    const updates = new Updates(async (_c, args) => {
+      const r = args.request as Record<string, unknown>;
+      calls.push(r);
+      if (r.action === 'install') return { installed: false };
+      if (hold) { hold = false; return new Promise<UpdateStatus>((resolve) => { release = resolve; }); }
+      return offered;
+    });
+    await updates.load();
+    hold = true;
+    const pending = updates.load();
+    const before = updates.message;
+    await updates.install(); // refused while busy: no confirmation box, no message change
+    expect(updates.message).toBe(before);
+    expect(calls.some((c) => c.action === 'install')).toBe(false);
+    release(offered);
+    await pending;
+    await updates.install();
+    expect(calls.at(-1)).toEqual({ action: 'install', version: '0.3.1-preview.1' });
+    expect(updates.message).toBe('Not installed: you cancelled.');
+  });
 });

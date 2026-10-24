@@ -104,7 +104,7 @@ export class Updates {
   /** Opens the native confirmation; the app closes and restarts if the owner accepts. */
   async install(): Promise<void> {
     const offer = this.status?.offer;
-    if (!offer || offer.previous) return; // rollback needs the matching state copy (LW-122): no in-app install
+    if (!offer || offer.previous || this.busy) return; // rollback needs the matching state copy (LW-122): no in-app install
     this.message = 'Waiting for your answer in the confirmation box…';
     try {
       const r = (await this.send('installing', { action: 'install', version: offer.version })) as { installed: boolean } | null;
