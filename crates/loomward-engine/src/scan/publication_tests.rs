@@ -96,6 +96,110 @@ fn terminal(engine: &Engine, id: &JobId) -> Job {
 }
 
 #[test]
+fn scan_progress_has_observed_counters_before_final_publication() {
+    use super::super::tests::{root, Tree};
+    struct PausedTree {
+        reached: mpsc::Sender<()>,
+        resume: Mutex<mpsc::Receiver<()>>,
+    }
+    impl DirSource for PausedTree {
+        type Dir = u64;
+        fn strategy(&self) -> Strategy {
+            Tree.strategy()
+        }
+        fn open_root(&self, path: &std::path::Path) -> Result<(u64, OpenedIdentity), SourceError> {
+            Tree.open_root(path)
+        }
+        fn open_child(
+            &self,
+            dir: &u64,
+            entry: &RawEntry<'_>,
+        ) -> Result<(u64, OpenedIdentity), SourceError> {
+            Tree.open_child(dir, entry)
+        }
+        fn list(&self, dir: &u64, sink: &mut dyn FnMut(RawEntry<'_>) -> Flow) -> ListOutcome {
+            if *dir != 1 {
+                self.reached.send(()).unwrap();
+                self.resume
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(5))
+                    .unwrap();
+            } else {
+                // Observe a file with unknown allocation before pausing at the child directory.
+                Tree.list(&2, &mut |mut entry| {
+                    entry.name = &[102];
+                    entry.allocation_size = None;
+                    sink(entry)
+                });
+            }
+            Tree.list(dir, sink)
+        }
+    }
+    let state = tempfile::tempdir().unwrap();
+    let engine = Engine::open(EngineConfig::new(
+        state.path().into(),
+        DatasetClass::Synthetic,
+    ))
+    .unwrap();
+    let root = root();
+    let root_id = root.root_id().clone();
+    let (reached, wait) = mpsc::channel();
+    let (release, resume) = mpsc::channel();
+    let source = PausedTree {
+        reached,
+        resume: Mutex::new(resume),
+    };
+    engine.register_job_runner(
+        JobKind::Scan,
+        Arc::new(move |ctx, _| {
+            let report = run_job_scan(
+                &source,
+                &root,
+                1,
+                Arc::new(MemorySink::default()),
+                Arc::new(ByteBudget::new(crate::budgets::SCAN_BYTES)),
+                &ctx,
+                ScanOptions {
+                    workers: 1,
+                    ..ScanOptions::default()
+                },
+            )?;
+            ctx.set_scan_report(&report)?;
+            Ok(CoverageState::Complete)
+        }),
+    );
+    let job = engine
+        .job_submit(JobSpec::new(JobKind::Scan, Some(root_id)))
+        .unwrap();
+    wait.recv_timeout(Duration::from_secs(5)).unwrap();
+    let during = engine.job_status(&job.job_id).unwrap();
+    release.send(()).unwrap();
+    let done = terminal(&engine, &job.job_id);
+    assert_eq!(during.state, JobState::Running);
+    let progress = during.progress.expect("running scan progress");
+    assert_eq!(
+        progress.phase,
+        loomward_protocol::ScanProgressPhase::Enumerating
+    );
+    assert_eq!(progress.examined.get(), 2);
+    assert_eq!(progress.indexed_files.get(), 1);
+    assert_eq!(progress.logical_bytes.to_string(), "123");
+    assert_eq!(progress.allocated_bytes, None);
+    // The last sample was taken before the parent task retired: active parent + queued child.
+    assert_eq!(progress.pending_dirs.get(), 2);
+    let progress = done.progress.unwrap();
+    assert_eq!(progress.phase, loomward_protocol::ScanProgressPhase::Done);
+    assert_eq!(progress.examined.get(), 3);
+    assert_eq!(progress.indexed_files.get(), 2);
+    assert_eq!(progress.indexed_dirs.get(), 1);
+    assert_eq!(progress.logical_bytes.to_string(), "246");
+    assert_eq!(progress.allocated_bytes, None);
+    assert_eq!(progress.pending_dirs.get(), 0);
+    assert_eq!(progress.writer_queue_depth.get(), 0);
+}
+
+#[test]
 fn cancellation_after_the_flag_snapshot_prevents_scan_publication() {
     use super::super::tests::{root, Tree};
 

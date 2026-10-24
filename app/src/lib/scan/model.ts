@@ -1,8 +1,8 @@
 // The scan-state model: what the app knows about each root's latest scan job, built only from what the
 // service sends (`job.state` events, `scan.progress` events, `jobs.list`). Pure functions, no DOM.
 //
-// Honesty rules (AGENTS.md invariant 4): `scan.progress` currently arrives only at the end of a job, so a
-// running scan has no counts and no percentage, and none is invented. A scan is "complete" only when the
+// Honesty rules (AGENTS.md invariant 4): interim `scan.progress` samples are observations, not totals or
+// percentages. The running view stays indeterminate. A scan is "complete" only when the
 // service says its coverage is complete; anything else says partial.
 import type { ErrorCode, Job, JobState, ScanProgress } from '../contracts.gen';
 import { formatBytes, parseBytes } from '../format/bytes';
@@ -98,7 +98,7 @@ export interface ScanView {
   /** Queued, running or cancelling: the control is Cancel and the elapsed time is ticking. */
   active: boolean;
   headline: string;
-  /** Counts, or what is not known. Empty while a scan runs: no count exists until it ends. */
+  /** Final counts, or what is not known. Empty while a scan runs; interim samples are not totals. */
   detail: string;
   /** Wall time so far (active) or the job's own figure (finished); null when unknown. */
   elapsedMs: number | null;
@@ -123,10 +123,11 @@ function countsText(p: ScanProgress | null): string {
 }
 
 export function viewOf(job: Job, nowMs: number): ScanView {
-  const started = ms(job.started_at) ?? ms(job.created_at);
-  const live = started === null ? null : Math.max(0, nowMs - started);
+  const started = ms(job.started_at);
+  const liveStarted = started ?? ms(job.created_at);
+  const live = liveStarted === null ? null : Math.max(0, nowMs - liveStarted);
   const finished = ms(job.finished_at);
-  const final = job.progress?.elapsed_ms ?? (started !== null && finished !== null ? Math.max(0, finished - started) : null);
+  const final = started !== null && finished !== null ? Math.max(0, finished - started) : job.progress?.elapsed_ms ?? null;
   switch (job.state) {
     case 'queued':
       return { activity: 'queued', active: true, headline: 'Queued', detail: '', elapsedMs: live };

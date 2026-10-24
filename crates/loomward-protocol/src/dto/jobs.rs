@@ -102,7 +102,9 @@ pub struct ScanProgress {
     pub logical_bytes: Bytes,
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub allocated_bytes: Option<Bytes>,
+    /// Queued and active tasks at sampling time, possibly including the listing just finished.
     pub pending_dirs: Count,
+    /// Waiting commands, including sender backpressure and deferred commands; excludes processing.
     pub writer_queue_depth: Count,
     pub entries_per_second: Rate,
     pub elapsed_ms: Count,
@@ -133,8 +135,8 @@ pub struct Job {
     pub started_at: Option<Timestamp>,
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub finished_at: Option<Timestamp>,
-    /// A scan's counters are published once, with its final report, so a running scan reads `null`
-    /// here. No live counters exist yet; a partial value is never invented in their place.
+    /// Running scans publish snapshots of their latest finished directory listings. Before
+    /// enumeration starts this can be null; `done` carries the exact final report.
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub progress: Option<ScanProgress>,
     #[serde(deserialize_with = "crate::types::required_nullable")]

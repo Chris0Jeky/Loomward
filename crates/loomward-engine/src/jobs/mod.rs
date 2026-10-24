@@ -48,25 +48,19 @@ pub struct JobContext {
 impl JobContext {
     /// Store and publish exact final scan counters. A missing wire strategy stays unknown.
     pub fn set_scan_report(&self, report: &crate::scan::ScanReport) -> EngineResult<()> {
-        let strategy = match report.strategy {
-            crate::scan::source::Strategy::Extended => {
-                loomward_protocol::EnumerationStrategy::FileIdExtdDirectoryInfo
-            }
-            crate::scan::source::Strategy::Find => {
-                loomward_protocol::EnumerationStrategy::FindFirstFileExLargeFetch
-            }
-            crate::scan::source::Strategy::Portable => {
-                loomward_protocol::EnumerationStrategy::StdReadDir
-            }
-            crate::scan::source::Strategy::Both => {
-                loomward_protocol::EnumerationStrategy::FileIdBothDirectoryInfo
-            }
-        };
+        let strategy = scan_strategy(report.strategy);
         let mut progress = serde_json::json!({"phase":"done","strategy":strategy,"examined":report.examined,"indexed_files":report.totals.files,"indexed_dirs":report.totals.dirs,"skipped":report.skipped,"failed":report.failed,"logical_bytes":report.totals.logical.to_string(),"allocated_bytes":report.totals.allocated.map(|n|n.to_string()),"pending_dirs":0,"writer_queue_depth":0,"entries_per_second":report.examined as f64/report.elapsed_seconds.max(0.000001),"elapsed_ms":(report.elapsed_seconds*1000.) as u64,"limit_hit":report.limit_hit});
         if let Some(reason) = report.limit_reason {
             progress["limit_reason"] = serde_json::to_value(reason).expect("scan limit reason");
         }
         let progress = serde_json::from_value(progress).expect("bounded scan progress");
+        self.set_scan_progress(progress)
+    }
+    /// Publish observations without changing coverage or admitting final publication.
+    pub(crate) fn set_scan_progress(
+        &self,
+        progress: loomward_protocol::ScanProgress,
+    ) -> EngineResult<()> {
         if let Some(registry) = self.registry.upgrade() {
             if let Some(r) = registry.records.lock().unwrap().get_mut(&self.job_id) {
                 if r.job.progress.as_ref() == Some(&progress) {
@@ -119,6 +113,24 @@ impl JobContext {
             .expect("live job")
             .committed = true;
         Ok(true)
+    }
+}
+pub(crate) fn scan_strategy(
+    strategy: crate::scan::source::Strategy,
+) -> loomward_protocol::EnumerationStrategy {
+    match strategy {
+        crate::scan::source::Strategy::Extended => {
+            loomward_protocol::EnumerationStrategy::FileIdExtdDirectoryInfo
+        }
+        crate::scan::source::Strategy::Find => {
+            loomward_protocol::EnumerationStrategy::FindFirstFileExLargeFetch
+        }
+        crate::scan::source::Strategy::Portable => {
+            loomward_protocol::EnumerationStrategy::StdReadDir
+        }
+        crate::scan::source::Strategy::Both => {
+            loomward_protocol::EnumerationStrategy::FileIdBothDirectoryInfo
+        }
     }
 }
 /// Engine-owned runner registered by the lane responsible for this job kind.

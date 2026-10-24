@@ -329,6 +329,25 @@ Rules:
   the event envelope's stream `seq`. Missing `rev` in legacy snapshots may use a null-preserving merge.
   Bare `scan.progress` events have no job revision; revision-aware clients use the progress carried by
   `job.state` snapshots so a late progress event cannot overwrite a newer revision.
+- Scan jobs publish an initial `enumerating` snapshot and sampled observations from finished directory
+  listings through `jobs.get` and events; counters can lag enumeration and are replaced on relisting.
+  Early samples carry the configured `strategy` until a directory listing's actual strategy is observed;
+  subsequent samples retain the least capable strategy observed across the traversal.
+  They count observed work, not a known total or a percentage. Watched reconciliation snapshots describe
+  the current traversal pass and can reset for a new pass; `done` carries the existing combined final report.
+  `pending_dirs` counts queued and active directory tasks; `writer_queue_depth` counts commands waiting
+  for the writer, including sender backpressure and deferred commands. These are sampled independently.
+  A finished-listing sample precedes retirement of its active task, so `pending_dirs` can still include
+  that task alongside its queued children. Snapshots are observations, not a claim that the writer has
+  committed the sampled entries, and do not admit publication or change coverage. Unknown allocation
+  size remains `allocated_bytes: null`; zero means the observed sum is zero. `entries_per_second` is
+  the sampled examined count divided by elapsed time in this traversal pass, not a completion estimate.
+  `indexed_dirs` excludes the root and directories refused on open. The catalogue's `dirs` includes
+  named denied folders, so one denied folder can make that total one greater than `indexed_dirs`.
+  `limit_reason: directory_limit` names the directory arena cap (including its memory reservation);
+  `depth_limit` takes precedence if both occur. The entry budget retains `limit_hit` without a named reason.
+  `scan.last_job_id` names the latest scan submitted for that root in this engine's lifetime and is not
+  persisted across engine restarts, even when catalogue scan history persists.
 - A response to a mutation is sent only after its transaction is committed at the durability level of the file
   it wrote (`state.db` `synchronous=FULL`; `catalog.db` `NORMAL`).
 - An event describing a state change is emitted only after the change is committed; `EventEnvelope.catalog_rev`

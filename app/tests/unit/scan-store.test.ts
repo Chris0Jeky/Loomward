@@ -407,13 +407,32 @@ describe('against the mock transport', () => {
   });
   afterEach(() => { stop(); vi.useRealTimers(); });
 
+  it('publishes interim mock progress through events and job snapshots before completion', async () => {
+    const c = new Client(transport);
+    const { result: { job: submitted } } = await c.call('scan.start', { root_id: 'rt_mock_10', mode: 'full' });
+    await vi.advanceTimersByTimeAsync(2150);
+    const during = (await c.call('jobs.get', { job_id: submitted.job_id })).result.job;
+    expect(during.state).toBe('running');
+    expect(during.progress).toMatchObject({ phase: 'enumerating', elapsed_ms: 2000 });
+    expect(during.progress!.indexed_files).toBeGreaterThan(0);
+    const samples = events.filter((e) => e.event === 'scan.progress');
+    expect(samples).toHaveLength(1);
+    expect(samples[0]!.data).toMatchObject({ job_id: submitted.job_id, progress: during.progress });
+    await c.call('scan.cancel', { job_id: submitted.job_id });
+    await vi.advanceTimersByTimeAsync(10_000);
+    const cancelled = (await c.call('jobs.get', { job_id: submitted.job_id })).result.job;
+    expect(cancelled.state).toBe('cancelled');
+    expect(cancelled.progress).toEqual(during.progress);
+    expect(events.filter((e) => e.event === 'scan.progress')).toHaveLength(1);
+  });
+
   it('runs a lab root queued, running, progress, tree.invalidated, completed, in that order', async () => {
     const r = await call('scan.start', { root_id: 'rt_mock_10', mode: 'full' });
     expect(r.ok && (r.result as unknown as { job: Job }).job.state).toBe('queued');
     await vi.advanceTimersByTimeAsync(10_000);
-    expect(names()).toEqual(['job:queued', 'job:running', 'scan.progress', 'job:running', 'tree.invalidated', 'job:completed']);
+    expect(names()).toEqual(['job:queued', 'job:running', 'scan.progress', 'job:running', 'scan.progress', 'job:running', 'tree.invalidated', 'job:completed']);
     const seqs = events.filter((e) => e.event !== 'stream.hello').map((e) => e.seq);
-    expect(seqs).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(seqs).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
     const list = await call('roots.list', {});
     const root = list.ok && (list.result as unknown as { roots: { root_id: string; scan: { state: string; coverage: string } }[] }).roots.find((x) => x.root_id === 'rt_mock_10');
     expect(root).toMatchObject({ scan: { state: 'complete', coverage: 'complete' } });
@@ -435,11 +454,11 @@ describe('against the mock transport', () => {
     expect(first.rev).toBe(0);
     await vi.advanceTimersByTimeAsync(10_000);
     const snapshots = events.filter((e) => e.event === 'job.state').map((e) => (e.data as unknown as { job: Job }).job).filter((j) => j.job_id === first.job_id);
-    expect(snapshots.map((j) => j.rev)).toEqual([0, 1, 2, 3]);
+    expect(snapshots.map((j) => j.rev)).toEqual([0, 1, 2, 3, 4]);
     expect(snapshots.every((j) => j.seq === first.seq)).toBe(true);
     expect((await c.call('jobs.get', { job_id: first.job_id })).result.job).toEqual(snapshots.at(-1));
     expect((await c.call('jobs.list', { limit: 50 })).result.jobs.map((j) => j.seq)).toEqual([2, 1]);
-    expect((await c.call('scan.cancel', { job_id: first.job_id })).result.job.rev).toBe(3);
+    expect((await c.call('scan.cancel', { job_id: first.job_id })).result.job.rev).toBe(4);
   });
 
   it('refuses a fixture root with the service\'s reason, and an unknown root as not found', async () => {

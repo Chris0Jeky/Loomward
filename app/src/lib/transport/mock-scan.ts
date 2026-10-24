@@ -4,8 +4,8 @@ import type {
 
 // Invented, contract-shaped scan jobs for the mock transport: two synthetic lab roots the mock "service"
 // will scan (the other mock roots are fixtures and are refused with the service's real reason). Nothing
-// here reads a disk. Like the engine today, a running job carries no progress: `scan.progress` arrives once,
-// at the end, followed by `tree.invalidated` and the terminal `job.state`.
+// here reads a disk. A running job carries an interim `scan.progress` sample; final progress is followed
+// by `tree.invalidated` and the terminal `job.state`, as in the engine.
 
 export type FailWith = (code: ErrorCode, message: string, detail?: ErrorBody['detail']) => never;
 export type Emit = <E extends EventKey>(event: E, data: EventMap[E]) => void;
@@ -92,7 +92,18 @@ export function createScanMock(o: ScanMockOptions): ScanMock {
     later(QUEUE_MS, () => {
       if (job.state !== 'queued') return;
       set(job, { state: 'running', started_at: iso() });
-      later(o.runMs ?? RUN_MS, () => finish(job, seed!));
+      const runMs = o.runMs ?? RUN_MS;
+      later(runMs / 2, () => {
+        if (job.state !== 'running') return;
+        const progress: ScanProgress = {
+          ...progressOf({ ...seed!, files: Math.floor(seed!.files / 2), dirs: Math.floor(seed!.dirs / 2), bytes: seed!.bytes / 2n, unreadable: 0 },
+            Math.max(0, o.now().getTime() - Date.parse(job.started_at!))),
+          phase: 'enumerating', pending_dirs: 1,
+        };
+        o.emit('scan.progress', { job_id: job.job_id, root_id: id, progress });
+        set(job, { progress });
+      });
+      later(runMs, () => finish(job, seed!));
     });
     return { job: { ...job } };
   }

@@ -178,8 +178,7 @@ describe('what the view says', () => {
     expect(v).toMatchObject({ activity: 'running', active: true, headline: 'Scanning', detail: '', elapsedMs: 11_000 });
   });
 
-  it('never invents counts from a progress that arrived early', () => {
-    // the engine sends none until the end; if one ever arrives mid-job it is not turned into a running figure
+  it('keeps the running view indeterminate when an interim sample arrives', () => {
     expect(viewOf(job('running', { progress: progress() }), T0 + 2000).detail).toBe('');
   });
 
@@ -197,7 +196,7 @@ describe('what the view says', () => {
 
   it('reports complete coverage only when the service does, with the final counts', () => {
     const v = viewOf(done(), T0 + 60_000);
-    expect(v).toMatchObject({ activity: 'completed', active: false, headline: 'Finished, complete coverage', elapsedMs: 3200 });
+    expect(v).toMatchObject({ activity: 'completed', active: false, headline: 'Finished, complete coverage', elapsedMs: 4000 });
     expect(v.detail).toContain('80 files, 20 folders, 2.00 KiB logical');
   });
 
@@ -233,6 +232,22 @@ describe('what the view says', () => {
 
   it('says a cancelled root is not fully covered', () => {
     expect(viewOf(job('cancelled', { coverage: 'cancelled' }), T0).detail).toContain('not published as a complete scan');
+  });
+
+  it.each(['cancelled', 'failed', 'completed'] as const)('uses the full timestamp duration for a %s job with an old sample', (state) => {
+    const v = viewOf(job(state, {
+      started_at: '2026-10-10T10:00:00Z', finished_at: '2026-10-10T10:10:00Z',
+      progress: progress({ phase: 'enumerating', elapsed_ms: 120_000 }),
+    }), T0 + 900_000);
+    expect(v.elapsedMs).toBe(600_000);
+  });
+
+  it.each([
+    { started_at: null, finished_at: '2026-10-10T10:10:00Z' },
+    { started_at: '2026-10-10T10:00:00Z', finished_at: null },
+    { started_at: 'unreadable', finished_at: '2026-10-10T10:10:00Z' },
+  ])('falls back to the sample when terminal timestamps are incomplete: %j', (times) => {
+    expect(viewOf(job('cancelled', { ...times, progress: progress({ elapsed_ms: 120_000 }) }), T0).elapsedMs).toBe(120_000);
   });
 
   it('announces the headline and the counts together', () => {
