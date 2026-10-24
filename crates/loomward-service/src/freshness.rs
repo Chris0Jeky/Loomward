@@ -243,6 +243,10 @@ impl Tracker {
     ) {
         if let Some(root) = self.roots.lock().unwrap().get_mut(&row) {
             if token.is_some_and(|token| !Arc::ptr_eq(&root.checkpoint, token)) {
+                // A retiring watch may drain after token rotation, beyond replay's epoch.
+                if !changes.is_empty() {
+                    root.dirty(true);
+                }
                 return;
             }
             for change in changes {
@@ -1893,6 +1897,150 @@ mod restart_tests {
         super::start(&svc.inner);
         let page = f3_wait_live(svc);
         assert_eq!(page["hits"][0]["freshness"]["state"], "live");
+    }
+
+    #[test]
+    fn f3_failed_watch_retiring_hint_survives_empty_journal_replay() {
+        retiring_hint_recovery(false, false);
+    }
+
+    #[test]
+    fn f3_failed_watch_retiring_hint_survives_unavailable_journal() {
+        retiring_hint_recovery(true, false);
+    }
+
+    #[test]
+    fn f3_failed_watch_retiring_hint_survives_replacement_start_failure() {
+        retiring_hint_recovery(true, true);
+    }
+
+    fn retiring_hint_recovery(journal_unavailable: bool, start_fails: bool) {
+        let Some(lab) = lab() else { return };
+        let svc = &lab.svc;
+        settle(svc, &start(svc, &lab.root, "full"));
+        f3_wait_live(svc);
+        svc.inner.freshness.pause_pump();
+        // Make replay deterministic rather than depending on the host's journal availability.
+        svc.inner
+            .db()
+            .execute("DELETE FROM st.root_freshness", [])
+            .unwrap();
+        let retiring = svc.inner.freshness.roots.lock().unwrap()[&1]
+            .checkpoint
+            .clone();
+        fail_watch(&svc.inner);
+        let now = Instant::now();
+        tick(&svc.inner, now);
+        let replay_epoch = svc.inner.freshness.roots.lock().unwrap()[&1].epoch + 1;
+        let phase = (
+            loomward_protocol::Command::ScanStart,
+            "persistent_watch_resolved",
+        );
+        svc.inner.hooks.closed.lock().unwrap().push(phase);
+        svc.inner
+            .hooks
+            .fail_watch_start
+            .store(start_fails, Ordering::SeqCst);
+        svc.inner.freshness.stopped.store(false, Ordering::Release);
+        let opening = {
+            let inner = svc.inner.clone();
+            std::thread::spawn(move || ensure_roots_at(&inner, now + Duration::from_secs(5)))
+        };
+        svc.inner
+            .hooks
+            .until("retiring callback after token rotation", |h| {
+                h.arrived
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|p| **p == phase)
+                    .count()
+                    >= 2
+            });
+        let rotated = !Arc::ptr_eq(
+            &retiring,
+            &svc.inner.freshness.roots.lock().unwrap()[&1].checkpoint,
+        );
+        let changed = std::fs::write(lab.path.join("top.bin"), [0u8; 137]);
+        svc.inner.freshness.record_watch(
+            1,
+            Some(&retiring),
+            vec![loomward_windows::watch::Change::RootDirty],
+        );
+        svc.inner.hooks.open(phase.0, phase.1);
+        opening.join().unwrap();
+        svc.inner.freshness.stopped.store(true, Ordering::Release);
+        changed.unwrap();
+        assert!(rotated, "test did not cross the callback-token boundary");
+        let row = db::roots(&svc.inner.db(), Some(1)).unwrap().remove(0);
+        if start_fails {
+            let (uncovered, epoch) = {
+                let roots = svc.inner.freshness.roots.lock().unwrap();
+                let root = &roots[&1];
+                (
+                    root.watch.is_none() && root.full && root.stale_since.is_some(),
+                    root.epoch,
+                )
+            };
+            assert!(uncovered);
+            assert!(epoch >= replay_epoch, "retiring hint was discarded");
+            refresh(&svc.inner);
+            assert!(svc.inner.freshness.roots.lock().unwrap()[&1].job.is_none());
+            svc.inner
+                .hooks
+                .fail_watch_start
+                .store(false, Ordering::SeqCst);
+            tick(&svc.inner, now + Duration::from_secs(5));
+            tick(&svc.inner, now + Duration::from_secs(15));
+            assert!(svc.inner.freshness.roots.lock().unwrap()[&1]
+                .watch
+                .is_some());
+        } else {
+            replay(
+                &svc.inner,
+                &row,
+                replay_epoch,
+                1,
+                Instant::now() + Duration::from_secs(5),
+                if journal_unavailable {
+                    Err(loomward_windows::enumerate::SourceError::Refused)
+                } else {
+                    Ok(Bookmark {
+                        journal_id: 1,
+                        next_usn: 2,
+                    })
+                },
+                &[],
+                &mut |_| None,
+            );
+            let (stale, full, epoch) = {
+                let roots = svc.inner.freshness.roots.lock().unwrap();
+                let root = &roots[&1];
+                (root.stale_since.is_some(), root.full, root.epoch)
+            };
+            assert!(stale, "empty replay lost the retiring hint");
+            assert!(full, "retiring hint lost full-refresh coverage");
+            assert!(epoch > replay_epoch, "retiring hint was discarded");
+        }
+        assert_eq!(
+            svc.inner.hit_freshness(1).state,
+            SearchFreshnessState::Stale
+        );
+        assert_eq!(
+            settle(svc, &start(svc, &lab.root, "full"))["state"],
+            "completed"
+        );
+        wait_recovered(svc);
+        let bytes: i64 = svc
+            .inner
+            .db()
+            .query_row(
+                "SELECT logical FROM main.file WHERE name='top.bin'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(bytes, 137, "refresh skipped the retiring watch's change");
     }
 
     #[test]
