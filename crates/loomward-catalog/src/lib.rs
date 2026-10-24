@@ -11,7 +11,9 @@
 // Test builds only: the hang watchdog's thread report signals threads through libc (#495).
 #![cfg_attr(test, deny(unsafe_code))]
 use std::path::Path;
+mod cloud;
 mod crashpoint;
+pub use cloud::{cloud_state, CloudBytes, CloudState, CloudSummary};
 mod developer_clutter;
 #[cfg(feature = "test-hooks")]
 pub use crashpoint::CRASH_EXIT;
