@@ -242,6 +242,14 @@ impl Tracker {
         changes: Vec<loomward_windows::watch::Change>,
     ) {
         if let Some(root) = self.roots.lock().unwrap().get_mut(&row) {
+            // Only a new filesystem hint after cooldown grants one retry, a retiring watch's too (#837).
+            if !changes.is_empty()
+                && root.attempts >= 3
+                && root.retry_after.is_some_and(|at| Instant::now() >= at)
+            {
+                root.attempts = 2;
+                root.retry_after = None;
+            }
             if token.is_some_and(|token| !Arc::ptr_eq(&root.checkpoint, token)) {
                 // A retiring watch may drain after token rotation, beyond replay's epoch.
                 if !changes.is_empty() {
@@ -250,11 +258,6 @@ impl Tracker {
                 return;
             }
             for change in changes {
-                // Only a new filesystem hint after cooldown grants one retry.
-                if root.attempts >= 3 && root.retry_after.is_some_and(|at| Instant::now() >= at) {
-                    root.attempts = 2;
-                    root.retry_after = None;
-                }
                 match change {
                     loomward_windows::watch::Change::RootDirty => root.dirty(true),
                     loomward_windows::watch::Change::Name { name, .. } => {
@@ -1741,6 +1744,53 @@ mod refresh_tests {
 mod restart_tests {
     use super::*;
     use crate::tests::{f3_wait_live, lab, settle, start};
+
+    /// #837: a retiring watch's late hint after the cooldown grants the one retry, as a live one does.
+    #[test]
+    fn f3_retiring_hint_after_cooldown_reopens_one_attempt() {
+        let Some(lab) = lab() else { return };
+        let svc = &lab.svc;
+        settle(svc, &start(svc, &lab.root, "full"));
+        f3_wait_live(svc);
+        svc.inner.freshness.pause_pump();
+        for _ in 0..3 {
+            svc.inner
+                .freshness
+                .record(1, vec![loomward_windows::watch::Change::RootDirty]);
+            svc.inner.freshness.ready_targeted_hint(1);
+            svc.inner
+                .hooks
+                .fail_automatic_start
+                .store(true, Ordering::SeqCst);
+            refresh(&svc.inner);
+        }
+        assert_eq!(svc.inner.freshness.attempts(1), 3);
+        let retired = Arc::new(Mutex::new(()));
+        svc.inner.freshness.record_watch(
+            1,
+            Some(&retired),
+            vec![loomward_windows::watch::Change::RootDirty],
+        );
+        assert_eq!(svc.inner.freshness.attempts(1), 3, "hint bypassed backoff");
+        svc.inner.freshness.expire_retry(1);
+        svc.inner.freshness.record_watch(1, Some(&retired), vec![]);
+        assert_eq!(
+            svc.inner.freshness.attempts(1),
+            3,
+            "an empty drain is no new hint"
+        );
+        svc.inner.freshness.record_watch(
+            1,
+            Some(&retired),
+            vec![loomward_windows::watch::Change::RootDirty],
+        );
+        assert_eq!(
+            svc.inner.freshness.attempts(1),
+            2,
+            "a retiring watch's hint must reopen exactly one attempt"
+        );
+        assert!(svc.inner.freshness.stale(1));
+    }
 
     #[test]
     fn f3_busy_checkpoint_is_unknown_without_scheduling_a_rescan() {
