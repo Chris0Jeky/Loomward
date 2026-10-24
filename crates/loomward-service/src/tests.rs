@@ -6935,7 +6935,223 @@ fn regrant_renamed_unverified(
     Some((states[0].clone(), states[1].clone()))
 }
 
-/// An old path whose probe fails for any reason but "not found" proves nothing about the folder:
+/// A file at the old path cannot be the previously granted folder.
+#[cfg(windows)]
+#[test]
+fn a_definitely_non_directory_old_path_retires_the_unverified_grant() {
+    use loomward_windows::enumerate::SourceError;
+    for code in [267, 0xC000_0103_u32 as i32] {
+        if let Some(states) = regrant_renamed_unverified(Some(SourceError::Io(code)), false) {
+            assert_eq!(
+                states,
+                ("identity_changed".into(), "active".into()),
+                "{code:#x}"
+            );
+        }
+    }
+}
+
+/// A real file at the old path retires the grant through native attribute validation, not an
+/// injected error; fresh consent for the renamed folder remains active.
+#[cfg(windows)]
+#[test]
+fn a_real_file_at_the_old_path_retires_the_unverified_grant() {
+    if loomward_windows::enumerate::running_elevated() {
+        return;
+    }
+    let tmp = temp_root();
+    let folder = tmp.path().join("fat-folder");
+    std::fs::create_dir(&folder).unwrap();
+    let folder = folder.canonicalize().unwrap();
+    let svc = open(&tmp.path().join("state"), DatasetClass::Personal);
+    *svc.inner.hooks.filesystem.lock().unwrap() = Some("exFAT");
+    let (old, _) = svc.inner.grant(&folder, "cli_flag", true).unwrap();
+    let moved = tmp.path().join("fat-folder-renamed");
+    std::fs::rename(&folder, &moved).unwrap();
+    std::fs::write(&folder, b"synthetic replacement file").unwrap();
+    let moved = moved.canonicalize().unwrap();
+    let (new, fresh) = svc.inner.grant(&moved, "cli_flag", true).unwrap();
+    assert!(fresh && new != old);
+    let states: Vec<(String, String)> = svc
+        .inner
+        .db()
+        .prepare("SELECT identity_mode,state FROM st.root_grant ORDER BY id")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        states,
+        [
+            ("unverified".into(), "identity_changed".into()),
+            ("unverified".into(), "active".into())
+        ]
+    );
+}
+
+/// Holds an old-path observation while the caller exercises concurrent owner state changes.
+#[cfg(windows)]
+fn with_stalled_old_path_probe(test: impl FnOnce(&Service, i64, &Path)) -> Option<String> {
+    if loomward_windows::enumerate::running_elevated() {
+        return None;
+    }
+    let tmp = temp_root();
+    let folder = tmp.path().join("fat-folder");
+    std::fs::create_dir(&folder).unwrap();
+    let folder = folder.canonicalize().unwrap();
+    let state = tmp.path().join("state");
+    let svc = open(&state, DatasetClass::Personal);
+    *svc.inner.hooks.filesystem.lock().unwrap() = Some("exFAT");
+    let (old, _) = svc.inner.grant(&folder, "cli_flag", true).unwrap();
+    let grant: i64 = svc
+        .inner
+        .db()
+        .query_row("SELECT grant_id FROM main.root WHERE id=?1", [old], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let moved = tmp.path().join("fat-folder-renamed");
+    std::fs::rename(&folder, &moved).unwrap();
+    let moved = moved.canonicalize().unwrap();
+    *svc.inner.hooks.probe_error.lock().unwrap() =
+        Some(loomward_windows::enumerate::SourceError::Io(3));
+    svc.inner
+        .hooks
+        .closed
+        .lock()
+        .unwrap()
+        .push((Command::RootsRequestGrant, "old_path_probe"));
+    let peer = svc.inner.clone();
+    let regrant = std::thread::spawn(move || peer.grant(&moved, "cli_flag", true));
+    svc.inner.hooks.until("old path probe", |h| {
+        h.arrived
+            .lock()
+            .unwrap()
+            .contains(&(Command::RootsRequestGrant, "old_path_probe"))
+    });
+    // Always release the worker, including when the regression assertion fails.
+    let result =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| test(&svc, grant, &state)));
+    svc.inner
+        .hooks
+        .open(Command::RootsRequestGrant, "old_path_probe");
+    let regranted = regrant.join().unwrap().unwrap();
+    if let Err(panic) = result {
+        std::panic::resume_unwind(panic);
+    }
+    assert!(regranted.1 && regranted.0 != old);
+    let new_state: String = svc
+        .inner
+        .db()
+        .query_row(
+            "SELECT g.state FROM st.root_grant g JOIN main.root r ON r.grant_id=g.id WHERE r.id=?1",
+            [regranted.0],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(new_state, "active");
+    let old_state = svc
+        .inner
+        .db()
+        .query_row(
+            "SELECT state FROM st.root_grant WHERE id=?1",
+            [grant],
+            |r| r.get(0),
+        )
+        .unwrap();
+    Some(old_state)
+}
+
+#[cfg(windows)]
+#[test]
+fn a_stalled_old_path_probe_does_not_block_an_unrelated_mutation() {
+    let state = with_stalled_old_path_probe(|svc, _, _| {
+        // Revocation of an unrelated grant needs both service locks.
+        let obs = RootObservation {
+            volume_key: "synthetic-other-volume".into(),
+            volume_guid: None,
+            display_name: "synthetic-other-root".into(),
+            display_path: "synthetic-other-root".into(),
+            root_file_id: Some(vec![42; 16]),
+            filesystem: Some("exFAT".into()),
+            origin: "owner_granted".into(),
+            granted_via: "cli_flag".into(),
+            observed_at_ns: crate::now_ns(),
+        };
+        let WriteReply::Root { grant_id, .. } = svc
+            .inner
+            .catalog
+            .writer()
+            .call(WriteCommand::RegisterRoot(obs))
+            .unwrap()
+        else {
+            panic!("root reply")
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        let peer = svc.inner.clone();
+        let mutation = std::thread::spawn(move || tx.send(peer.revoke(grant_id)).unwrap());
+        let completed = rx.recv_timeout(Duration::from_secs(3));
+        svc.inner
+            .hooks
+            .open(Command::RootsRequestGrant, "old_path_probe");
+        mutation.join().unwrap();
+        assert!(
+            completed.is_ok(),
+            "unrelated mutation waited for filesystem probing"
+        );
+        completed.unwrap().unwrap();
+        let state: String = svc
+            .inner
+            .db()
+            .query_row(
+                "SELECT state FROM st.root_grant WHERE id=?1",
+                [grant_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(state, "revoked");
+    });
+    if let Some(state) = state {
+        assert_eq!(state, "identity_changed");
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn an_old_path_probe_does_not_retire_a_changed_candidate() {
+    // An independent SQLite connection injects changes while the service has dropped its locks.
+    for change in [
+        "display_path=display_path || '-changed'",
+        "root_file_id=X'01010101010101010101010101010101'",
+        "volume_key='synthetic-changed-volume'",
+        "volume_guid='synthetic-changed-guid'",
+        "identity_mode='verified'",
+        "state='revoked'",
+    ] {
+        let state = with_stalled_old_path_probe(|_, grant, state| {
+            let conn = rusqlite::Connection::open(state.join("state.db")).unwrap();
+            conn.execute(
+                &format!("UPDATE root_grant SET {change} WHERE id=?1"),
+                [grant],
+            )
+            .unwrap();
+        });
+        if let Some(state) = state {
+            assert_eq!(
+                state,
+                if change == "state='revoked'" {
+                    "revoked"
+                } else {
+                    "active"
+                },
+                "{change}"
+            );
+        }
+    }
+}
+
+/// An old path whose probe fails inconclusively proves nothing about the folder:
 /// access denied, a not-ready volume or a cancelled open must keep the healthy grant active.
 #[cfg(windows)]
 #[test]

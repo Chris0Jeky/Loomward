@@ -1214,12 +1214,16 @@ impl Inner {
         }
     }
 
-    /// Whether a renamed unverified grant's old path is definitely not this folder: it is not
-    /// there (ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND or their NT statuses), or it opens with
-    /// another identity. Any other failure (access denied, not ready, cancelled) proves nothing,
-    /// so the grant stays active and a later re-grant can retire it.
+    /// Whether a renamed unverified grant's old path is definitely not this folder: a missing
+    /// path, a non-directory component (Win32 error or NT status), a plain file (not a link or other
+    /// reparse point) where the folder was, or an
+    /// opened folder with another identity. Other failures, including attribute or policy
+    /// refusals, prove nothing, so the grant stays active and a later re-grant can retire it.
     fn old_path_is_another_folder(&self, old: &Path, identity: &(String, Vec<u8>, String)) -> bool {
         use loomward_windows::enumerate::SourceError;
+        #[cfg(test)]
+        self.hooks
+            .gate(Command::RootsRequestGrant, "old_path_probe");
         #[cfg(test)]
         let injected = *self.hooks.probe_error.lock().unwrap();
         #[cfg(not(test))]
@@ -1227,8 +1231,24 @@ impl Inner {
         match injected.map_or_else(|| self.open_observation(old), Err) {
             Ok((_, seen)) => Self::identity_triple(&seen).is_ok_and(|seen| seen != *identity),
             Err(SourceError::Io(code)) => {
-                matches!(code as u32, 2 | 3 | 0xC000_000F | 0xC000_0034 | 0xC000_003A)
+                matches!(
+                    code as u32,
+                    2 | 3 | 267 | 0xC000_000F | 0xC000_0034 | 0xC000_003A | 0xC000_0103
+                )
             }
+            // The native open refuses any non-directory (and reparse points) without saying which;
+            // only a plain file, never a link or other reparse point, proves the old path is another
+            // object. Everything else stays inconclusive.
+            Err(SourceError::Refused) => std::fs::symlink_metadata(old).is_ok_and(|m| {
+                #[cfg(windows)]
+                let reparse = {
+                    use std::os::windows::fs::MetadataExt;
+                    m.file_attributes() & 0x400 != 0
+                };
+                #[cfg(not(windows))]
+                let reparse = m.file_type().is_symlink();
+                m.is_file() && !reparse
+            }),
             Err(_) => false,
         }
     }
@@ -1270,25 +1290,38 @@ impl Inner {
         let unverified = !loomward_windows::enumerate::verifies_identity(&filesystem);
         let text = root.to_string_lossy();
         let display_path = text.strip_prefix(r"\\?\").unwrap_or(&text).to_string();
-        let _m = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
-        let conn = self.db();
         // A grant is consent for one path (docs/41 section 16): a moved root is granted afresh,
         // and the grant still naming its old path ends identity_changed.
+        let candidates = {
+            let _m = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
+            let conn = self.db();
+            db::renamed_grants(&conn, &volume_key, &file_id, &display_path, &volume_guid)
+                .map_err(|_| Refusal::IdentityUnavailable)?
+        };
+        // An identity-unverified ID is weak and recyclable, so its grant retires only once the old
+        // path is definitely another folder. Slow native observations hold neither service lock.
+        let observed: Vec<_> = candidates
+            .into_iter()
+            .filter(|(_, unverified, old)| {
+                !*unverified
+                    || self.old_path_is_another_folder(
+                        Path::new(old),
+                        &(volume_key.clone(), file_id.clone(), volume_guid.clone()),
+                    )
+            })
+            .collect();
+        let mutation = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.db();
+        // Recheck consent and candidate identity, state, mode and path after the unlocked probes.
+        // ponytail: no refresh stamp; a rename-back/re-grant during the unlocked probe can still
+        // retire the refreshed grant. This fails closed; the owner must re-grant.
         let existing = db::active_grant(&conn, &volume_key, &file_id, &display_path, &volume_guid)
             .map_err(|_| Refusal::IdentityUnavailable)?;
-        // An identity-unverified ID is weak and recyclable, so its grant retires only once the old
-        // path is definitely another folder; a verified one retires on the ID alone.
         let renamed: Vec<i64> =
             db::renamed_grants(&conn, &volume_key, &file_id, &display_path, &volume_guid)
                 .map_err(|_| Refusal::IdentityUnavailable)?
                 .into_iter()
-                .filter(|(_, unverified, old)| {
-                    !*unverified
-                        || self.old_path_is_another_folder(
-                            Path::new(old),
-                            &(volume_key.clone(), file_id.clone(), volume_guid.clone()),
-                        )
-                })
+                .filter(|row| observed.contains(row))
                 .map(|(id, ..)| id)
                 .collect();
         if unverified
@@ -1360,14 +1393,12 @@ impl Inner {
         let WriteReply::Root { root_id, .. } = reply else {
             return Err(Refusal::IdentityUnavailable.into());
         };
-        // identity_changed takes the mutation lock itself.
-        drop(_m);
         for grant in renamed {
-            // Release the connection guard first: identity_changed reads it again.
+            // Keep mutation serialised through retirement; the connection guard is released.
             let row = db::root_for_grant(&self.db(), grant);
             if let Ok(Some(row)) = row {
                 if let Ok(id) = loomward_protocol::RootId::new(self.root_id(row)) {
-                    self.identity_changed(grant, &id, true);
+                    self.identity_changed_locked(grant, &id, true, &mutation);
                 }
             }
         }

@@ -1062,7 +1062,17 @@ impl Inner {
     /// advertising the dead grant.
     /// `cancel` is false when the failing scan job itself reports it (nothing else runs).
     pub(crate) fn identity_changed(&self, grant: i64, id: &RootId, cancel: bool) {
-        let _m = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
+        let mutation = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
+        self.identity_changed_locked(grant, id, cancel, &mutation);
+    }
+
+    pub(crate) fn identity_changed_locked(
+        &self,
+        grant: i64,
+        id: &RootId,
+        cancel: bool,
+        _mutation: &std::sync::MutexGuard<'_, ()>,
+    ) {
         let changed = self
             .catalog
             .writer()
