@@ -111,4 +111,36 @@ describe('Updates view state', () => {
     expect(updates.desktop).toBe(false);
     expect(updates.status).toBeNull();
   });
+
+  it('an update check while another update action is busy leaves the message unchanged', async () => {
+    const calls: Record<string, unknown>[] = [];
+    let holdNext = false;
+    let release: (s: UpdateStatus) => void = () => {};
+    const updates = new Updates(async (_c, args) => {
+      const r = args.request as Record<string, unknown>;
+      calls.push(r);
+      if (holdNext) {
+        holdNext = false;
+        return new Promise<UpdateStatus>((resolve) => {
+          release = resolve;
+        });
+      }
+      return base;
+    });
+    await updates.load(); // status known, nothing busy
+    holdNext = true;
+    const pending = updates.load(); // busy = 'loading' while the reply is held
+    expect(updates.busy).toBe('loading');
+    const before = updates.message;
+    const sent = calls.length;
+    await updates.check(); // refused while busy: no request, no message change
+    expect(updates.message).toBe(before);
+    expect(calls.slice(sent).some((c) => c.action === 'check')).toBe(false);
+    release(base);
+    await pending;
+    expect(updates.busy).toBe('');
+    await updates.check();
+    expect(calls.at(-1)).toEqual({ action: 'check', previous: false });
+    expect(updates.message).toBe('You have the newest preview build.');
+  });
 });
