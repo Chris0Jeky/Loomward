@@ -449,6 +449,21 @@ pub(crate) fn open_pair_validated(
     tx.execute("DELETE FROM stage_entry", [])?;
     // Add the derived catch-up index to existing catalogues without migrating precious state.
     tx.execute_batch("CREATE INDEX IF NOT EXISTS dir_missing_identity ON dir(root_id) WHERE file_id IS NULL AND listing_state!='absent_pending'")?;
+    // Derived-layout migration (#386): retain the same covering/keyset plans with one rowid.
+    for (index, key) in [
+        ("file_by_logical", "logical"),
+        ("file_by_allocated", "allocated"),
+    ] {
+        if tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_index_info(?1) WHERE name='id')",
+            [index],
+            |r| r.get::<_, bool>(0),
+        )? {
+            tx.execute_batch(&format!(
+                "DROP INDEX {index}; CREATE INDEX {index} ON file(dir_id,{key} DESC)"
+            ))?;
+        }
+    }
     search_index(&tx, ranked)?;
     bulk_tables(&tx, false)?;
     tx.execute("UPDATE revision SET catalog_rev=catalog_rev+1", [])?;
@@ -491,11 +506,17 @@ pub(crate) fn search_index(conn: &Connection, ranked: bool) -> Result<()> {
             |r| r.get::<_, bool>(0),
         )?)
     };
+    // Forward-only derived-layout migration; the caller's transaction also covers the backfill.
+    // No catalogue rows or precious state are rewritten, and a failed rebuild restores the old index.
+    if has("search_name_docsize")? {
+        conn.execute_batch("DROP TRIGGER search_file_insert; DROP TRIGGER search_file_delete; DROP TRIGGER search_file_rename;
+            DROP TRIGGER search_dir_insert; DROP TRIGGER search_dir_delete; DROP TRIGGER search_dir_rename;
+            DROP TABLE search_name")?;
+    }
     if !has("search_name")? {
         conn.execute_batch(include_str!("search.sql"))?;
         conn.execute_batch(
-            "INSERT INTO search_name(rowid,name) SELECT id, char(1)||replace(replace(name,char(1),' '),char(2),' ')||char(2) FROM dir WHERE parent_id IS NOT NULL;
-             INSERT INTO search_name(rowid,name) SELECT id+281474976710656, char(1)||replace(replace(name,char(1),' '),char(2),' ')||char(2) FROM file;",
+            "INSERT INTO search_name(rowid,name) SELECT rowid,name FROM search_name_content;",
         )?;
     }
     if ranked && !has("search_token")? {
@@ -616,6 +637,76 @@ pub(crate) fn grant_view(conn: &Connection) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn trigram_layout_migration_rolls_back_after_ddl_failure_and_retries() {
+        use rusqlite::hooks::{AuthAction, Authorization};
+        let mut db = Connection::open_in_memory().unwrap();
+        db.execute_batch(include_str!("catalog.sql")).unwrap();
+        db.execute_batch(include_str!("../tests/fixtures/search-name-v1.sql"))
+            .unwrap();
+        db.execute_batch("INSERT INTO root(id,grant_id,state) VALUES(1,1,'complete'); INSERT INTO dir(id,root_id,name,id_quality,id_basis,depth,attrs,listing_state,born_run,seen_run) VALUES(1,1,'fixture-root','path_observation','none',0,0,'complete',0,0); INSERT INTO file(id,dir_id,name,logical,attrs,born_run,seen_run) VALUES(1,1,'fixture-report.txt',7,0,0,0);").unwrap();
+        db.authorizer(Some(|context: rusqlite::hooks::AuthContext<'_>| {
+            if matches!(
+                context.action,
+                AuthAction::CreateTrigger {
+                    trigger_name: "search_file_insert",
+                    ..
+                }
+            ) {
+                Authorization::Deny
+            } else {
+                Authorization::Allow
+            }
+        }))
+        .unwrap();
+        {
+            let tx = db.transaction().unwrap();
+            assert!(search_index(&tx, false).is_err());
+        }
+        db.authorizer(None::<fn(rusqlite::hooks::AuthContext<'_>) -> Authorization>)
+            .unwrap();
+        assert_eq!(
+            db.query_row(
+                "SELECT count(*) FROM sqlite_schema WHERE name='search_name_docsize'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT count(*) FROM search_name WHERE search_name MATCH 'report'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+        {
+            let tx = db.transaction().unwrap();
+            search_index(&tx, false).unwrap();
+            tx.commit().unwrap();
+        }
+        assert_eq!(
+            db.query_row(
+                "SELECT count(*) FROM sqlite_schema WHERE name='search_name_docsize'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            db.query_row("SELECT name FROM file WHERE id=1", [], |r| r
+                .get::<_, String>(0))
+                .unwrap(),
+            "fixture-report.txt"
+        );
+        db.execute_batch("INSERT INTO search_name(search_name,rank) VALUES('integrity-check',1)")
+            .unwrap();
+    }
+
     #[test]
     fn writer_connection_uses_full_for_precious_state_and_normal_for_catalogue() {
         let temp = tempfile::tempdir().unwrap();

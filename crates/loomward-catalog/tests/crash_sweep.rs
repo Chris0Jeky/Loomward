@@ -570,6 +570,12 @@ fn structural(store: &Path) -> Vec<String> {
         "token index changes still queued after recovery",
         "SELECT count(*) FROM search_dirty",
     );
+    // A non-MATCH read of an external-content table lists its source, so also check postings.
+    if let Err(e) =
+        db.execute_batch("INSERT INTO search_name(search_name,rank) VALUES('integrity-check',1)")
+    {
+        bad.push(format!("trigram postings differ from catalogue rows: {e}"));
+    }
     for (index, what) in [("search_token", "token"), ("search_name", "trigram")] {
         let keys = "SELECT id+281474976710656 AS k FROM file UNION ALL SELECT id FROM dir WHERE parent_id IS NOT NULL";
         zero_check(
