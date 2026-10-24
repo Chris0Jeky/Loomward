@@ -561,6 +561,18 @@ mod tests {
     use super::*;
     use loomward_protocol::ErrorBody;
 
+    /// Fixtures for `run`: the harness refuses any root under a `users` component, which is every
+    /// checkout under a profile, so such hosts use the volume-root fallback of `test_roots_base` (#465).
+    fn soak_base() -> PathBuf {
+        let base = loomward_service::paths::test_roots_base();
+        if real_root(base.to_str().unwrap().trim_start_matches(r"\\?\")).is_ok() {
+            return base;
+        }
+        let volume = base.ancestors().last().unwrap().join("loomward-test-roots");
+        fs::create_dir_all(&volume).unwrap();
+        volume
+    }
+
     #[test]
     fn watch_busy_retries_but_refusal_and_exhaustion_remain_distinct() {
         let mut calls = 0;
@@ -737,19 +749,13 @@ mod tests {
             eprintln!("skipped under an elevated token: {refused}");
             return;
         }
-        let tmp = tempfile::tempdir_in(loomward_service::paths::test_roots_base()).unwrap();
+        let tmp = tempfile::tempdir_in(soak_base()).unwrap();
         let lab = tmp.path().join("lab");
         fs::create_dir(&lab).unwrap();
         let root = lab.join("soak");
         let out = tmp.path().join("cycles.jsonl");
         fs::write(&out, b"earlier run\n").unwrap();
         let refused = run(&root, &out, Duration::ZERO, Some(1)).unwrap_err();
-        // A checkout under a user profile puts target/ there, which the harness refuses by design.
-        if refused.to_string().contains("profile, credential, browser") {
-            eprintln!("skipped: this checkout's test root is refused: {refused}");
-            assert_eq!(fs::read(&out).unwrap(), b"earlier run\n");
-            return;
-        }
         assert_eq!(refused.kind(), io::ErrorKind::AlreadyExists, "{refused}");
         assert!(
             !root.exists(),
@@ -765,19 +771,12 @@ mod tests {
             eprintln!("skipped under an elevated token: {refused}");
             return;
         }
-        let tmp = tempfile::tempdir_in(loomward_service::paths::test_roots_base()).unwrap();
+        let tmp = tempfile::tempdir_in(soak_base()).unwrap();
         let lab = tmp.path().join("lab");
         fs::create_dir(&lab).unwrap();
         let root = lab.join("soak");
         let out = tmp.path().join("cycles.jsonl");
-        match run(&root, &out, std::time::Duration::ZERO, Some(3)) {
-            // A checkout under a user profile puts target/ there, which the harness refuses by design.
-            Err(refused) if refused.to_string().contains("profile, credential, browser") => {
-                eprintln!("skipped: this checkout's test root is refused: {refused}");
-                return;
-            }
-            other => other.unwrap(),
-        }
+        run(&root, &out, std::time::Duration::ZERO, Some(3)).unwrap();
         let records: Vec<serde_json::Value> = fs::read_to_string(out)
             .unwrap()
             .lines()
