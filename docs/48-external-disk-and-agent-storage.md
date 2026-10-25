@@ -28,8 +28,8 @@ drive type (`crates/loomward-windows/src/volumes.rs`), and the path rules refuse
 destinations (`destination_unsupported_volume`). So `H:` can be neither scanned, nor verified, nor copied to.
 
 **Agent decision (reversible, lane E0).** A USB volume becomes an allowed **scan and grant root** when it is fixed
-media (no removable-media flag, not SD) and its file system verifies identity (NTFS or ReFS). FAT and exFAT keep the
-q-12 path (listed, identity-unverified). Reason: the owner asked Loomward to show and organise this disk, and scanning
+media (no removable-media flag, not SD) and its file system verifies identity (NTFS or ReFS). USB volumes with FAT or
+exFAT stay refused as roots, as today (q-12's identity-unverified listing is unchanged for the volumes it covers). Reason: the owner asked Loomward to show and organise this disk, and scanning
 it is a read; the identity model below already handles a disk that comes and goes. Reversal: restore the fence.
 Copying **to** it stays behind the copy gate: docs/47's `destination_unsupported_volume` is lifted for such volumes
 only in lab sessions (synthetic lab roots on the USB disk) until C8 opens.
@@ -99,7 +99,7 @@ Docs/46 limited MCP to `find` and `describe` until "a separate grant design". Th
   (placeholders, reparse points) need `attributes`. Without the field, that part is absent, not null.
 - The owner issues, lists and revokes MCP client grants through new owner-only commands `clients.grant`,
   `clients.list` and `clients.revoke` (thin wrappers over `grant_client` / `revoke_client`, as `ask.grant` is for Ask),
-  in an "Agent access" panel in the desktop app. An agent never issues its own grant; a shell-capable agent could
+  on the desktop (Tauri) adapter only, in an "Agent access" panel in the desktop app. An agent never issues its own grant; a shell-capable agent could
   bypass any local gate, so the grant is the owner's consent and scope, not a sandbox.
 - What an MCP host sends to its model is outside Loomward (docs/28). The panel says so before a grant with `path`.
 
@@ -140,7 +140,9 @@ The plan is JSON the agent shows to the owner. It writes nothing: no draft in `s
 `loomward-native verify-tree SOURCE DESTINATION --state-dir DIR` runs the C1 verifier once from the command line.
 
 - Both folders explicit; neither a volume root nor a whole user profile (q-4, q-7); the state directory outside both.
-  Both must be grantable roots (so `H:` needs lane E0 first).
+  `--state-dir` is a separate scratch store, never the desktop's: the CLI records exactly the two folders as grants
+  there, as `loomward-serve --grant-root` does (never a volume root), because `compare_trees` admits only an exact
+  active grant and overlapping grants are refused. Both must be grantable roots (so `H:` needs lane E0 first).
 - It reads metadata and content only and requests no write access. Content reads are **non-cached**
   (`FILE_FLAG_NO_BUFFERING`, sector-aligned, as docs/47's read-back), so a destination's bytes are read from the
   device, not from pages still in the system cache. The device's own cache stays outside that proof (docs/47
@@ -172,11 +174,14 @@ the owner approves each plan.
   agent per approved plan, or the owner copies. robocopy is never wired into Loomward (docs/47 option D stays rejected
   for Loomward code). An agent's robocopy run copies into one new folder and may use only copy flags: `/E /COPY:DAT
   /DCOPY:DAT /XJ /R:1 /W:1 /NP /UNILOG:<log>` plus `/XC /XN /XO` (never replace an existing file). `/MOV`, `/MOVE`,
-  `/MIR`, `/PURGE`, `/IS`, `/IT` and `/CREATE` are forbidden. Then `verify-tree` must exit 0.
+  `/MIR`, `/PURGE`, `/IS`, `/IT` and `/CREATE` are forbidden. The log lives outside the new folder. A robocopy exit
+  code of 8 or more is a failed plan. A failed or interrupted run is never patched up: its folder is left and reported
+  to the owner, and a retry copies into another new folder. Then `verify-tree` must exit 0.
 - **Removing originals.** The owner's answer to `loomward-archive-originals` decides who removes them. Under every
-  option, removal of a plan's originals needs a **second** `verify-tree` run that exits 0 after the external disk
-  was safely removed and plugged in again (which empties the system cache for it and makes the disk persist what it
-  holds), and the copy is never removed. Until the owner answers, nothing removes an original.
+  option, removal of a plan's originals needs a **second** `verify-tree` run that exits 0 after the owner safely
+  removed the external disk and plugged it in again (the owner confirms the replug; it empties the system cache for
+  that volume, while the device's own cache stays outside the proof, as in section 4.5), and the copy is never
+  removed. Until the owner answers, nothing removes an original.
 - **Journal for the interim path.** Each approved plan, its robocopy log summary and both verifier reports are kept
   in the gitignored `.loomward/archive/` of the primary checkout, never in Git (no real names in this repository).
 
@@ -184,7 +189,7 @@ the owner approves each plan.
 
 | Lane | Delivers | Effect | Acceptance |
 |---|---|---|---|
-| E0 | USB fixed-media NTFS/ReFS volumes as scan and grant roots (section 2); offline and identity-change states for detachable roots; lab copy destinations on such volumes | none (lab copies only, as today) | fence tests: USB fixed NTFS allowed, SD, removable media and FAT refused as before; a root whose volume disappears reads offline with its last-seen sizes; a different volume at the same letter is `identity_changed`; a real `H:` read-only scan recorded with anonymised counts |
+| E0 | USB fixed-media NTFS/ReFS volumes as scan and grant roots (section 2), by splitting the shared `is_removable` predicate so the copy refusal for personal sessions stays; offline and identity-change states for detachable roots; lab copy destinations on such volumes | none (lab copies only, as today) | fence tests: USB fixed NTFS allowed, SD, removable media and USB FAT/exFAT refused as before; a root whose volume disappears reads offline with its last-seen sizes; a different volume at the same letter is `identity_changed`; a real `H:` read-only scan recorded with anonymised counts |
 | E1 | this document | none | review |
 | E2 | `loomward-mcp`: stdio transport (both MCP eras, ported from `python/loomward/mcp_stdio.py`), lazy host with idle release and the shared lock helper, principal, session references, `find` and `describe` | none | subprocess tests in both eras; busy while another process holds the lock; `state.db` unchanged by every tool and hidden name |
 | E3 | service: space reads open to clients under the 4.2 rules (`volumes.list`, `roots.list`, `tree.children`, `stats.breakdown`, `clutter.developer`), the `volumes` field, projections | none | out-of-scope nodes unknown; totals exclude rows outside the grant; missing field refused or absent; revocation from the next call |
