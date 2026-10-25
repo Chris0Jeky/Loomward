@@ -212,12 +212,16 @@ the owner approves each plan.
 4. **Review plans.** The agent sends you `plan_archive` results: what, how big, where, and whether it fits. Nothing
    moves until you approve; how approved plans are executed follows your answers to the decisions below.
 
-## 9. Owner decisions this design waits on
+## 9. Owner decisions (answered 2026-10-25 in chat; HUMAN_TODO q-47, q-48)
 
-- `loomward-copy-power-cut-method` (docs/47 Q2) and `loomward-copy-staging-removal` (Q1), open since 2026-10-17:
-  without Q2 the copy gate never opens for personal data.
-- `loomward-first-cleanup-copier` (posed 2026-10-25): how the first cleanup copies before that gate opens.
-- `loomward-archive-originals` (posed 2026-10-25): who removes originals after a verified copy.
+- `loomward-copy-power-cut-method`: (a) Hyper-V VM. Hyper-V was already enabled; the VM and image live on `E:`.
+- `loomward-copy-staging-removal`: allowed, but Loomward first assesses whether something can be done, helps the owner
+  understand what happened and indexes or explains before deleting its own staging (docs/49 section 4).
+- `loomward-first-cleanup-copier`: (b) agent robocopy per approved plan, then `verify-tree` (section 6). Survey all
+  disks first; mainly `C:` to `E:` and `H:`, `G:` also a candidate.
+- `loomward-archive-originals`: (b) Recycle Bin after per-plan confirmation, with a human-readable, machine-learning
+  summary of what is being removed (docs/49).
+- USB fixed NTFS/ReFS roots (section 2): confirmed by the owner.
 
 Agent decisions recorded here, reversible: USB fixed-media NTFS/ReFS volumes become scan roots (section 2); the MCP
 server holds the state lock only while busy, and the desktop retries before refusing (4.1); space tools need `size`,
