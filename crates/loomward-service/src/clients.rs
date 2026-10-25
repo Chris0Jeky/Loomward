@@ -2,7 +2,7 @@
 //! (LW-069, docs/46 sections 4 and 8.3).
 //!
 //! A client principal (`ask:<class>`, `mcp:<name>`) is set by the in-process adapter that hosts
-//! it, never by a payload. It reaches two reads only, `search.query` and `node.inspect`, and only
+//! it, never by a payload. It reaches only the allowlisted search and space reads, and only
 //! under a live owner-issued grant loaded from `state.db` on every call, so a revocation holds
 //! from the next call on. The grant names durable root grants and optional fields: rows outside the
 //! roots are absent from results, root states and the generation (the catalogue applies the scope
@@ -17,7 +17,8 @@ use crate::handlers::encode;
 use crate::{bare_row, fail, now_ns, sql_error, Inner, Out, Service};
 use loomward_catalog::NodeKey;
 use loomward_protocol::{
-    Command, ErrorBody, ErrorCode, NodeRefRequest, RequestEnvelope, RootId, SearchRequest,
+    BreakdownRequest, BreakdownRequestBy, Command, DeveloperClutterRequest, ErrorBody, ErrorCode,
+    NodeRefRequest, RequestEnvelope, RootId, SearchRequest, TreeChildrenRequest,
 };
 use rusqlite::{OptionalExtension, TransactionBehavior};
 use serde_json::{Map, Value};
@@ -45,7 +46,7 @@ pub(crate) fn migrate(conn: &mut rusqlite::Connection) -> rusqlite::Result<()> {
 
 /// The optional fields a grant may disclose. Name, kind, extension, coverage, match and the
 /// node reference are always part of a hit.
-pub const CLIENT_FIELDS: [&str; 4] = ["path", "size", "modified", "attributes"];
+pub const CLIENT_FIELDS: [&str; 5] = ["path", "size", "modified", "attributes", "volumes"];
 
 /// A live grant as one call sees it.
 #[derive(Debug, Clone)]
@@ -195,7 +196,16 @@ impl Inner {
 
 /// The only commands a client principal reaches.
 pub(crate) fn open_to_clients(command: Command) -> bool {
-    matches!(command, Command::SearchQuery | Command::NodeInspect)
+    matches!(
+        command,
+        Command::SearchQuery
+            | Command::NodeInspect
+            | Command::VolumesList
+            | Command::RootsList
+            | Command::TreeChildren
+            | Command::StatsBreakdown
+            | Command::ClutterDeveloper
+    )
 }
 
 impl Inner {
@@ -244,20 +254,61 @@ impl Inner {
     ) -> Handled {
         #[cfg(test)]
         self.hooks.before(command);
+        let required = match command {
+            Command::VolumesList => Some(("volumes", "this grant does not disclose volumes")),
+            Command::TreeChildren | Command::StatsBreakdown | Command::ClutterDeveloper => {
+                Some(("size", "this grant does not disclose sizes"))
+            }
+            _ => None,
+        };
+        if let Some((field, message)) = required {
+            if !grant.has(field) {
+                return Err(fail(ErrorCode::PermissionDenied, message));
+            }
+        }
         match command {
             Command::SearchQuery => self.search(req, work, Some(grant)),
-            Command::NodeInspect => {
+            Command::VolumesList => self.placement_command(req, command, work),
+            Command::RootsList => self.client_roots(work, grant),
+            Command::NodeInspect | Command::TreeChildren | Command::StatsBreakdown => {
                 // Scope first: a node outside the grant answers as an unknown one before a
                 // generation check or a read could tell it apart (Codex review of #541).
-                let r: NodeRefRequest = req.decode_payload()?;
-                let key = self.node(&r.node_id, &mut self.read_reader(work)?)?;
+                let node_id = match command {
+                    Command::NodeInspect => req.decode_payload::<NodeRefRequest>()?.node_id,
+                    Command::TreeChildren => req.decode_payload::<TreeChildrenRequest>()?.node_id,
+                    Command::StatsBreakdown => {
+                        let r = req.decode_payload::<BreakdownRequest>()?;
+                        // Age bands are a distribution of modified times (docs/48 4.2).
+                        if r.by == BreakdownRequestBy::AgeBand && !grant.has("modified") {
+                            return Err(fail(
+                                ErrorCode::PermissionDenied,
+                                "this grant does not disclose modified times",
+                            ));
+                        }
+                        r.node_id
+                    }
+                    _ => unreachable!(),
+                };
+                let key = self.node(&node_id, &mut self.read_reader(work)?)?;
                 if !self
                     .node_root(key)?
                     .is_some_and(|root| grant.roots.contains(&root))
                 {
                     return Err(fail(ErrorCode::NotFound, "unknown node"));
                 }
-                self.client_inspect(req, work, grant)
+                match command {
+                    Command::NodeInspect => self.client_inspect(req, work, grant),
+                    Command::TreeChildren => self.tree_children(req, work, Some(grant)),
+                    Command::StatsBreakdown => self.breakdown(req, work),
+                    _ => unreachable!(),
+                }
+            }
+            Command::ClutterDeveloper => {
+                let r: DeveloperClutterRequest = req.decode_payload()?;
+                if !grant.roots.contains(&self.root_row(&r.root_id)?) {
+                    return Err(fail(ErrorCode::NotFound, "unknown root"));
+                }
+                self.clutter_developer(req, work)
             }
             _ => Err(fail(
                 ErrorCode::PermissionDenied,
@@ -352,6 +403,43 @@ pub(crate) fn project(command: Command, grant: &ClientGrant, map: &mut Map<Strin
             }
             *map = out;
         }
+        Command::RootsList => {
+            for root in map
+                .get_mut("roots")
+                .and_then(Value::as_array_mut)
+                .into_iter()
+                .flatten()
+            {
+                if let Some(root) = root.as_object_mut() {
+                    root.retain(|key, _| {
+                        key == "root_id"
+                            || key == "scan"
+                            || (key == "display_path" && grant.has("path"))
+                    });
+                    if let Some(scan) = root.get_mut("scan").and_then(Value::as_object_mut) {
+                        scan.remove("last_job_id");
+                    }
+                }
+            }
+        }
+        Command::TreeChildren | Command::ClutterDeveloper => {
+            let key = if command == Command::TreeChildren {
+                "items"
+            } else {
+                "candidates"
+            };
+            for row in map
+                .get_mut(key)
+                .and_then(Value::as_array_mut)
+                .into_iter()
+                .flatten()
+            {
+                if let Some(row) = row.as_object_mut() {
+                    project_row(grant, row);
+                }
+            }
+        }
+        Command::VolumesList | Command::StatsBreakdown => {}
         _ => map.clear(),
     }
 }

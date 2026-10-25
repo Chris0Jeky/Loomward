@@ -9,7 +9,7 @@
   import type { AskField, AskStatus, AskTurnRecord, AskCitation, NodeDetail, Root } from '../../lib/contracts.gen';
   import { FAILURE_WORDS, sentencesOf, providerOf, scopeOf, scopeSentence, shortDigest } from './model';
 
-  const FIELD_WORDS: Record<AskField, string> = { path: 'Paths inside the folder', size: 'Sizes', modified: 'Modified dates', attributes: 'Attributes' };
+  const FIELD_WORDS: Record<AskField, string> = { path: 'Paths inside the folder', size: 'Sizes', modified: 'Modified dates', attributes: 'Attributes', volumes: 'All drives and free space' };
   const POLL_MS = 400;
 
   let status = $state<AskStatus | null>(null);

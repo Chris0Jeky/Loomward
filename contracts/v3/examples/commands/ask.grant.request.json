@@ -4,6 +4,9 @@
   ],
   "fields": [
     "path",
-    "size"
+    "size",
+    "modified",
+    "attributes",
+    "volumes"
   ]
 }

@@ -152,6 +152,11 @@ impl Command {
         match self {
             Self::SearchQuery => Some("ClientSearchPage"),
             Self::NodeInspect => Some("ClientNodeDetail"),
+            Self::VolumesList => Some("VolumeList"),
+            Self::RootsList => Some("ClientRootList"),
+            Self::TreeChildren => Some("ClientEntryPage"),
+            Self::StatsBreakdown => Some("Breakdown"),
+            Self::ClutterDeveloper => Some("DeveloperClutterReport"),
             _ => None,
         }
     }
@@ -164,6 +169,15 @@ impl Command {
             }
             Self::NodeInspect => {
                 decode_exact::<ClientNodeDetail>(Value::Object(result.clone())).map(drop)
+            }
+            Self::VolumesList | Self::StatsBreakdown | Self::ClutterDeveloper => {
+                self.validate_result(result)
+            }
+            Self::RootsList => {
+                decode_exact::<ClientRootList>(Value::Object(result.clone())).map(drop)
+            }
+            Self::TreeChildren => {
+                decode_exact::<ClientEntryPage>(Value::Object(result.clone())).map(drop)
             }
             _ => Err(ErrorBody::invalid_request(
                 "this command has no client result",

@@ -228,11 +228,10 @@ fn an_ungranted_client_reaches_nothing_and_learns_nothing() {
         assert!(e.detail.is_none());
         assert!(!e.message.contains("Alpha"));
     }
-    // Every other command is closed to a client, granted or not: no roots, grants or effects.
+    // Owner metadata, grants and effects stay closed, even with a disclosure grant.
     svc.grant_client("mcp:granted", std::slice::from_ref(&alpha), &["path"], None)
         .unwrap();
     for (command, payload) in [
-        ("roots.list", json!({})),
         ("grants.list", json!({})),
         ("session.hello", json!({})),
         ("collections.list", json!({})),
@@ -646,7 +645,7 @@ fn a_client_path_starts_at_the_granted_root_and_the_owner_keeps_the_absolute_one
     );
 }
 
-const ALL_FIELDS: [&str; 4] = ["path", "size", "modified", "attributes"];
+const ALL_FIELDS: [&str; 5] = ["path", "size", "modified", "attributes", "volumes"];
 
 fn schema_validator(definition: &str) -> jsonschema::Validator {
     let mut schema: Value = serde_json::from_str(include_str!(
@@ -685,9 +684,9 @@ fn check_client_reply_schema(command: Command) {
             .unwrap(),
     );
     let envelope_validator = schema_validator("ResponseEnvelope");
-    for mask in 0..16 {
+    for mask in 0..32 {
         let mask = if command == Command::NodeInspect {
-            15 - mask
+            31 - mask
         } else {
             mask
         };
@@ -1115,4 +1114,367 @@ fn a_text_that_cleans_to_nothing_is_still_a_listing_that_needs_size() {
         listing("\u{200b}"),
     ));
     assert_eq!(names(&page), Vec::<String>::new());
+}
+
+fn root_node(svc: &Service, root: &RootId) -> Value {
+    let slice = ok(as_owner(
+        svc,
+        "tree.slice",
+        json!({
+            "anchor": {"kind": "root", "root_id": root.as_ref()},
+            "depth": 1, "max_nodes": 20, "min_share": 0, "basis": "logical", "include_files": true
+        }),
+    ));
+    slice["anchor_node_id"].clone()
+}
+
+fn space_reads(root: &RootId, node: &Value) -> [(&'static str, Value); 5] {
+    [
+        ("volumes.list", json!({})),
+        ("roots.list", json!({})),
+        (
+            "tree.children",
+            json!({"node_id": node, "sort": "size_desc", "basis": "logical", "limit": 200, "cursor": null}),
+        ),
+        (
+            "stats.breakdown",
+            json!({"node_id": node, "by": "extension", "basis": "logical", "limit": 64}),
+        ),
+        (
+            "clutter.developer",
+            json!({"root_id": root.as_ref(), "limit": 200}),
+        ),
+    ]
+}
+
+#[test]
+fn client_space_reads_require_live_grants_and_their_specific_fields() {
+    let tmp = temp_root();
+    let svc = open(tmp.path());
+    let alpha = root(&svc, "Alpha", 1, Some(ALPHA));
+    let node = root_node(&svc, &alpha);
+    for (command, payload) in space_reads(&alpha, &node) {
+        let validator = schema_validator(
+            Command::from_name(command)
+                .unwrap()
+                .client_result_def()
+                .unwrap(),
+        );
+        let needed = match command {
+            "volumes.list" => Some("volumes"),
+            "roots.list" => None,
+            _ => Some("size"),
+        };
+        for client in ["mcp:space", "ask:local"] {
+            let e = err(as_client(&svc, client, command, payload.clone()));
+            assert_eq!(e.code, ErrorCode::PermissionDenied, "{command}");
+            assert_eq!(e.message.as_str(), "this client has no disclosure grant");
+            // Every other field, including size, cannot stand in for volumes consent.
+            let other: Vec<_> = ["path", "size", "modified", "attributes", "volumes"]
+                .into_iter()
+                .filter(|f| Some(*f) != needed)
+                .collect();
+            svc.grant_client(client, std::slice::from_ref(&alpha), &other, None)
+                .unwrap();
+            if let Some(field) = needed {
+                let e = err(as_client(&svc, client, command, payload.clone()));
+                assert_eq!(e.code, ErrorCode::PermissionDenied, "{command}");
+                assert!(
+                    e.message
+                        .as_str()
+                        .contains(if field == "size" { "sizes" } else { field }),
+                    "{e:?}"
+                );
+            }
+            let fields: Vec<_> = needed.into_iter().collect();
+            svc.grant_client(client, std::slice::from_ref(&alpha), &fields, None)
+                .unwrap();
+            let result = ok(as_client(&svc, client, command, payload.clone()));
+            let errors: Vec<_> = validator
+                .iter_errors(&result)
+                .map(|e| e.to_string())
+                .collect();
+            assert!(errors.is_empty(), "{command}: {errors:?}");
+            assert!(svc.revoke_client(client).unwrap());
+            let e = err(as_client(&svc, client, command, payload.clone()));
+            assert_eq!(e.code, ErrorCode::PermissionDenied, "{command}");
+            assert_eq!(e.message.as_str(), "this client has no disclosure grant");
+        }
+    }
+}
+
+#[test]
+fn client_space_nodes_and_roots_outside_the_grant_are_unknown_before_generation() {
+    let tmp = temp_root();
+    let svc = open(tmp.path());
+    let alpha = root(&svc, "Alpha", 1, Some(ALPHA));
+    let beta = root(&svc, "Beta", 2, Some(BETA));
+    svc.grant_client("mcp:space", &[alpha], &["size"], None)
+        .unwrap();
+    let node = root_node(&svc, &beta);
+    for (command, payload) in space_reads(&beta, &node).into_iter().skip(2) {
+        for generation in [None, Some(999)] {
+            if command == "clutter.developer" && generation.is_some() {
+                continue; // This command does not accept expected_generation in its envelope.
+            }
+            let mut req = request(command, payload.clone());
+            req.expected_generation = generation.map(Generation);
+            let e = err(svc.call(req, &CallContext::client("mcp:space")));
+            assert_eq!(e.code, ErrorCode::NotFound, "{command}: {e:?}");
+            assert_eq!(
+                e.message.as_str(),
+                if command == "clutter.developer" {
+                    "unknown root"
+                } else {
+                    "unknown node"
+                }
+            );
+            assert!(e.detail.is_none());
+        }
+    }
+}
+
+#[test]
+fn client_roots_are_absent_outside_scope_and_paths_start_at_the_root_name() {
+    let tmp = temp_root();
+    let svc = open(tmp.path());
+    let alpha = root(&svc, "Alpha", 1, Some(ALPHA));
+    root(&svc, "Beta", 2, Some(BETA));
+    for fields in [&[][..], &["path"][..], &["size"][..]] {
+        svc.grant_client("mcp:space", std::slice::from_ref(&alpha), fields, None)
+            .unwrap();
+        let page = ok(as_client(&svc, "mcp:space", "roots.list", json!({})));
+        let roots = page["roots"].as_array().unwrap();
+        assert_eq!(roots.len(), 1);
+        let row = &roots[0];
+        assert_eq!(row["root_id"], alpha.as_ref());
+        for key in [
+            "origin",
+            "dataset_class",
+            "volume_id",
+            "granted_at",
+            "granted_via",
+            "grant_state",
+            "totals",
+        ] {
+            assert!(row.get(key).is_none(), "{key}: {row}");
+        }
+        assert!(row["scan"].get("last_job_id").is_none());
+        assert_eq!(row["scan"]["coverage"], "complete");
+        if fields.contains(&"path") {
+            assert_eq!(
+                row["display_path"],
+                json!({"text": "Alpha", "truncated": false})
+            );
+        } else {
+            assert!(row.get("display_path").is_none());
+        }
+        assert!(!page.to_string().contains("Synthetic Owner"));
+        assert!(!page.to_string().contains("Beta"));
+    }
+}
+
+#[test]
+fn client_children_and_breakdowns_count_only_the_granted_subtree_and_project_rows() {
+    let tmp = temp_root();
+    let svc = open(tmp.path());
+    let alpha = root(&svc, "Alpha", 1, Some(ALPHA));
+    root(&svc, "Beta", 2, Some(BETA));
+    let node = root_node(&svc, &alpha);
+    svc.grant_client("mcp:space", std::slice::from_ref(&alpha), &["size"], None)
+        .unwrap();
+    for (command, payload) in space_reads(&alpha, &node).into_iter().skip(2).take(2) {
+        let owner = ok(as_owner(&svc, command, payload.clone()));
+        let page = ok(as_client(&svc, "mcp:space", command, payload));
+        if command == "tree.children" {
+            assert_eq!(page["total"], owner["total"]);
+            let items = page["items"].as_array().unwrap();
+            assert_eq!(items.len(), 5);
+            let total: u64 = items
+                .iter()
+                .map(|r| r["logical_bytes"].as_str().unwrap().parse::<u64>().unwrap())
+                .sum();
+            assert_eq!(total, 10_007);
+            for row in items {
+                for key in ["location_hint", "modified_at", "attributes", "flags"] {
+                    assert!(row.get(key).is_none(), "{key}: {row}");
+                }
+            }
+        } else {
+            assert_eq!(page, owner);
+            let total: u64 = page["buckets"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|b| b["bytes"].as_str().unwrap().parse::<u64>().unwrap())
+                .sum();
+            assert_eq!(total, 10_007);
+        }
+    }
+    svc.grant_client(
+        "mcp:space",
+        std::slice::from_ref(&alpha),
+        &["volumes"],
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        ok(as_client(&svc, "mcp:space", "volumes.list", json!({}))),
+        ok(as_owner(&svc, "volumes.list", json!({})))
+    );
+}
+
+fn clutter_root(svc: &Service, name: &str, id: u8, bytes: u64) -> RootId {
+    let root = root(svc, name, id, None);
+    let (grant, dir): (i64, i64) = svc.inner.db().query_row(
+        "SELECT r.grant_id,d.id FROM main.root r JOIN main.dir d ON d.root_id=r.id WHERE r.id=?1 AND d.parent_id IS NULL",
+        [svc.inner.root_row(root.as_ref()).unwrap()], |r| Ok((r.get(0)?, r.get(1)?)),
+    ).unwrap();
+    let w = svc.inner.catalog.writer();
+    let WriteReply::Run(run) = w
+        .call(WriteCommand::BeginRun {
+            grant_id: grant,
+            mode: "full".into(),
+            strategy: "fixture".into(),
+            started_at_ns: 0,
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+    w.call(WriteCommand::DirListing(DirListing {
+        run_id: run,
+        dir_id: dir,
+        files: vec![file("Cargo.toml", 10)],
+        dirs: vec![file("target", 0)],
+        state: "complete".into(),
+        skipped: 0,
+        errors: 0,
+    }))
+    .unwrap();
+    let sub: i64 = svc.inner.db().query_row(
+        "SELECT id FROM main.bulk_dir WHERE parent_id=?1 UNION ALL SELECT id FROM main.dir WHERE parent_id=?1",
+        [dir], |r| r.get(0),
+    ).unwrap();
+    w.call(WriteCommand::DirListing(DirListing {
+        run_id: run,
+        dir_id: sub,
+        files: vec![file("output.bin", bytes)],
+        dirs: vec![],
+        state: "complete".into(),
+        skipped: 0,
+        errors: 0,
+    }))
+    .unwrap();
+    w.call(WriteCommand::EndRun {
+        run_id: run,
+        state: "completed".into(),
+        finished_at_ns: 1,
+    })
+    .unwrap();
+    root
+}
+
+#[test]
+fn client_clutter_projects_only_candidates_under_the_granted_root() {
+    let tmp = temp_root();
+    let svc = open(tmp.path());
+    let alpha = clutter_root(&svc, "Alpha", 1, 123);
+    clutter_root(&svc, "Beta", 2, 999);
+    for fields in [&["size"][..], &["size", "path"][..]] {
+        svc.grant_client("mcp:space", std::slice::from_ref(&alpha), fields, None)
+            .unwrap();
+        let payload = json!({"root_id": alpha.as_ref(), "limit": 200});
+        let page = ok(as_client(
+            &svc,
+            "mcp:space",
+            "clutter.developer",
+            payload.clone(),
+        ));
+        assert_eq!(page, ok(as_owner(&svc, "clutter.developer", payload)));
+        let candidates = page["candidates"].as_array().unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0]["logical_bytes"], "123");
+        // The current clutter DTO has names and references, but no path fields to disclose.
+        for key in ["path", "display_path", "location_hint"] {
+            assert!(candidates[0].get(key).is_none());
+        }
+        assert!(!page.to_string().contains("Beta"));
+    }
+}
+
+#[test]
+fn client_children_cursors_bind_the_client_and_grant_epoch() {
+    let tmp = temp_root();
+    let svc = open(tmp.path());
+    let alpha = root(&svc, "Alpha", 1, Some(ALPHA));
+    let node = root_node(&svc, &alpha);
+    for client in ["mcp:space", "ask:local"] {
+        svc.grant_client(client, std::slice::from_ref(&alpha), &["size"], None)
+            .unwrap();
+    }
+    let mut payload = space_reads(&alpha, &node)[2].1.clone();
+    payload["limit"] = json!(1);
+    let first = ok(as_client(
+        &svc,
+        "mcp:space",
+        "tree.children",
+        payload.clone(),
+    ));
+    assert!(first["next_cursor"].is_string());
+    payload["cursor"] = first["next_cursor"].clone();
+    let next = ok(as_client(
+        &svc,
+        "mcp:space",
+        "tree.children",
+        payload.clone(),
+    ));
+    assert_ne!(first["items"][0]["node_id"], next["items"][0]["node_id"]);
+    assert_eq!(
+        err(as_client(
+            &svc,
+            "ask:local",
+            "tree.children",
+            payload.clone()
+        ))
+        .code,
+        ErrorCode::InvalidRequest
+    );
+    assert_eq!(
+        err(as_owner(&svc, "tree.children", payload.clone())).code,
+        ErrorCode::InvalidRequest
+    );
+    svc.grant_client("mcp:space", &[alpha], &["size"], None)
+        .unwrap();
+    assert_eq!(
+        err(as_client(&svc, "mcp:space", "tree.children", payload)).code,
+        ErrorCode::InvalidRequest
+    );
+}
+
+#[test]
+fn client_age_band_breakdowns_need_modified_times() {
+    let tmp = temp_root();
+    let svc = open(tmp.path());
+    let alpha = root(&svc, "Alpha", 1, Some(ALPHA));
+    let node = root_node(&svc, &alpha);
+    let payload = json!({"node_id": node, "by": "age_band", "basis": "logical", "limit": 64});
+    svc.grant_client("mcp:space", std::slice::from_ref(&alpha), &["size"], None)
+        .unwrap();
+    let e = err(as_client(
+        &svc,
+        "mcp:space",
+        "stats.breakdown",
+        payload.clone(),
+    ));
+    assert_eq!(e.code, ErrorCode::PermissionDenied);
+    assert!(e.message.as_str().contains("modified"), "{e:?}");
+    svc.grant_client(
+        "mcp:space",
+        std::slice::from_ref(&alpha),
+        &["size", "modified"],
+        None,
+    )
+    .unwrap();
+    ok(as_client(&svc, "mcp:space", "stats.breakdown", payload));
 }

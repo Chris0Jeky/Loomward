@@ -21,6 +21,14 @@ async function settle(c: Client, t: AskTurnRecord): Promise<AskTurnRecord> {
 }
 
 describe('ask on the mock transport', () => {
+  it('accepts all five disclosure fields including machine-wide volumes consent', async () => {
+    const c = client();
+    const root = (await c.call('roots.list', {})).result.roots[0]!;
+    const fields = ['path', 'size', 'modified', 'attributes', 'volumes'] as const;
+    const { result } = await c.call('ask.grant', { roots: [root.root_id], fields: [...fields] });
+    expect(result.grant?.fields).toEqual([...fields].sort());
+  });
+
   it('pins the fake profile digest to ProviderProfile::digest', async () => {
     const { result } = await client().call('ask.status', {});
     expect(result.profile_digest).toBe('sha256:' + createHash('sha256').update(MOCK_ASK_PROFILE_DIGEST_INPUT).digest('hex'));

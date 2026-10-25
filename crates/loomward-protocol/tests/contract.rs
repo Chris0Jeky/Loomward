@@ -159,6 +159,25 @@ fn client_projection_contracts_preserve_omitted_and_unknown_fields() {
         .is_err());
 }
 
+#[test]
+fn client_grant_contract_accepts_all_five_disclosures_including_volumes() {
+    let mut schema = Schema::load();
+    let value = json!({"roots": ["rt_synthetic"], "fields": ["path", "size", "modified", "attributes", "volumes"]});
+    assert!(schema.errors("AskGrantRequest", &value).is_empty());
+    assert_eq!(
+        roundtrip("AskGrantRequest", &value).unwrap().unwrap(),
+        value
+    );
+    let grant = json!({"roots": value["roots"], "fields": value["fields"], "granted_at": "2026-10-25T00:00:00.000Z"});
+    assert!(schema.errors("AskGrant", &grant).is_empty());
+    assert_eq!(roundtrip("AskGrant", &grant).unwrap().unwrap(), grant);
+    for fields in [json!(["volumes", "volumes"]), json!(["execute"])] {
+        let invalid = json!({"roots": ["rt_synthetic"], "fields": fields});
+        assert!(!schema.errors("AskGrantRequest", &invalid).is_empty());
+        assert!(roundtrip("AskGrantRequest", &invalid).unwrap().is_err());
+    }
+}
+
 impl Schema {
     fn load() -> Self {
         Self {

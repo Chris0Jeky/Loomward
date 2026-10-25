@@ -744,6 +744,33 @@ export interface ClientNodeDetail {
   display_path?: DisplayPath;
 }
 
+export interface ClientRootScanState {
+  state: "never_scanned" | "scanning" | "complete" | "partial" | "stale" | "failed";
+  generation: NullableGeneration;
+  finished_at: NullableTimestamp;
+  coverage: CoverageState;
+}
+
+/** Client root coverage and freshness only; display_path starts at the root name and is absent without path disclosure. Owner grant metadata and totals stay with the owner. */
+export interface ClientRoot {
+  root_id: RootId;
+  display_path?: DisplayPath;
+  scan: ClientRootScanState;
+}
+
+export interface ClientRootList {
+  roots: ClientRoot[];
+}
+
+export interface ClientEntryPage {
+  anchor: NodeId | CollectionId | null;
+  generation: NullableGeneration;
+  items: ClientEntryRow[];
+  next_cursor: Cursor | null;
+  total: NullableCount;
+  budget_hit: boolean;
+}
+
 export interface NodeDetail {
   row: EntryRow;
   root_id: RootId;
@@ -2082,7 +2109,7 @@ export interface CopyStatus {
 export type AskTurnId = string;
 
 /** Optional fields an Ask grant discloses to the model (LW-067). Name, kind, extension, coverage and match type are always part of a row. */
-export type AskField = "path" | "size" | "modified" | "attributes";
+export type AskField = "path" | "size" | "modified" | "attributes" | "volumes";
 
 /** local is the only class that runs; a cloud profile is refused when configured (q-5 not met). */
 export type AskProviderState = "not_configured" | "local";
@@ -2326,8 +2353,13 @@ export interface CommandMap {
 
 /** Results for grant-scoped client principals; CommandMap remains owner-only. */
 export interface ClientCommandMap {
+  "roots.list": { request: EmptyRequest; result: ClientRootList };
+  "volumes.list": { request: EmptyRequest; result: VolumeList };
+  "tree.children": { request: TreeChildrenRequest; result: ClientEntryPage };
   "node.inspect": { request: NodeRefRequest; result: ClientNodeDetail };
   "search.query": { request: SearchRequest; result: ClientSearchPage };
+  "stats.breakdown": { request: BreakdownRequest; result: Breakdown };
+  "clutter.developer": { request: DeveloperClutterRequest; result: DeveloperClutterReport };
 }
 
 export type CommandKey = keyof CommandMap;

@@ -448,9 +448,29 @@ through `commands.json`, so that, for example, an `EventEnvelope` with `event: "
 is not a `JobResult` fails. Implementations MUST enable `format` validation for `date-time` in tests.
 
 `commands.json`'s `result` describes the complete owner reply. For a client principal under an
-LW-067 grant, `search.query` and `node.inspect` use the command's `client_result` instead:
-`ClientSearchPage` and `ClientNodeDetail`. The service validates the owner-shaped result before
-projection and the final client result after projection. Other commands have no client result.
+LW-067 grant, the reads below use the command's `client_result` instead. The service validates the
+owner-shaped result before projection and the final client result after projection. Other commands
+have no client result. The service's `open_to_clients` is the single command allowlist.
+
+| Command | Required disclosure | Scope and client result |
+|---|---|---|
+| `search.query` | Live grant; existing field-filter rules apply | Granted roots only; `ClientSearchPage` |
+| `node.inspect` | Live grant | Node under a granted root; `ClientNodeDetail` |
+| `volumes.list` | `volumes` | Machine-wide `VolumeList`, unchanged rows; this field is the owner's consent, independent of `size` |
+| `roots.list` | Live grant, even with no fields | Granted roots only, all others absent; `ClientRootList` carries root ID, scan state, generation, finished time and coverage, plus `display_path` only with `path` |
+| `tree.children` | `size` | Parent under a granted root; `ClientEntryPage` with each row projected as `ClientEntryRow` |
+| `stats.breakdown` | `size` | Node under a granted root; unchanged `Breakdown` groups aggregate only that subtree |
+| `clutter.developer` | `size` | `root_id` must be a granted root; `DeveloperClutterReport` candidates use the same field projection (the current candidate DTO has no paths) |
+
+For the space reads (docs/48 section 4.2), a missing required field is `permission_denied` with a
+plain message naming the disclosure, such as "this grant does not disclose sizes". No live grant
+keeps the existing `permission_denied` response. Grants are re-read per call; revocation refuses the
+next call. A node outside the grant is `not_found`, "unknown node", before a generation check or
+subtree read; an ungranted clutter root is `not_found`, "unknown root". Roots are selected before
+their totals are read; owner grant metadata, volume IDs, job IDs and subtree totals are removed from
+the client root list. Its optional display path starts at the root's own name, never the owner's
+absolute path. Tree cursors bind the client and grant epoch as search cursors do.
+
 `ClientEntryRow` always carries node reference, kind, name, extension, extension family and
 coverage. Path, size, modified time and attributes are present only when the grant discloses
 them; withheld fields are absent, while disclosed unknown values remain null. Client node
@@ -905,7 +925,7 @@ Alerts are advice, never an action, and never an approval.
 ## Ask (LW-118, docs/46 section 8)
 
 - **Who may call.** Every `ask.*` command is the owner's. A client principal (`ask:local`, `mcp:<name>`) reaches
-  `search.query` and `node.inspect` only and is refused `permission_denied` on these, whatever its grant says.
+  the grant-scoped search and space reads in section 10 only and is refused `permission_denied` on `ask.*`, whatever its grant says.
 - **Profile.** `ask.configure` exists on the Tauri adapter only (docs/46 section 8.1: profiles are created on the
   desktop); HTTP answers `capability_unavailable`. A profile is `local` only for an `http` loopback endpoint with an
   explicit port and a model name that is not remote (`:cloud`, `-cloud`); anything else is refused,
@@ -913,7 +933,7 @@ Alerts are advice, never an action, and never an approval.
   is no default profile and nothing is discovered: no endpoint is contacted until the owner configured one and asked
   a question. `ask.status` never contacts it.
 - **Grant.** `ask.grant` replaces the standing `ask:local` client grant (LW-067) over active granted roots and the
-  optional fields `path`, `size`, `modified`, `attributes`; `ask.revoke` ends it. The grant is read on every tool
+  optional fields `path`, `size`, `modified`, `attributes`, `volumes`; `ask.revoke` ends it. The grant is read on every tool
   call, so a revocation holds from the next call and the next turn. It does not cancel a question already
   running: that turn finishes with what it already looked up, and its later rounds re-send that conversation
   (rows read before the revocation included) to the same loopback model; it gets nothing new. For the local class there is **no per-round
