@@ -422,7 +422,8 @@ Rules:
 | `not_found` | No; refetch the parent resource (IDs may have expired) |
 | `stale_generation` | Yes, after refetching from the first page or re-reading the root; with `detail.reason = "state_rev_changed"` only after re-reading the state and, for an old owner choice, asking the owner again (section 3) |
 | `busy` | Yes, after the job in `detail.job_id` finishes |
-| `resource_budget`, `deadline_exceeded` (read) | Yes, with a narrower request |
+| `resource_budget` with `detail.reason = "root_limit_reached"` | No; the owner must revoke a root before granting another (64 active roots maximum) |
+| Other `resource_budget`, `deadline_exceeded` (read) | Yes, with a narrower request |
 | `deadline_exceeded` (mutation) | Section 3 only: action key, read, or revision precondition; never a blind resend |
 | `device_offline`, `partial_coverage` | When the condition changes (events) |
 | `cancelled` | No |

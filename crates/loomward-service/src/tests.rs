@@ -3928,10 +3928,49 @@ fn grants_list_caps_retained_and_forgotten_rows_without_negative_limit() {
     );
 }
 
+/// #198: the hard root cap requires owner action; narrower transient budgets can be retried.
+#[test]
+fn root_limit_requires_owner_action_but_transient_budgets_are_retryable() {
+    for command in [Command::RootsRequestGrant, Command::RootsList] {
+        for (reason, retryable) in [
+            (Some("root_limit_reached"), false),
+            (Some("sort_requires_index"), true),
+            (None, true),
+        ] {
+            let body = crate::fail(ErrorCode::ResourceBudget, "budget exhausted");
+            let body = if let Some(reason) = reason {
+                crate::with_reason(body, reason)
+            } else {
+                body
+            };
+            let error = crate::retry_flag(command, body);
+            assert_eq!(error.code, ErrorCode::ResourceBudget);
+            assert_eq!(error.retryable, retryable, "{command:?}: {reason:?}");
+            assert_eq!(
+                error
+                    .detail
+                    .as_ref()
+                    .and_then(|d| d.get("reason"))
+                    .and_then(Value::as_str),
+                reason
+            );
+        }
+    }
+}
+
 /// #185 item 3: the contract lists at most 64 roots, so a 65th active grant is refused by name;
 /// re-granting an active root and granting after a revocation still work.
 #[test]
 fn grants_past_64_active_roots_are_refused_by_rule() {
+    struct Pick(std::path::PathBuf);
+    impl NativeDialogs for Pick {
+        fn pick_folder(&self) -> Option<std::path::PathBuf> {
+            Some(self.0.clone())
+        }
+        fn confirm_disclosure(&self, _: &DisclosureSummary) -> Result<bool, ErrorBody> {
+            Ok(false)
+        }
+    }
     let tmp = temp_root();
     let state = tmp.path().join("state");
     let svc = open(&state, DatasetClass::Personal);
@@ -3955,6 +3994,15 @@ fn grants_past_64_active_roots_are_refused_by_rule() {
         svc.inner.grant(&dirs[64], "cli_flag", false),
         Err(crate::Refused::RootLimit)
     );
+    let error = err(svc.call(
+        request("roots.request_grant", json!({"purpose": "metadata_scan"})),
+        &CallContext::tauri(Arc::new(Pick(dirs[64].clone()))),
+    ));
+    assert_eq!(
+        (error.code, error.retryable),
+        (ErrorCode::ResourceBudget, false)
+    );
+    assert_eq!(reason(&error), Some("root_limit_reached"));
     assert_eq!(
         svc.inner.grant(&dirs[0], "cli_flag", false),
         Ok((granted[0], false))
