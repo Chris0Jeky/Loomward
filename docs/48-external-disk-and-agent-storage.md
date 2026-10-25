@@ -38,7 +38,9 @@ Rules for a detachable root:
 
 - **Never the drive letter.** Letters move between plugs. A root is its volume GUID and root file ID (the lab and
   grant identity already used); a copy destination is the pinned destination folder (docs/47 section 4). Another
-  disk on `H:` tomorrow is `identity_changed` for the root and `destination_changed` for a copy, never a retarget.
+  disk on `H:` tomorrow makes the root read offline (it waits for its own volume; `identity_changed`, which is terminal
+  and redacts learning, is kept for the same volume with a replaced folder) and is `destination_changed` for a copy;
+  never a retarget.
 - **Bus type, not drive type.** The app and the agent tools show a USB volume as "external, may be detached".
   Unknown bus type shows nothing extra (invariant 4).
 - **Detached is offline, not empty.** A detached disk's catalogue rows stay visible and are marked offline; sizes
@@ -201,7 +203,7 @@ the owner approves each plan.
 
 | Lane | Delivers | Effect | Acceptance |
 |---|---|---|---|
-| E0 | USB fixed-media NTFS/ReFS volumes as scan and grant roots (section 2), by splitting the shared `is_removable` predicate so the copy refusal for personal sessions stays; offline and identity-change states for detachable roots; lab copy destinations on such volumes | none (lab copies only, as today) | fence tests: USB fixed NTFS allowed, SD, removable media and USB FAT/exFAT refused as before; a root whose volume disappears reads offline with its last-seen sizes; a different volume at the same letter is `identity_changed`; a real `H:` read-only scan recorded with anonymised counts |
+| E0 | USB fixed-media NTFS/ReFS volumes as scan and grant roots (section 2), by splitting the shared `is_removable` predicate so the copy refusal for personal sessions stays; offline and identity-change states for detachable roots; lab copy destinations on such volumes | none (lab copies only, as today) | fence tests: USB fixed NTFS allowed, SD, removable media and USB FAT/exFAT refused as before; a root whose volume disappears reads offline with its last-seen sizes; a different volume at the same letter reads offline and keeps the grant; a real `H:` read-only scan recorded with anonymised counts |
 | E1 | this document | none | review |
 | E2 | `loomward-mcp`: stdio transport (both MCP eras, ported from `python/loomward/mcp_stdio.py`), lazy host with idle release and the shared lock helper, principal, session references, `find` and `describe` | none | subprocess tests in both eras; busy while another process holds the lock; `state.db` unchanged by every tool and hidden name |
 | E3 | service: space reads open to clients under the 4.2 rules (`volumes.list`, `roots.list`, `tree.children`, `stats.breakdown`, `clutter.developer`), the `volumes` field, projections | none | out-of-scope nodes unknown; totals exclude rows outside the grant; missing field refused or absent; revocation from the next call |
