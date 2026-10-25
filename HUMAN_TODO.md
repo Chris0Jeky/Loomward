@@ -406,12 +406,14 @@ Copy-and-verify lanes C1 to C5 and C7 landed on 2026-10-17 (lab-only), so Q1 to 
 inbox in agent-hq#461, and Ask Q3 (local-model preview) and Q4 (conversation retention) were added there the same day;
 they reach the cockpit when that PR merges. Answer there or in chat. Still not asked: the elevated helper's launch model
 (docs/46 Q1), Everything results outside the grants (docs/46 Q2) and the Store item below.
-- [ ] **loomward-copy-staging-removal** (Q1): may cancel and abandon delete Loomward's own unpublished staging files,
+- [x] **loomward-copy-staging-removal** (Q1): may cancel and abandon delete Loomward's own unpublished staging files,
   matched by recorded identity inside its own staging folder? Recommended: allow. Until answered, cancel and abandon
   leave the staging folder in place and report it (`LOOMWARD_COPY_STAGING_REMOVAL = false`, #522).
-- [ ] **loomward-copy-power-cut-method** (Q2): a Hyper-V VM hard-stopped during lab copies (desktop only; KRASPYON is
+  ANSWERED 2026-10-25 in chat (Other): "this is nuanced; allow but it should assess whether there is something that can be done and help the user understand what happened and index or give more info if needed before deleting". Implementation: docs/49 section 4.
+- [x] **loomward-copy-power-cut-method** (Q2): a Hyper-V VM hard-stopped during lab copies (desktop only; KRASPYON is
   Windows 11 Home, without Hyper-V), a power pull on a disposable machine, or neither yet (copy stays lab-only).
   Recommended: Hyper-V. Gate G5 stays shut until one is done.
+  ANSWERED 2026-10-25 in chat: (a) Hyper-V VM. Hyper-V was already enabled on the desktop (measured: vmms running); the test VM and image live on E: (owner, same chat). G5 lane follows.
 - [ ] **loomward-copy-destination-shape** (Q3): v1 new folder only (recommended, built), or also into an existing
   folder with new names only. Defaults to new folder only on 2026-10-24 if unanswered (reversible).
 - [ ] **loomward-ask-local-preview** (docs/46 Q3, posed 2026-10-17 in agent-hq#461): for a model on this machine, is
@@ -424,15 +426,25 @@ they reach the cockpit when that PR merges. Answer there or in chat. Still not a
   - Everything results outside the grants (hidden is recommended).
 - Microsoft Store: a short privacy policy page is required before a Store submission (packaging/store/README.md).
 
-### q-48 — External archive disk (H:) and the first cleanup — POSED 2026-10-25 (agent-hq inbox)
+### q-48 — External archive disk (H:) and the first cleanup — POSED and ANSWERED 2026-10-25
 
 The owner attached a WD Elements USB disk (`H:`) for backup and archive and asked for safe archiving, agent tooling and
 a supervised cleanup. Design: [docs/48](docs/48-external-disk-and-agent-storage.md). Copying personal files still waits
 on the copy gate (q-47 Q1 and Q2 above); these two decide the cleanup around it:
-- [ ] **loomward-first-cleanup-copier**: before Loomward's own copier passes its gate, (a) wait, (b) agents copy with
+- [x] **loomward-first-cleanup-copier**: before Loomward's own copier passes its gate, (a) wait, (b) agents copy with
   robocopy per approved plan and Loomward's read-only verifier (non-cached reads) must find each copy equal (recommended), or (c)
   you copy in Explorer and the verifier compares it. Removing any original also needs a second equal comparison after
   the disk was safely removed and plugged in again (docs/48 section 6).
-- [ ] **loomward-archive-originals**: after a verified copy, (a) you delete originals from Loomward's verified list,
+  ANSWERED 2026-10-25 in chat: (b) agent robocopy per approved plan plus Loomward's verifier (docs/48 section 6). Owner, same chat: survey all disks first; mainly C: to E: and H:, G: also a candidate.
+- [x] **loomward-archive-originals**: after a verified copy, (a) you delete originals from Loomward's verified list,
   (b) Loomward sends them to the Recycle Bin after your per-plan confirmation, behind its own gate (recommended), or
   (c) permanent delete after confirmation.
+  ANSWERED 2026-10-25 in chat: (b) Recycle Bin after per-plan confirmation, with the owner's note: "BUT it should clearly inform the user of the nature of the things that are being sent to the recycle bin, including some sort of machine learning piece of  software that can give more insights, not just names of files, but actual human readable info at a glance". Design seed: docs/49.
+
+Also answered in the same chat (agent questions, recorded so they bind):
+- USB fixed NTFS/ReFS disks as read-only scan roots: allow (docs/48 section 2, lane E0).
+- Insight model: local first, hosted as fallback with a per-request preview; machine learning before LLMs, smaller local
+  models than Qwen 27B worth evaluating, the categoriser a fairly high priority (docs/49).
+- New direction: browse external disks instantly and pull RAW photos for Lightroom in the background (docs/50); a
+  ChatGPT Pro deep-research prompt is in `docs/research/deep-research-prompt-storage-2026-10.md` for the owner to run.
+- [ ] Owner runs the deep-research prompt in ChatGPT Pro and drops the report into `docs/research/`.

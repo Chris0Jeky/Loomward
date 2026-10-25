@@ -94,7 +94,8 @@ Docs/46 limited MCP to `find` and `describe` until "a separate grant design". Th
   outside the grant exist.
 - A new optional field, `volumes`, discloses the machine's volume list (label, bus type, capacity, free space,
   online state, declared tier). It is off unless the owner ticks it, because it is a machine-wide observation.
-- Each output needs the field it discloses: names and paths need `path`; byte totals need `size` (a grant without
+- Each output needs the field it discloses. Names and kinds are always part of a row, as in search (LW-069); paths
+  and locations need `path`; byte totals need `size` (a grant without
   `size` gets no space tools); age bands and modified ranges need `modified`; attribute-derived warnings
   (placeholders, reparse points) need `attributes`. Without the field, that part is absent, not null.
 - The owner issues, lists and revokes MCP client grants through new owner-only commands `clients.grant`,
@@ -181,7 +182,8 @@ the owner approves each plan.
   option, removal of a plan's originals needs a **second** `verify-tree` run that exits 0 after the owner safely
   removed the external disk and plugged it in again (the owner confirms the replug; it empties the system cache for
   that volume, while the device's own cache stays outside the proof, as in section 4.5), and the copy is never
-  removed. Until the owner answers, nothing removes an original.
+  removed. The owner chose a Loomward Recycle Bin effect, which is not built: it needs its own LW issue and
+  safety gate after the copy gate (invariant 1). Until it exists, nothing removes an original.
 - **Journal for the interim path.** Each approved plan, its robocopy log summary and both verifier reports are kept
   in the gitignored `.loomward/archive/` of the primary checkout, never in Git (no real names in this repository).
 
@@ -204,7 +206,7 @@ the owner approves each plan.
    the biggest folders; Clutter lists build outputs and caches you can delete yourself; volumes on USB are marked
    external, and a detached one shows offline with its last-seen sizes.
 2. **Let an agent look.** In Agent access, create a grant for one agent name (for example `claude`): pick the roots
-   and tick what it may see (`size` for space tools, `path` for names, `modified` for ages, `attributes` for file
+   and tick what it may see (`size` for space tools, `path` for where things are, `modified` for ages, `attributes` for file
    attributes, `volumes` for drive capacity). Revoke it any time; it stops at the agent's next call.
 3. **Connect the agent.** Add the server to the agent host, for example Claude Code:
    `claude mcp add loomward -- "%LOCALAPPDATA%\Loomward\loomward-mcp.exe" --client claude`. The agent's tools and the
@@ -212,12 +214,17 @@ the owner approves each plan.
 4. **Review plans.** The agent sends you `plan_archive` results: what, how big, where, and whether it fits. Nothing
    moves until you approve; how approved plans are executed follows your answers to the decisions below.
 
-## 9. Owner decisions this design waits on
+## 9. Owner decisions (answered 2026-10-25 in chat; HUMAN_TODO q-47, q-48)
 
-- `loomward-copy-power-cut-method` (docs/47 Q2) and `loomward-copy-staging-removal` (Q1), open since 2026-10-17:
-  without Q2 the copy gate never opens for personal data.
-- `loomward-first-cleanup-copier` (posed 2026-10-25): how the first cleanup copies before that gate opens.
-- `loomward-archive-originals` (posed 2026-10-25): who removes originals after a verified copy.
+- `loomward-copy-power-cut-method`: (a) Hyper-V VM. Hyper-V was already enabled; the VM and image live on `E:`.
+- `loomward-copy-staging-removal`: allowed, but Loomward first assesses whether something can be done, helps the owner
+  understand what happened and indexes or explains before deleting its own staging (docs/49 section 4).
+  `LOOMWARD_COPY_STAGING_REMOVAL` stays false until that explain-first behaviour lands.
+- `loomward-first-cleanup-copier`: (b) agent robocopy per approved plan, then `verify-tree` (section 6). Survey all
+  disks first; mainly `C:` to `E:` and `H:`, `G:` also a candidate.
+- `loomward-archive-originals`: (b) Recycle Bin after per-plan confirmation, with a human-readable, machine-learning
+  summary of what is being removed (docs/49). The effect is not built and has its own gate (invariant 1).
+- USB fixed NTFS/ReFS roots (section 2): confirmed by the owner.
 
 Agent decisions recorded here, reversible: USB fixed-media NTFS/ReFS volumes become scan roots (section 2); the MCP
 server holds the state lock only while busy, and the desktop retries before refusing (4.1); space tools need `size`,
