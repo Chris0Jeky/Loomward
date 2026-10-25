@@ -270,7 +270,7 @@ fn prepare_with_limit(
     };
     drop(dest);
     let ctx = loomward_operations::Context {
-        elevated: enumerate::running_elevated(),
+        elevated: enumerate::skip_elevated_test(),
         grants_active: request.grants_active,
         // H1 measured PASS on NTFS (evidence/v3/copy-primitives.md).
         named_streams: true,
@@ -2118,6 +2118,10 @@ fn clean(store: &Mutex<Store>, op: u64, plan: &Plan, control: &Control) -> Resul
         attention(&log)?;
         return status(store, op);
     };
+    if !within(&dest, plan.destination_root, plan.destination_root_guid).unwrap_or(false) {
+        attention(&log)?;
+        return status(store, op);
+    }
     let Ok(staging) = Staging::attach(
         &dest,
         &token,
@@ -2457,6 +2461,10 @@ fn confirm(
     let confirmed = (|| -> Result<Vec<VerifiedFile>, Unconfirmed> {
         let dest = Destination::open(&plan.destination, &plan.destination_key)
             .map_err(|e| unverifiable(&e))?;
+        check(
+            within(&dest, plan.destination_root, plan.destination_root_guid)
+                .map_err(|e| unverifiable(&e))?,
+        )?;
         let published = Staging::attach_published(
             &dest,
             final_name,

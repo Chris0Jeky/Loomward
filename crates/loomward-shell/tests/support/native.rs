@@ -51,7 +51,7 @@ fn removable_and_optical_targets_do_not_touch_media() {
 fn junction_ancestor_is_refused_with_reason() {
     let (_dir, parent, outside) = fixture();
     let path = parent.join("child").join("synthetic.lnk");
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         assert!(read(&path).is_err());
         assert_eq!(metadata(path.to_str().unwrap()), MetadataState::Unknown);
         return;
@@ -77,7 +77,7 @@ fn walk_stays_relative_after_junction_swap() {
     for contents in [false, true] {
         let (_dir, parent, outside) = fixture();
         let path = parent.join("child").join("synthetic.lnk");
-        if loomward_windows::enumerate::running_elevated() {
+        if loomward_windows::enumerate::skip_elevated_test() {
             assert!(read(&path).is_err());
             assert_eq!(metadata(path.to_str().unwrap()), MetadataState::Unknown);
             return;
@@ -109,7 +109,7 @@ fn reader_uses_final_pinned_handle_after_leaf_swap() {
     // The handle-swap proof lives beside the private capped reader in loomward-windows.
     let (_dir, parent, _outside) = fixture();
     let path = parent.join("child").join("synthetic.lnk");
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         assert!(read(&path).is_err());
         assert_eq!(metadata(path.to_str().unwrap()), MetadataState::Unknown);
     } else {

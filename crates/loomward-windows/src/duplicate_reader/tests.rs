@@ -581,7 +581,7 @@ mod native {
 
     fn fixture() -> Option<tempfile::TempDir> {
         let temp = tempfile::tempdir_in(fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap();
-        if crate::enumerate::running_elevated() {
+        if crate::enumerate::skip_elevated_test() {
             assert_eq!(
                 inspect(
                     temp.path(),

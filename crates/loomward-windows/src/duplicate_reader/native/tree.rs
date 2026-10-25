@@ -785,7 +785,7 @@ mod tests {
 
     #[test]
     fn native_short_name_fallback_respects_the_requested_entry_budget() {
-        if crate::enumerate::running_elevated() {
+        if crate::enumerate::skip_elevated_test() {
             return;
         }
         let temp = tempfile::tempdir().unwrap();
@@ -849,7 +849,7 @@ mod tests {
 
     #[test]
     fn native_listing_replacement_cannot_supply_the_open_entries_short_name() {
-        if crate::enumerate::running_elevated() {
+        if crate::enumerate::skip_elevated_test() {
             return;
         }
         let temp = tempfile::tempdir().unwrap();
@@ -884,7 +884,7 @@ mod tests {
 
     #[test]
     fn native_83_file_and_directory_have_no_short_name() {
-        if crate::enumerate::running_elevated() {
+        if crate::enumerate::skip_elevated_test() {
             return;
         }
         let temp = tempfile::tempdir().unwrap();
@@ -904,7 +904,7 @@ mod tests {
 
     #[test]
     fn native_listing_short_names_match_real_alternate_names_without_opens() {
-        if crate::enumerate::running_elevated() {
+        if crate::enumerate::skip_elevated_test() {
             return;
         }
         let temp = tempfile::tempdir().unwrap();
@@ -1011,7 +1011,7 @@ mod tests {
     }
     #[test]
     fn native_lab_trees_find_planted_shape_size_content_and_metadata() {
-        if crate::enumerate::running_elevated() {
+        if crate::enumerate::skip_elevated_test() {
             return;
         }
         let a = tempfile::tempdir().unwrap();
@@ -1073,7 +1073,7 @@ mod tests {
 
     #[test]
     fn native_control_and_named_stream_content_are_read_only() {
-        if crate::enumerate::running_elevated() {
+        if crate::enumerate::skip_elevated_test() {
             return;
         }
         let temp = tempfile::tempdir().unwrap();
@@ -1148,7 +1148,7 @@ mod tests {
 
     #[test]
     fn native_budget_stops_and_writer_refusal_stay_unknown() {
-        if crate::enumerate::running_elevated() {
+        if crate::enumerate::skip_elevated_test() {
             return;
         }
         let temp = tempfile::tempdir().unwrap();
@@ -1205,7 +1205,7 @@ mod tests {
     /// Find lists no file ID and Both a 64-bit one; neither may read as `changed_during_read`.
     #[test]
     fn listing_classes_without_a_128_bit_id_still_read_every_file() {
-        if crate::enumerate::running_elevated() {
+        if crate::enumerate::skip_elevated_test() {
             return;
         }
         let temp = tempfile::tempdir().unwrap();
@@ -1246,7 +1246,7 @@ mod tests {
     /// unknown `identity_unverified`, never `changed_during_read` and never equal.
     #[test]
     fn both_listing_on_refs_is_identity_unverified_not_changed() {
-        if crate::enumerate::running_elevated() {
+        if crate::enumerate::skip_elevated_test() {
             return;
         }
         let temp = tempfile::tempdir().unwrap();
@@ -1273,7 +1273,7 @@ mod tests {
     /// the directory `sub` cannot finish; with five the whole tree lists.
     #[test]
     fn entry_budget_counts_directories_and_files_alike() {
-        if crate::enumerate::running_elevated() {
+        if crate::enumerate::skip_elevated_test() {
             return;
         }
         let temp = tempfile::tempdir().unwrap();
@@ -1310,7 +1310,7 @@ mod tests {
     /// A ceiling is a refusal, not a silent clamp: 200,000 is honoured, one more is refused.
     #[test]
     fn entry_budget_above_the_ceiling_is_refused_not_clamped() {
-        if crate::enumerate::running_elevated() {
+        if crate::enumerate::skip_elevated_test() {
             return;
         }
         let temp = tempfile::tempdir().unwrap();

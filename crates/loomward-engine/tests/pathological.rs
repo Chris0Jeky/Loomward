@@ -58,7 +58,7 @@ fn unverified(reason: &str) {
 }
 
 fn lab(profile: Profile) -> Option<Lab> {
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         unverified(
             "native pathological scan requires a non-elevated token; no elevation attempted",
         );

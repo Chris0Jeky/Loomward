@@ -201,7 +201,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn linkcount_disposable_hardlinks_match_identity_and_refuse_replacement() {
-        if crate::enumerate::running_elevated() {
+        if crate::enumerate::skip_elevated_test() {
             assert_eq!(
                 crate::identity::observe(std::path::Path::new("synthetic"))
                     .unwrap_err()
