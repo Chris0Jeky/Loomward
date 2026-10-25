@@ -47,7 +47,7 @@ def main(argv=None,*,which=shutil.which,run=subprocess.run,isdir=os.path.isdir,e
     env=dict(os.environ,PYTHONPATH=str(ROOT/'python'));failed=False
     commands=[('Python suite',[sys.executable,'-m','unittest','discover','-s','tests'])]
     if which('cargo'):
-        commands.extend([('Rust format',['cargo','fmt','--all','--','--check']),('Rust unit tests',['cargo','test','--workspace']),('Rust lint',['cargo','clippy','--workspace','--all-targets','--','-D','warnings'])])
+        commands.extend([('Rust format',['cargo','fmt','--all','--','--check']),('Rust unit tests',['cargo','test','--workspace','--no-fail-fast']),('Rust lint',['cargo','clippy','--workspace','--all-targets','--','-D','warnings'])])
     else:
         print('UNVERIFIED Rust: cargo is missing; no native success is claimed',flush=True)
         failed=a.require_native

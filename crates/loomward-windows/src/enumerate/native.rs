@@ -1181,7 +1181,7 @@ mod containment_tests {
 
     #[test]
     fn reopen_checks_handle_guid_instead_of_cached_root_guid() {
-        if running_elevated() {
+        if skip_elevated_test() {
             eprintln!("skipped: elevated token; native identity reads refuse elevation");
             return;
         }
@@ -1200,7 +1200,7 @@ mod containment_tests {
     fn native_containment_normalizes_verbatim_and_short_root_aliases() {
         let temp = super::super::tests::canonical_tempdir();
         let source = NativeSource::default();
-        if running_elevated() {
+        if skip_elevated_test() {
             assert!(matches!(
                 source.open_root(temp.path()),
                 Err(SourceError::Refused)
@@ -1251,7 +1251,7 @@ mod containment_tests {
     fn native_containment_failed_path_query_refuses_listing() {
         let temp = super::super::tests::canonical_tempdir();
         let source = NativeSource::default();
-        if running_elevated() {
+        if skip_elevated_test() {
             assert!(matches!(
                 source.open_root(temp.path()),
                 Err(SourceError::Refused)
@@ -1281,7 +1281,7 @@ mod containment_tests {
     fn native_containment_queries_nt_paths_once_for_root_and_retries_long_paths() {
         let temp = super::super::tests::canonical_tempdir();
         let source = NativeSource::default();
-        if running_elevated() {
+        if skip_elevated_test() {
             assert!(matches!(
                 source.open_root(temp.path()),
                 Err(SourceError::Refused)
@@ -1576,7 +1576,7 @@ mod cancellation_tests {
     #[test]
     fn volume_binding_handles_guid_path_longer_than_initial_buffer() {
         use std::{fs::OpenOptions, os::windows::fs::OpenOptionsExt};
-        if running_elevated() {
+        if skip_elevated_test() {
             eprintln!("SKIP: native enumeration requires a non-elevated token");
             return;
         }
@@ -1766,7 +1766,7 @@ mod cancellation_tests {
     }
     #[test]
     fn root_walk_checks_cancellation_between_components() {
-        if running_elevated() {
+        if skip_elevated_test() {
             return;
         }
         let temp = super::super::tests::canonical_tempdir();
@@ -1874,7 +1874,7 @@ mod cancellation_tests {
     fn shortcut_reader_caps_bytes_and_metadata_handles_cannot_read() {
         use std::io::Read;
         let (temp, parent, name) = shortcut_fixture();
-        if running_elevated() {
+        if skip_elevated_test() {
             assert!(read_capped_regular_file(&parent, &name, 8).is_err());
             assert!(open_metadata_child(&parent, &name).is_err());
             return;
@@ -1901,7 +1901,7 @@ mod cancellation_tests {
     #[test]
     fn reader_uses_final_pinned_handle_after_leaf_swap() {
         let (temp, parent, name) = shortcut_fixture();
-        if running_elevated() {
+        if skip_elevated_test() {
             assert!(read_capped_regular_file(&parent, &name, 8).is_err());
             assert!(open_metadata_child(&parent, &name).is_err());
             return;
@@ -1921,7 +1921,7 @@ mod cancellation_tests {
     fn fixture() -> Option<(tempfile::TempDir, NativeSource, NativeDir)> {
         let temp = super::super::tests::canonical_tempdir();
         let source = NativeSource::with_strategy(Strategy::Find);
-        if running_elevated() {
+        if skip_elevated_test() {
             assert!(matches!(
                 source.open_root(temp.path()),
                 Err(SourceError::Refused)
@@ -1982,7 +1982,7 @@ mod cancellation_tests {
     fn unverified_filesystems_open_only_under_an_unverified_grant() {
         let temp = super::super::tests::canonical_tempdir();
         std::fs::create_dir(temp.path().join("child")).unwrap();
-        if running_elevated() {
+        if skip_elevated_test() {
             assert!(matches!(
                 NativeSource::default()
                     .with_identity_unverified()
@@ -2019,7 +2019,7 @@ mod cancellation_tests {
     #[test]
     fn unverified_listing_keeps_metadata_and_drops_every_id() {
         let temp = super::super::tests::canonical_tempdir();
-        if running_elevated() {
+        if skip_elevated_test() {
             return;
         }
         std::fs::create_dir(temp.path().join("child")).unwrap();
@@ -2059,7 +2059,7 @@ mod cancellation_tests {
     #[test]
     fn find_binds_unverified_pins_by_path_but_never_on_ntfs() {
         let temp = super::super::tests::canonical_tempdir();
-        if running_elevated() {
+        if skip_elevated_test() {
             return;
         }
         std::fs::write(temp.path().join("file"), b"synthetic").unwrap();
@@ -2095,7 +2095,7 @@ mod cancellation_tests {
     #[test]
     fn unverified_relist_refuses_when_containment_cannot_be_proven() {
         let temp = super::super::tests::canonical_tempdir();
-        if running_elevated() {
+        if skip_elevated_test() {
             eprintln!(
                 "skipped: elevated token; native enumeration refuses elevation (invariant 2)"
             );
@@ -2187,7 +2187,7 @@ mod cancellation_tests {
     fn native_opens_refuse_elevation_consistently() {
         let temp = super::super::tests::canonical_tempdir();
         std::fs::create_dir(temp.path().join("child")).unwrap();
-        let parent = if running_elevated() {
+        let parent = if skip_elevated_test() {
             None
         } else {
             Some(

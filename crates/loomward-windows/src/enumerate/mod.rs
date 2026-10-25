@@ -346,6 +346,20 @@ pub use native::{
     open_metadata_child, open_readonly_directory, running_elevated, IoCancellation, NativeDir,
     NativeSource,
 };
+
+/// Fixture-only elevation check, visible in CI with libtest's `--show-output`.
+/// A true result means native coverage was skipped, even if refusal assertions still ran.
+#[cfg(windows)]
+pub fn skip_elevated_test() -> bool {
+    if !running_elevated() {
+        return false;
+    }
+    eprintln!(
+        "SKIPPED (elevated): {}",
+        std::thread::current().name().unwrap_or("unnamed fixture")
+    );
+    true
+}
 #[cfg(all(
     windows,
     any(feature = "content-read", feature = "diagnostics-export", test)

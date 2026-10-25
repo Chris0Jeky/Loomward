@@ -934,7 +934,7 @@ fn placement_partial_allocation_uses_logical_fallback_and_rejects_whatif() {
 #[test]
 fn placement_native_link_pass_feeds_verified_relief_on_disposable_hardlinks() {
     use loomward_windows::{identity, linkcount};
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         assert_eq!(
             identity::observe(std::path::Path::new("synthetic"))
                 .unwrap_err()

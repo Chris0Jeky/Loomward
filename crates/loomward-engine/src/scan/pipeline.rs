@@ -122,6 +122,98 @@ pub(super) fn before_publish(at: &str) {
 
 #[cfg(test)]
 #[test]
+fn non_forced_progress_skips_a_busy_sampler_without_publishing() {
+    use super::tests::{identity, Tree};
+    use crate::{jobs::JobSpec, Engine, EngineConfig};
+    use loomward_protocol::{CoverageState, DatasetClass, JobKind};
+
+    let state = tempfile::tempdir().unwrap();
+    let engine = Engine::open(EngineConfig::new(
+        state.path().into(),
+        DatasetClass::Synthetic,
+    ))
+    .unwrap();
+    let (context_tx, context_rx) = mpsc::channel();
+    engine.register_job_runner(
+        JobKind::Scan,
+        Arc::new(move |ctx, _| {
+            context_tx.send(ctx).unwrap();
+            Ok(CoverageState::Complete)
+        }),
+    );
+    let job = engine
+        .job_submit(JobSpec::new(
+            JobKind::Scan,
+            Some(RootId::new("rt_sampler").unwrap()),
+        ))
+        .unwrap();
+    let context = context_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    let (tx, _rx) = mpsc::sync_channel(1);
+    let shared = Shared {
+        source: &Tree,
+        progress: Some(&context),
+        started: Instant::now(),
+        last_progress: Mutex::new(None),
+        writer_queue: Arc::new(AtomicUsize::new(0)),
+        root_identity: identity(1),
+        round: AtomicU32::new(1),
+        run: 1,
+        options: ScanOptions::default(),
+        tasks: Mutex::new(Tasks {
+            queue: VecDeque::new(),
+            active: 0,
+            done: false,
+        }),
+        ready: Condvar::new(),
+        arena: Mutex::new(Vec::new()),
+        discovered: Mutex::new(HashMap::new()),
+        catalog_dirs: Mutex::new(HashMap::new()),
+        tx,
+        bytes: Arc::new(ByteBudget::new(crate::budgets::SCAN_BYTES)),
+        cancel: Default::default(),
+        writer_failed: Default::default(),
+        attempted: Default::default(),
+        duplicate_identity: Default::default(),
+        enumeration_ns: Default::default(),
+        strategy: Mutex::new(Strategy::Portable),
+        limit_hit: Default::default(),
+        depth_limit_hit: Default::default(),
+        directory_limit_hit: Default::default(),
+        excluded: vec![],
+        max_dirs: 1,
+        held: Default::default(),
+        arena_bytes: crate::budgets::SCAN_BYTES,
+        node_bytes: 1,
+        handle_bytes: 1,
+        handles: AtomicUsize::new(0),
+        bounded: None,
+    };
+
+    let last = shared.last_progress.lock().unwrap();
+    let (returned, wait) = mpsc::channel();
+    let skipped = std::thread::scope(|threads| {
+        let sampler = threads.spawn(|| {
+            let result = shared.publish_progress(false);
+            returned.send(()).unwrap();
+            result
+        });
+        let skipped = wait.recv_timeout(Duration::from_secs(2));
+        // Unlock before joining so a blocking-lock regression fails rather than deadlocks.
+        drop(last);
+        sampler.join().unwrap().unwrap();
+        skipped
+    });
+    assert!(skipped.is_ok(), "sampler waited for the contended lock");
+    assert!(engine.job_status(&job.job_id).unwrap().progress.is_none());
+    assert!(shared.last_progress.lock().unwrap().is_none());
+
+    shared.publish_progress(false).unwrap();
+    assert!(engine.job_status(&job.job_id).unwrap().progress.is_some());
+    assert!(shared.last_progress.lock().unwrap().is_some());
+}
+
+#[cfg(test)]
+#[test]
 fn directory_limit_releases_pending_identity_before_parent_relist() {
     use super::tests::{identity, Tree};
     let ticket = ListingTicket {

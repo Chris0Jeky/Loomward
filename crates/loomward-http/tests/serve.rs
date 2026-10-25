@@ -1526,7 +1526,7 @@ fn tree(
 #[cfg(windows)]
 #[test]
 fn followup_stored_grants_refuse_static_without_recording_new_grants() {
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         // Native identity refuses elevation (invariant 2, #217), so no lab root can be registered.
         let tmp = tempfile::tempdir_in(loomward_service::paths::test_roots_base()).unwrap();
         let err = loomward_service::lab::register(
@@ -1590,7 +1590,7 @@ fn followup_stored_grants_refuse_static_without_recording_new_grants() {
 #[cfg(windows)]
 #[test]
 fn followup_proposed_static_overlap_leaves_no_active_grant() {
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         // Native identity refuses elevation (invariant 2, #217), so no lab root can be registered.
         let tmp = tempfile::tempdir_in(loomward_service::paths::test_roots_base()).unwrap();
         let err = loomward_service::lab::register(
@@ -1636,7 +1636,7 @@ fn followup_proposed_static_overlap_leaves_no_active_grant() {
 #[cfg(windows)]
 #[test]
 fn refused_start_creates_no_state_directory() {
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         // Native identity refuses elevation (invariant 2, #217) before the overlap check runs.
         return;
     }
@@ -1685,7 +1685,7 @@ fn followup_stored_picker_grant_refuses_static() {
     .unwrap();
     let response = service.call(RequestEnvelope::from_slice(br#"{"protocol":"loomward/3","request_id":"r_pick","command":"roots.request_grant","payload":{"purpose":"metadata_scan"}}"#).unwrap(), &CallContext::tauri(Arc::new(Picker(root))));
     let granted = serde_json::to_value(response).unwrap();
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         // Native identity refuses elevation (invariant 2, #217): the picker grant is refused.
         assert_eq!(granted["result"]["outcome"], "refused");
         return;
@@ -2235,7 +2235,7 @@ fn api_errors_carry_json_content_type_and_connection_close() {
 #[cfg(windows)]
 #[test]
 fn revoked_duplicates_are_redacted_from_last_event_id_replay_and_cancel_receipts() {
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         return;
     }
     let tmp = tempfile::tempdir_in(loomward_service::paths::test_roots_base()).unwrap();

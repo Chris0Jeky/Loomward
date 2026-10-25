@@ -154,7 +154,7 @@ fn duplicate_grant_returns_evidence(class: DatasetClass) {
         enumerate::{DirSource, NativeSource},
         identity,
     };
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         assert_eq!(
             NativeSource::default()
                 .open_root(std::path::Path::new("synthetic"))
@@ -2522,7 +2522,7 @@ fn explain(path: &std::path::Path) -> String {
 /// (AGENTS.md invariant 2). There, pin the refusal and skip; elsewhere run the native test.
 #[cfg(windows)]
 pub(super) fn skip_elevated() -> bool {
-    if !loomward_windows::enumerate::running_elevated() {
+    if !loomward_windows::enumerate::skip_elevated_test() {
         return false;
     }
     let temp = canonical_tempdir();
@@ -3091,7 +3091,7 @@ fn stale_child_prepare_relists_the_parent() {
 #[test]
 fn followup_grant_gate_cancels_and_fences_every_wire_alias() {
     use loomward_windows::enumerate::{DirSource, NativeSource};
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         assert_eq!(
             NativeSource::default()
                 .open_root(std::path::Path::new("synthetic"))

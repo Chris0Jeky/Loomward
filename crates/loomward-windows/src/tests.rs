@@ -83,7 +83,7 @@ mod windows {
     use std::fs;
 
     fn skip_elevated() -> bool {
-        if !crate::enumerate::running_elevated() {
+        if !crate::enumerate::skip_elevated_test() {
             return false;
         }
         assert_eq!(

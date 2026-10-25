@@ -608,7 +608,7 @@ mod tests {
     fn elevated() -> bool {
         #[cfg(windows)]
         {
-            loomward_windows::enumerate::running_elevated()
+            loomward_windows::enumerate::skip_elevated_test()
         }
         #[cfg(not(windows))]
         {
