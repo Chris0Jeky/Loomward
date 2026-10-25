@@ -389,7 +389,7 @@ mod tests {
 
     #[test]
     fn duplicate_job_cancel_and_root_revocation_reach_the_worker_and_terminal_state() {
-        if loomward_windows::enumerate::running_elevated() {
+        if loomward_windows::enumerate::skip_elevated_test() {
             assert!(
                 matches!(loomward_windows::identity::observe(std::path::Path::new("synthetic")),
                 Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied)

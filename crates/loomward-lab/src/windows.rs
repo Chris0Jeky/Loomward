@@ -1343,7 +1343,7 @@ mod tests {
     /// Hosted runners are elevated and the validated log handle refuses an elevated token
     /// (invariant 2): prove the refusal, then skip the rest of the test with the reason.
     fn skip_elevated(scope: &LogScope) -> bool {
-        if !loomward_windows::enumerate::running_elevated() {
+        if !loomward_windows::enumerate::skip_elevated_test() {
             return false;
         }
         assert!(validated_root_log(&scope.root(), &scope.0.join("elevated.log")).is_err());

@@ -49,10 +49,16 @@ jobs:
         run: cargo +stable test --locked -p loomward-service copy::pending_fence_tests
       - name: Scan publication cancellation receipts
         run: cargo +stable test --locked -p loomward-engine publication_tests
-      - run: cargo +stable test --workspace
+      - name: Workspace tests (Linux)
+        if: runner.os != 'Windows'
+        run: cargo +stable test --workspace
+      # libtest captures successful early returns unless --show-output is requested.
+      - name: Workspace tests and native coverage (Windows)
+        if: runner.os == 'Windows'
+        run: python scripts/ci_native_tests.py cargo +stable test --workspace -- --show-output
       - name: Windows fixture lab tests with all features
         if: runner.os == 'Windows'
-        run: cargo +stable test --locked -p loomward-windows --all-features
+        run: python scripts/ci_native_tests.py cargo +stable test --locked -p loomward-windows --all-features -- --show-output
       - name: Windows fixture lab Clippy with all features
         if: runner.os == 'Windows'
         run: cargo +stable clippy --locked -p loomward-windows --all-targets --all-features -- -D warnings

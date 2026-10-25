@@ -464,7 +464,7 @@ mod tests {
         let base = std::fs::canonicalize(env!("CARGO_MANIFEST_DIR")).unwrap();
         let temp = tempfile::tempdir_in(base).unwrap();
         let source = enumerate::NativeSource::default();
-        if enumerate::running_elevated() {
+        if enumerate::skip_elevated_test() {
             assert!(matches!(
                 source.open_root(temp.path()),
                 Err(SourceError::Refused)
@@ -596,7 +596,7 @@ mod tests {
 
     #[test]
     fn named_pipe_handle_is_a_visible_special_file_refusal() {
-        if crate::enumerate::running_elevated() {
+        if crate::enumerate::skip_elevated_test() {
             assert_eq!(
                 crate::win::non_elevated().unwrap_err().kind(),
                 io::ErrorKind::PermissionDenied

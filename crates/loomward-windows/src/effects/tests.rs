@@ -4,7 +4,7 @@ use std::{fs, io::Write};
 /// Hosted runners are elevated, and every primitive refuses an elevated token (invariant 2): prove the
 /// refusal, then skip the rest of the test with the reason.
 fn skip_elevated() -> bool {
-    if !crate::enumerate::running_elevated() {
+    if !crate::enumerate::skip_elevated_test() {
         return false;
     }
     let temp = tempfile::tempdir().unwrap();

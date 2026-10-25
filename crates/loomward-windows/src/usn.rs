@@ -341,7 +341,7 @@ mod tests {
     #[test]
     fn parent_of_walks_current_ancestry_to_the_self_parented_volume_root() {
         use std::os::windows::fs::OpenOptionsExt;
-        if crate::enumerate::running_elevated() {
+        if crate::enumerate::skip_elevated_test() {
             return;
         }
         let base = std::env::current_dir()

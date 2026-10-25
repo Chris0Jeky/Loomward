@@ -941,7 +941,7 @@ mod native {
             tempfile::tempdir_in(std::fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap()
         }
         fn elevated_refusal(path: &Path) -> bool {
-            if !crate::enumerate::running_elevated() {
+            if !crate::enumerate::skip_elevated_test() {
                 return false;
             }
             assert!(Watcher::start(path, None, |_| ()).is_err());
@@ -1036,7 +1036,7 @@ mod native {
         fn pending_read_early_exit_drains_before_storage_is_reused() {
             let tree =
                 tempfile::tempdir_in(std::fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap();
-            if crate::enumerate::running_elevated() {
+            if crate::enumerate::skip_elevated_test() {
                 assert!(open_watch_root(tree.path()).is_err());
                 return;
             }
@@ -1129,7 +1129,7 @@ mod access_only_tests {
 
     #[test]
     fn modified_hints_not_changed_since_the_scan_began_are_access_updates() {
-        if crate::enumerate::running_elevated() {
+        if crate::enumerate::skip_elevated_test() {
             return;
         }
         let tree = fixture();
@@ -1181,7 +1181,7 @@ mod access_only_tests {
 
     #[test]
     fn listing_a_directory_raises_only_hints_the_filter_drops() {
-        if crate::enumerate::running_elevated() {
+        if crate::enumerate::skip_elevated_test() {
             return;
         }
         let tree = fixture();

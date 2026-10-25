@@ -81,9 +81,9 @@ CASES.extend([
 support = (SRC / "../tests/support/native.rs").read_text(encoding="utf-8")
 for test in ["junction_ancestor_is_refused_with_reason", "walk_stays_relative_after_junction_swap", "reader_uses_final_pinned_handle_after_leaf_swap"]:
     start = support.index(f"fn {test}() {{")
-    end = support.index("if loomward_windows::enumerate::running_elevated()", start)
+    end = support.index("if loomward_windows::enumerate::skip_elevated_test()", start)
     prefix = support[start:end]
-    CASES.append((f"shortcuts::native::tests::{test}", "../tests/support/native.rs", prefix + "if loomward_windows::enumerate::running_elevated()", prefix + "if true"))
+    CASES.append((f"shortcuts::native::tests::{test}", "../tests/support/native.rs", prefix + "if loomward_windows::enumerate::skip_elevated_test()", prefix + "if true"))
 
 for name, filename, old, new in CASES:
     path = SRC / filename

@@ -44,7 +44,7 @@ fn full() -> bool {
 
 /// Hosted runners are elevated and the copy primitives refuse elevation: prove the refusal, then skip.
 fn lab() -> Option<Lab> {
-    if enumerate::running_elevated() {
+    if enumerate::skip_elevated_test() {
         let temp = tempfile::tempdir().unwrap();
         assert!(
             identity::observe(temp.path()).is_err(),
