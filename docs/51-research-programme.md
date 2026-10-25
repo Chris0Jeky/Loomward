@@ -20,8 +20,10 @@ tiny embeddings, then a small model, then hosted) with a model tournament; and (
 working sets** for the RAW and Lightroom direction. Two report recommendations need care against owner decisions:
 its claim that Hyper-V alone is insufficient for copy graduation (the owner chose Hyper-V for G5; section 4.1 keeps
 that and stops receipts claiming more than it proves), and its retirement-area step before the Recycle Bin (the owner
-chose the Recycle Bin; section 4.4 shows the two compose). No recommendation requires breaking an invariant; two
-would if taken literally (raw MFT enumeration and an elevated service, which the report itself rejects).
+chose the Recycle Bin; section 4.4 shows the two compose). No recommendation requires breaking an invariant, but one conflicts with an owner decision as written: the report's
+hosted disclosure ladder (path tokens, histograms, excerpts) exceeds q-5's names-only scope, and a preview cannot widen
+consent (section 3). Its "no privileged indexing" stance is stricter than q-36, which keeps a separately gated
+elevated helper (LW-115) on the roadmap; ordinary operation stays non-elevated either way.
 
 ## 2. Reconciliation
 
@@ -59,7 +61,7 @@ checked against `main` at 40bb8d1 on 2026-10-25 (read, not run).
 | Robocopy is transport, not verified publication; `/B` and `/COPY:DATSOU` are traps | **DONE** (agreed) | docs/48 section 6 flag allowlist (`/COPY:DAT`, no `/B`, no `/MIR`, `/PURGE`, `/MOV`); robocopy is never wired into Loomward |
 | FastCopy and TeraCopy as comparators | **PLANNED** | LW-056 (fair benchmarks against specialist tools) |
 | SHA-256 for receipts; BLAKE3 only if measured; XXH3 for candidate bucketing | **DONE / NEW (measure)** | SHA-256 per stream today; LW-144 measures whether hashing ever limits an HDD |
-| Canonical Merkle tree manifest with versioned collation | **Partial** | canonical manifest digest exists (`operations/src/manifest.rs`, ADR-V3-04 byte strings); a per-directory tree root is **NEW**, inside LW-136 |
+| Canonical Merkle tree manifest with versioned collation | **Partial** | the canonical manifest digest exists (`operations/src/manifest.rs`, ADR-V3-04) but binds consent, not retained content; a portable content manifest is **NEW**, inside LW-136. A cached tree root proves what was hashed then, never that sectors are still good: it never earns scrub credit, and the portable part excludes source file IDs so a copy on another volume can match |
 | Scrubbing as an ordinary product concept (`last_content_verified_at`, overdue not failed) | **NEW** | LW-136 |
 | PAR2 parity for a cold-archive lane | **Deferred** | section 6; a second copy (LW-136, Q2) comes first |
 | ADS preserved and hashed; `Zone.Identifier` survives | **DONE** (generic) | docs/47 section 6: up to 64 named streams, each SHA-256; no `Zone.Identifier`-specific fixture yet (fold into LW-132's fixtures) |
@@ -105,7 +107,7 @@ checked against `main` at 40bb8d1 on 2026-10-25 (read, not run).
 | Quantisation sweep Q4 to Q8 | **NEW** | LW-140 |
 | llama.cpp / LM Studio as endpoint; ONNX/Windows ML for non-generative students; Foundry Local as an adapter | **PLANNED / NEW** | the Ask provider interface speaks the OpenAI-compatible API (LW-117, docs/46); ONNX for embeddings is LW-116's runtime choice; Foundry Local adapter deferred |
 | Benchmark on group and time splits; OOD set; 1,000 owner-reviewed examples before claiming calibration | **Partial DONE, owner-bound** | splits exist; the 1,000 labels are owner time (expensive operation X4) |
-| Hosted fallback: literal payload preview, disclosure levels, cache by payload digest | **PLANNED, extended** | docs/49 I4, q-5 scope (names only); Ask records body SHA-256 before send (`ask/src/turn.rs`) but shows no preview; LW-141 |
+| Hosted fallback: literal payload preview, disclosure levels, cache by payload digest | **Preview and cache PLANNED; disclosure ladder CONFLICT (q-5)** | q-5 allows file and folder names only, no full paths, contents or extra metadata, after the broker's canaries; the report's aggregates, histograms and excerpts are outside it and a preview does not widen consent. Ask records body SHA-256 before send (`ask/src/turn.rs`) but shows no preview; LW-141 builds the preview within q-5 |
 | Agent may propose, explain and simulate, never approve or mint capability | **DONE** | invariants 1, 3, 7; `plan_archive` returns `owner_approval_required` (docs/48 4.4) |
 
 ### 2.5 External media and Lightroom
@@ -165,7 +167,15 @@ checked against `main` at 40bb8d1 on 2026-10-25 (read, not run).
    until LW-140 reads each model card and records the digest of what it downloads.
 6. **It does not know the Recycle Bin trap.** Recycling originals on `C:` frees nothing on `C:` until the bin is
    emptied, which matters for the owner's chosen effect on a full disk (docs/52 section 4).
-7. **`fileciteturn…` and `citeturn…` markers do not resolve.** Primary sources must be re-read before any claim
+7. **Its hosted ladder exceeds q-5.** Aggregates, path tokens and excerpts are more than names; a preview confirms a
+   permitted disclosure, it does not permit one (section 2.4).
+8. **Some of its "read-only" checks mutate.** `npm cache verify` garbage-collects the cache; Docker prune and WSL
+   compaction obviously change state. Validation uses only inspection commands (docs/52 section 7).
+9. **Its sample explanation overclaims** ("abandoned Rust experiment", "88% confidence"): facts first, inferences
+   labelled, uncalibrated scores never shown as percentages (section 4.8).
+10. **Its benchmark matrices are TiB-scale.** The hash matrix (32 cells, five repeats, 32-128 GiB) reads 5-20 TiB per
+   storage class; the transfer matrix moves about 28.8 TB. Both start as small screening runs (X8).
+11. **`fileciteturn…` and `citeturn…` markers do not resolve.** Primary sources must be re-read before any claim
    reaches a doc as fact.
 
 ## 4. Extensions to the plan
@@ -245,13 +255,18 @@ docs/49's four stages stand. This programme fills them in:
 
 - **Stage 1 facts and labelling functions** (LW-138): the evidence packet; rules vote or abstain (for example
   `Cargo.toml` + dominant `target/` votes `generated_build`; `.lrcat` + dated `Backups/` votes `catalogue_backup`).
-- **Stage 2 students** (LW-139, LW-024): hashed path n-gram linear model and a structural tree model over packet
-  numbers, combined with the labelling-function votes by a weak-supervision label model; tiny embedding prototypes
-  (BGE-small/E5-small class, about 33M parameters, 384 dimensions) from LW-024. Every output can abstain.
-- **Stage 3 small model** (LW-140): only on abstention or for the one-line summary; Laya for typed decisions,
-  a 0.8-4B generative model for the sentence.
-- **Stage 4 hosted** (LW-141): q-5's preconditions, a literal payload preview, disclosure levels never escalated
-  silently, a cache keyed by the digest of provider, model, prompt version, schema and disclosed payload.
+- **Stage 2 students** (LW-139, LW-024), as an **ablation, not a collection**: keep today's naive Bayes as the
+  baseline, add one hashed path n-gram linear model, then one tiny embedding candidate (BGE-small/E5-small class,
+  about 33M parameters, 384 dimensions, LW-024). A structural tree model and a weak-supervision label model over the
+  labelling-function votes come only if the ablation leaves a named error class. Every output can abstain.
+- **Stage 3 small model** (LW-140): only on abstention or for the one-line summary. Screen one small generative
+  summariser first; Laya and the wider matrix only when the screen shows a real trade-off.
+- **Explanations are facts first.** "No source change seen for 238 days; clean working tree" is a fact; "abandoned
+  Rust experiment" is an inference and is labelled as one. An uncalibrated score is never shown as a percentage
+  (the student emits `calibrated: false` today). Owner-authored lifecycle labels stay separate from inferred ones.
+- **Stage 4 hosted** (LW-141): q-5's preconditions and scope (names only), a literal payload preview of exactly
+  those names, a cache keyed by the digest of provider, model, prompt version, schema and disclosed payload. Any wider
+  disclosure level (aggregates, relative names, excerpts) needs a new owner decision first; none is posed now.
 
 Benchmark rules (LW-140): group and time splits as `evaluation.rs` does; an OOD set of new projects and shoots;
 metrics as the report lists; the promotion bar in section 2.4; no vendor benchmark substitutes for the owner corpus.
@@ -317,34 +332,41 @@ SQLite, automatic deletion of anything, an elevated product service.
 | LW-143 | #882 | Photo working sets and a prioritised transfer queue | P5 | LW-124, LW-142 |
 | LW-144 | #883 | Measure hashing and I/O costs per storage class | P5 | LW-064 |
 | LW-145 | #884 | Hostile names and metadata cannot create effects | P0-P5 | LW-118, LW-066 |
+| LW-146 | #889 | Explain interrupted staging before its removal | P1 | LW-040, LW-041, LW-138 |
 
-Bodies: `backlog/issues/LW-131.md` to `LW-145.md`.
+Bodies: `backlog/issues/LW-131.md` to `LW-146.md`. LW-146 came from the peer analysis (section 13): the owner's q-47 Q1
+answer needs its own item before `LOOMWARD_COPY_STAGING_REMOVAL` can turn on.
 
 ## 8. Cheap advances shipped with this programme
 
 | PR | Delivers | Effect |
 |---|---|---|
-| this one | docs/51, docs/52, LW-131 to LW-145 | none |
+| this one | docs/51, docs/52, LW-131 to LW-146 | none |
 | evidence-packet schema | `schemas/evidence-packet-v1.json`, synthetic packets, validator test | none |
 | reclaim fixtures | synthetic `fixtures/reclaim/` trees and their expected candidates (docs/52 section 7) | none |
 | Hyper-V campaign skeleton | host and guest scripts with a dry-run self-test; nothing creates a VM | none |
 
 ## 9. Owner questions (batched; at most five)
 
-1. **Q1 Hyper-V lab setup** (unblocks X1). The campaign needs a Windows guest image (about 20 GB download or an ISO
-   you already have) and Hyper-V cmdlets, which need membership of "Hyper-V Administrators" or an elevated shell once.
-   Recommended: you add your account to that group; agents build the VM on `E:` and run the campaign.
-2. **Q2 A second copy** (decides 4.3). Once originals leave the internal disks, `H:` holds the only copy.
-   Options: (a) a second disk rotated offline (recommended); (b) cold cloud storage with a per-upload preview;
-   (c) accept a single copy for now, with a "sole copy" warning in every plan.
-3. **Q3 Physical power-loss hardware** (decides LW-134). (a) Not now: copies to USB disks say "not power-loss tested on
-   this disk" (recommended for now); (b) buy a disposable disk in the same WD enclosure model and a programmable USB
-   power switch.
-4. **Q4 Model tournament** (unblocks X3). Approve about 20-25 GB of model downloads to `E:` through LM Studio, and say
-   which 27B model, revision and quantisation you run today and which GPU and VRAM the desktop has. Recommended:
-   approve.
-5. **Q5 Labelling time** (unblocks X4). Calibration claims need about 1,000 of your labels over a few sessions,
-   using a draft taxonomy agents prepare from the categories you care about. Recommended: yes, 20-30 minutes a session.
+Facts an agent can measure are not asked: the desktop's GPU is an AMD Radeon RX 9070 XT with an Intel i5-13600K
+(measured 2026-10-25, `Win32_VideoController`, `Win32_Processor`); the installed 27B model and quantisation are read
+from LM Studio's local endpoint when LM Studio runs (it did not on 2026-10-25), and its models folder exists. The
+first category list is drafted by agents and corrected through normal use. Posed in the agent-hq inbox, lane
+`loomward-research`:
+
+1. **Q1 Hyper-V lab setup** (unblocks X1). The campaign needs a Windows guest image (an ISO you already have, or
+   Microsoft's evaluation image, about 20 GB) and Hyper-V cmdlets, which need membership of "Hyper-V Administrators"
+   or an elevated shell once. Recommended: you add your account to that group; agents build the VM on `E:`.
+2. **Q2 A second copy** (decides 4.3, blocks sole-copy retirement only). Once originals leave the internal disks,
+   `H:` holds the only copy. Options: (a) a second disk rotated offline, and originals stay until it exists
+   (recommended); (b) cold cloud storage with a per-upload preview; (c) accept a single copy, with a "sole copy"
+   warning in every plan.
+3. **Q3 Physical power-loss hardware** (decides LW-134). (a) Not now: copies to USB disks say "not power-loss tested
+   on this disk" (recommended); (b) buy a disposable disk in the same WD enclosure model and a programmable USB power
+   switch.
+4. **Q4 Model downloads** (unblocks X3). Approve agents fetching, through LM Studio onto `E:`, the one or two small
+   models the first screen needs (a few GB), and later others only when the screen justifies them, each recorded with
+   source, licence and digest. Recommended: approve the screen.
 
 ## 10. Expensive operations waiting for the owner's go-ahead
 
@@ -354,12 +376,12 @@ Ordered by value per cost. None starts without a go-ahead.
 |---|---|---|---|---|---|---|
 | X1 | Hyper-V crash campaign (G5) | VM VHDX about 40 GB plus image about 20 GB, on `E:` | 4-8 GB while running | VM build 1-2 h; 20 hard-offs about 1 h; 2,000 about 3-4 days unattended | Q1 | after the campaign skeleton PR and C6; ready in P1 |
 | X2 | Disk survey scans of `C:`, `E:`, `G:`, `H:` (owner asked to survey first) | state database 1-4 GB on `E:`, never `C:` | 1-3 GB | `C:` 10-30 min, `H:` over USB longer | native grants for each root (q-7); owned by the external-disk lane after E0 | after E0 lands |
-| X3 | Model downloads for the tournament | 20-25 GB on `E:` | up to 6-8 GB per model loaded | downloads 1-2 h; runs a few hours per model | Q4 | after LW-140's runner |
-| X4 | Owner labelling corpus (about 1,000 labels) | negligible | negligible | 5-8 h of owner time over weeks | Q5 | after LW-138 |
+| X3 | Model downloads: first a one- or two-model screen, the wider matrix only if justified | screen a few GB; full matrix 20-25 GB, on `E:` | the RX 9070 XT's VRAM or system RAM; one model loaded at a time | screen under 1 h to fetch; hours to run | Q4 | after LW-140's runner |
+| X4 | Owner labelling corpus (about 1,000 labels for any calibration claim) | negligible | negligible | 5-8 h of owner time over weeks, gathered through normal corrections | none to pose; the owner's time | after LW-138 |
 | X5 | Reclaim tool-agreement run (read-only tool commands) | none | small | under 1 h | none beyond the grants of X2 | after LW-131 R1b-R1c |
 | X6 | Rolling scrub of `H:` archive data | none | small | 12-19 h for a full pass; sliced weekly | none (read-only), but the disk spins | after LW-136 |
 | X7 | RAW corpus and preview cache benchmark | cache 10-50 GB on `E:` or `G:` | 1-2 GB | hours | point at your own RAW folders (real data stays out of Git) | after LW-142 |
-| X8 | Transfer and hash sweep (LW-144) | 32-128 GiB generated corpus per storage class (not `C:`); up to 300 GB on `H:` for the transfer matrix | small | a day of disk time | none beyond lab folders | after LW-144 |
+| X8 | Transfer and hash sweep (LW-144) | screening first (one corpus, a few cells); the report's full hash matrix reads 5-20 TiB per storage class and its transfer matrix moves about 28.8 TB, so neither runs whole | small | screen: hours; full matrices: days, not planned | lab folders only, never owner data | after LW-144 |
 | X9 | Physical power-cut and unplug campaign | a disposable disk | small | days | Q3 (b): buy hardware | after LW-133, LW-137 |
 | X10 | 24-72 h soak (docs/45 item 7) | lab | moderate | 3 days | none | with P1 |
 
@@ -388,3 +410,26 @@ analysis and takes decision-complete implementation slices; Haiku workers do ext
 Files owned by the external-disk lane this wave (`crates/loomward-mcp`, parts of `loomward-service`, `loomward-cli`,
 `loomward-windows/src/volumes.rs`, the Agent access view, `native/` bundling, docs/48) are changed only through
 issues. Status files (`docs/16`, `handoff/CHECKPOINT.json`) are left to the next checkpoint PR.
+
+## 13. Two independent analyses compared
+
+GPT-6.1 Sol high read the report and the repository separately, without seeing this draft. Where it differed, this
+document changed:
+
+| Point | Sol's reading | Outcome here |
+|---|---|---|
+| Hosted disclosure | the report's ladder contradicts q-5 (names only) | adopted: section 2.4 marks it a conflict; 4.8 keeps stage 4 inside q-5 |
+| Read-only validation | `npm cache verify` mutates the cache | adopted: docs/52 section 7 drops it |
+| Model work | an ablation, not a collection: NB baseline, one linear, one embedding, one summariser | adopted in 4.8; LW-139 and LW-140 scope follow it |
+| Explanations | "abandoned Rust experiment" and "88% confidence" overclaim | adopted in 4.8 |
+| Merkle roots | a cached root never earns scrub credit; keep source file IDs out of the portable manifest | adopted in 2.2 |
+| Elevated helper | q-36 keeps a gated elevated helper; the report's blanket "no privilege" is stricter than owner direction | adopted in section 1 |
+| Benchmark cost | hash matrix 5-20 TiB per class; transfer matrix about 28.8 TB | adopted: X8 screens first |
+| Staging explain-first | q-47 Q1's answer needs its own item | adopted: LW-146 |
+| Owner questions | only three truly block; GPU, model identity and taxonomy are investigation | adopted: GPU measured, four questions instead of five |
+| Integrity campaign | do not invent a 2,000-boot dependency | agreed: G5 stays at the docs/47 floor; 2,000 is a target for a higher label (4.1) |
+| Separate items for portable manifest and scrub (Sol N4, N5) | | kept as one item (LW-136); split if it grows past one PR |
+
+Both analyses agree on the order: a truthful reclaim review and understandable categories first, the declared copy
+gate (G5, G9) alongside, media browsing next, working sets and explained retirement last, with no CfAPI/ProjFS,
+general cleanup execution or automatic deletion in the window.

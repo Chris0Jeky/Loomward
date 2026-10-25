@@ -1765,5 +1765,18 @@
       "LW-066"
     ],
     "body_file": "backlog/issues/LW-145.md"
+  },
+  {
+    "id": "LW-146",
+    "title": "[LW-146] Explain interrupted staging before its removal",
+    "milestone": "M3",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-040",
+      "LW-041",
+      "LW-138"
+    ],
+    "body_file": "backlog/issues/LW-146.md"
   }
 ]

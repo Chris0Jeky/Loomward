@@ -118,8 +118,8 @@ owner picks; nothing is probed for existence in advance.
   inside `target`). Acceptance: each decoy is not a candidate; cross-boundary links give null reclaimable bytes;
   partial subtrees give null sizes, never zero; output is byte-stable for the same catalogue.
 - **Tool agreement** (lab, owner machine, read-only commands only, run by an agent, not by Loomward):
-  `cargo clean --dry-run`, `npm cache verify`, `dotnet nuget locals all --list`, `pip cache info`, `uv cache dir`,
-  `docker system df -v`. Acceptance: Loomward's allocated bytes agree with each tool's own report within 2%, or the
+  `cargo clean --dry-run`, `dotnet nuget locals all --list`, `pip cache info`, `uv cache dir`, `docker system df -v`.
+  Not `npm cache verify`: it garbage-collects the cache, so npm is compared on Loomward's own sizes only. Acceptance: Loomward's allocated bytes agree with each tool's own report within 2%, or the
   planner reports unknown. Results recorded with anonymised counts only.
 - **No effect.** A test asserts the reclaim read requests no write, delete or rename access, and that `state.db` is
   unchanged apart from the read's own bookkeeping.

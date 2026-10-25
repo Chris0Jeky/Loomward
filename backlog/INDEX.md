@@ -1,6 +1,6 @@
 # Implementation backlog
 
-145 local, dependency-linked issue specifications: the original 64, 36 expansion tasks, 12 v3 tasks, 18 owner-decision tasks and 15 research-programme tasks (docs/51). These are **not remote GitHub issue numbers**. This inventory is not an implementation-completion claim; consult each issue and the implementation status for its evidence and remaining gates. The runnable reference work is recorded separately in `docs/37-expansion-verification.md`.
+146 local, dependency-linked issue specifications: the original 64, 36 expansion tasks, 12 v3 tasks, 18 owner-decision tasks and 16 research-programme tasks (docs/51). These are **not remote GitHub issue numbers**. This inventory is not an implementation-completion claim; consult each issue and the implementation status for its evidence and remaining gates. The runnable reference work is recorded separately in `docs/37-expansion-verification.md`.
 
 The first eight manifest entries preserve the original native critical path. Publishing helpers remain dry-run by default, at most eight unless explicitly expanded. `M1I` covers integration foundations, `M2I` advanced evidence/workload integration, and `MX` optional experiments; none bypass the original native safety milestones.
 
@@ -151,3 +151,4 @@ The first eight manifest entries preserve the original native critical path. Pub
 | [LW-143](issues/LW-143.md) | Photo working sets and a prioritised transfer queue | M6 | P1 | LW-124, LW-142 |
 | [LW-144](issues/LW-144.md) | Measure hashing and I/O costs per storage class | M6 | P2 | LW-064 |
 | [LW-145](issues/LW-145.md) | Hostile names and metadata cannot create effects | M2 | P1 | LW-118, LW-066 |
+| [LW-146](issues/LW-146.md) | Explain interrupted staging before its removal | M3 | P1 | LW-040, LW-041, LW-138 |
