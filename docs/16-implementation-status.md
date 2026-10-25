@@ -420,3 +420,15 @@ Counts (Windows, KRASPYON, at `4b05fd6`, `RUST_TEST_THREADS=3`):
 Reviewed the 173 initially open issues and four open PRs against current source, review comments and execution evidence. The [wave record](../evidence/v3/backlog-review-2026-10-20.md) lists 13 merged PRs, 1 remaining PR and 7 scoped closures before this documentation checkpoint; its JSON companion preserves exact heads, trees and hosted runs.
 
 The changes advance forgotten-response handling, source packaging, scan settlement/history/cancellation, watch probing, durable feedback replay, terminal metadata and diagnostics as detailed in that record. Historical counts and receipts above are retained unchanged. This wave adds no claim of complete 10M service readiness, a continuous 72-hour pass, real native foreign-rename qualification, required power-cut/restore proof, teacher confinement or manual accessibility acceptance. C8 remains closed.
+
+## LW-001 reference Windows witness — 25 October 2026
+
+`py -3 scripts/test_reference_windows.py` passes both live cases on Windows 11 build 26300,
+Python 3.14.3, non-elevated: a disposable selected-root scan, consented duplicate comparison,
+feedback committed by a separate interpreter and recovered after restart, unknown first-sample
+CPU, and unchanged fixture bytes/identity/write times. The frozen Python oracle is unchanged.
+The legacy browser UI was retired in q-40; this witnesses its retained reference API.
+Commands, named skips, regression controls and suite results are in
+[reference-windows.md](../evidence/v3/reference-windows.md). This closes the missing #4 witness;
+manual accessibility/field acceptance in #24/#101 remains separate. No new owner action was
+added to `HUMAN_TODO.md`.

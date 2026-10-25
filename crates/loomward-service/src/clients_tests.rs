@@ -108,6 +108,66 @@ pub(crate) const ALPHA: &[(&str, u64)] = &[
     ("report-2024.xlsx", 2000),
     ("notes.txt", 1000),
 ];
+
+#[test]
+fn client_reference_stamp_binds_the_grant_epoch_and_catalogue_revision() {
+    let tmp = temp_root();
+    let svc = open(tmp.path());
+    assert_eq!(
+        svc.client_view_stamp("mcp:stamp").unwrap_err().code,
+        ErrorCode::PermissionDenied
+    );
+    let alpha = root(&svc, "Alpha", 1, Some(ALPHA));
+    svc.grant_client("mcp:stamp", std::slice::from_ref(&alpha), &[], None)
+        .unwrap();
+    let first = svc.client_view_stamp("mcp:stamp").unwrap();
+    assert_eq!(first, svc.client_view_stamp("mcp:stamp").unwrap());
+    svc.grant_client("mcp:stamp", &[alpha], &[], None).unwrap();
+    let regranted = svc.client_view_stamp("mcp:stamp").unwrap();
+    assert_ne!(first, regranted);
+    root(&svc, "Beta", 2, Some(ALPHA));
+    assert_ne!(regranted, svc.client_view_stamp("mcp:stamp").unwrap());
+    svc.revoke_client("mcp:stamp").unwrap();
+    assert_eq!(
+        svc.client_view_stamp("mcp:stamp").unwrap_err().code,
+        ErrorCode::PermissionDenied
+    );
+}
+
+#[test]
+fn client_host_never_accepts_a_new_root_grant() {
+    let tmp = temp_root();
+    let state = tmp.path().join("state");
+    let error = Service::open_client(Config {
+        state_dir: state.clone(),
+        dataset: DatasetClass::Synthetic,
+        allow_personal: false,
+        allow_identity_unverified: false,
+        grant_roots: vec![tmp.path().join("synthetic-lab")],
+    })
+    .err()
+    .unwrap();
+    assert_eq!(error, "a client host cannot grant roots");
+    assert!(!state.exists());
+}
+
+#[cfg(windows)]
+#[test]
+fn client_host_never_opens_the_copy_recovery_store() {
+    let tmp = temp_root();
+    let regular = open(tmp.path());
+    assert!(regular.inner.copies.store.is_some());
+    drop(regular);
+    let client = Service::open_client(Config {
+        state_dir: tmp.path().into(),
+        dataset: DatasetClass::Synthetic,
+        allow_personal: false,
+        allow_identity_unverified: false,
+        grant_roots: vec![],
+    })
+    .unwrap();
+    assert!(client.inner.copies.store.is_none());
+}
 const BETA: &[(&str, u64)] = &[
     ("report.pdf", 9000),
     ("beta report secret.txt", 8000),

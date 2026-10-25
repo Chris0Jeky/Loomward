@@ -423,3 +423,16 @@ they reach the cockpit when that PR merges. Answer there or in chat. Still not a
   - the elevated helper's launch model;
   - Everything results outside the grants (hidden is recommended).
 - Microsoft Store: a short privacy policy page is required before a Store submission (packaging/store/README.md).
+
+### q-48 — External archive disk (H:) and the first cleanup — POSED 2026-10-25 (agent-hq inbox)
+
+The owner attached a WD Elements USB disk (`H:`) for backup and archive and asked for safe archiving, agent tooling and
+a supervised cleanup. Design: [docs/48](docs/48-external-disk-and-agent-storage.md). Copying personal files still waits
+on the copy gate (q-47 Q1 and Q2 above); these two decide the cleanup around it:
+- [ ] **loomward-first-cleanup-copier**: before Loomward's own copier passes its gate, (a) wait, (b) agents copy with
+  robocopy per approved plan and Loomward's read-only verifier (non-cached reads) must find each copy equal (recommended), or (c)
+  you copy in Explorer and the verifier compares it. Removing any original also needs a second equal comparison after
+  the disk was safely removed and plugged in again (docs/48 section 6).
+- [ ] **loomward-archive-originals**: after a verified copy, (a) you delete originals from Loomward's verified list,
+  (b) Loomward sends them to the Recycle Bin after your per-plan confirmation, behind its own gate (recommended), or
+  (c) permanent delete after confirmation.

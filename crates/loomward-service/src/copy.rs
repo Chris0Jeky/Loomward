@@ -798,13 +798,14 @@ fn fence_pending(code: ErrorCode, message: &str) -> ErrorBody {
 
 impl Copies {
     /// Open the journal for a synthetic session and run recovery (docs/47 section 5): C3's reader
-    /// decides, and only its decisions run, through the C2 primitives. Nothing resumes by itself.
-    pub(crate) fn open(state_dir: &Path, dataset: DatasetClass) -> Copies {
+    /// decides, and only its decisions run, through the C2 primitives. Client-only hosts keep
+    /// `recover` false: even synthetic recovery can write the journal or touch staging.
+    pub(crate) fn open(state_dir: &Path, dataset: DatasetClass, recover: bool) -> Copies {
         let removal = AtomicBool::new(LOOMWARD_COPY_STAGING_REMOVAL);
         let shutdown_wait_ms = AtomicU64::new(30_000);
         #[cfg(windows)]
         {
-            let store = (dataset == DatasetClass::Synthetic)
+            let store = (dataset == DatasetClass::Synthetic && recover)
                 .then(|| {
                     loomward_operations::Store::open(
                         &loomward_catalog::sqlite_dir(state_dir).join("state.db"),
@@ -840,7 +841,7 @@ impl Copies {
         }
         #[cfg(not(windows))]
         {
-            let _ = (state_dir, dataset);
+            let _ = (state_dir, dataset, recover);
             Copies {
                 pending: Mutex::default(),
                 ops: Mutex::default(),

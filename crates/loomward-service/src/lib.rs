@@ -86,6 +86,14 @@ pub struct Service {
     peer: bool,
 }
 
+/// An in-process client's reference lifetime witness. Never sent to a model or persisted.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ClientViewStamp {
+    epoch: i64,
+    catalog_rev: i64,
+    instance: String,
+}
+
 /// Shared borrows stay unchanged; shutdown can take and atomically reclaim the owning Arc.
 struct OwnedInner(Option<Arc<Inner>>);
 
@@ -180,9 +188,29 @@ impl Service {
         Self::open_with(config, idem::TTL, true)
     }
 
+    /// Opens client views without watchers, automatic scans, telemetry or backup cleanup.
+    /// Store initialization/migrations still run. The adapter must use `CallContext::client`.
+    pub fn open_client(config: Config) -> Result<Service, String> {
+        if !config.grant_roots.is_empty() {
+            return Err("a client host cannot grant roots".into());
+        }
+        Self::open_stores(config, idem::TTL, false, None, None, true)
+    }
+
+    /// Recheck before and after resolving an adapter's in-memory reference, alongside the normal
+    /// client call. A re-grant or catalogue change invalidates the adapter's previous references.
+    pub fn client_view_stamp(&self, client: &str) -> Result<ClientViewStamp, ErrorBody> {
+        let grant = self.inner.client_grant(client)?;
+        Ok(ClientViewStamp {
+            epoch: grant.epoch,
+            catalog_rev: self.inner.revisions()?.0,
+            instance: self.inner.instance.clone(),
+        })
+    }
+
     /// Refuses static overlap with stored and proposed grants before recording any new grant.
     pub fn open_with_static(config: Config, static_dir: Option<&Path>) -> Result<Service, String> {
-        Self::open_stores(config, idem::TTL, true, static_dir, None)
+        Self::open_stores(config, idem::TTL, true, static_dir, None, false)
     }
 
     /// `scan_writer: false` leaves the engine without a catalogue scan writer (tests that install
@@ -192,7 +220,7 @@ impl Service {
         ttl: Duration,
         scan_writer: bool,
     ) -> Result<Service, String> {
-        Self::open_stores(config, ttl, scan_writer, None, None)
+        Self::open_stores(config, ttl, scan_writer, None, None, false)
     }
 
     fn open_stores(
@@ -201,6 +229,7 @@ impl Service {
         scan_writer: bool,
         static_dir: Option<&Path>,
         metadata: Option<Arc<dyn inventory::Provider>>,
+        client_only: bool,
     ) -> Result<Service, String> {
         if config.dataset == DatasetClass::Personal && !config.allow_personal {
             return Err("a personal session requires --allow-personal".into());
@@ -323,7 +352,7 @@ impl Service {
             dialog: Mutex::new(()),
             picker_last: Mutex::new(None),
             preview: Mutex::new(None),
-            copies: copy::Copies::open(&config.state_dir, config.dataset),
+            copies: copy::Copies::open(&config.state_dir, config.dataset, !client_only),
             reads: Mutex::new(0),
             metadata: metadata
                 .clone()
@@ -333,7 +362,7 @@ impl Service {
             #[cfg(test)]
             hooks: Default::default(),
         });
-        if forgotten {
+        if forgotten && !client_only {
             let _ = inner.scrub_backups(None); // Pending cleanup is exposed by health.get, not fatal.
         }
         if scan_writer {
@@ -360,8 +389,10 @@ impl Service {
         if scan_writer {
             freshness::start(&inner);
         }
-        spawn_telemetry_pump(Arc::downgrade(&inner));
-        spawn_backup_scrub_retry(Arc::downgrade(&inner));
+        if !client_only {
+            spawn_telemetry_pump(Arc::downgrade(&inner));
+            spawn_backup_scrub_retry(Arc::downgrade(&inner));
+        }
         Ok(Service {
             inner: OwnedInner(Some(inner)),
             peer: false,
