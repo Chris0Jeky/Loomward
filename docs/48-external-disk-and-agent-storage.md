@@ -94,7 +94,8 @@ Docs/46 limited MCP to `find` and `describe` until "a separate grant design". Th
   outside the grant exist.
 - A new optional field, `volumes`, discloses the machine's volume list (label, bus type, capacity, free space,
   online state, declared tier). It is off unless the owner ticks it, because it is a machine-wide observation.
-- Each output needs the field it discloses: names and paths need `path`; byte totals need `size` (a grant without
+- Each output needs the field it discloses. Names and kinds are always part of a row, as in search (LW-069); paths
+  and locations need `path`; byte totals need `size` (a grant without
   `size` gets no space tools); age bands and modified ranges need `modified`; attribute-derived warnings
   (placeholders, reparse points) need `attributes`. Without the field, that part is absent, not null.
 - The owner issues, lists and revokes MCP client grants through new owner-only commands `clients.grant`,
