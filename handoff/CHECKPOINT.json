@@ -14,7 +14,7 @@
     "docs/40-parallel-work-packs.md"
   ],
   "reference": {
-    "python_tests": 224,
+    "python_tests": 299,
     "browser_checks": 14,
     "js_boundary_assertions": 9,
     "js_python_parity_cases": 80,
@@ -24,7 +24,17 @@
     "catalog": "immutable in-memory scoped snapshot",
     "lease_broker": "ephemeral local accounting, no authentication or OS enforcement",
     "ui_pages": 10,
-    "windows_verified": true
+    "windows_verified": true,
+    "windows_witness": {
+      "issue": "LW-001 / #4",
+      "date": "2026-10-25",
+      "command": "py -3 scripts/test_reference_windows.py",
+      "cases_passed": 2,
+      "python_suite_passed": 297,
+      "python_suite_skipped": 2,
+      "scope": "Non-elevated Windows; disposable selected root; consented duplicates; fresh-process feedback restart; first live CPU sample unknown; fixture bytes unchanged. Frozen Python API only, legacy UI retired.",
+      "evidence": "evidence/v3/reference-windows.md"
+    }
   },
   "mcp": {
     "transport": "stdio",
@@ -100,7 +110,7 @@
     "#766: retain the next complete panic and identify the original failing stage; PR812 is diagnostic only",
     "#787: remaining wedged-worker pins, retiring-watch hint coverage and sustained-load churn",
     "#414: actual durable-service 10M qualification, a new continuous 72-hour pass, required effect power-cut/restore evidence and owner UX acceptance",
-    "#4 and #24/#101: missing original reference witness and manual Windows accessibility/field acceptance"
+    "#24/#101: manual Windows accessibility/field acceptance"
   ],
   "optional_independent_starts": [
     "LW-065",
@@ -146,7 +156,8 @@
     "evidence/v3/duplicate-reader-bughunt.md",
     "evidence/v3/backlog-review-2026-10-20.md",
     "evidence/v3/backlog-review-2026-10-20.json",
-    "evidence/v3/backlog-closure-evidence-2026-10-20.md"
+    "evidence/v3/backlog-closure-evidence-2026-10-20.md",
+    "evidence/v3/reference-windows.md"
   ],
   "estate": {
     "repository": "Chris0Jeky/Loomward (public)",
