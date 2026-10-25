@@ -1058,6 +1058,95 @@ fn a_destination_grant_on_another_volume_guid_is_refused_before_any_write() {
     }
 }
 
+/// #690: recovery must bind cleanup to the destination grant's GUID even when all object IDs match.
+#[test]
+fn recovery_clean_checks_the_destination_volume_guid() {
+    for binding in [0, 1, 2] {
+        let Some(mut lab) = Lab::new() else { return };
+        fs::write(lab.src().join("f"), b"payload").unwrap();
+        let op = lab.start(&["f"]);
+        let crash = Control::new(true).with_hook(|p, _| {
+            if p == Point::Verified(0) {
+                Flow::Crash
+            } else {
+                Flow::Continue
+            }
+        });
+        assert!(matches!(run(&lab.store, op, &crash), Err(Fault::Crashed)));
+        let staging = lab.dest().join(&staging_dirs(&lab)[0]);
+        lab.reopen();
+        let mut plan = lab.plan(op);
+        plan.destination_root_guid = match binding {
+            0 => plan.destination_root_guid,
+            1 => plan.destination_root_guid.map(|g| g ^ 1),
+            _ => None,
+        };
+        let outcome = cancel(&lab.store, op, &plan, &Control::new(true)).unwrap();
+        let r = replay(&lab.store, op).unwrap();
+        if binding == 0 {
+            assert_eq!(outcome.state, OpState::Cancelled, "{outcome:?}");
+            assert!(r.staging_removed);
+            assert!(!staging.exists());
+        } else {
+            assert_eq!(outcome.state, OpState::NeedsAttention, "{outcome:?}");
+            assert!(!r.staging_removed);
+            assert_eq!(r.held().count(), 1);
+            assert_eq!(fs::read(staging.join("f")).unwrap(), b"payload");
+        }
+        assert_eq!(fs::read(lab.src().join("f")).unwrap(), b"payload");
+    }
+}
+
+/// #690: a byte-identical published tree on a different (or unbound) volume cannot be committed.
+#[test]
+fn recovery_confirm_checks_the_destination_volume_guid() {
+    for settle in [false, true] {
+        for binding in [0, 1, 2] {
+            let Some(mut lab) = Lab::new() else { return };
+            fs::create_dir(lab.src().join("top")).unwrap();
+            fs::write(lab.src().join("top/f"), b"payload").unwrap();
+            let op = lab.start(&["top"]);
+            let crash = Control::new(false).with_hook(|p, _| {
+                if p == Point::AfterPublish {
+                    Flow::Crash
+                } else {
+                    Flow::Continue
+                }
+            });
+            assert!(matches!(run(&lab.store, op, &crash), Err(Fault::Crashed)));
+            lab.reopen();
+            let mut plan = lab.plan(op);
+            plan.destination_root_guid = match binding {
+                0 => plan.destination_root_guid,
+                1 => plan.destination_root_guid.map(|g| g ^ 1),
+                _ => None,
+            };
+            let r = replay(&lab.store, op).unwrap();
+            let outcome = confirm(
+                &lab.store,
+                op,
+                &plan,
+                &r,
+                r.staging.unwrap(),
+                &plan.manifest.destination.folder_name,
+                settle,
+            )
+            .unwrap();
+            if binding == 0 {
+                assert_eq!(outcome.state, OpState::Committed, "{outcome:?}");
+            } else {
+                assert_eq!(outcome.state, OpState::NeedsAttention, "{outcome:?}");
+                assert_eq!(
+                    outcome.refusal,
+                    Some((Refusal::ChangedAfterVerification, None))
+                );
+            }
+            assert_eq!(fs::read(lab.dest().join("top/f")).unwrap(), b"payload");
+            assert_eq!(fs::read(lab.src().join("top/f")).unwrap(), b"payload");
+        }
+    }
+}
+
 /// #526: the destination parent replaced between approval and the run (renamed away, a new folder under
 /// its name) is refused with a cause, `destination_changed`, before any write to either folder.
 #[test]
