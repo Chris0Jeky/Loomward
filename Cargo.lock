@@ -674,6 +674,7 @@ dependencies = [
  "loomward-operations",
  "loomward-protocol",
  "loomward-service",
+ "loomward-windows",
  "rusqlite",
  "serde_json",
  "tempfile",

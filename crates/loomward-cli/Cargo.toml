@@ -21,6 +21,7 @@ serde_json.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+loomward-windows = { path = "../loomward-windows", features = ["fixtures"] }
 
 [dev-dependencies.loomward-service]
 path = "../loomward-service"

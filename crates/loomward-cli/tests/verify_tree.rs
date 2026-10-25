@@ -1,6 +1,14 @@
 use std::path::Path;
 use std::process::{Command, Output};
 
+/// Hosted CI runs elevated, and grants refuse elevated processes; native coverage then skips.
+fn elevated() -> bool {
+    #[cfg(windows)]
+    return loomward_windows::enumerate::skip_elevated_test();
+    #[cfg(not(windows))]
+    false
+}
+
 fn verify(source: &Path, destination: &Path, state: &Path, extra: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_loomward-native"))
         .arg("verify-tree")
@@ -24,6 +32,9 @@ fn fixture() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
 
 #[test]
 fn unsafe_roots_are_refused_before_state_or_tree_reads() {
+    if elevated() {
+        return;
+    }
     let (temp, source, destination) = fixture();
     let state = temp.path().join("state");
     let nested = source.join("nested");
@@ -83,6 +94,9 @@ fn unsafe_roots_are_refused_before_state_or_tree_reads() {
 
 #[test]
 fn whole_environment_profile_is_refused_with_a_plain_reason() {
+    if elevated() {
+        return;
+    }
     let (temp, source, destination) = fixture();
     let state = temp.path().join("state");
     let output = Command::new(env!("CARGO_BIN_EXE_loomward-native"))
@@ -173,6 +187,9 @@ fn populated_fixture() -> (tempfile::TempDir, std::path::PathBuf, std::path::Pat
 #[cfg(windows)]
 #[test]
 fn identical_trees_exit_zero_with_a_json_report() {
+    if elevated() {
+        return;
+    }
     let (temp, source, destination) = populated_fixture();
     let state = temp.path().join("state");
     let output = verify(&source, &destination, &state, &[]);
@@ -207,6 +224,9 @@ fn identical_trees_exit_zero_with_a_json_report() {
 #[cfg(windows)]
 #[test]
 fn changed_missing_and_extra_files_exit_one_with_the_difference() {
+    if elevated() {
+        return;
+    }
     for (change, kind) in [
         ("changed", "Content"),
         ("missing", "Missing"),
@@ -243,6 +263,9 @@ fn changed_missing_and_extra_files_exit_one_with_the_difference() {
 #[cfg(windows)]
 #[test]
 fn byte_time_and_entry_budget_exhaustion_exit_two() {
+    if elevated() {
+        return;
+    }
     for option in ["--budget-bytes", "--budget-secs", "--max-entries"] {
         let (temp, source, destination) = populated_fixture();
         let output = verify(
