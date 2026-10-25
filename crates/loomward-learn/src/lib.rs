@@ -7,6 +7,7 @@ use std::fmt;
 
 pub mod evaluation;
 pub mod features;
+pub mod packet;
 pub mod student;
 
 /// A `ValueError`-style rejection. The message is the Python reference's message, byte for byte.

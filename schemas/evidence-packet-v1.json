@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Loomward evidence-packet-v1",
+  "description": "Deterministic facts about one folder or file set, the input to every categoriser stage (docs/49 section 3, docs/51 section 4.8, LW-138). Facts only: no file contents, no absolute paths, no raw names (name_tokens are casefolded word runs). null is unknown, never zero (invariant 4). A packet is never an approval and carries no label (invariant 3); labels live in benchmark records.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "synthetic", "packet_id", "group_id", "observed_at", "subject", "shape", "families", "extensions", "markers", "time", "duplicates", "media", "coverage"],
+  "properties": {
+    "schema": {"const": "loomward.evidence-packet.v1"},
+    "synthetic": {"type": "boolean", "description": "true for every packet in Git (AGENTS.md: synthetic fixtures only). Personal packets never leave the state directory."},
+    "packet_id": {"$ref": "#/$defs/id"},
+    "group_id": {"$ref": "#/$defs/id", "description": "Project, shoot or root lineage key; benchmark splits never put one group on both sides."},
+    "observed_at": {"$ref": "#/$defs/unix"},
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "name_tokens", "depth"],
+      "properties": {
+        "kind": {"enum": ["folder", "file_set"]},
+        "name_tokens": {"type": "array", "maxItems": 16, "items": {"$ref": "#/$defs/token"}},
+        "depth": {"type": "integer", "minimum": 0, "maximum": 4096, "description": "Depth below the granted root, not an absolute path depth."}
+      }
+    },
+    "shape": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["files", "folders", "logical_bytes", "allocated_bytes", "max_depth"],
+      "properties": {
+        "files": {"$ref": "#/$defs/count"},
+        "folders": {"$ref": "#/$defs/count"},
+        "logical_bytes": {"$ref": "#/$defs/bytes_or_null"},
+        "allocated_bytes": {"$ref": "#/$defs/bytes_or_null"},
+        "max_depth": {"type": "integer", "minimum": 0, "maximum": 4096}
+      }
+    },
+    "families": {
+      "type": "array",
+      "maxItems": 15,
+      "description": "Share of files and bytes per catalogue extension family (loomward-catalog FAMILIES). Each family at most once; shares in [0, 1] and summing to at most 1 (rounding).",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["family", "share_files", "share_bytes"],
+        "properties": {
+          "family": {"enum": ["document", "spreadsheet", "presentation", "image", "video", "audio", "archive", "code", "data", "model", "executable", "system", "font", "other", "none"]},
+          "share_files": {"$ref": "#/$defs/share"},
+          "share_bytes": {"oneOf": [{"$ref": "#/$defs/share"}, {"type": "null"}]}
+        }
+      }
+    },
+    "extensions": {
+      "type": "array",
+      "maxItems": 16,
+      "description": "Top extensions by bytes, casefolded, without the dot; the empty string is files with no extension.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["ext", "files", "bytes"],
+        "properties": {
+          "ext": {"type": "string", "maxLength": 32, "pattern": "^[a-z0-9_+-]*$"},
+          "files": {"$ref": "#/$defs/count"},
+          "bytes": {"$ref": "#/$defs/bytes_or_null"}
+        }
+      }
+    },
+    "markers": {
+      "type": "array",
+      "maxItems": 32,
+      "uniqueItems": true,
+      "description": "Recognised structural markers directly inside the subject or one level below. A closed vocabulary: new markers need a schema version.",
+      "items": {"enum": [
+        "cargo_toml", "cargo_target_dir", "package_json", "node_modules_dir", "pnpm_lock", "pyproject_toml", "requirements_txt", "python_venv_dir", "pycache_dir",
+        "dotnet_project", "dotnet_bin_obj_dirs", "gradle_build", "gradle_cache_dir", "git_dir", "git_file_worktree", "cachedir_tag",
+        "gguf_file", "safetensors_file", "hf_hub_layout", "lmstudio_models_layout", "ollama_blobs_layout", "vhdx_file",
+        "lightroom_catalog", "lightroom_catalog_lock", "lightroom_previews", "lightroom_backups_dated", "dcim_layout", "raw_xmp_pairs",
+        "installer_files", "archive_files", "office_documents", "loomward_staging"
+      ]}
+    },
+    "time": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The coldness evidence vector (docs/51 section 4.5). Last-access time is never evidence.",
+      "required": ["newest_content_write", "oldest_content_write", "newest_source_write", "newest_generated_write", "git_last_commit", "git_dirty", "last_access"],
+      "properties": {
+        "newest_content_write": {"$ref": "#/$defs/unix_or_null"},
+        "oldest_content_write": {"$ref": "#/$defs/unix_or_null"},
+        "newest_source_write": {"$ref": "#/$defs/unix_or_null", "description": "Newest write outside recognised generated directories."},
+        "newest_generated_write": {"$ref": "#/$defs/unix_or_null", "description": "Newest write inside recognised generated directories."},
+        "git_last_commit": {"$ref": "#/$defs/unix_or_null", "description": "Only inside granted project roots; null when not observed."},
+        "git_dirty": {"type": ["boolean", "null"]},
+        "last_access": {"const": "not_evidence"}
+      }
+    },
+    "duplicates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["duplicate_bytes", "groups"],
+      "properties": {
+        "duplicate_bytes": {"$ref": "#/$defs/bytes_or_null", "description": "Bytes in files with a content-equal copy elsewhere (q-10 hashing); null when not hashed."},
+        "groups": {"oneOf": [{"$ref": "#/$defs/count"}, {"type": "null"}]}
+      }
+    },
+    "media": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["raw_files", "sidecar_files", "raw_with_sidecar", "capture_start", "capture_end", "camera_models"],
+          "properties": {
+            "raw_files": {"$ref": "#/$defs/count"},
+            "sidecar_files": {"$ref": "#/$defs/count"},
+            "raw_with_sidecar": {"$ref": "#/$defs/count"},
+            "capture_start": {"$ref": "#/$defs/unix_or_null"},
+            "capture_end": {"$ref": "#/$defs/unix_or_null"},
+            "camera_models": {"oneOf": [{"$ref": "#/$defs/count"}, {"type": "null"}], "description": "Count of distinct models, never the model names."}
+          }
+        }
+      ]
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "allocation_known", "link_counts_observed", "online"],
+      "properties": {
+        "state": {"enum": ["complete", "partial", "stale", "unscanned", "denied", "excluded", "cancelled", "unknown"]},
+        "allocation_known": {"type": "boolean"},
+        "link_counts_observed": {"type": "boolean"},
+        "online": {"type": "boolean", "description": "false when the volume is detached: facts are last-seen observations."}
+      }
+    }
+  },
+  "$defs": {
+    "id": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-z0-9][a-z0-9._-]*$"},
+    "token": {"type": "string", "minLength": 1, "maxLength": 64},
+    "count": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+    "bytes_or_null": {"oneOf": [{"type": "integer", "minimum": 0, "maximum": 9007199254740991}, {"type": "null"}]},
+    "share": {"type": "number", "minimum": 0, "maximum": 1},
+    "unix": {"type": "integer", "minimum": 0, "maximum": 32503680000},
+    "unix_or_null": {"oneOf": [{"$ref": "#/$defs/unix"}, {"type": "null"}]}
+  }
+}
