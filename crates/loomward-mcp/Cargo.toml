@@ -1,0 +1,19 @@
+[package]
+name = "loomward-mcp"
+version.workspace = true
+edition.workspace = true
+rust-version = "1.89"
+license.workspace = true
+description = "Bounded read-only stdio MCP host for the Loomward service."
+
+[dependencies]
+loomward-protocol = { path = "../loomward-protocol" }
+loomward-service = { path = "../loomward-service" }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+loomward-service = { path = "../loomward-service", features = ["test-support"] }
+loomward-windows = { path = "../loomward-windows", features = ["fixtures"] }
+rusqlite = { version = "0.39.0", features = ["bundled"] }
+tempfile.workspace = true
