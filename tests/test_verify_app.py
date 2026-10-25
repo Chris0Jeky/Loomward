@@ -1,4 +1,4 @@
-"""Hermetic orchestration test for scripts/verify.py --app (#154, #186, #431).
+"""Hermetic orchestration tests for scripts/verify.py (#154, #186, #431, #850).
 
 Tool discovery, the subprocess runner and the Playwright probe are all stubbed, so no npm,
 node, cargo or browser runs here.
@@ -23,9 +23,11 @@ UNIT = [NPM, "--prefix", "app", "run", "test"]
 BUILD = [NPM, "--prefix", "app", "run", "build"]
 
 
-def tools(node=True, npm=True):
-    """A which() stub: node and npm are found or not; cargo never is."""
+def tools(node=True, npm=True, cargo=False):
+    """A which() stub: node, npm and cargo are found only when enabled."""
     def which(name):
+        if name == "cargo" and cargo:
+            return "/fake/bin/cargo"
         if name in ("node",) and node:
             return "/fake/bin/node"
         if name in ("npm", "npm.cmd") and npm:
@@ -146,6 +148,22 @@ class VerifyAppOrchestrationTests(unittest.TestCase):
             code = verify.main(["--require-native", "--app"], which=tools(False, False),
                                run=Runner(), isdir=lambda path: False, e2e_gap=e2e_ok)
         self.assertEqual(code, 1)
+
+    def test_rust_tests_run_without_fail_fast_and_lint_runs_after_failure(self):
+        for failing in (False, True):
+            with self.subTest(failing=failing):
+                run = Runner(fail_on=["cargo test"] if failing else [])
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    code = verify.main(["--require-native"], which=tools(cargo=True), run=run)
+                self.assertEqual(run.calls[1:], [
+                    ["cargo", "fmt", "--all", "--", "--check"],
+                    ["cargo", "test", "--workspace", "--no-fail-fast"],
+                    ["cargo", "clippy", "--workspace", "--all-targets", "--", "-D", "warnings"],
+                ])
+                self.assertEqual(code, 1 if failing else 0)
+                self.assertIn(("FAIL" if failing else "PASS") + " Rust unit tests", out.getvalue())
+                self.assertIn("PASS Rust lint", out.getvalue())
 
 
 if __name__ == "__main__":

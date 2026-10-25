@@ -143,7 +143,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn registration_pins_empty_root_against_personal_replacement() {
-        if loomward_windows::enumerate::running_elevated() {
+        if loomward_windows::enumerate::skip_elevated_test() {
             eprintln!(
                 "skipped: elevated token; native identity reads refuse elevation (invariant 2)"
             );

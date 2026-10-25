@@ -188,7 +188,7 @@ fn assert_redacted(bytes: &[u8], svc: &Service, root: &Path) {
 #[cfg(windows)]
 #[test]
 fn a_scanned_hostile_lab_root_never_reaches_the_bundle() {
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         eprintln!("skipped: elevated token; the native scan refuses elevation (invariant 2)");
         return;
     }
@@ -548,7 +548,7 @@ fn an_elevated_session_refuses_new_and_existing_exports_without_touching_them() 
 /// write (fails closed, invariant 2): prove the refusal, then skip a test that needs a real write.
 #[cfg(windows)]
 fn export_refuses_elevation() -> bool {
-    if !loomward_windows::enumerate::running_elevated() {
+    if !loomward_windows::enumerate::skip_elevated_test() {
         return false;
     }
     let tmp = temp_root();
@@ -569,7 +569,7 @@ fn export_refuses_elevation() -> bool {
 #[cfg(windows)]
 #[test]
 fn a_failed_write_leaves_the_target_and_no_partial_file() {
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         // The pinned export folder refuses an elevated token before any write (fails closed).
         let tmp = temp_root();
         assert_eq!(

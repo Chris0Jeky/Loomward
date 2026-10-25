@@ -1035,7 +1035,7 @@ fn placement_lab_space_timestamp_is_fresh() {
 /// can change it; the caller keeps `tmp` alive for the grant's lifetime.
 #[cfg(windows)]
 fn personal_grant_session(tmp: &tempfile::TempDir) -> Option<(Service, std::path::PathBuf)> {
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         eprintln!("skipped: elevated token; the native space read refuses elevation (invariant 2)");
         return None;
     }
@@ -1774,7 +1774,7 @@ fn placement_save_refuses_same_generation_changes_and_unknown_overlap() {
 #[cfg(windows)]
 #[test]
 fn placement_registered_lab_simulation_preserves_every_file_and_mtime() {
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         let tmp = temp_root();
         let refusal = crate::lab::register(
             &tmp.path().join("state"),
@@ -4011,7 +4011,7 @@ fn publish_clamps_negative_revision_to_unknown() {
 
 pub(crate) fn native_identity_available() -> bool {
     #[cfg(windows)]
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         assert!(
             matches!(loomward_windows::identity::observe(Path::new("synthetic")),
             Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied)
@@ -4108,7 +4108,7 @@ pub(crate) fn lab() -> Option<Lab> {
 
 #[cfg(windows)]
 pub(crate) fn lab_in(tmp: tempfile::TempDir) -> Option<Lab> {
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         eprintln!("skipped: elevated token; the native scan refuses elevation (invariant 2)");
         return None;
     }
@@ -5641,7 +5641,7 @@ fn f3_issue617_completed_catchup_retries_its_checkpoint() {
 #[cfg(windows)]
 #[test]
 fn issue776_default_scan_shares_workers_with_an_owner_scan_and_freshness() {
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         eprintln!("skipped: elevated token; native scans refuse elevation");
         return;
     }
@@ -5749,7 +5749,7 @@ fn issue776_default_scan_shares_workers_with_an_owner_scan_and_freshness() {
 #[cfg(windows)]
 #[test]
 fn f3_issue617_explicit_scan_preempts_another_roots_pool() {
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         return;
     }
     let tmp = temp_root();
@@ -6918,7 +6918,7 @@ fn regranting_a_renamed_root_mints_a_grant_for_its_new_path() {
 #[cfg(windows)]
 #[test]
 fn regranting_a_renamed_unverified_root_retires_the_grant_naming_the_old_path() {
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         return;
     }
     let tmp = temp_root();
@@ -6959,7 +6959,7 @@ fn regrant_renamed_unverified(
     probe_error: Option<loomward_windows::enumerate::SourceError>,
     replace_old: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
 ) -> Option<(String, String)> {
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         return None;
     }
     let tmp = temp_root();
@@ -7018,7 +7018,7 @@ fn a_definitely_non_directory_old_path_retires_the_unverified_grant() {
 #[cfg(windows)]
 #[test]
 fn a_real_file_at_the_old_path_retires_the_unverified_grant() {
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         return;
     }
     let tmp = temp_root();
@@ -7055,7 +7055,7 @@ fn a_real_file_at_the_old_path_retires_the_unverified_grant() {
 /// Holds an old-path observation while the caller exercises concurrent owner state changes.
 #[cfg(windows)]
 fn with_stalled_old_path_probe(test: impl FnOnce(&Service, i64, &Path)) -> Option<String> {
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         return None;
     }
     let tmp = temp_root();
@@ -7299,7 +7299,7 @@ fn an_old_path_answering_another_identity_retires_the_unverified_grant() {
 #[cfg(windows)]
 #[test]
 fn an_old_path_still_answering_the_same_identity_keeps_the_unverified_grant() {
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         return;
     }
     let tmp = temp_root();
@@ -7736,7 +7736,7 @@ fn personal_session_scans_a_granted_folder_metadata_only() {
         allow_identity_unverified: false,
         grant_roots: vec![path.clone()],
     });
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         // Hosted CI: an elevated token cannot open native identity, so the grant is refused.
         let e = opened.err().expect("an elevated grant is refused");
         assert!(e.contains("identity_unavailable"), "{e}");
@@ -8398,7 +8398,7 @@ fn a_stale_stored_grant_still_blocks_a_picked_parent() {
     );
     assert_eq!(result["outcome"], "refused");
     #[cfg(windows)]
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         // Native identity refuses elevation (invariant 2, #217) before any overlap check runs.
         assert_eq!(result["refusal"], "identity_unavailable");
         return;
@@ -8495,7 +8495,7 @@ fn grant_identity(svc: &Service, root: i64) -> (String, u32, Option<Vec<u8>>) {
 #[cfg(windows)]
 #[test]
 fn identity_unverified_cli_grants_need_explicit_confirmation() {
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         return;
     }
     let tmp = temp_root();
@@ -8548,7 +8548,7 @@ fn identity_unverified_cli_grants_need_explicit_confirmation() {
 #[cfg(windows)]
 #[test]
 fn regrant_backfills_a_legacy_null_filesystem_without_replacing_the_grant() {
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         eprintln!("skipped: elevated token; native identity reads refuse elevation (invariant 2)");
         return;
     }
@@ -8589,7 +8589,7 @@ fn regrant_backfills_a_legacy_null_filesystem_without_replacing_the_grant() {
 #[cfg(windows)]
 #[test]
 fn stored_unverified_grant_needs_no_second_cli_confirmation_after_restart() {
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         eprintln!("skipped: elevated token; native identity reads refuse elevation (invariant 2)");
         return;
     }
@@ -8663,7 +8663,7 @@ fn stored_unverified_grant_needs_no_second_cli_confirmation_after_restart() {
 #[cfg(windows)]
 #[test]
 fn revocation_between_regrant_lookup_and_write_cannot_reuse_confirmation() {
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         eprintln!("skipped: elevated token; native identity reads refuse elevation (invariant 2)");
         return;
     }
@@ -8735,7 +8735,7 @@ fn picker_confirms_identity_unverified_volumes_explicitly() {
             self.1
         }
     }
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         return;
     }
     let tmp = temp_root();
@@ -9039,7 +9039,7 @@ fn open_stores_the_canonical_spelling_of_a_non_canonical_root() {
         allow_identity_unverified: false,
         grant_roots: vec![spelled],
     });
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         // Native identity refuses elevated tokens (invariant 2), including hosted Windows CI.
         let error = opened.err().expect("an elevated grant is refused");
         assert!(error.contains("identity_unavailable"), "{error}");

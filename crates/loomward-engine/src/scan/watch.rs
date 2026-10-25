@@ -2405,7 +2405,7 @@ mod native_tests {
     }
     fn grant(path: &Path) -> Option<GrantedRoot> {
         let source = NativeSource::default();
-        if loomward_windows::enumerate::running_elevated() {
+        if loomward_windows::enumerate::skip_elevated_test() {
             assert!(source.open_root(path).is_err());
             assert!(loomward_windows::watch::Watcher::start(path, None, |_| ()).is_err());
             return None;
