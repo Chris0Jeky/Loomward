@@ -151,4 +151,4 @@ The first eight manifest entries preserve the original native critical path. Pub
 | [LW-143](issues/LW-143.md) | Photo working sets and a prioritised transfer queue | M6 | P1 | LW-124, LW-142 |
 | [LW-144](issues/LW-144.md) | Measure hashing and I/O costs per storage class | M6 | P2 | LW-064 |
 | [LW-145](issues/LW-145.md) | Hostile names and metadata cannot create effects | M2 | P1 | LW-118, LW-066 |
-| [LW-146](issues/LW-146.md) | Explain interrupted staging before its removal | M3 | P1 | LW-040, LW-041, LW-138 |
+| [LW-146](issues/LW-146.md) | Explain interrupted staging before its removal | M3 | P1 | LW-040, LW-041 |

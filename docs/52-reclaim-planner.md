@@ -8,7 +8,7 @@ in the owning tool, never something Loomward runs (invariant 1). It composes exi
 
 ## 1. The problem
 
-The owner's system NVMe (`C:`, about 1.86 TB) holds about 20 GB free, at or below the 1% reserve that Loomward's own
+The owner's system NVMe (`C:`, about 1.86 TB) holds about 20 GB free, within a few GB of the 1% reserve that Loomward's own
 native fixtures and copy manifest refuse to cross (`max(1 GiB, 1% of the volume)`). Builds, model downloads, VHDX
 growth and copy staging each need more than that. Archiving owner documents to `H:` waits on the copy gate
 (docs/47 section 11) and on the owner's per-plan review (docs/48 section 6). Generated and re-downloadable data is
@@ -67,8 +67,8 @@ Two special rules:
   **unknown**: guest free space is not observable from the host without the owning tool.
 - **The Recycle Bin trap.** Sending files to the Recycle Bin on `C:` frees nothing on `C:` until the bin is emptied:
   the bin lives on the same volume. The planner says so whenever it shows a recycle-type step for a candidate on the
-  volume under pressure, and lists the bin's current size (from `SHQueryRecycleBinW` for that root, a read-only
-  metadata query) as a candidate of its own. This interacts with the owner's chosen archive-originals effect
+  volume under pressure, and lists the bin's current size (from `SHQueryRecycleBinW`, a read-only metadata query, only when
+  the granted root is the volume root) as a candidate of its own. This interacts with the owner's chosen archive-originals effect
   (q-48: Recycle Bin after per-plan confirmation): originals recycled from `C:` keep occupying `C:` until emptied.
 
 ## 5. Ranking and output
@@ -102,7 +102,10 @@ crate is owned by the external-disk lane, so this is proposed there as an issue,
 
 ## 6. Coverage: which roots the planner sees
 
-The planner reads only the catalogue, so it sees only owner-granted, scanned roots (invariant 2). It never stats a
+The planner reads the catalogue, so it sees only owner-granted, scanned roots (invariant 2). Two reads touch the live
+volume, both metadata only and both limited to granted roots: placement's link-count pass, and the Recycle Bin size,
+which is read only when the granted root is the volume root (the bin is per volume; otherwise its size is unknown).
+It never stats a
 well-known location the owner has not granted. To make the first plan useful, the desktop shows a **checklist of
 well-known store locations** (for example `%USERPROFILE%\.cargo`, `%LOCALAPPDATA%\npm-cache`,
 `%USERPROFILE%\.cache\huggingface`, `%USERPROFILE%\.lmstudio\models`, `%LOCALAPPDATA%\Docker`,
@@ -119,8 +122,11 @@ owner picks; nothing is probed for existence in advance.
   partial subtrees give null sizes, never zero; output is byte-stable for the same catalogue.
 - **Tool agreement** (lab, owner machine, read-only commands only, run by an agent, not by Loomward):
   `cargo clean --dry-run`, `dotnet nuget locals all --list`, `pip cache info`, `uv cache dir`, `docker system df -v`.
-  Not `npm cache verify`: it garbage-collects the cache, so npm is compared on Loomward's own sizes only. Acceptance: Loomward's allocated bytes agree with each tool's own report within 2%, or the
-  planner reports unknown. Results recorded with anonymised counts only.
+  Not `npm cache verify`: it garbage-collects the cache, so npm is compared on Loomward's own sizes only. Acceptance:
+  where a command reports sizes (`pip cache info`, `docker system df -v`, and `cargo clean --dry-run` if the installed
+  cargo prints a total), Loomward's allocated bytes agree within 2%, or the
+  planner reports unknown; path-only commands (`uv cache dir`, `dotnet nuget locals all --list`) only confirm which
+  folder is the cache. Results recorded with anonymised counts only.
 - **No effect.** A test asserts the reclaim read requests no write, delete or rename access, and that `state.db` is
   unchanged apart from the read's own bookkeeping.
 

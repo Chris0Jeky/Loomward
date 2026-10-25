@@ -1774,8 +1774,7 @@
     "status": "planned",
     "depends_on": [
       "LW-040",
-      "LW-041",
-      "LW-138"
+      "LW-041"
     ],
     "body_file": "backlog/issues/LW-146.md"
   }

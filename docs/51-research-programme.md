@@ -223,7 +223,8 @@ The owner chose: originals go to the Recycle Bin after per-plan confirmation, wi
 2. re-verification after remount (4.2);
 3. the review: per group, the docs/49 summary (what it is, size, age, the verified copy's location and last
    verification, hard links outside the selection that will not free space, "H: will hold the only copy");
-4. on confirmation: Recycle Bin through the Shell (`IFileOperation` with recycle and undo flags) **only where the
+4. on confirmation, after re-checking each source's native identity and the verified copy immediately before the
+   call, and pre-checking that the Shell will recycle rather than prompt for a permanent delete: Recycle Bin through the Shell (`IFileOperation` with recycle and undo flags) **only where the
    Shell will recycle**; an item the Shell would delete permanently (too large for the bin, or a volume without one)
    stops at `requires_permanent_delete_confirmation` and is never deleted by this effect;
 5. the review says plainly that recycling on `C:` frees no space on `C:` until the bin is emptied, and shows the bin.
@@ -332,7 +333,7 @@ SQLite, automatic deletion of anything, an elevated product service.
 | LW-143 | #882 | Photo working sets and a prioritised transfer queue | P5 | LW-124, LW-142 |
 | LW-144 | #883 | Measure hashing and I/O costs per storage class | P5 | LW-064 |
 | LW-145 | #884 | Hostile names and metadata cannot create effects | P0-P5 | LW-118, LW-066 |
-| LW-146 | #889 | Explain interrupted staging before its removal | P1 | LW-040, LW-041, LW-138 |
+| LW-146 | #889 | Explain interrupted staging before its removal | P1 | LW-040, LW-041 |
 
 Bodies: `backlog/issues/LW-131.md` to `LW-146.md`. LW-146 came from the peer analysis (section 13): the owner's q-47 Q1
 answer needs its own item before `LOOMWARD_COPY_STAGING_REMOVAL` can turn on.
