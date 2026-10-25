@@ -14,7 +14,7 @@ fn verify(source: &Path, destination: &Path, state: &Path, extra: &[&str]) -> Ou
 }
 
 fn fixture() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = tempfile::tempdir_in(loomward_service::paths::test_roots_base()).unwrap();
     let source = temp.path().join("source");
     let destination = temp.path().join("destination");
     std::fs::create_dir(&source).unwrap();

@@ -1,8 +1,8 @@
+use loomward_engine::scan::TreeBudget as Budget;
 use loomward_engine::{scan::CatalogRootIdentity, scan::GrantedRoot, Engine, EngineConfig};
 use loomward_operations::tree::{DifferenceKind, Report};
 use loomward_protocol::{DatasetClass, RootId};
 use loomward_service::{paths, Config, Service};
-use loomward_windows::duplicate_reader::Budget;
 use std::{path::PathBuf, time::Duration};
 
 #[derive(Debug, PartialEq, Eq)]

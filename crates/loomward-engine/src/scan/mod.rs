@@ -191,6 +191,9 @@ fn native_source(
         source
     }
 }
+/// The C1 comparison budget, re-exported so consumers stay outside the content reader.
+pub use loomward_windows::duplicate_reader::Budget as TreeBudget;
+
 impl Engine {
     /// Read-only C1 evidence. Both roots must pass the existing q-10 admission gate.
     /// No service, HTTP, IPC or MCP command is exposed.
