@@ -526,11 +526,19 @@ fn default_deadline(c: Command) -> u64 {
 }
 
 /// `retryable` per `semantics.md` section 8 and #144: a timed-out mutation is never blindly
-/// retryable; `internal_error` at most once, never for `teacher.run`.
+/// retryable; `internal_error` at most once, never for `teacher.run`. The hard root cap
+/// requires an owner revocation rather than a retry.
 pub(crate) fn retry_flag(command: Command, mut body: ErrorBody) -> ErrorBody {
     use ErrorCode::*;
     body.retryable = match body.code {
-        StaleGeneration | DeviceOffline | PartialCoverage | ResourceBudget | Busy => true,
+        ResourceBudget => {
+            body.detail
+                .as_ref()
+                .and_then(|d| d.get("reason"))
+                .and_then(Value::as_str)
+                != Some("root_limit_reached")
+        }
+        StaleGeneration | DeviceOffline | PartialCoverage | Busy => true,
         DeadlineExceeded => command == Command::PlacementSimulate || !is_mutation(command),
         InternalError => command != Command::TeacherRun,
         _ => false,
