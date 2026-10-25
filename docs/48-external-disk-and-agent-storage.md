@@ -181,7 +181,8 @@ the owner approves each plan.
   option, removal of a plan's originals needs a **second** `verify-tree` run that exits 0 after the owner safely
   removed the external disk and plugged it in again (the owner confirms the replug; it empties the system cache for
   that volume, while the device's own cache stays outside the proof, as in section 4.5), and the copy is never
-  removed. Until the owner answers, nothing removes an original.
+  removed. The owner chose a Loomward Recycle Bin effect, which is not built: it needs its own LW issue and
+  safety gate after the copy gate (invariant 1). Until it exists, nothing removes an original.
 - **Journal for the interim path.** Each approved plan, its robocopy log summary and both verifier reports are kept
   in the gitignored `.loomward/archive/` of the primary checkout, never in Git (no real names in this repository).
 
@@ -217,10 +218,11 @@ the owner approves each plan.
 - `loomward-copy-power-cut-method`: (a) Hyper-V VM. Hyper-V was already enabled; the VM and image live on `E:`.
 - `loomward-copy-staging-removal`: allowed, but Loomward first assesses whether something can be done, helps the owner
   understand what happened and indexes or explains before deleting its own staging (docs/49 section 4).
+  `LOOMWARD_COPY_STAGING_REMOVAL` stays false until that explain-first behaviour lands.
 - `loomward-first-cleanup-copier`: (b) agent robocopy per approved plan, then `verify-tree` (section 6). Survey all
   disks first; mainly `C:` to `E:` and `H:`, `G:` also a candidate.
 - `loomward-archive-originals`: (b) Recycle Bin after per-plan confirmation, with a human-readable, machine-learning
-  summary of what is being removed (docs/49).
+  summary of what is being removed (docs/49). The effect is not built and has its own gate (invariant 1).
 - USB fixed NTFS/ReFS roots (section 2): confirmed by the owner.
 
 Agent decisions recorded here, reversible: USB fixed-media NTFS/ReFS volumes become scan roots (section 2); the MCP

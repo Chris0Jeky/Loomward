@@ -27,7 +27,7 @@ preview of exactly what is sent**, and added:
   from the owner's labels only (q-11), abstains when unsure, and its scores are relative and uncalibrated (invariant
   4).
 - **Meaning and threads** (`crates/loomward-engine/src/learning`, `threads.meaning`): weak supervision from an LLM
-  teacher, held as a separate data class (invariant 3). The teacher runs in a confined sandbox (docs/41, q-5, q-8).
+  teacher, held as a separate data class (invariant 3). The teacher is being confined in a sandbox whose canaries have not passed yet (docs/41, q-5, q-8).
 - **Developer clutter** (`clutter.developer`): rule-based detection of build outputs and caches with their
   providers.
 - **Duplicates**: local content hashing (q-10).
@@ -49,7 +49,10 @@ preview of exactly what is sent**, and added:
    2023, 40 GB of build output, last touched 14 months ago, rebuildable". It receives facts and a bounded sample of
    names, never file contents unless the owner opts in.
 4. **Hosted fallback.** Used only when no local model is available and the owner allowed it. Each request shows a
-   preview of exactly what is sent (names and facts) before it goes, as the owner asked.
+   preview of exactly what is sent before it goes, as the owner asked. q-5's scope and preconditions bind this stage:
+   file and folder names only (no full paths, no contents, no extra metadata), and only after the broker's canaries
+   pass, when the repository takes the `sensitive_data` overlay. Local requests (stage 3) follow the Ask grant rule
+   (docs/46 Q3); whether they also get a per-request preview is this design's open question, not yet decided.
 
 Every summary is shown with what it rests on: the facts that produced it and which stage spoke. A category or
 summary is never an approval: the Recycle Bin effect still needs the owner's per-plan confirmation, and a learned

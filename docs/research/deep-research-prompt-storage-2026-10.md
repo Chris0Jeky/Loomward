@@ -26,7 +26,7 @@ is measured, what is documented and what is your inference.
 - The user runs AI coding agents (Claude Code, Codex and others) all day. The agents produce huge build caches.
   Local LLMs run through LM Studio; the main model today is Qwen 27B.
 - Loomward already has:
-  - a native NTFS metadata scanner and catalogue, faster than WinDirStat-class tools;
+  - a native NTFS metadata scanner and catalogue, designed to beat WinDirStat-class tools;
   - treemap, breakdown and developer-clutter views;
   - duplicate detection by local hashing;
   - a small learned "student" model trained on the owner's own labels, with an optional LLM teacher used as weak
@@ -42,7 +42,8 @@ is measured, what is documented and what is your inference.
   - honest unknowns;
   - a learned score is never an approval;
   - MCP is read-only;
-  - nothing deletes owner data without the owner's explicit, per-plan confirmation.
+  - no delete of owner data exists until its own safety gate opens, and then only with the owner's per-plan
+    confirmation.
 
 ## Part A — Integrity of copy, move and archive on Windows (go very deep)
 
