@@ -451,7 +451,22 @@ pub(crate) fn project(command: Command, grant: &ClientGrant, map: &mut Map<Strin
                 }
             }
         }
-        Command::VolumesList | Command::StatsBreakdown => {}
+        Command::VolumesList => {
+            // A folder mount point is a path outside the grant: only with `path` (red-team review).
+            if !grant.has("path") {
+                for volume in map
+                    .get_mut("volumes")
+                    .and_then(Value::as_array_mut)
+                    .into_iter()
+                    .flatten()
+                {
+                    if let Some(volume) = volume.as_object_mut() {
+                        volume.insert("mount_points".into(), Value::Array(Vec::new()));
+                    }
+                }
+            }
+        }
+        Command::StatsBreakdown => {}
         _ => map.clear(),
     }
 }

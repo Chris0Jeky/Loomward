@@ -1574,3 +1574,31 @@ fn client_children_sorted_by_modified_time_need_modified_times() {
         "{page}"
     );
 }
+
+#[test]
+fn client_volume_mount_points_need_path() {
+    let mut map = serde_json::Map::new();
+    map.insert(
+        "volumes".into(),
+        json!([{"volume_id": "vo_1", "mount_points": ["X:/", "X:/Mounted/Folder"]}]),
+    );
+    let grant = |fields: &[&str]| crate::clients::ClientGrant {
+        client: "mcp:space".into(),
+        epoch: 1,
+        roots: vec![],
+        fields: fields.iter().map(|f| f.to_string()).collect(),
+    };
+    let mut without = map.clone();
+    crate::clients::project(Command::VolumesList, &grant(&["volumes"]), &mut without);
+    assert_eq!(without["volumes"][0]["mount_points"], json!([]));
+    let mut with = map.clone();
+    crate::clients::project(
+        Command::VolumesList,
+        &grant(&["volumes", "path"]),
+        &mut with,
+    );
+    assert_eq!(
+        with["volumes"][0]["mount_points"].as_array().unwrap().len(),
+        2
+    );
+}
