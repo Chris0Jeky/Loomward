@@ -319,7 +319,7 @@ pub(super) struct Lab {
 
 impl Lab {
     pub(super) fn new() -> Option<Lab> {
-        if enumerate::running_elevated() {
+        if enumerate::skip_elevated_test() {
             eprintln!("skipped: elevated token (invariant 2)");
             return None;
         }
@@ -2225,7 +2225,7 @@ fn a_pending_fence_during_rename_commits_annotated() {
 fn a_process_dying_with_a_pending_fence_reopens_without_effects() {
     const CHILD: &str = "LOOMWARD_PENDING_FENCE_CHILD";
     if let Some(dir) = std::env::var_os(CHILD) {
-        assert!(!enumerate::running_elevated());
+        assert!(!enumerate::skip_elevated_test());
         let store = std::sync::Arc::new(Mutex::new(
             Store::open(&PathBuf::from(dir).join("state/state.db")).unwrap(),
         ));

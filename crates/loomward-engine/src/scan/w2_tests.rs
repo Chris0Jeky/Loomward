@@ -117,7 +117,7 @@ mod native {
     fn fixture() -> Option<(tempfile::TempDir, GrantedRoot, Arc<Engine>)> {
         use loomward_windows::enumerate::NativeSource;
 
-        if loomward_windows::enumerate::running_elevated() {
+        if loomward_windows::enumerate::skip_elevated_test() {
             assert_eq!(
                 NativeSource::default()
                     .open_root(std::path::Path::new("synthetic"))

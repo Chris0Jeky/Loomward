@@ -475,7 +475,7 @@ pub(super) fn canonical_tempdir() -> tempfile::TempDir {
 /// (AGENTS.md invariant 2). There, pin the refusal and skip; elsewhere run the native test.
 #[cfg(windows)]
 fn skip_elevated() -> bool {
-    if !crate::enumerate::running_elevated() {
+    if !crate::enumerate::skip_elevated_test() {
         return false;
     }
     let temp = canonical_tempdir();
@@ -488,6 +488,32 @@ fn skip_elevated() -> bool {
     );
     eprintln!("skipped: elevated token; the native scan refuses elevation (invariant 2)");
     true
+}
+
+#[cfg(windows)]
+#[test]
+fn elevated_fixture_skip_is_visible_in_success_output() {
+    const CHILD: &str = "LOOMWARD_ELEVATION_REPORT_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        let _reset = crate::enumerate::force_elevation_for_test();
+        assert!(skip_elevated());
+        return;
+    }
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "enumerate::tests::elevated_fixture_skip_is_visible_in_success_output",
+            "--show-output",
+        ])
+        .env(CHILD, "1")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.contains("SKIPPED (elevated): enumerate::tests::elevated_fixture_skip_is_visible_in_success_output"),
+        "successful native fixture skips must be visible: {stdout}"
+    );
 }
 
 #[test]
