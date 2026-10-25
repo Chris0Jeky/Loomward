@@ -430,8 +430,9 @@ The owner attached a WD Elements USB disk (`H:`) for backup and archive and aske
 a supervised cleanup. Design: [docs/48](docs/48-external-disk-and-agent-storage.md). Copying personal files still waits
 on the copy gate (q-47 Q1 and Q2 above); these two decide the cleanup around it:
 - [ ] **loomward-first-cleanup-copier**: before Loomward's own copier passes its gate, (a) wait, (b) agents copy with
-  robocopy per approved plan and Loomward's read-only verifier proves each copy (recommended), or (c) you copy in
-  Explorer and the verifier proves it.
+  robocopy per approved plan and Loomward's read-only verifier (non-cached reads) must find each copy equal (recommended), or (c)
+  you copy in Explorer and the verifier compares it. Removing any original also needs a second equal comparison after
+  the disk was safely removed and plugged in again (docs/48 section 6).
 - [ ] **loomward-archive-originals**: after a verified copy, (a) you delete originals from Loomward's verified list,
   (b) Loomward sends them to the Recycle Bin after your per-plan confirmation, behind its own gate (recommended), or
   (c) permanent delete after confirmation.
