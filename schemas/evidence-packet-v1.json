@@ -132,7 +132,7 @@
   },
   "$defs": {
     "id": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-z0-9][a-z0-9._-]*$"},
-    "token": {"type": "string", "minLength": 1, "maxLength": 64},
+    "token": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[^\\s/\\\\:._@\u0000-\u001f]+$", "description": "One casefolded word run; the Rust validator also checks the run boundaries."},
     "count": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
     "bytes_or_null": {"oneOf": [{"type": "integer", "minimum": 0, "maximum": 9007199254740991}, {"type": "null"}]},
     "share": {"type": "number", "minimum": 0, "maximum": 1},

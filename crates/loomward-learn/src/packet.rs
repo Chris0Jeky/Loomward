@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 
 use serde_json::Value;
 
-use crate::features::{casefold, integer, SIZE_MAX};
+use crate::features::{casefold, integer, word_runs, SIZE_MAX};
 use crate::LearnError;
 
 const UNIX_MAX: u64 = 32_503_680_000;
@@ -303,6 +303,10 @@ pub fn validate_packet(value: &Value) -> Result<(), LearnError> {
         no_path(token, "name_token")?;
         if casefold(token) != token {
             return Err(LearnError::new("name_tokens must already be casefolded"));
+        }
+        // One word run each, so a raw name ("tax return 2024.pdf") never passes as a token.
+        if word_runs(token) != [token] {
+            return Err(LearnError::new("name_tokens must be single word runs"));
         }
     }
 

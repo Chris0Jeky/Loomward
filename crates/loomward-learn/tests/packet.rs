@@ -721,3 +721,16 @@ fn numeric_endpoints_and_equal_or_unknown_times_are_accepted() {
     packet["media"]["capture_end"] = Value::Null;
     validate_packet(&packet).unwrap();
 }
+
+#[test]
+fn raw_names_are_not_tokens() {
+    for raw in ["tax return 2024", "users.someone", "..", "a@b", "two_words"] {
+        let mut record = record();
+        record["packet"]["subject"]["name_tokens"] = json!([raw]);
+        assert_eq!(
+            validate_record(&record).unwrap_err().message(),
+            "name_tokens must be single word runs",
+            "{raw}"
+        );
+    }
+}
