@@ -130,7 +130,7 @@ those of 12 October (licence, thesis, channels, nightly, Find & Ask, readiness b
 ## Pitfalls
 
 - `LW-*` IDs are the local backlog (`backlog/issues.json`, the source of truth), not GitHub numbers;
-  they are mirrored as issues #4-#105, #120-#131, #404-#421 and #870-#884 and #889 (`backlog/github-issues.json` maps them). New IDs mint there first.
+  they are mirrored as issues #4-#105, #120-#131, #404-#421, #870-#884 and #889 (`backlog/github-issues.json` maps them). New IDs mint there first.
 - Licence: AGPL-3.0-only since #396; the owner may also license it commercially (HUMAN_TODO q-20 to q-23).
 - Taskdeck is proprietary: never copy its code into this repository.
 - Public repo: synthetic fixtures only; no real filenames, inventories or training exports.
