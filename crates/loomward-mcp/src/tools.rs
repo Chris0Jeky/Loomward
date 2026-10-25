@@ -91,6 +91,14 @@ impl Host {
 
     fn open(&mut self) -> Result<(), String> {
         if self.loaded.is_none() {
+            // A client host never creates or seeds a store: that would pre-empt the desktop's own
+            // first run and its legacy-state move (docs/48 4.1).
+            let dir = loomward_service::paths::prospective_dir(&self.args.config.state_dir)?;
+            if !dir.join("state.db").is_file() {
+                return Err(
+                    "Loomward has no data here yet: open the Loomward app once first".into(),
+                );
+            }
             let lock = lock_state_dir(&self.args.config.state_dir).map_err(|error| {
                 if error.starts_with("busy:") {
                     "busy: Loomward is open on this machine; try again after it closes".into()
@@ -127,8 +135,11 @@ impl Host {
                     tool.argument, tool.max_length
                 )
             })?;
+        // An unknown reference never takes the state lock.
+        if name == "describe" && !self.references.iter().any(|(r, _)| r == text) {
+            return Err(UNKNOWN.into());
+        }
         self.open()?;
-        self.last_call = Instant::now();
         let stamp = match self
             .loaded
             .as_ref()
@@ -138,10 +149,13 @@ impl Host {
         {
             Ok(stamp) => stamp,
             Err(error) => {
+                // No live grant: release at once, so a refused agent cannot keep the desktop out.
                 self.references.clear();
+                self.loaded = None;
                 return Err(service_error(error));
             }
         };
+        self.last_call = Instant::now();
         if self
             .stamp
             .as_ref()

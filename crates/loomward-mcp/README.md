@@ -39,9 +39,11 @@ without the ordinary host's freshness watches, automatic scans, telemetry, backu
 synthetic copy recovery.
 Without those writers the catalogue is a stored view: search freshness remains visibly stale.
 Every read still passes through the service's grant check and projection. MCP creates no Ask
-conversation or `ask.db`. No state writes occur on calls; startup store migrations remain possible.
+conversation or `ask.db`, and it never creates a store: with no `state.db` it answers "open the Loomward app once
+first". Calls write nothing to `state.db`. Known limits: opening an existing store can run its migrations,
+and a catalogue read can repair derived aggregates in `catalog.db` (shared reader behaviour, tracked separately).
 
-After 120 seconds without tool calls the service drops before its lock; `--idle-release-secs 0`
+After 10 seconds without tool calls (and at once after a refused call without a live grant) the service drops before its lock; `--idle-release-secs 0`
 holds it until exit. Listing, discovery and partial input do not keep the state open. When another
 host holds the lock, tools return `isError` with a plain busy message and can retry later.
 

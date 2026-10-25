@@ -223,7 +223,7 @@ fn protocol_eras_do_not_lend_metadata_or_skip_legacy_initialization() {
 }
 
 #[test]
-fn no_grant_is_a_tool_permission_error_and_rate_budget_is_bounded() {
+fn absent_store_is_a_tool_error_without_creating_state_and_rate_budget_is_bounded() {
     let tmp = tempfile::tempdir().unwrap();
     let mut server = Server::start(tmp.path(), true, &[]);
     for _ in 0..120 {
@@ -233,7 +233,7 @@ fn no_grant_is_a_tool_permission_error_and_rate_budget_is_bounded() {
             v["result"]["content"][0]["text"]
                 .as_str()
                 .unwrap()
-                .contains("permission_denied"),
+                .contains("no data here yet"),
             "{v}"
         );
     }
@@ -246,6 +246,9 @@ fn no_grant_is_a_tool_permission_error_and_rate_budget_is_bounded() {
         "{v}"
     );
     assert!(!tmp.path().join("ask.db").exists());
+    // A client host never creates a store or its lock where none exists.
+    assert!(!tmp.path().join("state.db").exists());
+    assert!(!tmp.path().join("lock").exists());
 }
 
 #[test]
@@ -569,6 +572,8 @@ mod live {
             .unwrap()
             .contains("permission_denied"));
         assert!(refused["result"].get("structuredContent").is_none());
+        // A refused call releases the lock at once, even with no idle release configured.
+        drop(lock_state_dir(&f.state).expect("released after a refused call"));
         drop(db);
         drop(server);
         assert!(lock_state_dir(&f.state).is_ok());
