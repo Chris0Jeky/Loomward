@@ -11,10 +11,10 @@ Loomward’s central architectural ruling — **meaning, residency and permissio
 
 I use five evidence labels throughout:
 
-**[D] Documented** means an operating-system, protocol, vendor or paper makes the claim.  
-**[M-LW] Measured by Loomward** means repository evidence records an experiment; it does not imply the same result on every machine.  
-**[M-src] Measured by source** means a paper/vendor published a benchmark.  
-**[I] Inference/design** is my engineering conclusion from the evidence.  
+**[D] Documented** means an operating-system, protocol, vendor or paper makes the claim.
+**[M-LW] Measured by Loomward** means repository evidence records an experiment; it does not imply the same result on every machine.
+**[M-src] Measured by source** means a paper/vendor published a benchmark.
+**[I] Inference/design** is my engineering conclusion from the evidence.
 **[T] To measure** means it must be established on Chris’s exact drives, USB bridge, GPU/CPU and Windows builds before becoming a product claim.
 
 Unless otherwise stated, rapidly changing model/runtime/MCP claims were checked on **25 October 2026**.
@@ -266,12 +266,12 @@ Loomward therefore should **not promise that “Delete to Recycle Bin” is alwa
 
 The human confirmation should not be a list of opaque paths. It should say, for example:
 
-> **Retire 14,822 source files occupying 412.6 GB from C:.**  
-> They have one independently verified destination copy on Archive-8TB.  
-> 11,304 are RAW photographs; 3,212 are XMP sidecars; 306 are other files.  
-> Lightroom references 8,917 of these paths and may show them as missing until relinked.  
-> 27 files have hard links outside the selected tree; they will not free physical space if only these names are removed.  
-> The archive copy was last independently read and SHA-256 verified on 24 October 2026.  
+> **Retire 14,822 source files occupying 412.6 GB from C:.**
+> They have one independently verified destination copy on Archive-8TB.
+> 11,304 are RAW photographs; 3,212 are XMP sidecars; 306 are other files.
+> Lightroom references 8,917 of these paths and may show them as missing until relinked.
+> 27 files have hard links outside the selected tree; they will not free physical space if only these names are removed.
+> The archive copy was last independently read and SHA-256 verified on 24 October 2026.
 > **No source bytes will be permanently deleted by this step; they will enter a 14-day retirement area.**
 
 That is what “explicit per-plan confirmation” should mean in human terms. [I]
@@ -568,12 +568,12 @@ Instead of:
 
 render:
 
-> **Abandoned Rust experiment — 40.3 GB**  
-> `Cargo.toml` and `.git` found.  
-> 39.7 GB is under `target/`; 312 MB is source/docs.  
-> No source change seen for 238 days.  
-> Git working tree: clean.  
-> 88% confidence from structure + path models.  
+> **Abandoned Rust experiment — 40.3 GB**
+> `Cargo.toml` and `.git` found.
+> 39.7 GB is under `target/`; 312 MB is source/docs.
+> No source change seen for 238 days.
+> Git working tree: clean.
+> 88% confidence from structure + path models.
 > **No reclaim action has been approved.**
 
 The model is deciding the label; the explanation renderer is citing feature facts. [I]
@@ -604,7 +604,7 @@ Its limitation is equally important: **it cannot write the short natural-languag
 
 For ordinary dense models, the theoretical raw weight floor is roughly:
 
-`Q4 ≈ 0.5 byte × parameter count`  
+`Q4 ≈ 0.5 byte × parameter count`
 `Q8 ≈ 1 byte × parameter count`
 
 plus quantisation scales, tensors, metadata, embeddings, runtime state and KV cache. [I] Thus a 2B model is in a completely different operating class from 27B. Actual GGUF sizes — particularly architectures with unusual embedding tables such as Gemma 4 — must be measured rather than inferred from nominal active parameter count. [T]
@@ -773,7 +773,7 @@ Do not full-decode 45–100 MB RAWs just to paint a 280-pixel grid tile.
 
 Use two image tiers:
 
-**thumbnail:** about 256–384 px long edge, optimised for grids;  
+**thumbnail:** about 256–384 px long edge, optimised for grids;
 **preview:** around 2K–3K long edge, optimised for loupe/select/compare.
 
 Cache identity should derive from the physical source identity plus content-relevant metadata, not merely path:
@@ -901,7 +901,7 @@ For a single spinning source HDD, throughput tends to favour sequential work ove
 
 Initial sweep:
 
-`I/O block = 256 KiB, 1 MiB, 4 MiB, 8 MiB`  
+`I/O block = 256 KiB, 1 MiB, 4 MiB, 8 MiB`
 `outstanding depth = 1, 2, 4, 8`
 
 For large RAWs I would expect low queue depth + multi-megabyte transfers to win, but that is explicitly **[T]**, not a product claim.
