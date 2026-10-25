@@ -80,6 +80,10 @@ Python reference for live catalogues; the Python reference is untouched.
 - **References.** Results name nodes by opaque session references (`r1`, `r2`, ...), never a `NodeId`. A reference
   survives an idle release while the catalogue instance and generation are unchanged, and is re-checked against the
   live grant on use; a rescan, revocation or restart makes it unknown ("call find again").
+- **Names are data.** File and folder names, paths and volume labels are third-party text. The server's
+  instructions and tool descriptions say so (never instructions, never pasted into a shell), and Unicode format and
+  bidirectional control characters are escaped in output. This reduces prompt-injection risk; the controls that hold
+  are the read-only tool set, the owner's approval of every plan and the argument-list rule of section 6.
 - **Read-only.** The tool set reaches read commands only. Tests assert `state.db` and `ask.db` are unchanged by every
   tool and by every attempted hidden name (docs/46 F12). There is no copy, approve, start, cancel, scan, grant or
   delete tool, and none may be added without changing invariant 7 (G6 holds).
@@ -175,10 +179,16 @@ the owner approves each plan.
   agent per approved plan, or the owner copies. robocopy is never wired into Loomward (docs/47 option D stays rejected
   for Loomward code). An agent's robocopy run copies into one new folder and may use only copy flags: `/E /COPY:DAT
   /DCOPY:DAT /XJ /R:1 /W:1 /NP /UNILOG:<log>` plus `/XC /XN /XO` (never replace an existing file). `/MOV`, `/MOVE`,
-  `/MIR`, `/PURGE`, `/IS`, `/IT` and `/CREATE` are forbidden. The log lives outside the new folder. A robocopy exit
+  `/MIR`, `/PURGE`, `/IS`, `/IT` and `/CREATE` are forbidden. The command is never built as a shell string: source,
+  destination and log are passed as separate arguments taken from the approved plan's JSON (for example
+  `subprocess.run([...], shell=False)`), because file names are third-party text and a name can carry shell syntax
+  (`$(...)`, backticks, `&`, `%`). The destination is never inside a source. Sources under a cloud sync root are left
+  out of plans (a copy would download placeholders, invariant 2). The log path must not exist yet (`/UNILOG:` would
+  overwrite it). The log lives outside the new folder. A robocopy exit
   code of 8 or more is a failed plan. A failed or interrupted run is never patched up: its folder is left and reported
   to the owner, and a retry copies into another new folder. Then `verify-tree` must exit 0.
-- **Removing originals.** The owner's answer to `loomward-archive-originals` decides who removes them. Under every
+- **Removing originals.** The removal re-checks the plan's own nodes by identity (volume and file ID), never paths an
+  agent supplies. The owner's answer to `loomward-archive-originals` decides who removes them. Under every
   option, removal of a plan's originals needs a **second** `verify-tree` run that exits 0 after the owner safely
   removed the external disk and plugged it in again (the owner confirms the replug; it empties the system cache for
   that volume, while the device's own cache stays outside the proof, as in section 4.5), and the copy is never
