@@ -48,5 +48,7 @@ Chapters 00-22 preserve the initial project. Chapters 23-40 expand it. Start wit
 - [43: v0.3 parallel implementation plan](43-v03-lanes.md)
 - [44: Product thesis: workspace memory, honest by construction, agent-ready](44-product-thesis.md)
 - [46: Find & Ask: search tiers, semantic layer and the Ask provider interface](46-find-and-ask.md)
+- [47: Copy-and-verify: the first file effect](47-copy-and-verify.md)
+- [48: External archive disk and agent storage tooling](48-external-disk-and-agent-storage.md)
 
 [Expansion research references](EXPANSION-SOURCES.md) · [Backlog](../backlog/INDEX.md) · [Contract index](../contracts/v2/README.md) · [Handoff](../handoff/START-HERE.md)
