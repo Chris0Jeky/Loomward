@@ -957,8 +957,8 @@ Alerts are advice, never an action, and never an approval.
 recorded aggregates; no live path is read, no manifest is opened). It is advice, never an action and never a claim
 that anything is safe to remove.
 
-- **Who may call.** The owner. A client principal is refused `permission_denied` (it reaches `search.query` and
-  `node.inspect` only). An unknown, revoked or forgotten root is `not_found` or `permission_denied` as for the
+- **Who may call.** The owner, and a client principal whose live grant covers the root and discloses `size`
+  (docs/48 section 4.2; rows projected to the grant's fields). An unknown, revoked or forgotten root is `not_found` or `permission_denied` as for the
   other root reads.
 - **What qualifies.** An exact-case conventional output directory directly beside a recorded manifest: Cargo
   `target`; npm `node_modules`; Python `.venv`, `venv`, `__pycache__`; .NET `bin`, `obj`; Gradle `build`, `.gradle`.

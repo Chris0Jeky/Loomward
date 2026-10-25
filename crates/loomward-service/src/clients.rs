@@ -19,6 +19,7 @@ use loomward_catalog::NodeKey;
 use loomward_protocol::{
     BreakdownRequest, BreakdownRequestBy, Command, DeveloperClutterRequest, ErrorBody, ErrorCode,
     NodeRefRequest, RequestEnvelope, RootId, SearchRequest, TreeChildrenRequest,
+    TreeChildrenRequestSort,
 };
 use rusqlite::{OptionalExtension, TransactionBehavior};
 use serde_json::{Map, Value};
@@ -275,7 +276,18 @@ impl Inner {
                 // generation check or a read could tell it apart (Codex review of #541).
                 let node_id = match command {
                     Command::NodeInspect => req.decode_payload::<NodeRefRequest>()?.node_id,
-                    Command::TreeChildren => req.decode_payload::<TreeChildrenRequest>()?.node_id,
+                    Command::TreeChildren => {
+                        let r = req.decode_payload::<TreeChildrenRequest>()?;
+                        // An order by modified time discloses modified times (docs/48 4.2).
+                        if r.sort == TreeChildrenRequestSort::ModifiedDesc && !grant.has("modified")
+                        {
+                            return Err(fail(
+                                ErrorCode::PermissionDenied,
+                                "this grant does not disclose modified times",
+                            ));
+                        }
+                        r.node_id
+                    }
                     Command::StatsBreakdown => {
                         let r = req.decode_payload::<BreakdownRequest>()?;
                         // Age bands are a distribution of modified times (docs/48 4.2).

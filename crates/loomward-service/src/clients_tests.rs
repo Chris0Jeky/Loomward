@@ -1478,3 +1478,39 @@ fn client_age_band_breakdowns_need_modified_times() {
     .unwrap();
     ok(as_client(&svc, "mcp:space", "stats.breakdown", payload));
 }
+
+#[test]
+fn client_children_sorted_by_modified_time_need_modified_times() {
+    let tmp = temp_root();
+    let svc = open(tmp.path());
+    let alpha = root(&svc, "Alpha", 1, Some(ALPHA));
+    let node = root_node(&svc, &alpha);
+    let payload = json!({"node_id": node, "sort": "modified_desc", "basis": "logical", "limit": 200, "cursor": null});
+    svc.grant_client("mcp:space", std::slice::from_ref(&alpha), &["size"], None)
+        .unwrap();
+    let e = err(as_client(
+        &svc,
+        "mcp:space",
+        "tree.children",
+        payload.clone(),
+    ));
+    assert_eq!(e.code, ErrorCode::PermissionDenied);
+    assert!(e.message.as_str().contains("modified"), "{e:?}");
+    svc.grant_client(
+        "mcp:space",
+        std::slice::from_ref(&alpha),
+        &["size", "modified"],
+        None,
+    )
+    .unwrap();
+    let page = ok(as_client(&svc, "mcp:space", "tree.children", payload));
+    // With the field granted, rows keep it (a projector that always stripped would fail here).
+    assert!(
+        page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row.get("modified_at").is_some()),
+        "{page}"
+    );
+}
