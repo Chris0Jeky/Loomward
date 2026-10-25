@@ -668,8 +668,16 @@ dependencies = [
 name = "loomward-cli"
 version = "0.1.0"
 dependencies = [
+ "loomward-catalog",
  "loomward-core",
+ "loomward-engine",
+ "loomward-operations",
+ "loomward-protocol",
+ "loomward-service",
+ "loomward-windows",
+ "rusqlite",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
