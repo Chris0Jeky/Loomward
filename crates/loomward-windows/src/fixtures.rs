@@ -641,6 +641,25 @@ fn control(path: &Path, code: u32, input: &[u8]) -> io::Result<()> {
 }
 
 #[cfg(windows)]
+/// Creates a synthetic, non-symlink file reparse point strictly below a disposable lab base.
+pub fn file_reparse_point(path: &Path, base: &Path) -> io::Result<()> {
+    let path = scoped(path, base)?;
+    let _pins = pin(path
+        .parent()
+        .ok_or_else(|| refuse("fixture needs a parent"))?)?;
+    fs::File::create_new(&path)?;
+    // Empty REPARSE_GUID_DATA_BUFFER with a private tag and synthetic, nonzero GUID.
+    let mut buffer = [0u8; 24];
+    buffer[..4].copy_from_slice(&0x42u32.to_le_bytes());
+    buffer[8..].fill(0x38);
+    control(
+        &path,
+        windows_sys::Win32::System::Ioctl::FSCTL_SET_REPARSE_POINT,
+        &buffer,
+    )
+}
+
+#[cfg(windows)]
 pub(crate) fn junction(path: &Path, target: &Path) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     fs::create_dir(path)?;

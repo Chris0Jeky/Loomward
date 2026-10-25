@@ -6952,12 +6952,12 @@ fn regranting_a_renamed_unverified_root_retires_the_grant_naming_the_old_path() 
     );
 }
 
-/// Renames an unverified grant's folder (optionally recreating another folder at the old path),
-/// re-grants it at the new path with the probe error injected, and returns the two grants' states.
+/// Renames an unverified grant's folder, prepares its old path, re-grants it at the new path with
+/// the probe error injected, and returns the two grants' states.
 #[cfg(windows)]
 fn regrant_renamed_unverified(
     probe_error: Option<loomward_windows::enumerate::SourceError>,
-    replace_old: bool,
+    replace_old: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
 ) -> Option<(String, String)> {
     if loomward_windows::enumerate::running_elevated() {
         return None;
@@ -6971,8 +6971,15 @@ fn regrant_renamed_unverified(
     svc.inner.grant(&folder, "cli_flag", true).unwrap();
     let moved = tmp.path().join("fat-folder-renamed");
     std::fs::rename(&folder, &moved).unwrap();
-    if replace_old {
-        std::fs::create_dir(&folder).unwrap();
+    if let Err(error) = replace_old(&folder, &moved) {
+        if matches!(
+            error.kind(),
+            std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::Unsupported
+        ) {
+            eprintln!("SKIP old-path fixture: {error}");
+            return None;
+        }
+        panic!("old-path fixture: {error}");
     }
     let moved = moved.canonicalize().unwrap();
     *svc.inner.hooks.probe_error.lock().unwrap() = probe_error;
@@ -6995,7 +7002,8 @@ fn regrant_renamed_unverified(
 fn a_definitely_non_directory_old_path_retires_the_unverified_grant() {
     use loomward_windows::enumerate::SourceError;
     for code in [267, 0xC000_0103_u32 as i32] {
-        if let Some(states) = regrant_renamed_unverified(Some(SourceError::Io(code)), false) {
+        if let Some(states) = regrant_renamed_unverified(Some(SourceError::Io(code)), |_, _| Ok(()))
+        {
             assert_eq!(
                 states,
                 ("identity_changed".into(), "active".into()),
@@ -7217,9 +7225,64 @@ fn an_inconclusive_old_path_probe_never_retires_an_unverified_grant() {
         SourceError::Io(995),
         SourceError::Refused,
     ] {
-        if let Some(states) = regrant_renamed_unverified(Some(error), false) {
-            assert_eq!(states, ("active".into(), "active".into()), "{error:?}");
+        for replace_old in [false, true] {
+            let states = regrant_renamed_unverified(Some(error), |old, _| {
+                if replace_old {
+                    std::fs::create_dir(old)
+                } else {
+                    Ok(())
+                }
+            });
+            if let Some(states) = states {
+                assert_eq!(
+                    states,
+                    ("active".into(), "active".into()),
+                    "{error:?}, replace_old={replace_old}"
+                );
+            }
         }
+    }
+}
+
+/// Refusing a junction does not prove that the previously granted folder is gone.
+#[cfg(windows)]
+#[test]
+fn an_inconclusive_old_path_junction_never_retires_an_unverified_grant() {
+    use loomward_windows::enumerate::SourceError;
+    let states = regrant_renamed_unverified(Some(SourceError::Refused), |old, moved| {
+        use std::os::windows::fs::MetadataExt;
+        let made = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(old)
+            .arg(moved)
+            .output()?;
+        if !made.status.success() {
+            eprintln!("SKIP old-path junction: {made:?}");
+            return Err(std::io::ErrorKind::Unsupported.into());
+        }
+        assert_ne!(std::fs::symlink_metadata(old)?.file_attributes() & 0x400, 0);
+        Ok(())
+    });
+    if let Some(states) = states {
+        assert_eq!(states, ("active".into(), "active".into()));
+    }
+}
+
+/// A non-symlink file reparse point satisfies is_file(), so it pins the separate reparse guard.
+#[cfg(windows)]
+#[test]
+fn an_inconclusive_old_path_file_reparse_point_never_retires_an_unverified_grant() {
+    use loomward_windows::enumerate::SourceError;
+    let states = regrant_renamed_unverified(Some(SourceError::Refused), |old, _| {
+        use std::os::windows::fs::MetadataExt;
+        loomward_windows::fixtures::file_reparse_point(old, old.parent().unwrap())?;
+        let metadata = std::fs::symlink_metadata(old)?;
+        assert!(metadata.is_file());
+        assert_ne!(metadata.file_attributes() & 0x400, 0);
+        Ok(())
+    });
+    if let Some(states) = states {
+        assert_eq!(states, ("active".into(), "active".into()));
     }
 }
 
@@ -7227,7 +7290,7 @@ fn an_inconclusive_old_path_probe_never_retires_an_unverified_grant() {
 #[cfg(windows)]
 #[test]
 fn an_old_path_answering_another_identity_retires_the_unverified_grant() {
-    if let Some(states) = regrant_renamed_unverified(None, true) {
+    if let Some(states) = regrant_renamed_unverified(None, |old, _| std::fs::create_dir(old)) {
         assert_eq!(states, ("identity_changed".into(), "active".into()));
     }
 }

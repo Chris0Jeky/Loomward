@@ -1215,10 +1215,10 @@ impl Inner {
     }
 
     /// Whether a renamed unverified grant's old path is definitely not this folder: a missing
-    /// path, a non-directory component (Win32 error or NT status), a plain file (not a link or other
-    /// reparse point) where the folder was, or an
-    /// opened folder with another identity. Other failures, including attribute or policy
-    /// refusals, prove nothing, so the grant stays active and a later re-grant can retire it.
+    /// path, a non-directory component (Win32 error or NT status), a plain file (not a link or
+    /// other reparse point) where the folder was, or an opened folder with another identity.
+    /// Other failures, including attribute or policy refusals, prove nothing, so the grant stays
+    /// active and a later re-grant can retire it.
     fn old_path_is_another_folder(&self, old: &Path, identity: &(String, Vec<u8>, String)) -> bool {
         use loomward_windows::enumerate::SourceError;
         #[cfg(test)]
