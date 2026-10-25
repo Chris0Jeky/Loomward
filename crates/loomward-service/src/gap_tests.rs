@@ -230,6 +230,8 @@ fn only_the_listed_commands_change_state() {
         CopyAbandon,
         AskConfigure,
         AskGrant,
+        ClientsGrant,
+        ClientsRevoke,
         AskRevoke,
         AskTurn,
     ];

@@ -6,6 +6,7 @@
   import { session } from '../../lib/stores/session.svelte';
   import { formatTime } from '../../lib/format/time';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
+  import VolumeStatus from '../../lib/ui/VolumeStatus.svelte';
   import type { AlertReport } from '../../lib/contracts.gen';
   import { COVERAGE_WORDS, formFrom, measured, settingsFrom, STATUS, threshold, type SettingsForm } from './model';
 
@@ -79,7 +80,7 @@
     <p class="empty">{loading ? 'Loading alerts' : error ? 'Alerts unavailable.' : 'No report yet.'}</p>
   {:else}
     {#each active as i, n (n)}
-      <p class="alert"><span class="tag bad">Alert</span> <VisibleName name={i.label} /> · {measured(i)}, {threshold(i)}. <span class="muted">{i.note}</span></p>
+      <p class="alert"><span class="tag bad">Alert</span> <VisibleName name={i.label} /> <VolumeStatus id={i.volume_id} /> · {measured(i)}, {threshold(i)}. <span class="muted">{i.note}</span></p>
     {:else}
       <p>No alert is active.{unevaluated ? ` ${unevaluated} ${unevaluated === 1 ? 'check was' : 'checks were'} not evaluated; see below.` : ''}</p>
     {/each}
@@ -98,7 +99,7 @@
           {#each report.items as i, n (n)}
             {@const s = STATUS[i.status]}
             <tr>
-              <th scope="row"><VisibleName name={i.label} /></th>
+              <th scope="row"><VisibleName name={i.label} /> <VolumeStatus id={i.volume_id} /></th>
               <td>{i.kind === 'low_space' ? 'Free space' : 'Growth'}</td>
               <td><span class="tag" class:bad={s.tone === 'bad'} class:ok={s.tone === 'ok'} class:warn={s.tone === 'warn'} class:unk={s.tone === 'unk'}>{s.label}</span><small>{i.note}</small></td>
               <td class:unknown={i.measured_bytes === null}>{measured(i)}{#if i.window_start && i.window_end}<small>{formatTime(i.window_start)} to {formatTime(i.window_end)}</small>{/if}</td>

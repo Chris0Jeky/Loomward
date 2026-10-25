@@ -306,6 +306,14 @@ pub fn roundtrip(def: &str, v: &Value) -> Option<Result<Value, String>> {
         "TreeInvalidated" => rt::<TreeInvalidated>(v),
         "TelemetrySampleEvent" => rt::<TelemetrySampleEvent>(v),
         "LearningUpdated" => rt::<LearningUpdated>(v),
+        "McpClient" => rt::<McpClient>(v),
+        "ClientField" => rt::<ClientField>(v),
+        "ClientGrantRequest" => rt::<ClientGrantRequest>(v),
+        "ClientGrantResult" => rt::<ClientGrantResult>(v),
+        "ClientGrantRecord" => rt::<ClientGrantRecord>(v),
+        "ClientGrantList" => rt::<ClientGrantList>(v),
+        "ClientRevokeRequest" => rt::<ClientRevokeRequest>(v),
+        "ClientRevokeResult" => rt::<ClientRevokeResult>(v),
         _ => return None,
     })
 }

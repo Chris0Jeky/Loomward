@@ -1,0 +1,9 @@
+{
+  "client": "mcp:synthetic-reader",
+  "roots": [
+    "rt_mock_1"
+  ],
+  "fields": [
+    "size"
+  ]
+}

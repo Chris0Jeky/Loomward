@@ -19,6 +19,7 @@ mod alerts;
 mod apps;
 mod ask;
 mod backups;
+mod client_commands;
 mod clients;
 mod clutter;
 mod collections;
@@ -441,6 +442,8 @@ pub(crate) fn is_mutation(c: Command) -> bool {
             | CopyAbandon
             | AskConfigure
             | AskGrant
+            | ClientsGrant
+            | ClientsRevoke
             | AskRevoke
             | AskTurn
     )
@@ -500,7 +503,7 @@ pub(crate) struct Queue {
 fn is_revocation(c: Command) -> bool {
     matches!(
         c,
-        Command::RootsRevoke | Command::GrantsRevoke | Command::AskRevoke
+        Command::RootsRevoke | Command::GrantsRevoke | Command::AskRevoke | Command::ClientsRevoke
     )
 }
 
@@ -711,6 +714,9 @@ impl ViewService for Service {
                     | Command::AskStatus
                     | Command::AskConfigure
                     | Command::AskGrant
+                    | Command::ClientsGrant
+                    | Command::ClientsList
+                    | Command::ClientsRevoke
                     | Command::AskRevoke
                     | Command::AskTurn
                     | Command::AskResult

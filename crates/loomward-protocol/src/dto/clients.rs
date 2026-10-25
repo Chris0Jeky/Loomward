@@ -2,6 +2,70 @@
 
 use super::*;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClientField {
+    Path,
+    Size,
+    Modified,
+    Attributes,
+    Volumes,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClientGrantRequest {
+    pub client: McpClient,
+    pub roots: UniqueVec<RootId, 1, 64>,
+    pub fields: UniqueVec<ClientField, 0, 5>,
+    #[serde(
+        default,
+        deserialize_with = "crate::types::optional_present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub expires_at: Option<Timestamp>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClientGrantResult {
+    pub grant_id: BoundedStr<1, 64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClientGrantRecord {
+    pub grant_id: BoundedStr<1, 64>,
+    pub client: McpClient,
+    pub roots: BoundedVec<RootId, 0, 64>,
+    pub fields: UniqueVec<ClientField, 0, 5>,
+    pub created_at: Timestamp,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub expires_at: Option<Timestamp>,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub revoked_at: Option<Timestamp>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClientGrantList {
+    pub grants: Vec<ClientGrantRecord>,
+    pub available_fields: UniqueVec<ClientField, 0, 5>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClientRevokeRequest {
+    pub client: McpClient,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClientRevokeResult {
+    pub client: McpClient,
+    pub revoked: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ClientEntryRow {

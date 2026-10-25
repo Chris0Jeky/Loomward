@@ -11,6 +11,7 @@ import { createInventoryMock } from './mock-inventory';
 import { createAlertMock } from './mock-alerts';
 import { createClutterMock } from './mock-clutter';
 import { createAskMock } from './mock-ask';
+import { createClientMock } from './mock-clients';
 import { createBackupMock } from './mock-backups';
 import diagnosticsFixture from '../../../../contracts/v3/examples/commands/diagnostics.preview.result.json';
 import { generateTree, prng, type SynthNode } from './synth';
@@ -393,6 +394,7 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
 
   // LW-118: a scripted fake model over this transport's own roots and search; no endpoint, no network.
   Object.assign(handlers, createAskMock(now, failWith, { roots: () => handlers['roots.list']!({}) as RootList, search }));
+  Object.assign(handlers, createClientMock(now, fail, () => handlers['roots.list']!({}) as RootList));
 
   const collections = createCollectionMock(now, failWith, rawNodeFor, entryRow,
     (n) => topOf(n).some((a) => views.revokedRoots.has(rootId(a))), views.stateRev);

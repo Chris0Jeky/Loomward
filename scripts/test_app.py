@@ -48,6 +48,7 @@ from test_app_copy import run_copy
 from test_app_inventory import run_inventory
 from test_app_ask import live_ask_isolated, run_ask
 from test_app_clutter import live_clutter, run_clutter
+from test_app_agent_access import run_agent_access
 
 ROOT = Path(__file__).resolve().parents[1]
 TOKEN = 'a1b2c3d4e5f60718293a4b5c6d7e8f90'
@@ -1051,6 +1052,7 @@ def main() -> None:
         run_copy(page, base, a.view_shots)
         run_ask(page, base)
         run_clutter(page, base)
+        run_agent_access(page, base, a.view_shots)
 
         # --- hygiene -------------------------------------------------------------------------------
         check(hosts <= {'127.0.0.1'}, f'every request stayed on loopback: {sorted(hosts)}')
