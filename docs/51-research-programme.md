@@ -300,23 +300,23 @@ SQLite, automatic deletion of anything, an elevated product service.
 
 ## 7. New backlog items (minted in `backlog/issues.json`, mirrored as GitHub issues)
 
-| LW | Title | Phase | Depends on |
-|---|---|---|---|
-| LW-131 | Read-only reclaim planner for a nearly full volume | P1 | LW-119, LW-108, LW-009 |
-| LW-132 | Truthful receipt vocabulary and storage-path qualification | P1 | LW-124, LW-040 |
-| LW-133 | Hyper-V crash campaign for the copy gate (G5) | P1 | LW-041, LW-040 |
-| LW-134 | Physical power-loss and unplug qualification on disposable media | P4 | LW-133, LW-137 |
-| LW-135 | Gate the Recycle Bin retirement effect for verified archive originals | P4 | LW-124, LW-037, LW-138 |
-| LW-136 | Archive custody: copy count, rolling scrub and restore drills | P4 | LW-124, LW-036, LW-084 |
-| LW-137 | Storage-path identity and volume health as domain objects | P4 | LW-004 |
-| LW-138 | Evidence packets, multi-axis taxonomy and the coldness vector | P2 | LW-110, LW-025 |
-| LW-139 | Classical student ensemble with labelling functions | P2 | LW-138, LW-025 |
-| LW-140 | Small-model tournament for categorisation and summaries | P3 | LW-138, LW-117 |
-| LW-141 | Hosted categoriser fallback with a literal payload preview | P3 | LW-117, LW-111, LW-140 |
-| LW-142 | RAW preview catalogue with a budgeted local cache | P5 | LW-099, LW-015 |
-| LW-143 | Photo working sets and a prioritised transfer queue | P5 | LW-124, LW-142 |
-| LW-144 | Measure hashing and I/O costs per storage class | P5 | LW-064 |
-| LW-145 | Hostile names and metadata cannot create effects | P0-P5 | LW-118, LW-066 |
+| LW | GitHub | Title | Phase | Depends on |
+|---|---|---|---|---|
+| LW-131 | #870 | Read-only reclaim planner for a nearly full volume | P1 | LW-119, LW-108, LW-009 |
+| LW-132 | #871 | Truthful receipt vocabulary and storage-path qualification | P1 | LW-124, LW-040 |
+| LW-133 | #872 | Hyper-V crash campaign for the copy gate (G5) | P1 | LW-041, LW-040 |
+| LW-134 | #873 | Physical power-loss and unplug qualification on disposable media | P4 | LW-133, LW-137 |
+| LW-135 | #874 | Gate the Recycle Bin retirement effect for verified archive originals | P4 | LW-124, LW-037, LW-138 |
+| LW-136 | #875 | Archive custody: copy count, rolling scrub and restore drills | P4 | LW-124, LW-036, LW-084 |
+| LW-137 | #876 | Storage-path identity and volume health as domain objects | P4 | LW-004 |
+| LW-138 | #877 | Evidence packets, multi-axis taxonomy and the coldness vector | P2 | LW-110, LW-025 |
+| LW-139 | #878 | Classical student ensemble with labelling functions | P2 | LW-138, LW-025 |
+| LW-140 | #879 | Small-model tournament for categorisation and summaries | P3 | LW-138, LW-117 |
+| LW-141 | #880 | Hosted categoriser fallback with a literal payload preview | P3 | LW-117, LW-111, LW-140 |
+| LW-142 | #881 | RAW preview catalogue with a budgeted local cache | P5 | LW-099, LW-015 |
+| LW-143 | #882 | Photo working sets and a prioritised transfer queue | P5 | LW-124, LW-142 |
+| LW-144 | #883 | Measure hashing and I/O costs per storage class | P5 | LW-064 |
+| LW-145 | #884 | Hostile names and metadata cannot create effects | P0-P5 | LW-118, LW-066 |
 
 Bodies: `backlog/issues/LW-131.md` to `LW-145.md`.
 

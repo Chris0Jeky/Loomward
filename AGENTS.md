@@ -17,7 +17,7 @@ duplicate/unused-file inspection, backups, and understandable process/RAM contro
 ruling: **meaning, residency and permission are separate systems.**
 
 Python reference app (a frozen test oracle since q-40; it changes only to keep cross-language fixtures aligned), Rust native workspace (first compiled and
-tested here on 2026-10-09; the Tauri 2 desktop shell first built on 2026-10-10, #164), MCP read-only reference, 130-task
+tested here on 2026-10-09; the Tauri 2 desktop shell first built on 2026-10-10, #164), MCP read-only reference, 145-task
 `LW-*` backlog.
 
 ## Where the ChatGPT material stands
@@ -130,7 +130,7 @@ those of 12 October (licence, thesis, channels, nightly, Find & Ask, readiness b
 ## Pitfalls
 
 - `LW-*` IDs are the local backlog (`backlog/issues.json`, the source of truth), not GitHub numbers;
-  they are mirrored as issues #4-#105, #120-#131 and #404-#421 (`backlog/github-issues.json` maps them). New IDs mint there first.
+  they are mirrored as issues #4-#105, #120-#131, #404-#421 and #870-#884 (`backlog/github-issues.json` maps them). New IDs mint there first.
 - Licence: AGPL-3.0-only since #396; the owner may also license it commercially (HUMAN_TODO q-20 to q-23).
 - Taskdeck is proprietary: never copy its code into this repository.
 - Public repo: synthetic fixtures only; no real filenames, inventories or training exports.
