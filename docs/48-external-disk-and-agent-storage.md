@@ -206,7 +206,7 @@ the owner approves each plan.
    the biggest folders; Clutter lists build outputs and caches you can delete yourself; volumes on USB are marked
    external, and a detached one shows offline with its last-seen sizes.
 2. **Let an agent look.** In Agent access, create a grant for one agent name (for example `claude`): pick the roots
-   and tick what it may see (`size` for space tools, `path` for names, `modified` for ages, `attributes` for file
+   and tick what it may see (`size` for space tools, `path` for where things are, `modified` for ages, `attributes` for file
    attributes, `volumes` for drive capacity). Revoke it any time; it stops at the agent's next call.
 3. **Connect the agent.** Add the server to the agent host, for example Claude Code:
    `claude mcp add loomward -- "%LOCALAPPDATA%\Loomward\loomward-mcp.exe" --client claude`. The agent's tools and the
