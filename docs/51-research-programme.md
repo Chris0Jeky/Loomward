@@ -345,7 +345,7 @@ answer needs its own item before `LOOMWARD_COPY_STAGING_REMOVAL` can turn on.
 | this one | docs/51, docs/52, LW-131 to LW-146 | none |
 | evidence-packet schema | `schemas/evidence-packet-v1.json`, synthetic packets, validator test | none |
 | reclaim fixtures | synthetic `fixtures/reclaim/` trees and their expected candidates (docs/52 section 7) | none |
-| Hyper-V campaign skeleton | host and guest scripts with a dry-run self-test; nothing creates a VM | none |
+| this one | docs/53: the Hyper-V campaign design (LW-133); the host orchestrator and pause hook follow as lanes H2 and H3 | none |
 
 ## 9. Owner questions (batched; at most five)
 
