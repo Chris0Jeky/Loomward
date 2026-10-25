@@ -9,6 +9,35 @@
 use loomward_protocol::RootGrantResultRefusal as Refusal;
 use std::path::{Path, PathBuf};
 
+/// Exclusive OS lock on `state_dir/lock`, held until the returned handle drops. A crashed host
+/// leaves no stale lock. Hosts must drop their service before dropping this handle.
+/// Ported from `native/src/launch.rs`; the desktop will adopt this shared helper separately.
+pub fn lock_state_dir(state_dir: &Path) -> Result<std::fs::File, String> {
+    use std::fs::{File, TryLockError};
+
+    let dir = prospective_dir(state_dir)?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("cannot create {}: {e}", state_dir.display()))?;
+    let file = File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(dir.join("lock"))
+        .map_err(|e| format!("cannot open the state lock in {}: {e}", state_dir.display()))?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(TryLockError::WouldBlock) => Err(format!(
+            "busy: Loomward is already open on {}. Switch to that window, or close it first.",
+            state_dir.display()
+        )),
+        Err(TryLockError::Error(e)) => Err(format!(
+            "cannot lock the state in {}: {e}",
+            state_dir.display()
+        )),
+    }
+}
+
 /// Resolve a local destination before creating it; reject unsafe existing ancestors.
 pub fn prospective_dir(path: &Path) -> Result<PathBuf, String> {
     if network_path(path) {
@@ -422,6 +451,25 @@ pub(crate) fn cloud_placeholder(_: &std::fs::Metadata) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn state_lock_is_exclusive_and_released_without_removing_the_file() {
+        let tmp = tempfile::tempdir_in(test_roots_base()).unwrap();
+        let state = tmp.path().join("state");
+        let lock = lock_state_dir(&state).unwrap();
+        assert!(state.join("lock").is_file());
+        assert!(lock_state_dir(&state).unwrap_err().starts_with("busy:"));
+        drop(lock);
+        assert!(lock_state_dir(&state).is_ok());
+    }
+
+    #[test]
+    fn state_lock_uses_the_prospective_directory_fence() {
+        assert_eq!(
+            lock_state_dir(Path::new(r"\\?\GLOBALROOT\Device\fixture\state")).unwrap_err(),
+            "network_or_removable_unsupported"
+        );
+    }
 
     #[cfg(windows)]
     #[test]
