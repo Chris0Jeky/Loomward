@@ -16,7 +16,7 @@ fn duplicates_select_candidates_before_opening_root_metadata() {
         "duplicates.inspect",
         duplicate_request(&lab.root, 1024),
     ));
-    assert_eq!(error.code, ErrorCode::PermissionDenied);
+    assert_eq!(error.code, ErrorCode::DeviceOffline);
     assert!(svc
         .inner
         .hooks

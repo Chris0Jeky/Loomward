@@ -17,6 +17,13 @@ use serde_json::{json, Value};
 
 mod root_view;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RootPresence {
+    Online,
+    Offline,
+    IdentityChanged,
+}
+
 type Handled = Result<Out, ErrorBody>;
 
 fn out(result: Value, revs: Option<(i64, i64)>) -> Out {
@@ -533,7 +540,8 @@ impl Inner {
                 "the root's grant is not active",
             ));
         }
-        self.session_root_gate(&root)?;
+        self.session_root_gate(&root)
+            .map_err(|e| self.root_admission_error(&root, e))?;
         let dir = root
             .dir
             .ok_or_else(|| fail(ErrorCode::InternalError, "root has no directory row"))?;
@@ -634,10 +642,8 @@ impl Inner {
         Ok(out(encode(&JobResult { job })?, None))
     }
 
-    /// The root a session may scan or read (scan.start, duplicates.inspect): a synthetic session
-    /// its registered lab roots, a personal session its own owner grants that still pass today's
-    /// fences. Runs before any engine call or filesystem access.
-    pub(crate) fn session_root_gate(&self, root: &db::RootRow) -> Result<(), ErrorBody> {
+    /// Provenance only: cached candidate selection can run without opening the native root.
+    pub(crate) fn session_root_origin_gate(&self, root: &db::RootRow) -> Result<(), ErrorBody> {
         let (origin, message, reason) = match self.dataset {
             DatasetClass::Synthetic => (
                 "lab_generated",
@@ -668,6 +674,24 @@ impl Inner {
                 reason,
             ));
         }
+        Ok(())
+    }
+
+    /// Native admission checks pinned liveness and current fences before any scan or content job.
+    pub(crate) fn session_root_gate(&self, root: &db::RootRow) -> Result<(), ErrorBody> {
+        self.session_root_origin_gate(root)?;
+        match self.root_presence(root) {
+            Some(RootPresence::Offline) => {
+                return Err(with_reason(
+                    fail(ErrorCode::DeviceOffline, "the granted root is offline"),
+                    "volume_offline",
+                ))
+            }
+            Some(RootPresence::IdentityChanged) => {
+                return Err(fail(ErrorCode::PermissionDenied, "root_identity_changed"))
+            }
+            _ => {}
+        }
         if self.dataset == DatasetClass::Personal {
             self.stored_grant_fence(root).map_err(|r| {
                 with_reason(
@@ -680,6 +704,16 @@ impl Inner {
             })?;
         }
         Ok(())
+    }
+
+    /// Admission retires a proven replacement through the same path as the engine's check.
+    pub(crate) fn root_admission_error(&self, root: &db::RootRow, error: ErrorBody) -> ErrorBody {
+        if error.message.as_str() == "root_identity_changed" {
+            if let Ok(id) = RootId::new(self.root_id(root.root)) {
+                self.identity_changed(root.grant, &id, true);
+            }
+        }
+        error
     }
 
     /// #312: a stored grant may predate today's fences (#253, #284, #286), so the path rules run

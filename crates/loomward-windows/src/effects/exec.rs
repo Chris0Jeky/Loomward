@@ -74,6 +74,8 @@ pub struct Request<'a> {
     pub destination: &'a Path,
     pub destination_grant: u64,
     pub grants_active: bool,
+    /// Only synthetic sessions on registered lab roots may use fixed USB destinations.
+    pub synthetic_lab: bool,
     /// Loomward's state directory or a scan fence contains the destination.
     pub protected: bool,
     pub date: &'a str,
@@ -259,7 +261,8 @@ fn prepare_with_limit(
         ancestors,
         verified_volume: enumerate::verifies_identity(&filesystem(request.destination)?),
         cloud_synced: dest.cloud_synced()?,
-        unsupported_volume: crate::volumes::is_removable(request.destination)?,
+        unsupported_volume: crate::volumes::classify(request.destination)?
+            .unsupported_copy_destination(!request.synthetic_lab)?,
         protected: request.protected,
         case_sensitive: dest.case_sensitive()?,
         existing_names,

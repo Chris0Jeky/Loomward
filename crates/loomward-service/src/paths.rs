@@ -217,7 +217,7 @@ pub(crate) fn check_new_root(root: &Path, state: &Path) -> Result<PathBuf, Strin
         .ancestors()
         .find(|p| p.is_dir())
         .ok_or("root parent unavailable")?;
-    if loomward_windows::volumes::is_removable(ancestor).map_err(|_| "identity_unavailable")? {
+    if loomward_windows::volumes::unsupported_root(ancestor).map_err(|_| "identity_unavailable")? {
         return Err("network_or_removable_unsupported".into());
     }
     if root.starts_with(state) || state.starts_with(&root) {
@@ -311,7 +311,7 @@ pub(crate) fn check_root_with(
         return Err(Refusal::VolumeRoot);
     }
     check_profile(&canonical)?;
-    if loomward_windows::volumes::is_removable(&canonical)
+    if loomward_windows::volumes::unsupported_root(&canonical)
         .map_err(|_| Refusal::IdentityUnavailable)?
     {
         return Err(Refusal::NetworkOrRemovableUnsupported);

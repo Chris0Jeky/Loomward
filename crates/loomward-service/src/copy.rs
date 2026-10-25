@@ -1027,7 +1027,8 @@ impl Inner {
             return Err(fail(ErrorCode::PermissionDenied, "grant_not_active"));
         }
         // Synthetic sessions: lab roots only (the same gate the synthetic scan uses).
-        self.session_root_gate(&root)?;
+        self.session_root_gate(&root)
+            .map_err(|e| self.root_admission_error(&root, e))?;
         let granted = self.engine.granted_root(
             RootId::new(self.root_id(row))
                 .map_err(|_| fail(ErrorCode::NotFound, "unknown root"))?,
@@ -1121,6 +1122,7 @@ impl Inner {
             destination: &dest_path,
             destination_grant: dest.root.grant as u64,
             grants_active: true,
+            synthetic_lab: self.dataset == DatasetClass::Synthetic,
             protected: dest_path.starts_with(&state),
             date: &date,
             // The pinned destination must sit under its own grant's verified root (review of #522).

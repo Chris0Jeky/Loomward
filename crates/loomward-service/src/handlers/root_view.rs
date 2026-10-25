@@ -1,16 +1,71 @@
 //! Root response assembly, shared by listing and grant/change notices.
-use super::{catalog_error, db, encode, scan_view, ts_ns, Inner};
+use super::{catalog_error, db, encode, scan_view, ts_ns, Inner, RootPresence};
 use loomward_catalog::{NodeKey, Reader};
 use loomward_protocol::{ErrorBody, RootId};
 use serde_json::{json, Value};
 
 impl Inner {
+    /// Metadata-only presence of a native grant. A different volume is never online for this root.
+    /// Fixtures and legacy grants without a pinned volume GUID keep their existing path.
+    pub(crate) fn root_presence(&self, r: &db::RootRow) -> Option<RootPresence> {
+        if !matches!(r.origin.as_str(), "owner_granted" | "lab_generated") {
+            return None;
+        }
+        let (key, file, guid): (String, Vec<u8>, Option<String>) = self
+            .db()
+            .query_row(
+                "SELECT volume_key,root_file_id,volume_guid FROM st.root_grant WHERE id=?1",
+                [r.grant],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .ok()?;
+        let guid = guid?;
+        match self.open_observation(std::path::Path::new(&r.display_path)) {
+            Ok((_, identity)) => Self::identity_triple(&identity).ok().map(|seen| {
+                if seen == (key, file, guid) {
+                    RootPresence::Online
+                } else {
+                    RootPresence::IdentityChanged
+                }
+            }),
+            // Missing path, device not ready or disconnected. Other errors prove no absence.
+            Err(loomward_windows::enumerate::SourceError::Io(code))
+                if matches!(
+                    code as u32,
+                    2 | 3
+                        | 15
+                        | 21
+                        | 55
+                        | 1167
+                        | 0xC000_000E
+                        | 0xC000_000F
+                        | 0xC000_0034
+                        | 0xC000_003A
+                        | 0xC000_009D
+                        | 0xC000_00A3
+                ) =>
+            {
+                Some(RootPresence::Offline)
+            }
+            Err(_) => None,
+        }
+    }
+
     pub(super) fn root_json(
         &self,
         r: &db::RootRow,
         reader: Option<&mut Reader>,
     ) -> Result<Value, ErrorBody> {
-        let (state, mut coverage) = scan_view(r);
+        let (mut state, mut coverage) = scan_view(r);
+        if r.grant_state == "active"
+            && matches!(
+                self.root_presence(r),
+                Some(RootPresence::Offline | RootPresence::IdentityChanged)
+            )
+        {
+            state = "stale";
+            coverage = "stale";
+        }
         let active = r.grant_state == "active";
         let totals = match (reader, r.dir, active && r.state != "never_scanned") {
             (Some(reader), Some(dir), true) => match reader.inspect(NodeKey::Dir(dir)) {
