@@ -24,12 +24,24 @@ fn unobserved_packet(state: &str) -> Value {
     let mut packet = packet();
     packet["coverage"]["state"] = json!(state);
     packet["coverage"]["allocation_known"] = json!(false);
-    for key in ["files", "folders", "logical_bytes", "allocated_bytes"] {
+    for key in [
+        "files",
+        "folders",
+        "logical_bytes",
+        "allocated_bytes",
+        "max_depth",
+    ] {
         packet["shape"][key] = Value::Null;
     }
     packet["duplicates"] = json!({"duplicate_bytes": null, "groups": null});
     packet["families"] = json!([]);
     packet["extensions"] = json!([]);
+    packet["markers"] = json!([]);
+    for (key, value) in packet["time"].as_object_mut().unwrap() {
+        if key != "last_access" {
+            *value = Value::Null;
+        }
+    }
     packet["media"] = Value::Null;
     packet
 }
@@ -68,6 +80,42 @@ unobserved_fact_test!(
     unobserved_duplicate_bytes_are_null,
     "/duplicates/duplicate_bytes",
     json!(0)
+);
+unobserved_fact_test!(unobserved_max_depth_is_null, "/shape/max_depth", json!(0));
+unobserved_fact_test!(
+    unobserved_markers_are_empty,
+    "/markers",
+    json!(["cargo_toml"])
+);
+unobserved_fact_test!(
+    unobserved_newest_content_write_is_null,
+    "/time/newest_content_write",
+    json!(0)
+);
+unobserved_fact_test!(
+    unobserved_oldest_content_write_is_null,
+    "/time/oldest_content_write",
+    json!(0)
+);
+unobserved_fact_test!(
+    unobserved_newest_source_write_is_null,
+    "/time/newest_source_write",
+    json!(0)
+);
+unobserved_fact_test!(
+    unobserved_newest_generated_write_is_null,
+    "/time/newest_generated_write",
+    json!(0)
+);
+unobserved_fact_test!(
+    unobserved_git_last_commit_is_null,
+    "/time/git_last_commit",
+    json!(0)
+);
+unobserved_fact_test!(
+    unobserved_git_dirty_is_null,
+    "/time/git_dirty",
+    json!(false)
 );
 unobserved_fact_test!(
     unobserved_duplicate_groups_are_null,
@@ -147,7 +195,11 @@ fn tokens_refuse_all_controls_and_bidi_formatting() {
         let mut packet = packet();
         packet["subject"]["name_tokens"] =
             json!([format!("a{}b", char::from_u32(codepoint).unwrap())]);
-        assert!(validate_packet(&packet).is_err(), "U+{codepoint:04X}");
+        assert_eq!(
+            validate_packet(&packet).unwrap_err().message(),
+            "name_tokens must be single word runs",
+            "U+{codepoint:04X}"
+        );
     }
 }
 
@@ -300,7 +352,6 @@ fn path_like_tokens_and_extensions_are_refused() {
         "c:\\folder",
         "\\\\host\\share",
         "//host/share",
-        "bad\0token",
     ] {
         reject_packet(
             "/subject/name_tokens/0",
@@ -333,6 +384,7 @@ fn token_lengths_and_extension_pattern_are_enforced() {
     for invalid in [
         json!("RS"),
         json!(".rs"),
+        json!("bad\0token"),
         json!("é"),
         json!("a".repeat(33)),
         json!(true),
@@ -530,13 +582,7 @@ fn depths_are_bounded_integers() {
         ("/subject/depth", "depth"),
         ("/shape/max_depth", "max_depth"),
     ] {
-        for invalid in [
-            json!(-1),
-            json!(4097),
-            json!(false),
-            json!(1.5),
-            Value::Null,
-        ] {
+        for invalid in [json!(-1), json!(4097), json!(false), json!(1.5)] {
             reject_packet(
                 pointer,
                 invalid,
@@ -547,6 +593,14 @@ fn depths_are_bounded_integers() {
         *packet.pointer_mut(pointer).unwrap() = json!(4096);
         validate_packet(&packet).unwrap();
     }
+    reject_packet(
+        "/subject/depth",
+        Value::Null,
+        "depth must be an integer in [0, 4096]",
+    );
+    let mut packet = packet();
+    packet["shape"]["max_depth"] = Value::Null;
+    validate_packet(&packet).unwrap();
 }
 
 #[test]

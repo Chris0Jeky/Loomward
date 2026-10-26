@@ -15,6 +15,11 @@ class CategoriserSchemas(unittest.TestCase):
     def setUp(self):
         if jsonschema is None:
             self.skipTest('jsonschema not installed')
+        probe = jsonschema.Draft202012Validator({
+            'type': 'array', 'contains': {'const': 'match'}, 'maxContains': 1})
+        self.assertTrue(probe.is_valid(['match', 'other']))
+        self.assertFalse(probe.is_valid(['match', 'match']),
+                         'jsonschema must enforce Draft 2020-12 maxContains')
         from referencing import Registry, Resource
 
         packet_schema = json.loads(
@@ -114,25 +119,61 @@ class CategoriserSchemas(unittest.TestCase):
         for state in ['denied', 'unscanned', 'excluded', 'cancelled', 'unknown']:
             packet = copy.deepcopy(self.records[0]['packet'])
             packet['coverage'].update(state=state, allocation_known=False)
-            for key in ['files', 'folders', 'logical_bytes', 'allocated_bytes']:
+            for key in ['files', 'folders', 'logical_bytes', 'allocated_bytes', 'max_depth']:
                 packet['shape'][key] = None
             packet['duplicates'] = {'duplicate_bytes': None, 'groups': None}
             packet['families'] = []
             packet['extensions'] = []
+            packet['markers'] = []
+            for key in packet['time']:
+                if key != 'last_access':
+                    packet['time'][key] = None
             packet['media'] = None
             self.packet_validator.validate(packet)
             for section, key, value in [
                     ('shape', 'files', 0), ('shape', 'folders', 0),
                     ('shape', 'logical_bytes', 0), ('shape', 'allocated_bytes', 0),
+                    ('shape', 'max_depth', 0),
                     ('duplicates', 'duplicate_bytes', 0), ('duplicates', 'groups', 0),
                     (None, 'families', self.records[0]['packet']['families']),
                     (None, 'extensions', self.records[0]['packet']['extensions']),
+                    (None, 'markers', ['cargo_toml']),
+                    ('time', 'newest_content_write', 0),
+                    ('time', 'oldest_content_write', 0),
+                    ('time', 'newest_source_write', 0),
+                    ('time', 'newest_generated_write', 0),
+                    ('time', 'git_last_commit', 0),
+                    ('time', 'git_dirty', False),
                     (None, 'media', self.records[6]['packet']['media'])]:
                 with self.subTest(state=state, section=section, key=key):
                     invalid = copy.deepcopy(packet)
                     target = invalid[section] if section else invalid
                     target[key] = value
                     self.assertFalse(self.packet_validator.is_valid(invalid))
+                    if (section, key) == ('shape', 'allocated_bytes'):
+                        invalid['coverage']['allocation_known'] = True
+                        with self.subTest(allocation_known=True):
+                            self.assertFalse(self.packet_validator.is_valid(invalid))
+
+    def test_incomplete_coverage_requires_positive_known_allocation(self):
+        for state in ['partial', 'stale']:
+            with self.subTest(state=state):
+                packet = copy.deepcopy(self.records[0]['packet'])
+                packet['coverage'].update(state=state, allocation_known=True)
+                packet['shape']['files'] = 1
+                packet['extensions'] = []
+                packet['shape']['allocated_bytes'] = 0
+                self.assertFalse(self.packet_validator.is_valid(packet))
+                packet['shape']['allocated_bytes'] = 1
+                self.packet_validator.validate(packet)
+                packet['shape']['allocated_bytes'] = 0
+                packet['shape']['files'] = 0
+                self.packet_validator.validate(packet)
+                packet['shape']['files'] = None
+                self.packet_validator.validate(packet)
+                packet['shape']['files'] = 1
+                packet['coverage']['state'] = 'complete'
+                self.packet_validator.validate(packet)
 
     def test_allocation_presence_matches_coverage(self):
         packet = copy.deepcopy(self.records[0]['packet'])
@@ -147,10 +188,14 @@ class CategoriserSchemas(unittest.TestCase):
         denied = next(record['packet'] for record in self.records
                       if record['packet']['coverage']['state'] == 'denied')
         self.assertTrue(all(denied['shape'][key] is None for key in
-                            ['files', 'folders', 'logical_bytes', 'allocated_bytes']))
+                            ['files', 'folders', 'logical_bytes', 'allocated_bytes', 'max_depth']))
         self.assertEqual(denied['duplicates'], {'duplicate_bytes': None, 'groups': None})
         self.assertEqual(denied['families'], [])
         self.assertEqual(denied['extensions'], [])
+        self.assertEqual(denied['markers'], [])
+        self.assertTrue(all(value is None for key, value in denied['time'].items()
+                            if key != 'last_access'))
+        self.assertEqual(denied['time']['last_access'], 'not_evidence')
         self.assertIsNone(denied['media'])
         for record in self.records:
             packet = record['packet']

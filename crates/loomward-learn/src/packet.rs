@@ -175,7 +175,7 @@ fn share(value: &Value, name: &str) -> Result<f64, LearnError> {
 
 fn no_path(text: &str, name: &str) -> Result<(), LearnError> {
     // This also excludes drive-relative paths and both Windows and slash-form UNC paths.
-    if text.contains(['/', '\\', ':', '\0']) {
+    if text.contains(['/', '\\', ':']) {
         return Err(LearnError::new(format!("Invalid path-like {name}")));
     }
     Ok(())
@@ -320,11 +320,6 @@ pub fn validate_packet(value: &Value) -> Result<(), LearnError> {
     for token in array(&subject["name_tokens"], "name_tokens", MAX_NAME_TOKENS)? {
         let token = text(token, "name_token", 1, 64)?;
         no_path(token, "name_token")?;
-        if token.chars().any(|c| {
-            c.is_control() || matches!(c, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
-        }) {
-            return Err(LearnError::new("name_tokens must not contain controls or bidi formatting"));
-        }
         if casefold(token) != token {
             return Err(LearnError::new("name_tokens must already be casefolded"));
         }
@@ -350,7 +345,7 @@ pub fn validate_packet(value: &Value) -> Result<(), LearnError> {
     nullable_unsigned(&shape["folders"], "folders", SIZE_MAX)?;
     nullable_unsigned(&shape["logical_bytes"], "logical_bytes", SIZE_MAX)?;
     let allocated = nullable_unsigned(&shape["allocated_bytes"], "allocated_bytes", SIZE_MAX)?;
-    unsigned(&shape["max_depth"], "max_depth", 4096)?;
+    nullable_unsigned(&shape["max_depth"], "max_depth", 4096)?;
 
     validate_families(&value["families"])?;
     let mut extensions = BTreeSet::new();
@@ -417,9 +412,16 @@ pub fn validate_packet(value: &Value) -> Result<(), LearnError> {
             "/shape/folders",
             "/shape/logical_bytes",
             "/shape/allocated_bytes",
+            "/shape/max_depth",
             "/duplicates/duplicate_bytes",
             "/duplicates/groups",
             "/media",
+            "/time/newest_content_write",
+            "/time/oldest_content_write",
+            "/time/newest_source_write",
+            "/time/newest_generated_write",
+            "/time/git_last_commit",
+            "/time/git_dirty",
         ] {
             if !value.pointer(pointer).unwrap().is_null() {
                 return Err(LearnError::new(format!(
@@ -427,7 +429,7 @@ pub fn validate_packet(value: &Value) -> Result<(), LearnError> {
                 )));
             }
         }
-        for key in ["families", "extensions"] {
+        for key in ["families", "extensions", "markers"] {
             if !value[key].as_array().unwrap().is_empty() {
                 return Err(LearnError::new(format!(
                     "/{key} must be unknown for unobserved coverage"

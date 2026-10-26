@@ -1075,7 +1075,7 @@
         "folders": null,
         "logical_bytes": null,
         "allocated_bytes": null,
-        "max_depth": 6
+        "max_depth": null
       },
       "families": [],
       "extensions": [],

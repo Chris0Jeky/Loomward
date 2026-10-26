@@ -31,7 +31,7 @@
         "folders": {"$ref": "#/$defs/count_or_null"},
         "logical_bytes": {"$ref": "#/$defs/bytes_or_null"},
         "allocated_bytes": {"$ref": "#/$defs/bytes_or_null"},
-        "max_depth": {"type": "integer", "minimum": 0, "maximum": 4096}
+        "max_depth": {"type": ["integer", "null"], "minimum": 0, "maximum": 4096}
       }
     },
     "families": {
@@ -121,7 +121,7 @@
     },
     "coverage": {
       "type": "object",
-      "description": "Denied, unscanned, excluded, cancelled and unknown coverage have null shape counts/bytes and duplicate counts/bytes, empty families/extensions and null media. Partial and stale observations are lower bounds.",
+      "description": "Denied, unscanned, excluded, cancelled and unknown coverage have null shape and duplicate facts, empty families/extensions/markers, null media and null time facts except last_access. Partial and stale observations are lower bounds.",
       "additionalProperties": false,
       "required": ["state", "allocation_known", "link_counts_observed", "online"],
       "properties": {
@@ -136,10 +136,19 @@
     {
       "if": {"properties": {"coverage": {"properties": {"state": {"enum": ["denied", "unscanned", "excluded", "cancelled", "unknown"]}}}}},
       "then": {"properties": {
-        "shape": {"properties": {"files": {"type": "null"}, "folders": {"type": "null"}, "logical_bytes": {"type": "null"}, "allocated_bytes": {"type": "null"}}},
+        "shape": {"properties": {"files": {"type": "null"}, "folders": {"type": "null"}, "logical_bytes": {"type": "null"}, "allocated_bytes": {"type": "null"}, "max_depth": {"type": "null"}}},
         "duplicates": {"properties": {"duplicate_bytes": {"type": "null"}, "groups": {"type": "null"}}},
         "families": {"maxItems": 0},
         "extensions": {"maxItems": 0},
+        "markers": {"maxItems": 0},
+        "time": {"properties": {
+          "newest_content_write": {"type": "null"},
+          "oldest_content_write": {"type": "null"},
+          "newest_source_write": {"type": "null"},
+          "newest_generated_write": {"type": "null"},
+          "git_last_commit": {"type": "null"},
+          "git_dirty": {"type": "null"}
+        }},
         "media": {"type": "null"}
       }}
     },
@@ -153,6 +162,13 @@
         "shape": {"properties": {"files": {"type": "integer", "minimum": 1}}}
       }},
       "then": {"properties": {"shape": {"properties": {"allocated_bytes": {"type": "integer"}}}}}
+    },
+    {
+      "if": {"properties": {
+        "coverage": {"properties": {"state": {"enum": ["partial", "stale"]}, "allocation_known": {"const": true}}},
+        "shape": {"properties": {"files": {"type": "integer", "minimum": 1}}}
+      }},
+      "then": {"properties": {"shape": {"properties": {"allocated_bytes": {"minimum": 1}}}}}
     }
   ],
   "$defs": {
