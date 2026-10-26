@@ -2,6 +2,7 @@
 from pathlib import Path
 
 from playwright.sync_api import Page, expect
+from test_app_views import wait_until
 
 
 def run_agent_access(page: Page, base: str, shots: Path | None = None) -> None:
@@ -25,13 +26,13 @@ def run_agent_access(page: Page, base: str, shots: Path | None = None) -> None:
     page.get_by_label('Client name', exact=True).fill('synthetic-new')
     folders = page.get_by_role('group', name='Folders', exact=True)
     folders.get_by_role('checkbox').first.check()
-    page.get_by_role('checkbox', name='Names and paths', exact=True).check()
+    page.get_by_role('checkbox', name='Where things are (paths); names are always visible', exact=True).check()
     page.get_by_role('checkbox', name='Sizes and the space tools', exact=True).check()
-    expect(page.get_by_text("The agent's host may send what it reads to its model provider. Loomward cannot see or control that.", exact=True)).to_be_visible()
+    expect(page.get_by_text("The agent always sees the names and kinds of files and folders in the chosen folders.", exact=False)).to_be_visible()
     expect(page.locator('pre.connect')).to_contain_text('claude mcp add loomward -- "%LOCALAPPDATA%\\Loomward\\loomward-mcp.exe" --client synthetic-new')
     page.get_by_role('button', name='Create grant', exact=True).click()
     created = table.locator('tbody tr').filter(has_text='mcp:synthetic-new')
-    expect(created).to_contain_text('Names and paths')
+    expect(created).to_contain_text('Where things are (paths)')
     expect(created).to_contain_text('Not revoked')
     page.get_by_role('button', name='Revoke mcp:synthetic-new', exact=True).click()
     page.get_by_role('button', name='Keep access', exact=True).click()
@@ -48,7 +49,7 @@ def run_agent_access(page: Page, base: str, shots: Path | None = None) -> None:
     scroller = page.get_by_role('region', name='Scrollable MCP client grants')
     scroller.focus()
     scroller.press('ArrowRight')
-    page.wait_for_function("document.querySelector('[aria-label=\"Scrollable MCP client grants\"]').scrollLeft > 0")
+    wait_until(page, "document.querySelector('[aria-label=\"Scrollable MCP client grants\"]').scrollLeft > 0")
     scroller.evaluate('(element) => { element.scrollLeft = 0; }')
     if shots:
         page.screenshot(path=str(shots / 'agent-access-mobile.png'), full_page=True)

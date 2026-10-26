@@ -2,7 +2,7 @@ import { CLIENT_FIELDS, type ClientField, type ClientGrantList, type ClientGrant
 import type { Client } from '../../lib/transport/client';
 
 const EXPLANATIONS: Partial<Record<ClientField, string>> = {
-  path: 'Names and paths', size: 'Sizes and the space tools', modified: 'Modified times and ages',
+  path: 'Where things are (paths); names are always visible', size: 'Sizes and the space tools', modified: 'Modified times and ages',
   attributes: 'File attributes', volumes: 'Drive labels, capacity and free space (all drives)',
 };
 

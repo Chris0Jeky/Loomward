@@ -102,7 +102,7 @@
         <fieldset><legend>Details the agent may read</legend>
           {#each options as option (option.field)}<label class="check"><input type="checkbox" value={option.field} bind:group={selectedFields} /> {option.explanation}</label>{/each}
         </fieldset>
-        {#if selectedFields.includes('path')}<p class="disclosure">The agent's host may send what it reads to its model provider. Loomward cannot see or control that.</p>{/if}
+        <p class="disclosure">The agent always sees the names and kinds of files and folders in the chosen folders. Its host may send what it reads to its model provider; Loomward cannot see or control that. The client name is a label, not a password: any program on this PC can use it.</p>
         <label class="lw-field"><span class="lbl">Expiry (optional, local time)</span><input type="datetime-local" bind:value={expiry} /></label>
         <button class="btn primary" type="submit" disabled={!selectedRoots.length}>Create grant</button>
       </fieldset>
