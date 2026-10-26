@@ -219,6 +219,141 @@ fn err(r: ResponseEnvelope) -> ErrorBody {
 }
 
 #[test]
+fn clients_read_dirty_first_aggregates_as_unknown() {
+    let tmp = temp_root();
+    let svc = open(tmp.path());
+    let alpha = root(&svc, "Alpha", 1, Some(ALPHA));
+    svc.grant_client("mcp:first", &[alpha], &["size"], None)
+        .unwrap();
+    let db = rusqlite::Connection::open(tmp.path().join("catalog.db")).unwrap();
+    db.execute("UPDATE dir SET agg_valid_rev=0,dirty_rev=1,sub_logical=0,sub_allocated=0,sub_files=0 WHERE parent_id IS NOT NULL", []).unwrap();
+    let found = ok(as_client(
+        &svc,
+        "mcp:first",
+        "search.query",
+        search("report drafts", 20, Value::Null),
+    ));
+    let row = &found["hits"][0]["row"];
+    assert_eq!(row["coverage"], "unknown");
+    assert_eq!(found["partial"], true);
+    for key in ["logical_bytes", "allocated_bytes", "files", "dirs"] {
+        assert!(
+            row[key].is_null(),
+            "{key} is unknown before the first rollup"
+        );
+    }
+    let detail = ok(as_client(
+        &svc,
+        "mcp:first",
+        "node.inspect",
+        json!({"node_id":row["node_id"]}),
+    ));
+    assert!(detail["row"]["logical_bytes"].is_null());
+}
+
+#[test]
+fn clients_read_dirty_aggregates_without_repairing_any_root() {
+    let tmp = temp_root();
+    let svc = open(tmp.path());
+    let alpha = root(&svc, "Alpha", 1, Some(ALPHA));
+    root(&svc, "Beta", 2, Some(BETA));
+    for client in ["mcp:readonly", "ask:readonly"] {
+        svc.grant_client(client, std::slice::from_ref(&alpha), &["size"], None)
+            .unwrap();
+    }
+    let db = rusqlite::Connection::open(tmp.path().join("catalog.db")).unwrap();
+    let dir = db
+        .query_row(
+            "SELECT id FROM dir WHERE parent_id IS NOT NULL ORDER BY id LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let mut cached_reader = svc.inner.catalog.reader().unwrap().without_repairs();
+    let breakdown = |reader: &mut loomward_catalog::Reader| {
+        reader
+            .breakdown(
+                dir,
+                "extension",
+                loomward_catalog::Basis::Logical,
+                16,
+                5_000_000,
+            )
+            .unwrap()
+    };
+    assert!(breakdown(&mut cached_reader).complete);
+    db.execute("UPDATE dir SET dirty_rev=agg_valid_rev+1", [])
+        .unwrap();
+    let state = || {
+        let rev: i64 = db
+            .query_row("SELECT catalog_rev FROM revision", [], |r| r.get(0))
+            .unwrap();
+        let dirs: Vec<(i64, i64, i64, i64)> = db
+            .prepare("SELECT id,dirty_rev,agg_valid_rev,sub_logical FROM dir ORDER BY id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        (rev, dirs)
+    };
+    let before = state();
+    assert!(
+        !breakdown(&mut cached_reader).complete,
+        "dirty aggregates must not reuse a complete cached breakdown"
+    );
+    for client in ["mcp:readonly", "ask:readonly"] {
+        let found = ok(as_client(
+            &svc,
+            client,
+            "search.query",
+            search("report drafts", 20, Value::Null),
+        ));
+        assert_eq!(state(), before, "{client} search repaired the catalogue");
+        assert_eq!(found["partial"], true);
+        let row = &found["hits"][0]["row"];
+        assert_eq!(row["coverage"], "stale");
+        assert_eq!(row["logical_bytes"], "7");
+        let node = row["node_id"].clone();
+        let reference = svc
+            .client_reference(client, node.as_str().unwrap())
+            .unwrap();
+        svc.resolve_client_reference(client, &reference).unwrap();
+        let detail = ok(as_client(
+            &svc,
+            client,
+            "node.inspect",
+            json!({"node_id":node}),
+        ));
+        assert_eq!(detail["row"]["coverage"], "stale");
+        assert_eq!(detail["row"]["logical_bytes"], "7");
+        ok(as_client(&svc, client, "roots.list", json!({})));
+        ok(as_client(
+            &svc,
+            client,
+            "tree.children",
+            json!({"node_id":node,"sort":"size_desc","basis":"logical","limit":20,"cursor":null}),
+        ));
+        let breakdown = ok(as_client(
+            &svc,
+            client,
+            "stats.breakdown",
+            json!({"node_id":node,"by":"extension","basis":"logical","limit":16}),
+        ));
+        assert_eq!(breakdown["complete"], false);
+        assert_eq!(state(), before, "{client} read repaired the catalogue");
+    }
+    ok(as_owner(
+        &svc,
+        "search.query",
+        search("report", 20, Value::Null),
+    ));
+    let after = state();
+    assert!(after.0 > before.0, "owner repair must advance catalog_rev");
+    assert!(after.1.iter().all(|(_, dirty, valid, _)| valid >= dirty));
+}
+
+#[test]
 fn owner_commands_manage_mcp_grants_and_preserve_epochs() {
     for dataset in [DatasetClass::Synthetic, DatasetClass::Personal] {
         let dir = temp_root();
@@ -1811,6 +1946,57 @@ fn verification_open_grants_roots_without_background_work() {
             .unwrap(),
         0
     );
+}
+
+/// #903: `copies.store.is_none()` holds for any Personal open, so the claims are pinned against
+/// `Service::open` instead. A Synthetic dataset opens the copy journal (and runs recovery) only
+/// when not client-only; the telemetry pump and the backup-scrub retry each keep one `Weak` to the
+/// service state for the life of their thread, and the automatic-scan machinery keeps more.
+#[cfg(windows)]
+#[test]
+fn verification_open_starts_no_telemetry_copy_recovery_or_backup_threads() {
+    let config = |dir: &std::path::Path| Config {
+        state_dir: dir.to_path_buf(),
+        dataset: DatasetClass::Synthetic,
+        allow_personal: false,
+        allow_identity_unverified: false,
+        grant_roots: vec![],
+    };
+    let temp = tempfile::tempdir_in(crate::paths::test_roots_base()).unwrap();
+    let open = Service::open(config(&temp.path().join("open"))).unwrap();
+    let verify = Service::open_for_verification(config(&temp.path().join("verify"))).unwrap();
+    let client = Service::open_client(config(&temp.path().join("client"))).unwrap();
+    // The control: a normal open does run copy recovery for a Synthetic dataset.
+    assert!(open.inner.copies.store.is_some());
+    assert!(verify.inner.copies.store.is_none());
+    let weak = |svc: &Service| std::sync::Arc::weak_count(&svc.inner);
+    // Telemetry pump, backup-scrub retry and the freshness scan writer each hold one Weak; all three
+    // are absent from a verification open, so dropping any one gate fails this (review of #906).
+    assert!(
+        weak(&open) >= weak(&verify) + 3,
+        "open {} verify {}",
+        weak(&open),
+        weak(&verify)
+    );
+    assert_eq!(
+        weak(&verify),
+        weak(&client),
+        "same footprint as a client host"
+    );
+}
+
+#[test]
+fn verification_open_names_no_flag_verify_tree_does_not_have() {
+    use crate::{grant_refusal, Refused};
+    let flagged = grant_refusal(1, &Refused::IdentityUnverified, true);
+    assert!(flagged.contains("--allow-identity-unverified"), "{flagged}");
+    let plain = grant_refusal(2, &Refused::IdentityUnverified, false);
+    assert!(
+        plain.starts_with("grant root #2 refused: identity_unverified"),
+        "{plain}"
+    );
+    assert!(!plain.contains("--allow-identity-unverified"), "{plain}");
+    assert!(plain.contains("reads no content"), "{plain}");
 }
 
 #[test]

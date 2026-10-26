@@ -148,6 +148,8 @@ pub(crate) struct Inner {
     metadata_cursors: cursors::Cursors,
     /// LW-118: the latest Ask turn and the provider factory.
     pub(crate) ask: ask::Asks,
+    /// Three-second display hints only; native admission never trusts this cache.
+    root_presence_cache: Mutex<handlers::RootPresenceCache>,
     #[cfg(test)]
     pub(crate) hooks: Arc<tests::Hooks>,
 }
@@ -379,6 +381,7 @@ impl Service {
                 .unwrap_or_else(|| inventory::provider(config.dataset)),
             metadata_cursors: cursors::Cursors::new(16),
             ask: Default::default(),
+            root_presence_cache: Default::default(),
             #[cfg(test)]
             hooks: Default::default(),
         });
@@ -394,17 +397,7 @@ impl Service {
         for (i, root) in roots.iter().enumerate() {
             inner
                 .grant(root, "cli_flag", config.allow_identity_unverified)
-                .map_err(|r| {
-                let rule = match r {
-                    Refused::Rule(r) => refusal_name(r),
-                    Refused::RootLimit => "root_limit_reached".into(),
-                    Refused::IdentityUnverified => {
-                        "identity_unverified (pass --allow-identity-unverified to list it read-only)"
-                            .into()
-                    }
-                };
-                format!("grant root #{} refused: {rule}", i + 1)
-            })?;
+                .map_err(|r| grant_refusal(i + 1, &r, !client_only))?;
         }
         if scan_writer {
             freshness::start(&inner);
@@ -422,6 +415,21 @@ impl Service {
     pub fn dataset(&self) -> DatasetClass {
         self.inner.dataset
     }
+}
+
+/// `flag_offered`: the host has `--allow-identity-unverified`. Client-only hosts, including the
+/// one-shot verification open, have none, so the text must not send their users to it (#903).
+pub(crate) fn grant_refusal(number: usize, refused: &Refused, flag_offered: bool) -> String {
+    let rule = match refused {
+        Refused::Rule(r) => refusal_name(*r),
+        Refused::RootLimit => "root_limit_reached".into(),
+        Refused::IdentityUnverified if flag_offered => {
+            "identity_unverified (pass --allow-identity-unverified to list it read-only)".into()
+        }
+        Refused::IdentityUnverified => "identity_unverified (a FAT, exFAT or unknown filesystem cannot prove file identity, so this command reads no content there; no option or state directory changes that)"
+            .into(),
+    };
+    format!("grant root #{number} refused: {rule}")
 }
 
 pub(crate) fn class_name(class: DatasetClass) -> &'static str {
@@ -525,10 +533,14 @@ impl Drop for ReadPermit {
 pub(crate) struct ReadWork {
     deadline: Instant,
     interrupt: Mutex<Option<rusqlite::InterruptHandle>>,
+    repair_on_read: bool,
 }
 impl ReadWork {
     fn reader(&self, catalog: &Catalog) -> Result<loomward_catalog::Reader, ErrorBody> {
         let mut reader = catalog.reader().map_err(catalog_error)?;
+        if !self.repair_on_read {
+            reader = reader.without_repairs();
+        }
         let mut handle = self.interrupt.lock().unwrap_or_else(|e| e.into_inner());
         if Instant::now() >= self.deadline {
             return Err(fail(
@@ -814,6 +826,7 @@ impl ViewService for Service {
             let work = Arc::new(ReadWork {
                 deadline,
                 interrupt: Mutex::new(None),
+                repair_on_read: matches!(&ctx.principal, Principal::Owner),
             });
             let worker_work = work.clone();
             let metadata_cursor = Arc::new(Mutex::new(None));
@@ -1003,6 +1016,7 @@ impl Service {
                             let work = ReadWork {
                                 deadline,
                                 interrupt: Mutex::new(None),
+                                repair_on_read: true,
                             };
                             // Owner scans and hashing can wait for automatic work to drain.
                             let bounded = matches!(
@@ -1221,6 +1235,9 @@ impl Inner {
         state_rev: Option<i64>,
     ) {
         if let Value::Object(map) = data {
+            if event == EventName::VolumesChanged {
+                self.invalidate_root_presence();
+            }
             let _ = self.engine.publish_event(
                 event,
                 map,
@@ -1374,6 +1391,7 @@ impl Inner {
                     )
             })
             .collect();
+        let presence = self.cached_root_presence();
         let mutation = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
         let conn = self.db();
         // Recheck consent and candidate identity, state, mode and path after the unlocked probes.
@@ -1454,15 +1472,19 @@ impl Inner {
             .writer()
             .call(command)
             .map_err(|_| Refusal::IdentityUnavailable)?;
-        let WriteReply::Root { root_id, .. } = reply else {
+        let WriteReply::Root {
+            grant_id, root_id, ..
+        } = reply
+        else {
             return Err(Refusal::IdentityUnavailable.into());
         };
+        self.remember_root_presence(grant_id, handlers::RootPresence::Online);
         for grant in renamed {
             // Keep mutation serialised through retirement; the connection guard is released.
             let row = db::root_for_grant(&self.db(), grant);
             if let Ok(Some(row)) = row {
                 if let Ok(id) = loomward_protocol::RootId::new(self.root_id(row)) {
-                    self.identity_changed_locked(grant, &id, true, &mutation);
+                    self.identity_changed_locked(grant, &id, true, &mutation, &presence);
                 }
             }
         }

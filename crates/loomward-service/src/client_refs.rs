@@ -126,7 +126,7 @@ impl Service {
         let mut node = None;
         let root = match reference.target {
             Target::Node(key, born) => {
-                let mut reader = self.inner.read_reader(None)?;
+                let mut reader = self.inner.read_reader(None)?.without_repairs();
                 reader
                     .check_incarnation(key, &self.inner.instance, born)
                     .map_err(|_| fail(ErrorCode::NotFound, "unknown node"))?;
@@ -140,7 +140,7 @@ impl Service {
             Target::Root(root) => {
                 let dir = db::active_root_dir(&self.inner.db(), root).map_err(sql_error)?;
                 if let Some(dir) = dir {
-                    let mut reader = self.inner.read_reader(None)?;
+                    let mut reader = self.inner.read_reader(None)?.without_repairs();
                     let born = db::born_runs(&self.inner.db(), "dir", &[dir]).map_err(sql_error)?;
                     if let Some((_, born)) = born.first() {
                         reader

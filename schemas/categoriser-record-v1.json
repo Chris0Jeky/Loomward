@@ -8,7 +8,7 @@
   "properties": {
     "schema": {"const": "loomward.categoriser-record.v1"},
     "synthetic": {"type": "boolean"},
-    "record_id": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-z0-9][a-z0-9._-]*$"},
+    "record_id": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-z0-9][a-z0-9._-]*(?![\\s\\S])"},
     "packet": {"$ref": "evidence-packet-v1.json"},
     "human_labels": {"$ref": "#/$defs/labels"},
     "teacher_labels": {"$ref": "#/$defs/labels"},
@@ -16,7 +16,7 @@
       "type": "array",
       "maxItems": 12,
       "description": "Packet field paths (JSON Pointer into packet) that a faithful one-line summary may rest on; used to score summary faithfulness in LW-140.",
-      "items": {"type": "string", "pattern": "^/[a-z_/0-9]+$", "maxLength": 96}
+      "items": {"type": "string", "pattern": "^/[a-z_/0-9]+(?![\\s\\S])", "maxLength": 96}
     }
   },
   "$defs": {
@@ -24,6 +24,11 @@
       "type": "array",
       "maxItems": 3,
       "description": "At most one label per axis.",
+      "allOf": [
+        {"contains": {"type": "object", "required": ["axis"], "properties": {"axis": {"const": "meaning"}}}, "minContains": 0, "maxContains": 1},
+        {"contains": {"type": "object", "required": ["axis"], "properties": {"axis": {"const": "lifecycle"}}}, "minContains": 0, "maxContains": 1},
+        {"contains": {"type": "object", "required": ["axis"], "properties": {"axis": {"const": "recreatability"}}}, "minContains": 0, "maxContains": 1}
+      ],
       "items": {
         "oneOf": [
           {"type": "object", "additionalProperties": false, "required": ["axis", "label"], "properties": {

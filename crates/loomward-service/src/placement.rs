@@ -1,4 +1,4 @@
-//! Catalogue-only placement and durable simulations. No content reads and no effect authority.
+//! Catalogue placement with live root presence and durable simulations. No content reads or effects.
 use crate::{db, fail, now_ns, ts_ns, with_reason, Inner, Out, ReadWork};
 use loomward_engine::{placement::*, EngineError, EngineResult};
 use loomward_protocol::*;
@@ -25,7 +25,7 @@ fn placement_error(e: EngineError) -> ErrorBody {
     let message = body.message.as_str().to_owned();
     if message == "personal_placement_physics_unobserved" {
         body.code = ErrorCode::CapabilityUnavailable;
-        body.message = Text::new("Personal placement needs observed catalogue volume physics; this call reads catalogue metadata only.").expect("bounded refusal");
+        body.message = Text::new("Personal placement needs observed catalogue volume physics; this call does not refresh volume space.").expect("bounded refusal");
         return with_reason(body, &message);
     }
     if body.code == ErrorCode::InvalidRequest || message == "overlapping_grant_ancestry_unknown" {
@@ -464,8 +464,8 @@ impl<'a> Input<'a> {
 
     /// `observe_personal_grants` is set only by `volumes.list` and the alerts report (#519): a
     /// personal volume holding an active owner grant gets a read-only space observation through that
-    /// grant's own root. Placement and tier models keep reading catalogue physics only, so their
-    /// personal refusal still holds.
+    /// grant's own root. Placement and tier models share live presence but keep catalogue physics,
+    /// so their personal refusal still holds.
     pub(crate) fn volumes(
         &self,
         deadline: Instant,
@@ -478,6 +478,14 @@ impl<'a> Input<'a> {
             });
         }
         let inactive = inactive_volumes(&self.conn)?;
+        let roots = db::roots(&self.conn, None).map_err(sql)?;
+        let mut presence = crate::handlers::RootPresences::new();
+        for root in roots.iter().filter(|r| r.grant_state == "active") {
+            check(deadline)?;
+            if let Some(observed) = self.inner.root_presence(root) {
+                presence.insert(root.grant, observed);
+            }
+        }
         let mut volumes = Vec::new();
         for v in rows {
             check(deadline)?;
@@ -498,36 +506,22 @@ impl<'a> Input<'a> {
             let stored: Value = serde_json::from_str(&capabilities).unwrap_or(Value::Null);
             let mut space = stored.get("space").cloned().unwrap_or(Value::Null);
             let mut observed_at = v.observed_at_ns;
-            let roots = if observe_personal_grants {
-                db::roots(&self.conn, None).map_err(sql)?
-            } else {
-                Vec::new()
-            };
-            let mut online = None;
+            let online = crate::handlers::volume_online(&v, &roots, &presence);
             let mut classification = None;
-            for root in roots
-                .iter()
-                .filter(|r| r.volume == Some(v.id) && r.grant_state == "active")
-            {
+            for root in roots.iter().filter(|r| {
+                observe_personal_grants
+                    && r.volume == Some(v.id)
+                    && r.grant_state == "active"
+                    && presence.get(&r.grant) == Some(&crate::handlers::RootPresence::Online)
+            }) {
                 check(deadline)?;
-                match self.inner.root_presence(root) {
-                    Some(crate::handlers::RootPresence::Online) => {
-                        online = Some(true);
-                        if classification.is_none() {
-                            classification = loomward_windows::volumes::classify(
-                                std::path::Path::new(&root.display_path),
-                            )
-                            .ok();
-                        }
-                    }
-                    Some(
-                        crate::handlers::RootPresence::Offline
-                        | crate::handlers::RootPresence::IdentityChanged,
-                    ) if online != Some(true) => online = Some(false),
-                    _ => {}
+                if classification.is_none() {
+                    classification = loomward_windows::volumes::classify(std::path::Path::new(
+                        &root.display_path,
+                    ))
+                    .ok();
                 }
             }
-            let online = online.unwrap_or(v.online);
             let device = match &classification {
                 Some(c) => json!({"bus_type": match c.bus_type.as_str() {
                     "nvme" | "sata" | "sas" | "scsi" | "usb" | "raid" | "virtual" | "sd" => c.bus_type.as_str(),
@@ -654,7 +648,7 @@ impl<'a> Input<'a> {
                 "online":online,"read_only":space.get("read_only").and_then(Value::as_bool),"removable":null,
                 "capacity_bytes":bytes("capacity_bytes"),"free_bytes":bytes("free_bytes"),
                 "device":device,
-                "tier":{"tier":declared,"basis":if declared.is_some(){"declared"}else{"unknown"},"declared_tier":declared,"hint_tier":null,"note":if inactive.contains(&v.id){"No active grant; excluded from placement simulation. Device speed is unmeasured."}else{"Declared tier; device speed is unmeasured."}},
+                "tier":{"tier":declared,"basis":if declared.is_some(){"declared"}else{"unknown"},"declared_tier":declared,"hint_tier":null,"note":if !online {crate::handlers::OFFLINE_SPACE_NOTE} else if inactive.contains(&v.id){"No active grant; excluded from placement simulation. Device speed is unmeasured."}else{"Declared tier; device speed is unmeasured."}},
                 "features":{"file_ids_128":null,"hard_links":null,"sparse_files":null,"compression":null,"reparse_points":null,"usn_journal":null},
                 "observed_at":ts_ns(observed_at)
             })).map_err(|_| EngineError::Internal { message: "invalid volume observation".into(), detail: None })?;

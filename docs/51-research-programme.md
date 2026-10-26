@@ -194,7 +194,8 @@ HDD honours a flush when its own power goes. So receipts get a ladder (ADR draft
 | archive verified at *date* | a later independent scrub matched the manifest (LW-136) |
 
 C8 needs only G5 as defined. Without LW-134, no receipt ever says "power-loss qualified", and the UI says
-"not power-loss tested on this disk" for copies to a USB path.
+"not power-loss tested on this disk" for copies to a USB path. The owner chose Hyper-V only (q-49, 2026-10-26), so LW-134
+is deferred.
 
 ### 4.2 Re-verification before any source leaves
 
@@ -212,7 +213,9 @@ shares the host's failures, theft and ransomware reach. So:
   copy"** whenever the catalogue knows no second copy (proposed to the external-disk lane as an issue).
 - LW-136 tracks copy count per archived object, the date of its last full content verification, and a rolling scrub
   budget (an 8 TB disk at 120-180 MB/s needs 12-19 hours for one full pass, so scrub a bounded slice per idle week).
-- Owner question Q2 asks about a second, rotated offline disk.
+- Owner answer (q-49, 2026-10-26): accept a single copy for now; a second disk will come later. So plans and the
+  retirement review always state when `H:` would hold the only copy, and LW-136 keeps the copy count ready for the
+  second disk.
 
 ### 4.4 Staged retirement, composed with the owner's Recycle Bin choice
 

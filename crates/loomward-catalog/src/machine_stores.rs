@@ -24,6 +24,7 @@ pub struct MachineStores {
     pub candidates: Vec<MachineStoreCandidate>,
     pub partial: bool,
     pub truncated: bool,
+    pub budget_hit: bool,
 }
 
 impl Reader {
@@ -63,7 +64,7 @@ fn detect(
     cap: usize,
     deadline: Option<Instant>,
 ) -> Result<MachineStores> {
-    let _guard = query::WorkGuard::new(conn, 2_000_000, deadline)?;
+    let guard = query::WorkGuard::new(conn, 2_000_000, deadline)?;
     query::revisions(conn, Some(root))?;
     let root_dir = conn.query_row(
         "SELECT id FROM dir WHERE root_id=?1 AND parent_id IS NULL",
@@ -72,12 +73,61 @@ fn detect(
     )?;
     let observed = query::get(conn, NodeKey::Dir(root_dir))?;
     let scanning = query::live(conn, root)?;
+    // Finish root advice before the walk can spend the remaining work budget.
+    let mut report = query_candidates(
+        conn,
+        include_str!("machine-stores-root.sql"),
+        root_dir,
+        cap,
+        scanning,
+    )?;
+    report.partial |= observed.coverage() != "complete" || !observed.valid || scanning;
+    match query_candidates(
+        conn,
+        include_str!("machine-stores.sql"),
+        root_dir,
+        cap,
+        scanning,
+    ) {
+        Ok(walk) => {
+            report.partial |= walk.partial;
+            report.truncated |= walk.truncated;
+            report.candidates.extend(walk.candidates);
+            report.candidates.sort_by_key(|c| {
+                let key = match c.node {
+                    NodeKey::Dir(id) => (id, 0),
+                    NodeKey::File(id) => (id, 1),
+                    _ => unreachable!(),
+                };
+                (std::cmp::Reverse(c.logical_bytes), key)
+            });
+            report.truncated |= report.candidates.len() > cap;
+            report.candidates.truncate(cap);
+        }
+        Err(e) if query::is_budget_interrupt(&e) && guard.hit() => {
+            report.partial = true;
+            report.budget_hit = true;
+        }
+        Err(e) => return Err(e),
+    }
+    if deadline.is_some_and(|at| Instant::now() >= at) {
+        return Err(Error::Cancelled);
+    }
+    Ok(report)
+}
+
+fn query_candidates(
+    conn: &Connection,
+    sql: &str,
+    root_dir: i64,
+    cap: usize,
+    scanning: bool,
+) -> Result<MachineStores> {
     let mut report = MachineStores {
         rules_version: 2,
-        partial: observed.coverage() != "complete" || !observed.valid || scanning,
         ..MachineStores::default()
     };
-    let mut stmt = conn.prepare(include_str!("machine-stores.sql"))?;
+    let mut stmt = conn.prepare(sql)?;
     let rows = stmt
         .query_map(
             params![

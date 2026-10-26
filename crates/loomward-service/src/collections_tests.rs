@@ -734,6 +734,7 @@ fn collections_hydration_interrupt_reaches_running_inspection() {
     let work = Arc::new(crate::ReadWork {
         deadline: Instant::now() + Duration::from_secs(5),
         interrupt: Mutex::new(None),
+        repair_on_read: true,
     });
     svc.inner.hooks.arrived.lock().unwrap().clear();
     svc.inner

@@ -60,10 +60,12 @@ pub(crate) fn read_tree(
         budget,
         max_entries,
         cancel,
+        crate::noncached::sector_for_file,
     )
 }
 
-/// `read_tree` over an explicit listing source, so the tests can force a listing class.
+/// `read_tree` over an explicit listing source and sector-geometry query, so the tests can force
+/// a listing class or a volume whose geometry cannot be read.
 fn read_tree_from(
     source: &NativeSource,
     root: &Path,
@@ -71,6 +73,7 @@ fn read_tree_from(
     budget: Budget,
     max_entries: usize,
     cancel: Arc<AtomicBool>,
+    geometry: fn(&File) -> io::Result<usize>,
 ) -> Result<(Tree, u64), Reason> {
     let mut meter = Meter::new(budget);
     meter.cancel = Some(cancel);
@@ -84,8 +87,10 @@ fn read_tree_from(
         return Ok((tree, 0));
     }
     let mut reader = Reader::new(root, expected, |_, _| {})?;
+    // Some USB bridges and card readers do not answer the alignment query; that is not an I/O fault
+    // of any file, so it gets its own reason rather than `io` (#903).
     reader.sector =
-        Some(crate::noncached::sector_for_file(reader.pins.last().unwrap()).map_err(error)?);
+        Some(geometry(reader.pins.last().unwrap()).map_err(|_| Reason::GeometryUnavailable)?);
     let (dir, identity) = source.open_root(root).map_err(super::source)?;
     if enumerate::expected_identity_matches(identity, *expected).is_err()
         || !matches!(
@@ -1597,6 +1602,151 @@ mod tests {
         }
     }
 
+    /// #903: a bridge that cannot report sector geometry gets its own reason, not `io`.
+    #[test]
+    fn unreadable_sector_geometry_is_its_own_reason() {
+        if crate::enumerate::skip_elevated_test() {
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("f"), b"bytes").unwrap();
+        let source = NativeSource::default();
+        let (_, expected) = source.open_root(temp.path()).unwrap();
+        let result = read_tree_from(
+            &source,
+            temp.path(),
+            &expected,
+            budget(),
+            100,
+            Default::default(),
+            |_| Err(io::Error::from_raw_os_error(1)),
+        );
+        assert_eq!(result.unwrap_err(), Reason::GeometryUnavailable);
+        assert_eq!(
+            Reason::GeometryUnavailable.as_str(),
+            "sector_geometry_unavailable"
+        );
+    }
+
+    fn pattern(size: usize, seed: u8) -> Vec<u8> {
+        (0..size)
+            .map(|i| (i as u8).wrapping_mul(31).wrapping_add(seed))
+            .collect()
+    }
+
+    /// #903: the sector boundaries of the non-cached tree path against real files: empty, one byte
+    /// under, on and over a 512-byte sector, and the same around 4 KiB. Equal content hashes equal
+    /// to the plain SHA-256; a one-byte change in the last (partial) sector is a content difference.
+    #[test]
+    fn tree_content_sector_boundary_sizes_hash_exactly_and_differ_on_the_last_byte() {
+        if crate::enumerate::skip_elevated_test() {
+            return;
+        }
+        let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let sizes = [0usize, 511, 512, 4095, 4096, 4097];
+        for size in sizes {
+            let data = pattern(size, 7);
+            std::fs::write(a.path().join(format!("same-{size}")), &data).unwrap();
+            std::fs::write(b.path().join(format!("same-{size}")), &data).unwrap();
+            let mut changed = data.clone();
+            if let Some(last) = changed.last_mut() {
+                *last ^= 1;
+            }
+            std::fs::write(a.path().join(format!("last-{size}")), &data).unwrap();
+            std::fs::write(b.path().join(format!("last-{size}")), &changed).unwrap();
+        }
+        let (left, right) = (snapshot(a.path()), snapshot(b.path()));
+        for (tree, other) in [(&left, false), (&right, true)] {
+            for size in sizes {
+                let mut data = pattern(size, 7);
+                let node = tree.nodes[Path::new(&format!("same-{size}"))]
+                    .as_ref()
+                    .unwrap();
+                assert_eq!(
+                    node.content,
+                    Ok(Sha256::digest(&data).into()),
+                    "same-{size}"
+                );
+                if other && size > 0 {
+                    *data.last_mut().unwrap() ^= 1;
+                }
+                let node = tree.nodes[Path::new(&format!("last-{size}"))]
+                    .as_ref()
+                    .unwrap();
+                assert_eq!(
+                    node.content,
+                    Ok(Sha256::digest(&data).into()),
+                    "last-{size}"
+                );
+            }
+        }
+        let report = compare(&left, &right);
+        let content: Vec<_> = report
+            .differences
+            .iter()
+            .filter(|d| matches!(d.kind, DifferenceKind::Content))
+            .map(|d| d.path.clone())
+            .collect();
+        // The empty file cannot differ in content.
+        let expected: Vec<PathBuf> = sizes
+            .iter()
+            .filter(|size| **size > 0)
+            .map(|size| format!("last-{size}").into())
+            .collect();
+        let mut content = content;
+        content.sort();
+        let mut expected = expected;
+        expected.sort();
+        assert_eq!(content, expected);
+        assert!(report.unknowns.is_empty(), "{:?}", report.unknowns);
+    }
+
+    /// #903: the overlapped `read_count` callback `sector_hash` drives on this path returns the
+    /// short tail of a file as a count below the request, and a read at the sector past the end
+    /// returns only the remainder. A mid-file short read cannot be produced by a real file on
+    /// demand; its continuation is pinned by `sector_hash_continues_short_reads...` over the same
+    /// generic loop.
+    #[test]
+    fn noncached_read_count_returns_the_short_tail() {
+        if crate::enumerate::skip_elevated_test() {
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let (_, expected) = NativeSource::default().open_root(temp.path()).unwrap();
+        let mut reader = Reader::new(temp.path(), &expected, |_, _| {}).unwrap();
+        let sector = crate::noncached::sector_for_file(reader.pins.last().unwrap()).unwrap();
+        reader.sector = Some(sector);
+        std::fs::write(temp.path().join("f"), pattern(sector + 1, 3)).unwrap();
+        let mut meter = Meter::new(budget());
+        let opened = reader
+            .open_relative(Path::new("f"), None, true, &meter)
+            .unwrap();
+        let mut buffer = crate::noncached::AlignedBuffer::new(sector);
+        let request = 2 * sector;
+        let got = reader
+            .read_count(
+                0,
+                &opened.file,
+                0,
+                &mut buffer.bytes()[..request],
+                &mut meter,
+                request,
+            )
+            .unwrap();
+        assert_eq!(got, sector + 1, "short of the {request}-byte request");
+        let got = reader
+            .read_count(
+                0,
+                &opened.file,
+                sector as u64,
+                &mut buffer.bytes()[..sector],
+                &mut meter,
+                sector,
+            )
+            .unwrap();
+        assert_eq!(got, 1);
+    }
+
     /// Find lists no file ID and Both a 64-bit one; neither may read as `changed_during_read`.
     #[test]
     fn listing_classes_without_a_128_bit_id_still_read_every_file() {
@@ -1616,6 +1766,7 @@ mod tests {
                 budget(),
                 100,
                 Default::default(),
+                crate::noncached::sector_for_file,
             )
             .unwrap()
             .0
@@ -1655,6 +1806,7 @@ mod tests {
             budget(),
             100,
             Default::default(),
+            crate::noncached::sector_for_file,
         )
         .unwrap()
         .0;
@@ -1686,6 +1838,7 @@ mod tests {
                 budget(),
                 max,
                 Default::default(),
+                crate::noncached::sector_for_file,
             )
             .unwrap()
             .0
@@ -1720,6 +1873,7 @@ mod tests {
                 budget(),
                 max,
                 Default::default(),
+                crate::noncached::sector_for_file,
             )
             .unwrap()
             .0

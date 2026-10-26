@@ -38,6 +38,8 @@ fn hello_reports_duplicate_content_reads_separately_from_effects() {
 /// holding `Inner::mutation`; `"after"`: any command after its handler returned, locks released).
 #[derive(Default)]
 pub(crate) struct Hooks {
+    pub check_presence_unlocked: std::sync::atomic::AtomicBool,
+    pub forbid_presence_probe: std::sync::atomic::AtomicBool,
     pub delay: Mutex<Option<(Command, Duration)>>,
     pub runs: Mutex<HashMap<Command, usize>>,
     pub order: Mutex<Vec<Command>>,
@@ -337,6 +339,7 @@ fn an_injected_read_clock_expires_the_receiver_and_catalogue_open() {
     let work = crate::ReadWork {
         deadline,
         interrupt: Mutex::new(None),
+        repair_on_read: true,
     };
     assert_eq!(
         svc.inner.read_reader(Some(&work)).err().unwrap().code,
@@ -739,6 +742,7 @@ fn roots_list_degrades_slow_roots_to_unknown_totals_inside_the_deadline() {
     let work = crate::ReadWork {
         deadline: Instant::now() + Duration::from_secs(1),
         interrupt: Mutex::new(None),
+        repair_on_read: true,
     };
     let started = Instant::now();
     let roots = svc.inner.root_list_sharing(Some(&work), 5).unwrap();
@@ -2160,6 +2164,7 @@ fn hardening_expired_sql_reads_do_not_start_or_resume() {
     let work = crate::ReadWork {
         deadline: Instant::now() + Duration::from_secs(10),
         interrupt: Mutex::new(None),
+        repair_on_read: true,
     };
     let mut reader = work.reader(&svc.inner.catalog).unwrap();
     reader.set_deadline(Instant::now());
@@ -2202,6 +2207,7 @@ fn hardening_expired_sql_reads_do_not_start_or_resume() {
     let expired = crate::ReadWork {
         deadline: Instant::now(),
         interrupt: Mutex::new(None),
+        repair_on_read: true,
     };
     assert!(
         matches!(expired.reader(&svc.inner.catalog), Err(e) if e.code == ErrorCode::DeadlineExceeded)
@@ -6905,7 +6911,8 @@ fn detachable_root_offline_retains_last_seen_sizes_and_reconnects_by_identity() 
         ),
     ] {
         let error = err(call(svc, command, payload));
-        assert_eq!(error.code, ErrorCode::DeviceOffline, "{error:?}");
+        assert_eq!(error.code, ErrorCode::NotFound, "{error:?}");
+        assert_eq!(error.detail.unwrap()["reason"], "root_folder_missing");
     }
     assert_eq!(slice_totals(&lab_slice(svc, &lab.root)), (5, 3, 165));
     std::fs::rename(&moved, &lab.path).unwrap();
@@ -6962,6 +6969,240 @@ fn detachable_root_replacement_guid_reads_offline_and_keeps_the_grant() {
             count, 5,
             "retained observations are never replaced with the new volume"
         );
+        for command in ["volumes.list", "tiers.model"] {
+            let (result, _) = ok(command, call(svc, command, json!({})));
+            assert_eq!(result["volumes"][0]["online"], false, "{command}");
+        }
+        // A missing folder on a foreign volume must not be misreported as a missing folder on
+        // the grant's own attached volume.
+        std::fs::rename(
+            &lab.path,
+            lab.path.with_file_name("foreign-volume-missing-root"),
+        )
+        .unwrap();
+        let refused = svc.inner.session_root_gate(&row).unwrap_err();
+        assert_eq!(refused.code, ErrorCode::DeviceOffline);
+        assert_eq!(refused.detail.unwrap()["reason"], "volume_offline");
+    }
+}
+
+#[test]
+fn detach_grant_reply_probes_presence_without_the_mutation_lock() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let (root, _) = fixture(&svc, 1);
+    svc.inner.db().execute_batch("UPDATE st.root_grant SET origin='lab_generated',volume_guid='00000000000000000000000000000001'").unwrap();
+    svc.inner
+        .hooks
+        .check_presence_unlocked
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    svc.inner
+        .hooks
+        .forbid_presence_probe
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    svc.inner.granted_root_reply(root).unwrap();
+}
+
+#[test]
+fn detach_presence_hints_expire_and_volume_notices_invalidate_them() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let (_, grant, volume) = placement_fixture(&svc);
+    use crate::handlers::RootPresence;
+    svc.inner
+        .remember_root_presence(grant, RootPresence::Online);
+    assert!(matches!(
+        svc.inner.cached_root_presence().get(&grant),
+        Some(RootPresence::Online)
+    ));
+    svc.inner
+        .root_presence_cache
+        .lock()
+        .unwrap()
+        .get_mut(&grant)
+        .unwrap()
+        .0 = Some(Instant::now() - Duration::from_secs(4));
+    assert!(matches!(
+        svc.inner.cached_root_presence().get(&grant),
+        Some(RootPresence::Offline)
+    ));
+    svc.inner
+        .remember_root_presence(grant, RootPresence::Online);
+    ok(
+        "volumes.declare_tier",
+        call(
+            &svc,
+            "volumes.declare_tier",
+            json!({"volume_id":volume,"tier":1}),
+        ),
+    );
+    assert!(matches!(
+        svc.inner.cached_root_presence().get(&grant),
+        Some(RootPresence::Offline)
+    ));
+    assert!(svc.inner.root_presence_cache.lock().unwrap()[&grant]
+        .0
+        .is_none());
+}
+
+#[test]
+fn detach_alert_configuration_probes_presence_without_the_mutation_lock() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    fixture(&svc, 1);
+    svc.inner.db().execute_batch("UPDATE st.root_grant SET origin='lab_generated',volume_guid='00000000000000000000000000000001'").unwrap();
+    svc.inner
+        .hooks
+        .check_presence_unlocked
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    svc.inner
+        .alerts_configure(loomward_engine::alerts::default_settings())
+        .unwrap();
+}
+
+#[test]
+fn detach_identity_and_revoke_notices_probe_other_roots_without_the_mutation_lock() {
+    for retire_identity in [true, false] {
+        let tmp = temp_root();
+        let svc = open(tmp.path(), DatasetClass::Synthetic);
+        let (root, grant) = fixture(&svc, 1);
+        svc.inner
+            .catalog
+            .writer()
+            .call(WriteCommand::RegisterRoot(RootObservation {
+                volume_guid: Some("00000000000000000000000000000001".into()),
+                volume_key: "other-fixture".into(),
+                display_name: "Other synthetic root".into(),
+                display_path: "Other synthetic root".into(),
+                root_file_id: Some(vec![2; 16]),
+                filesystem: Some("NTFS".into()),
+                origin: "fixture".into(),
+                granted_via: "fixture".into(),
+                observed_at_ns: 0,
+            }))
+            .unwrap();
+        svc.inner
+            .db()
+            .execute(
+                "UPDATE st.root_grant SET origin='lab_generated' WHERE volume_key='other-fixture'",
+                [],
+            )
+            .unwrap();
+        svc.inner
+            .hooks
+            .check_presence_unlocked
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        svc.inner
+            .hooks
+            .forbid_presence_probe
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        if retire_identity {
+            svc.inner
+                .identity_changed(grant, &RootId::new(svc.inner.root_id(root)).unwrap(), true);
+        } else {
+            svc.inner.revoke(grant).unwrap();
+        }
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn detach_missing_folder_has_its_own_reason_and_preserves_the_grant() {
+    let Some(lab) = lab() else { return };
+    std::fs::rename(&lab.path, lab.path.with_file_name("missing-folder")).unwrap();
+    let row = crate::db::roots(&lab.svc.inner.db(), None)
+        .unwrap()
+        .pop()
+        .unwrap();
+    let error = lab.svc.inner.session_root_gate(&row).unwrap_err();
+    assert_eq!(error.code, ErrorCode::NotFound);
+    assert_eq!(error.detail.unwrap()["reason"], "root_folder_missing");
+    assert_eq!(
+        crate::db::roots(&lab.svc.inner.db(), None).unwrap()[0].grant_state,
+        "active"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn detach_placement_and_volume_notices_share_live_presence() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    let target = crate::db::volumes(&svc.inner.db(), None).unwrap()[0].id;
+    let target_id = svc.inner.volume_id(target);
+    let (_, _, source) = placement_fixture(svc);
+    svc.inner.db().execute("UPDATE main.volume SET capabilities_json=?1", [json!({"space":{"capacity_bytes":"1048576","free_bytes":"524288","read_only":false}}).to_string()]).unwrap();
+    ok(
+        "volumes.declare_tier",
+        call(
+            svc,
+            "volumes.declare_tier",
+            json!({"volume_id":target_id,"tier":1}),
+        ),
+    );
+    let (online, _) = ok(
+        "placement.simulate",
+        call(svc, "placement.simulate", placement_request(&source, false)),
+    );
+    assert!(online["projected_free_bytes"].get(&target_id).is_some());
+    std::fs::rename(&lab.path, lab.path.with_file_name("offline-target")).unwrap();
+    let mut events = svc.subscribe(None);
+    let (declared, _) = ok(
+        "volumes.declare_tier",
+        call(
+            svc,
+            "volumes.declare_tier",
+            json!({"volume_id":target_id,"tier":1}),
+        ),
+    );
+    let event = loop {
+        match events.recv_timeout(Duration::from_secs(2)) {
+            RecvOutcome::Event(e) if e.event == EventName::VolumesChanged => break e,
+            RecvOutcome::Event(_) => continue,
+            other => panic!("{other:?}"),
+        }
+    };
+    let (listed, _) = ok("volumes.list", call(svc, "volumes.list", json!({})));
+    let listed = listed["volumes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["volume_id"] == target_id)
+        .unwrap();
+    assert_eq!(listed["online"], false);
+    assert_eq!(listed["free_bytes"], "524288");
+    assert_eq!(declared["volume"]["online"], false);
+    assert!(listed["tier"]["note"]
+        .as_str()
+        .unwrap()
+        .contains("Last-seen"));
+    assert_eq!(declared["volume"]["free_bytes"], listed["free_bytes"]);
+    let noticed = event.data["volumes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["volume_id"] == target_id)
+        .unwrap();
+    assert_eq!(noticed, &declared["volume"]);
+    for (command, payload) in [
+        ("placement.simulate", placement_request(&source, false)),
+        (
+            "placement.candidates",
+            json!({"source_volume_id":source,"basis":"largest_dirs","max_groups":50,"min_bytes":"0"}),
+        ),
+    ] {
+        let (result, _) = ok(command, call(svc, command, payload));
+        assert!(
+            result["excluded_volumes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v["volume_id"] == target_id && v["reason"] == "offline"),
+            "{command}: {result:?}"
+        );
+        if command == "placement.simulate" {
+            assert!(result["projected_free_bytes"].get(&target_id).is_none());
+        }
     }
 }
 
@@ -8367,10 +8608,12 @@ fn followup_all_catalogue_reads_observe_deadlines() {
     let expired = crate::ReadWork {
         deadline: Instant::now(),
         interrupt: Mutex::new(None),
+        repair_on_read: true,
     };
     let active = crate::ReadWork {
         deadline: Instant::now() + Duration::from_secs(10),
         interrupt: Mutex::new(None),
+        repair_on_read: true,
     };
     for (command, payload) in [
         ("health.get", json!({})),

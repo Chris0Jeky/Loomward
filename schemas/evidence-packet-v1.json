@@ -23,14 +23,15 @@
     },
     "shape": {
       "type": "object",
+      "description": "Counts and bytes may be null when unknown. For partial and stale coverage, present counts and bytes are lower bounds, not complete totals.",
       "additionalProperties": false,
       "required": ["files", "folders", "logical_bytes", "allocated_bytes", "max_depth"],
       "properties": {
-        "files": {"$ref": "#/$defs/count"},
-        "folders": {"$ref": "#/$defs/count"},
+        "files": {"$ref": "#/$defs/count_or_null"},
+        "folders": {"$ref": "#/$defs/count_or_null"},
         "logical_bytes": {"$ref": "#/$defs/bytes_or_null"},
         "allocated_bytes": {"$ref": "#/$defs/bytes_or_null"},
-        "max_depth": {"type": "integer", "minimum": 0, "maximum": 4096}
+        "max_depth": {"type": ["integer", "null"], "minimum": 0, "maximum": 4096}
       }
     },
     "families": {
@@ -51,13 +52,13 @@
     "extensions": {
       "type": "array",
       "maxItems": 16,
-      "description": "Top extensions by bytes, casefolded, without the dot; the empty string is files with no extension.",
+      "description": "Top extensions by bytes, casefolded, without the dot; the empty string is files with no extension. Each ext at most once. The sum of extension files must not exceed shape.files when known (checked by the Rust validator).",
       "items": {
         "type": "object",
         "additionalProperties": false,
         "required": ["ext", "files", "bytes"],
         "properties": {
-          "ext": {"type": "string", "maxLength": 32, "pattern": "^[a-z0-9_+-]*$"},
+          "ext": {"type": "string", "maxLength": 32, "pattern": "^[a-z0-9_+-]*(?![\\s\\S])"},
           "files": {"$ref": "#/$defs/count"},
           "bytes": {"$ref": "#/$defs/bytes_or_null"}
         }
@@ -120,6 +121,7 @@
     },
     "coverage": {
       "type": "object",
+      "description": "Denied, unscanned, excluded, cancelled and unknown coverage have null shape and duplicate facts, empty families/extensions/markers, null media and null time facts except last_access. Partial and stale observations are lower bounds.",
       "additionalProperties": false,
       "required": ["state", "allocation_known", "link_counts_observed", "online"],
       "properties": {
@@ -130,10 +132,50 @@
       }
     }
   },
+  "allOf": [
+    {
+      "if": {"properties": {"coverage": {"properties": {"state": {"enum": ["denied", "unscanned", "excluded", "cancelled", "unknown"]}}}}},
+      "then": {"properties": {
+        "shape": {"properties": {"files": {"type": "null"}, "folders": {"type": "null"}, "logical_bytes": {"type": "null"}, "allocated_bytes": {"type": "null"}, "max_depth": {"type": "null"}}},
+        "duplicates": {"properties": {"duplicate_bytes": {"type": "null"}, "groups": {"type": "null"}}},
+        "families": {"maxItems": 0},
+        "extensions": {"maxItems": 0},
+        "markers": {"maxItems": 0},
+        "time": {"properties": {
+          "newest_content_write": {"type": "null"},
+          "oldest_content_write": {"type": "null"},
+          "newest_source_write": {"type": "null"},
+          "newest_generated_write": {"type": "null"},
+          "git_last_commit": {"type": "null"},
+          "git_dirty": {"type": "null"}
+        }},
+        "media": {"type": "null"}
+      }}
+    },
+    {
+      "if": {"properties": {"coverage": {"properties": {"allocation_known": {"const": false}}}}},
+      "then": {"properties": {"shape": {"properties": {"allocated_bytes": {"type": "null"}}}}}
+    },
+    {
+      "if": {"properties": {
+        "coverage": {"properties": {"allocation_known": {"const": true}}},
+        "shape": {"properties": {"files": {"type": "integer", "minimum": 1}}}
+      }},
+      "then": {"properties": {"shape": {"properties": {"allocated_bytes": {"type": "integer"}}}}}
+    },
+    {
+      "if": {"properties": {
+        "coverage": {"properties": {"state": {"enum": ["partial", "stale"]}, "allocation_known": {"const": true}}},
+        "shape": {"properties": {"files": {"type": "integer", "minimum": 1}}}
+      }},
+      "then": {"properties": {"shape": {"properties": {"allocated_bytes": {"minimum": 1}}}}}
+    }
+  ],
   "$defs": {
-    "id": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-z0-9][a-z0-9._-]*$"},
-    "token": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[^\\s/\\\\:._@\u0000-\u001f]+$", "description": "One casefolded word run; the Rust validator also checks the run boundaries."},
+    "id": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-z0-9][a-z0-9._-]*(?![\\s\\S])"},
+    "token": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[^\\s/\\\\:._@\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]+(?![\\s\\S])", "description": "One casefolded word run, without C0/C1 controls or bidi formatting; the Rust validator also checks the run boundaries."},
     "count": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+    "count_or_null": {"oneOf": [{"$ref": "#/$defs/count"}, {"type": "null"}]},
     "bytes_or_null": {"oneOf": [{"type": "integer", "minimum": 0, "maximum": 9007199254740991}, {"type": "null"}]},
     "share": {"type": "number", "minimum": 0, "maximum": 1},
     "unix": {"type": "integer", "minimum": 0, "maximum": 32503680000},

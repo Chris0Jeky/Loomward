@@ -246,7 +246,7 @@ fn place<'a>(
 }
 
 fn root_states(conn: &Connection, root: Option<i64>) -> Result<Vec<SearchRootState>> {
-    let mut s = conn.prepare_cached("SELECT r.id,r.state,coalesce(d.sub_complete,0),EXISTS(SELECT 1 FROM scan_run s WHERE s.root_id=r.id AND s.state='completed') FROM root r JOIN root_grant g ON g.id=r.id LEFT JOIN dir d ON d.root_id=r.id AND d.parent_id IS NULL WHERE g.state='active' AND (?1 IS NULL OR r.id=?1) ORDER BY r.id LIMIT 64")?;
+    let mut s = conn.prepare_cached("SELECT r.id,CASE WHEN r.state='complete' AND d.agg_valid_rev<d.dirty_rev THEN 'stale' ELSE r.state END,coalesce(d.sub_complete,0),EXISTS(SELECT 1 FROM scan_run s WHERE s.root_id=r.id AND s.state='completed') FROM root r JOIN root_grant g ON g.id=r.id LEFT JOIN dir d ON d.root_id=r.id AND d.parent_id IS NULL WHERE g.state='active' AND (?1 IS NULL OR r.id=?1) ORDER BY r.id LIMIT 64")?;
     let rows = s.query_map([root], |r| {
         let state: String = r.get(1)?;
         let complete: bool = r.get(2)?;
@@ -375,8 +375,9 @@ impl Walk<'_> {
         } else {
             format!("{}\\{}", parent.rel, hit.name)
         };
+        self.skipped |= !hit.valid;
         let mut row = hit.entry();
-        if !hit.valid {
+        if !hit.valid && self.req.scope.is_none() {
             row.logical_bytes = None;
             row.allocated_bytes = None;
             row.files = None;

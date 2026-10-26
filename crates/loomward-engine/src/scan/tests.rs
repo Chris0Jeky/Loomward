@@ -3560,3 +3560,30 @@ fn unidentifiable_state_exclusion_refuses_the_scan() {
     );
     assert!(report.unwrap().complete);
 }
+
+/// #903: a volume whose sector geometry cannot be read is named by the owner's own path with the
+/// reason and the side, never by a GUID; other reasons keep their plain wire names.
+#[test]
+fn tree_geometry_refusal_names_the_volume_and_the_reason() {
+    use loomward_windows::duplicate_reader::Reason;
+    let message = tree_refusal(
+        Reason::GeometryUnavailable,
+        "destination",
+        std::path::Path::new(r"\\?\H:\synthetic-folder"),
+    );
+    assert!(
+        message.starts_with("sector_geometry_unavailable: "),
+        "{message}"
+    );
+    assert!(
+        message.contains(r"destination root (H:\synthetic-folder)"),
+        "{message}"
+    );
+    assert!(
+        message.contains("does not report its sector size"),
+        "{message}"
+    );
+    assert!(!message.contains("{"), "{message}");
+    let other = tree_refusal(Reason::Io, "source", std::path::Path::new(r"H:\x"));
+    assert_eq!(other, "io");
+}

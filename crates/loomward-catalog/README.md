@@ -267,8 +267,13 @@ Shared Cargo targets require a complete parent listing, so a granted root with n
 parent cannot match. Other v1 pairs use observed manifests, including the same-run requirement
 under incomplete listings. pnpm requires `store`, `.pnpm-store` or a parent named `pnpm`,
 plus a `v<digits>/files` child. Results use a 2,000,000-step budget, the reader's
-deadline and a 1..=200 cap, ordered by known logical size descending, then node id (directory
-before file on equal ids). Partial, invalid or mid-scan directory sizes and unknown allocations
+deadline and a 1..=200 cap. A non-recursive query first collects the root's Recycle Bin and
+system-managed candidates, including direct children of its `Windows` directory. If the
+subsequent walk exhausts the budget, these candidates still return with `partial: true`
+and `budget_hit: true` (normally false). Exhaustion before the root query completes returns
+`Error::ResourceBudget`; deadline expiry returns `Error::Cancelled`. Completed results are
+ordered by known logical size descending, then node id (directory before file on equal ids).
+Partial, invalid or mid-scan directory sizes and unknown allocations
 stay null; a file uses its own observed sizes, also null during a scan. Observed allocation is
 never a reclaimability estimate. The `agent_worktree` class means only that a `.git` file
 marks a linked worktree, a submodule or a separate-git-dir checkout; names alone cannot tell
