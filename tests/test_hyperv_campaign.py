@@ -118,7 +118,7 @@ class CampaignTests(unittest.TestCase):
                 self.assertNotIn(LAB_ROOT + r"\state", text)
                 if command != "preflight":
                     self.assertIn("<redacted>", text)
-                    self.assertLess(text.index("# lw-hv:prepare"), text.index("# lw-hv:act"))
+                    self.assertLess(text.index("# lw-hv:prepare"), text.index("# Act wrapper"))
                     self.assertIn("Stop-VM -Name", text)
                     self.assertIn("-TurnOff -Force", text)
                     self.assertIn("Copy-Item -FromSession", text)
@@ -175,10 +175,16 @@ class CampaignTests(unittest.TestCase):
         self.assertGreaterEqual(record["delay_ms"], 0)
         self.assertLessEqual(record["delay_ms"], 2000)
         scripts = {op: s for op, s, _ in self.ps.calls}
-        self.assertIn("Start-Process", scripts["act"])
-        self.assertIn("-WindowStyle Hidden", scripts["act"])
-        self.assertIn(".cmd", scripts["act"])
-        self.assertIn("LOOMWARD_HV_STEP=act", scripts["act"])
+        cut = scripts["cut"]
+        self.assertNotIn("act", scripts)
+        # The act starts in the cut's own session, before the poll and the hard-off: a process
+        # started through PowerShell Direct ends when its session closes.
+        self.assertEqual(cut.count("New-PSSession"), 1)
+        self.assertLess(cut.index("Start-Process"), cut.index("$deadline"))
+        self.assertLess(cut.index("Start-Process"), cut.index("-TurnOff"))
+        self.assertIn("-WindowStyle Hidden", cut)
+        self.assertIn(".cmd", cut)
+        self.assertIn("LOOMWARD_HV_STEP=act", cut)
         self.assertIn("c00007", scripts["prepare"])
         self.assertIn("'lwrunner'", scripts["prepare"])
         self.assertIn("'lwadmin'", scripts["health"])
@@ -266,6 +272,17 @@ class CampaignTests(unittest.TestCase):
                     self.assertEqual(self.ps.records[-1]["failure"], "guest_boot_failed")
                     self.assertNotIn("cut", self.operations())
 
+    def test_negative_cycles_never_earn_floor_credit(self):
+        c = self.make(command="negative", cycles=1, exe=r"C:\lw\mutant.exe")
+        with contextlib.redirect_stdout(io.StringIO()):
+            c.run()
+        record = self.ps.records[-1]
+        self.assertTrue(record["ok"])
+        self.assertEqual(record["command"], "negative")
+        self.assertEqual(record["exe"], r"C:\lw\mutant.exe")
+        self.assertIsNone(record["floor_credit"])
+        self.assertEqual(sum(c.summary["floor_credits"].values()), 0)
+
     def test_negative_continues_only_oracle_failures(self):
         c = self.make(command="negative", cycles=3, exe=r"C:\lw\mutant.exe")
         response = json.loads(self.ps.run("# lw-hv:recover", 1))
@@ -281,7 +298,7 @@ class CampaignTests(unittest.TestCase):
         self.assertEqual(summary["failures"], 3)
         self.assertEqual(len(self.ps.records), 3)
         self.assertTrue(all(r["floor_credit"] is None for r in self.ps.records))
-        self.assertIn("mutant.exe", next(s for op, s, _ in self.ps.calls if op == "act"))
+        self.assertIn("mutant.exe", next(s for op, s, _ in self.ps.calls if op == "cut"))
 
     def test_negative_still_stops_on_missing_copy_or_elevation(self):
         for defect in ("copy", "elevation"):

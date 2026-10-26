@@ -439,6 +439,9 @@ try {{
         return self._call(step, body, default, timeout=600, guard=True)
 
     def _act(self, values):
+        """Prepare the act launch; it runs inside the cut's persistent session. A process started through
+        PowerShell Direct ends with its session, so launching it in a separate, closed session would kill
+        the act before the hard-off and turn the experiment into a process kill."""
         signal = values["LOOMWARD_HV_SIGNAL"]
         wrapper = signal + r"\act.cmd"
         commands = ['@echo off', 'set "LOOMWARD_HV_STEP=act"',
@@ -446,21 +449,15 @@ try {{
         commands += [f'set "{key}={value}"' for key, value in values.items()]
         commands += [f'"{self.config.exe}" {TEST_ARGS} > "{signal}\\act.log" 2>&1']
         cmd = "\r\n".join(commands) + "\r\n"
-        body = self._session() + f"""
-try {{
-Invoke-Command -Session $session -ScriptBlock {{
+        self._launch = "# Act wrapper (no secrets):\n" + "\n".join("# " + line for line in commands) + f"""
+$started = Invoke-Command -Session $session -ScriptBlock {{
     $ErrorActionPreference = 'Stop'
     [IO.File]::WriteAllText({quote(wrapper)}, {encoded(cmd)}, [Text.Encoding]::ASCII)
     Start-Process -FilePath 'cmd.exe' -ArgumentList {quote('/d /c ""' + wrapper + '""')} -WindowStyle Hidden
-    @{{ started = $true }}
-}} | ConvertTo-Json -Compress
-}} finally {{ Remove-PSSession $session }}
+    $true
+}}
+if ($started -ne $true) {{ throw 'act_start_failed' }}
 """
-        # Keep the wrapper readable in the dry plan without ever including secrets.
-        body = "# Detached wrapper:\n" + "\n".join("# " + line for line in commands) + "\n" + body
-        answer = self._call("act", body, {"started": True}, timeout=150, guard=True)
-        if answer.get("started") is not True:
-            raise CampaignError("act_start_failed")
 
     def _cut(self, values, delay):
         trace = values["LOOMWARD_COPY_CRASH_TRACE"]
@@ -468,6 +465,7 @@ Invoke-Command -Session $session -ScriptBlock {{
         act_log, act_done = signal + r"\act.log", signal + r"\act-done.json"
         body = self._session() + rf"""
 try {{
+{self._launch}
 $deadline = (Get-Date).AddSeconds({ACT_TIMEOUT})
 while ($true) {{
 $poll = Invoke-Command -Session $session -ScriptBlock {{
@@ -533,7 +531,8 @@ $line = {encoded(line)}
         removal = (0 if number % 2 else 1) if self.config.removal == "mixed" else int(self.config.removal)
         if scenario == "abandon":
             removal = 1
-        record = {"cycle": number, "kind": "floor", "scenario": scenario, "removal": removal,
+        record = {"cycle": number, "command": self.config.command, "exe": self.config.exe,
+            "kind": "negative_control" if self.config.command == "negative" else "floor", "scenario": scenario, "removal": removal,
             "tree": self.config.tree, "seed": self.config.seed, "delay_ms": None, "trace_lines": None,
             "cut_latency_ms": None, "last_poll_return": None, "stop_started": None, "stop_returned": None,
             "last_trace_label": None, "dirty_pages": None, "recovered": None, "abandoned": None,
@@ -604,7 +603,9 @@ $line = {encoded(line)}
                 raise CampaignError("oracle_failed")
             if recovered.get("exit_code") != 0 and record["ok"] is True:
                 raise CampaignError("recover_failed")
-            if record["ok"] and record["kind"] == "floor" and record["dirty_pages"] > 0:
+            # A negative-control cycle runs a mutant: never qualification evidence, whatever its outcome.
+            if (record["ok"] and record["kind"] == "floor" and record["dirty_pages"] > 0
+                    and self.config.command != "negative"):
                 record["floor_credit"] = window_for_label(record["last_record"])
             free = recovered.get("free_bytes")
             if not isinstance(free, (int, float)) or not math.isfinite(free) or free < 0:
