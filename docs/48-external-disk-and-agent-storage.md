@@ -186,7 +186,21 @@ the owner approves each plan.
   `subprocess.run([...], shell=False)`), because file names are third-party text and a name can carry shell syntax
   (`$(...)`, backticks, `&`, `%`). The destination is never inside a source. Sources under a cloud sync root are left
   out of plans (a copy would download placeholders, invariant 2). The log path must not exist yet (`/UNILOG:` would
-  overwrite it). The log lives outside the new folder. A robocopy exit
+  overwrite it). The log lives outside the new folder and outside every source, in `.loomward/archive/`.
+  Before a plan may run, and checked again by the runner:
+  - **Same disk.** The destination volume's GUID equals the plan's destination volume key, checked immediately
+    before robocopy and before each `verify-tree` run; a mismatch (a letter that moved after a replug) stops the
+    plan.
+  - **Bound to what the owner saw.** The approval record holds the exact argument list shown to the owner; the
+    runner executes that list and nothing else, and each source root's identity (volume and file ID) must equal the
+    plan node's.
+  - **No reach.** Each source folder first passes a read-only Loomward check with zero cloud placeholders, reparse
+    points or symbolic links; any found refuses the plan (a copy could download content or follow a link outside the
+    plan, invariant 2). This holds whatever the agent's grant fields are.
+  - **A new, valid folder.** The destination folder must not exist when the run starts, and its name is one path
+    component that passes docs/47's name rules (no `..`, `\`, `:` or reserved names). One plan item maps to one
+    uniquely named subfolder, copied and verified as its own pair; two items with the same leaf name get distinct
+    subfolder names. A robocopy exit
   code of 8 or more is a failed plan. A failed or interrupted run is never patched up: its folder is left and reported
   to the owner, and a retry copies into another new folder. Then `verify-tree` must exit 0.
 - **Removing originals.** The removal re-checks the plan's own nodes by identity (volume and file ID), never paths an
