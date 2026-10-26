@@ -2407,7 +2407,7 @@ fn first_scan_statements(children: i64) -> HashMap<String, u64> {
                 id[..8].copy_from_slice(&(dir * 16 + i as i64).to_le_bytes());
                 o.file_id = Some(id);
                 o.extension = Some("txt".into());
-                o.family = "other".into();
+                o.family = crate::extension_family(o.extension.as_deref()).into();
                 o.created_ft = Some(1);
                 o.modified_ft = Some(2);
                 o

@@ -74,7 +74,7 @@ fn obs(name: &str, logical: u64, id: Option<u8>) -> Observation {
     o.modified_ft = Some(i64::from(id.unwrap_or(0)));
     if let Some((_, ext)) = name.rsplit_once('.') {
         o.extension = Some(ext.into());
-        o.family = "other".into();
+        o.family = crate::extension_family(o.extension.as_deref()).into();
     }
     o
 }

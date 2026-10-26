@@ -46,6 +46,9 @@ pub(crate) struct Hooks {
     pub fail_spawn: std::sync::atomic::AtomicBool,
     pub fail_job_list: std::sync::atomic::AtomicBool,
     pub before_generation_read: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    /// #912: one-shot, runs after a scan or inspection passed the root gate, before the engine
+    /// mints the root (a volume swap in that window).
+    pub after_root_gate: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     pub closed: Mutex<Vec<(Command, &'static str)>>,
     pub arrived: Mutex<Vec<(Command, &'static str)>>,
     pub opened: std::sync::Condvar,
@@ -4634,6 +4637,50 @@ fn scan_jobs_get_reports_progress_while_a_lab_scan_is_running() {
     assert_eq!(done["progress"]["logical_bytes"], "165");
 }
 
+/// #908: a native scan classifies by extension, so `ext_family` is not one big `other` bucket.
+#[cfg(windows)]
+#[test]
+fn scan_classifies_extensions_into_families_for_the_ext_family_breakdown() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    for (name, size) in [
+        ("synthetic-photo.jpg", 11),
+        ("synthetic-RAW.CR3", 12),
+        ("synthetic-clip.mp4", 13),
+        ("synthetic-notes.pdf", 14),
+        ("synthetic-noext", 15),
+    ] {
+        std::fs::write(lab.path.join(name), vec![0u8; size]).unwrap();
+    }
+    let done = settle(svc, &start(svc, &lab.root, "full"));
+    assert_eq!(done["state"], "completed", "{done:?}");
+    let anchor = lab_slice(svc, &lab.root)["anchor_node_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (b, _) = ok(
+        "stats.breakdown",
+        call(
+            svc,
+            "stats.breakdown",
+            json!({"node_id": anchor, "by": "ext_family", "basis": "logical", "limit": 8}),
+        ),
+    );
+    let files = |key: &str| {
+        b["buckets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|k| k["key"] == key)
+            .map(|k| k["files"].as_u64().unwrap())
+    };
+    assert_eq!(files("image"), Some(2), "{b:?}");
+    assert_eq!(files("video"), Some(1), "{b:?}");
+    assert_eq!(files("document"), Some(1), "{b:?}");
+    assert_eq!(files("none"), Some(1), "{b:?}");
+    assert_eq!(files("other"), Some(5), "the .bin fixture files: {b:?}");
+}
+
 /// #719/#808: a directory-budget stop remains a named, finished partial scan at the service boundary.
 #[cfg(windows)]
 #[test]
@@ -6875,7 +6922,8 @@ fn detachable_root_offline_retains_last_seen_sizes_and_reconnects_by_identity() 
     let classification = loomward_windows::volumes::classify(&lab.path).unwrap();
     assert_eq!(
         volumes["volumes"][0]["device"]["bus_type"],
-        classification.bus_type
+        crate::placement::wire_bus_type(&classification.bus_type),
+        "a native bus outside the protocol's names reads other (#888 item 6)"
     );
     assert_eq!(
         volumes["volumes"][0]["device"]["basis"],
@@ -6947,6 +6995,12 @@ fn detachable_root_replacement_guid_reads_offline_and_keeps_the_grant() {
             .unwrap();
         let refused = svc.inner.session_root_gate(&row).unwrap_err();
         assert_eq!(refused.code, ErrorCode::DeviceOffline);
+        // #888 item 5: the refusal says plainly that a different disk holds the letter.
+        assert_eq!(
+            refused.message.as_str(),
+            crate::handlers::OTHER_VOLUME_MESSAGE
+        );
+        assert_eq!(refused.detail.unwrap()["reason"], "volume_offline");
         let payload = if command == "scan.start" {
             json!({"root_id": lab.root, "mode": "full"})
         } else {
@@ -6973,6 +7027,15 @@ fn detachable_root_replacement_guid_reads_offline_and_keeps_the_grant() {
             let (result, _) = ok(command, call(svc, command, json!({})));
             assert_eq!(result["volumes"][0]["online"], false, "{command}");
         }
+        // #888 item 5: the volume list says plainly that another disk holds the letter.
+        let (volumes, _) = ok("volumes.list", call(svc, "volumes.list", json!({})));
+        assert!(
+            volumes["volumes"][0]["tier"]["note"]
+                .as_str()
+                .unwrap()
+                .contains("a different disk is on this disk's drive letter"),
+            "{volumes:?}"
+        );
         // A missing folder on a foreign volume must not be misreported as a missing folder on
         // the grant's own attached volume.
         std::fs::rename(
@@ -6983,6 +7046,47 @@ fn detachable_root_replacement_guid_reads_offline_and_keeps_the_grant() {
         let refused = svc.inner.session_root_gate(&row).unwrap_err();
         assert_eq!(refused.code, ErrorCode::DeviceOffline);
         assert_eq!(refused.detail.unwrap()["reason"], "volume_offline");
+    }
+}
+
+/// #912: a different volume takes the root's path after the service gate passed and before the
+/// engine mints the root. The engine reads it offline too, so no path retires the grant.
+#[cfg(windows)]
+#[test]
+fn detachable_root_swapped_after_the_gate_reads_offline_and_keeps_the_grant() {
+    for command in ["scan.start", "duplicates.inspect"] {
+        let Some(lab) = lab() else { return };
+        let svc = &lab.svc;
+        let job = start(svc, &lab.root, "full");
+        assert_eq!(settle(svc, &job)["state"], "completed");
+        let state = loomward_catalog::sqlite_dir(&svc.inner.state_dir).join("state.db");
+        // The grant now pins another volume: the path's volume is foreign to it.
+        *svc.inner.hooks.after_root_gate.lock().unwrap() = Some(Box::new(move || {
+            rusqlite::Connection::open(state)
+                .unwrap()
+                .execute(
+                    "UPDATE root_grant SET volume_guid='00000000000000000000000000000001'",
+                    [],
+                )
+                .unwrap();
+        }));
+        let payload = if command == "scan.start" {
+            json!({"root_id": lab.root, "mode": "full"})
+        } else {
+            json!({"root_id": lab.root, "budget": {"max_candidates": 20, "max_bytes": "1024", "max_ms": 1000}})
+        };
+        let e = err(call(svc, command, payload));
+        assert!(svc.inner.hooks.after_root_gate.lock().unwrap().is_none());
+        assert_eq!(e.code, ErrorCode::DeviceOffline, "{command}: {e:?}");
+        let state: String = svc
+            .inner
+            .db()
+            .query_row("SELECT state FROM st.root_grant", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            state, "active",
+            "{command}: a foreign volume never retires the grant"
+        );
     }
 }
 
@@ -7022,10 +7126,8 @@ fn detach_presence_hints_expire_and_volume_notices_invalidate_them() {
         .get_mut(&grant)
         .unwrap()
         .0 = Some(Instant::now() - Duration::from_secs(4));
-    assert!(matches!(
-        svc.inner.cached_root_presence().get(&grant),
-        Some(RootPresence::Offline)
-    ));
+    // #913: an expired hint is not an observation, never a guessed offline.
+    assert!(!svc.inner.cached_root_presence().contains_key(&grant));
     svc.inner
         .remember_root_presence(grant, RootPresence::Online);
     ok(
@@ -7036,10 +7138,7 @@ fn detach_presence_hints_expire_and_volume_notices_invalidate_them() {
             json!({"volume_id":volume,"tier":1}),
         ),
     );
-    assert!(matches!(
-        svc.inner.cached_root_presence().get(&grant),
-        Some(RootPresence::Offline)
-    ));
+    assert!(!svc.inner.cached_root_presence().contains_key(&grant));
     assert!(svc.inner.root_presence_cache.lock().unwrap()[&grant]
         .0
         .is_none());

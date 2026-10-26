@@ -129,12 +129,13 @@ mod native {
         ptr::{null, null_mut},
         sync::{
             atomic::{AtomicBool, AtomicU8, Ordering},
-            mpsc, Arc, Mutex,
+            mpsc, Arc, Condvar, Mutex,
         },
         thread::{self, JoinHandle},
         time::{Duration, Instant},
     };
     use windows_sys::Win32::{
+        Devices::DeviceAndDriverInstallation::*,
         Foundation::*,
         Storage::FileSystem::*,
         System::{
@@ -191,6 +192,92 @@ mod native {
             } else {
                 completed()
             }
+        }
+    }
+
+    /// #888 item 4: a watch must never veto Safely Remove of its volume. Windows first asks the
+    /// holders of handles on the volume (target-device query-remove); the watch thread then
+    /// closes its directory handle and pins before the answer, and reports the watch failed. The
+    /// owner rebuilds it after its restart delay: by then the volume is gone (offline) or the
+    /// removal was refused and the root is watched again. Registration is best effort: a volume
+    /// without device notifications keeps today's behaviour.
+    #[derive(Default)]
+    struct Release {
+        requested: AtomicBool,
+        closed: Mutex<bool>,
+        closed_cv: Condvar,
+    }
+    impl Release {
+        fn close(&self) {
+            *self.closed.lock().unwrap_or_else(|e| e.into_inner()) = true;
+            self.closed_cv.notify_all();
+        }
+        /// Ask the watch thread to release its handles and wait (bounded) until it has.
+        fn release(&self) {
+            self.requested.store(true, Ordering::Release);
+            let closed = self.closed.lock().unwrap_or_else(|e| e.into_inner());
+            let _ = self
+                .closed_cv
+                .wait_timeout_while(closed, Duration::from_secs(10), |closed| !*closed);
+        }
+    }
+    unsafe extern "system" fn on_device_event(
+        _: HCMNOTIFICATION,
+        context: *const core::ffi::c_void,
+        action: CM_NOTIFY_ACTION,
+        _: *const CM_NOTIFY_EVENT_DATA,
+        _: u32,
+    ) -> u32 {
+        if matches!(
+            action,
+            CM_NOTIFY_ACTION_DEVICEQUERYREMOVE
+                | CM_NOTIFY_ACTION_DEVICEREMOVEPENDING
+                | CM_NOTIFY_ACTION_DEVICEREMOVECOMPLETE
+        ) {
+            // SAFETY: the context is the registration's own Arc, live until unregistration,
+            // which waits for in-flight callbacks.
+            unsafe { &*context.cast::<Release>() }.release();
+        }
+        ERROR_SUCCESS // Never veto the removal.
+    }
+    struct Registration {
+        handle: HCMNOTIFICATION,
+        context: *const Release,
+    }
+    // SAFETY: the notification handle and the Arc it carries are usable from any thread.
+    unsafe impl Send for Registration {}
+    unsafe impl Sync for Registration {}
+    impl Registration {
+        fn new(dir: &File, release: &Arc<Release>) -> Option<Self> {
+            let mut filter = CM_NOTIFY_FILTER {
+                cbSize: std::mem::size_of::<CM_NOTIFY_FILTER>() as u32,
+                FilterType: CM_NOTIFY_FILTER_TYPE_DEVICEHANDLE,
+                ..Default::default()
+            };
+            filter.u.DeviceHandle.hTarget = dir.as_raw_handle();
+            let context = Arc::into_raw(release.clone());
+            let mut handle = null_mut();
+            if unsafe {
+                CM_Register_Notification(
+                    &filter,
+                    context.cast(),
+                    Some(on_device_event),
+                    &mut handle,
+                )
+            } != CR_SUCCESS
+            {
+                drop(unsafe { Arc::from_raw(context) });
+                return None;
+            }
+            Some(Self { handle, context })
+        }
+    }
+    impl Drop for Registration {
+        fn drop(&mut self) {
+            // Waits for an in-flight callback, which waits only on the watch thread; that thread
+            // never waits on the callback or on this drop.
+            unsafe { CM_Unregister_Notification(self.handle) };
+            drop(unsafe { Arc::from_raw(self.context) });
         }
     }
 
@@ -284,6 +371,8 @@ mod native {
         busy_since: Mutex<Option<Instant>>,
         thread: Mutex<Option<JoinHandle<()>>>,
         checkpoints: mpsc::SyncSender<mpsc::SyncSender<()>>,
+        release: Arc<Release>,
+        registration: Mutex<Option<Registration>>,
     }
     impl Watcher {
         /// Open a non-elevated root with component-wise no-recall, reparse-refusing pins.
@@ -297,6 +386,9 @@ mod native {
             if let Some(expected) = expected {
                 expected_identity_matches(identity, expected)?;
             }
+            let release = Arc::new(Release::default());
+            let registration = Registration::new(&dir, &release);
+            let released = release.clone();
             let done = Arc::new(AtomicBool::new(false));
             let stopped = done.clone();
             let failed = Arc::new(AtomicBool::new(false));
@@ -305,7 +397,6 @@ mod native {
             let (ready_tx, ready_rx) = mpsc::sync_channel(1);
             let (checkpoints, checkpoint_rx) = mpsc::sync_channel::<mpsc::SyncSender<()>>(1);
             let thread = thread::spawn(move || {
-                let _pins = pins;
                 let outcome = (|| -> Result<(), SourceError> {
                     let raw = unsafe { CreateEventW(null(), 0, 0, null()) };
                     if raw.is_null() {
@@ -336,7 +427,9 @@ mod native {
                             checkpoint.deliver(hints, &callback);
                         }
                         let (error, returned) = loop {
-                            if stopped.load(Ordering::Acquire) {
+                            if stopped.load(Ordering::Acquire)
+                                || released.requested.load(Ordering::Acquire)
+                            {
                                 break pending.cancel_and_finish();
                             }
                             // A handle can survive a root/ancestor rename without a notification.
@@ -366,6 +459,9 @@ mod native {
                                 _ => return Err(SourceError::Io(unsafe { GetLastError() } as i32)),
                             }
                         };
+                        if released.requested.load(Ordering::Acquire) {
+                            return Err(SourceError::Io(ERROR_DEVICE_REMOVED as i32));
+                        }
                         if error == Some(ERROR_OPERATION_ABORTED) && stopped.load(Ordering::Acquire)
                         {
                             return Ok(());
@@ -387,8 +483,14 @@ mod native {
                         });
                     }
                 })();
-                if let Err(error) = outcome {
+                if outcome.is_err() {
                     failure.store(true, Ordering::Release);
+                }
+                // Cancelled I/O is drained above; release the volume before any callback.
+                drop(dir);
+                drop(pins);
+                released.close();
+                if let Err(error) = outcome {
                     let _ = ready_tx.try_send(Err(error));
                     if !stopped.load(Ordering::Acquire) {
                         callback(vec![Change::RootDirty]);
@@ -402,6 +504,8 @@ mod native {
                 busy_since: Mutex::new(None),
                 thread: Mutex::new(Some(thread)),
                 checkpoints,
+                release,
+                registration: Mutex::new(registration),
             };
             // Startup gets a larger scheduling allowance, but never claims unarmed coverage.
             match ready_rx.recv_timeout(Duration::from_secs(30)) {
@@ -508,6 +612,24 @@ mod native {
                     self.failed.store(true, Ordering::Release);
                 }
             }
+            drop(
+                self.registration
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take(),
+            );
+        }
+        /// Whether Windows will ask this watch to let its volume go (#888 item 4).
+        pub fn releases_on_removal(&self) -> bool {
+            self.registration
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_some()
+        }
+        /// Test seam: act as if Windows asked to remove the watched volume.
+        #[cfg(any(test, feature = "fixtures"))]
+        pub fn simulate_removal_request(&self) {
+            self.release.release();
         }
     }
     impl Drop for Watcher {
@@ -540,6 +662,8 @@ mod native {
                 busy_since: Mutex::new(None),
                 thread: Mutex::new(Some(worker)),
                 checkpoints,
+                release: Arc::default(),
+                registration: Mutex::new(None),
             };
             let result = watcher.checkpoint();
             let failed = watcher.failed();
@@ -567,6 +691,8 @@ mod native {
                 busy_since: Mutex::new(None),
                 thread: Mutex::new(Some(worker)),
                 checkpoints,
+                release: Arc::default(),
+                registration: Mutex::new(None),
             });
             let release = release;
             watcher
@@ -618,6 +744,8 @@ mod native {
                 busy_since: Mutex::new(None),
                 thread: Mutex::new(Some(worker)),
                 checkpoints,
+                release: Arc::default(),
+                registration: Mutex::new(None),
             };
             // Always release the fake worker before Watcher::drop, even if an assertion fails.
             let release = release;
@@ -656,6 +784,8 @@ mod native {
                 busy_since: Mutex::new(None),
                 thread: Mutex::new(Some(worker)),
                 checkpoints,
+                release: Arc::default(),
+                registration: Mutex::new(None),
             };
             assert_eq!(watcher.checkpoint(), Err(SourceError::Refused));
             assert!(watcher.failed(), "an exited thread lost coverage");
@@ -681,6 +811,8 @@ mod native {
                 busy_since: Mutex::new(None),
                 thread: Mutex::new(Some(worker)),
                 checkpoints,
+                release: Arc::default(),
+                registration: Mutex::new(None),
             };
             let release = release_tx;
             let result = thread::scope(|scope| {
@@ -756,6 +888,8 @@ mod native {
                 busy_since: Mutex::new(None),
                 thread: Mutex::new(Some(worker)),
                 checkpoints,
+                release: Arc::default(),
+                registration: Mutex::new(None),
             };
             watcher
                 .checkpoints
@@ -936,6 +1070,47 @@ mod native {
                 "stop discarded the read completed during the callback"
             );
             assert!(!watcher.failed());
+        }
+        /// #888 item 4: a removal request closes the watch's handles before it is answered, so
+        /// the watch never vetoes Safely Remove; the watch then reads failed for its owner to
+        /// rebuild. The OS delivery itself needs a detachable volume and is not exercised here.
+        #[test]
+        fn removal_request_releases_the_watched_volume_before_answering() {
+            use std::os::windows::fs::OpenOptionsExt;
+            let tree = fixture();
+            if elevated_refusal(tree.path()) {
+                return;
+            }
+            let (tx, rx) = mpsc::channel();
+            let watcher = Watcher::start(tree.path(), None, move |batch| {
+                let _ = tx.send(batch);
+            })
+            .unwrap();
+            assert!(
+                watcher.releases_on_removal(),
+                "a local NTFS directory accepts a device-handle registration"
+            );
+            // A share-nothing open fails while any data-access handle (the watch) is open.
+            let exclusive = || {
+                std::fs::OpenOptions::new()
+                    .access_mode(FILE_LIST_DIRECTORY)
+                    .share_mode(0)
+                    .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+                    .open(tree.path())
+            };
+            assert!(exclusive().is_err(), "the watch holds its directory");
+            watcher.simulate_removal_request();
+            assert!(
+                exclusive().is_ok(),
+                "released before the request is answered"
+            );
+            assert!(watcher.failed(), "the owner must rebuild the watch");
+            assert!(rx
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap()
+                .contains(&Change::RootDirty));
+            watcher.stop();
+            assert!(!watcher.releases_on_removal(), "stop unregisters");
         }
         fn fixture() -> tempfile::TempDir {
             tempfile::tempdir_in(std::fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap()

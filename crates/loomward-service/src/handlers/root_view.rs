@@ -11,6 +11,27 @@ const PRESENCE_TTL: Duration = Duration::from_secs(3);
 
 pub(crate) const OFFLINE_SPACE_NOTE: &str =
     "Offline. Last-seen capacity and free space are observations, not current availability.";
+/// #888 item 5: say plainly why a disk reads offline while its letter is in use.
+pub(crate) const OTHER_VOLUME_MESSAGE: &str =
+    "A different disk is on this root's drive letter; the granted disk is offline until it is plugged back in.";
+const OTHER_VOLUME_SPACE_NOTE: &str = "Offline: a different disk is on this disk's drive letter. Last-seen capacity and free space are observations, not current availability.";
+
+/// The note for an offline volume: names a different disk on the letter when one was observed.
+pub(crate) fn offline_space_note(
+    volume: &db::VolumeRow,
+    roots: &[db::RootRow],
+    presence: &RootPresences,
+) -> &'static str {
+    if roots.iter().any(|r| {
+        r.volume == Some(volume.id)
+            && r.grant_state == "active"
+            && presence.get(&r.grant) == Some(&RootPresence::OtherVolume)
+    }) {
+        OTHER_VOLUME_SPACE_NOTE
+    } else {
+        OFFLINE_SPACE_NOTE
+    }
+}
 
 pub(crate) fn volume_online(
     volume: &db::VolumeRow,
@@ -44,23 +65,18 @@ impl Inner {
     }
 
     /// Mutation notices use short-lived display hints, never synchronous device I/O.
-    /// Expired or invalidated native observations make the retained scan stale.
+    /// An expired or invalidated hint is not an observation (#913, invariant 4): it is left out,
+    /// so the root keeps its stored scan state and coverage instead of a guessed offline.
     pub(crate) fn cached_root_presence(&self) -> RootPresences {
         let now = Instant::now();
         self.root_presence_cache
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .iter()
-            .map(|(&grant, &(at, presence))| {
-                (
-                    grant,
-                    if at.is_some_and(|at| now.saturating_duration_since(at) < PRESENCE_TTL) {
-                        presence
-                    } else {
-                        RootPresence::Offline
-                    },
-                )
+            .filter(|(_, (at, _))| {
+                at.is_some_and(|at| now.saturating_duration_since(at) < PRESENCE_TTL)
             })
+            .map(|(&grant, &(_, presence))| (grant, presence))
             .collect()
     }
 
@@ -143,7 +159,7 @@ impl Inner {
                         // Another volume holds the path (a stick on a detached disk's letter): the root
                         // is away, not replaced. identity_changed is terminal and redacts learning, so it
                         // is kept for the same volume with a different folder (#869 deep review).
-                        RootPresence::Offline
+                        RootPresence::OtherVolume
                     } else if seen == (key, file, guid) {
                         RootPresence::Online
                     } else {
@@ -160,6 +176,10 @@ impl Inner {
                             return Some(
                                 if identity.volume_guid.map(|g| format!("{g:032x}")) == Some(guid) {
                                     RootPresence::RootMissing
+                                } else if ancestor.parent().is_none() {
+                                    // The letter's own root is another volume: a different disk.
+                                    // A folder mount point's host volume is not, so it stays plain.
+                                    RootPresence::OtherVolume
                                 } else {
                                     RootPresence::Offline
                                 },
@@ -200,6 +220,7 @@ impl Inner {
                 presence,
                 Some(
                     RootPresence::Offline
+                        | RootPresence::OtherVolume
                         | RootPresence::RootMissing
                         | RootPresence::IdentityChanged
                 )
@@ -442,6 +463,37 @@ mod tests {
             .unwrap();
         assert!(result["totals"].is_null());
         assert_eq!(result["scan"]["coverage"], "partial");
+    }
+
+    /// #913: a notice built from an expired or invalidated presence hint keeps the stored scan
+    /// state; only a fresh offline observation marks the retained scan stale.
+    #[test]
+    fn expired_presence_hints_keep_the_stored_scan_state_in_notices() {
+        let (_tmp, service, _connection, row) = fixture();
+        let inner = &service.inner;
+        let notice = || {
+            inner
+                .root_json(
+                    &row,
+                    None,
+                    inner.cached_root_presence().get(&row.grant).copied(),
+                )
+                .unwrap()
+        };
+        inner.remember_root_presence(row.grant, RootPresence::Online);
+        inner
+            .root_presence_cache
+            .lock()
+            .unwrap()
+            .get_mut(&row.grant)
+            .unwrap()
+            .0 = Some(Instant::now() - Duration::from_secs(4));
+        assert_eq!(notice()["scan"]["state"], "complete", "expired hint");
+        inner.remember_root_presence(row.grant, RootPresence::Online);
+        inner.invalidate_root_presence();
+        assert_eq!(notice()["scan"]["state"], "complete", "invalidated hint");
+        inner.remember_root_presence(row.grant, RootPresence::OtherVolume);
+        assert_eq!(notice()["scan"]["state"], "stale", "fresh offline hint");
     }
 
     #[test]

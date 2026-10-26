@@ -2,17 +2,47 @@
 use super::*;
 use crate::enumerate::{DirSource, Flow, ListOutcome, NativeSource};
 use loomward_operations::tree::{Kind, MetadataClass as Class, Node, Observation, Tree};
-use std::{collections::BTreeMap, mem::ManuallyDrop, os::windows::ffi::OsStringExt};
+use std::{
+    collections::BTreeMap,
+    mem::ManuallyDrop,
+    os::windows::{ffi::OsStringExt, fs::OpenOptionsExt, io::FromRawHandle},
+};
 use windows_sys::{
-    Wdk::Storage::FileSystem::{
-        FileAlternateNameInformation, FileEaInformation, FileIdBothDirectoryInformation,
-        NtQueryDirectoryFile, NtQueryInformationFile,
+    Wdk::{
+        Foundation::OBJECT_ATTRIBUTES,
+        Storage::FileSystem::{
+            FileAlternateNameInformation, FileEaInformation, FileIdBothDirectoryInformation,
+            NtCreateFile, NtQueryDirectoryFile, NtQueryInformationFile, FILE_OPEN,
+            FILE_OPEN_NO_RECALL, FILE_OPEN_REPARSE_POINT,
+        },
     },
     Win32::Security::*,
 };
 
 /// Most entries one tree read may list (the root, every listed directory and every listed file).
 const MAX_TREE_ENTRIES: usize = 200_000;
+
+#[cfg(test)]
+thread_local! {
+    static ACL_OPEN_ACCESSES: std::cell::RefCell<Option<Vec<u32>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn record_acl_open(access: u32) {
+    ACL_OPEN_ACCESSES.with_borrow_mut(|accesses| {
+        if let Some(accesses) = accesses {
+            accesses.push(access);
+        }
+    });
+}
+
+#[cfg(test)]
+fn record_tree_open_accesses(run: impl FnOnce()) -> Vec<u32> {
+    ACL_OPEN_ACCESSES.with_borrow_mut(|accesses| *accesses = Some(Vec::new()));
+    let mut accesses = enumerate::record_open_accesses(run);
+    ACL_OPEN_ACCESSES.with_borrow_mut(|acl| accesses.extend(acl.take().unwrap()));
+    accesses
+}
 
 /// One entry budget: the root and every listed child, files and directories alike, count once.
 /// A request above `MAX_TREE_ENTRIES` is refused as `entry_budget` rather than clamped.
@@ -78,13 +108,23 @@ fn read_tree_from(
     .map(|mut files| files.pop().unwrap());
     // The root's parent is outside the grant; never enumerate it for an alternate name.
     let root_short = short_name(dir.file(), || Err("metadata_unreadable"));
-    let mut pending = vec![(PathBuf::new(), dir, root_security, root_short)];
+    // A failed parent read leaves legacy root ACEs unknown, rather than treating them as explicit.
+    let root_parent_acl = root_parent_security(root, &observe(dir.file())?)
+        .ok()
+        .map(|acl| Arc::new(Ok(acl)));
+    let mut pending = vec![(
+        PathBuf::new(),
+        dir,
+        root_security,
+        root_short,
+        root_parent_acl,
+    )];
     let mut directories = Vec::new();
     let mut reserved = 1;
-    while let Some((path, dir, security, short)) = pending.pop() {
+    while let Some((path, dir, security, short, parent_acl)) = pending.pop() {
         if let Err(reason) = meter.check() {
             tree.nodes.insert(path, Err(reason.as_str()));
-            for (path, _, _, _) in pending.drain(..) {
+            for (path, _, _, _, _) in pending.drain(..) {
                 tree.nodes.insert(path, Err(reason.as_str()));
             }
             break;
@@ -94,6 +134,7 @@ fn read_tree_from(
             dir.file(),
             &before,
             security.as_ref().ok(),
+            parent_acl.as_deref(),
             Kind::Directory,
             short,
         );
@@ -128,6 +169,7 @@ fn read_tree_from(
         tree.nodes.insert(path.clone(), Ok(node));
         let mut short_names = None;
         let short_name_limit = children.len();
+        let parent_acl = parent_security(dir.file()).ok().map(|a| Arc::new(Ok(a)));
         for (name, id, attributes, size, creation, write, change) in children {
             let relative = path.join(std::ffi::OsString::from_wide(&name));
             let result = (|| {
@@ -166,7 +208,7 @@ fn read_tree_from(
                             short_name_limit,
                         )
                     });
-                    pending.push((relative.clone(), child, security, short));
+                    pending.push((relative.clone(), child, security, short, parent_acl.clone()));
                     return Ok(None);
                 }
                 let opened = reader.open_relative(&relative, None, false, &meter)?;
@@ -215,6 +257,7 @@ fn read_tree_from(
                     &opened.file,
                     &observed,
                     security.as_ref().ok(),
+                    parent_acl.as_deref(),
                     Kind::File,
                     short,
                 );
@@ -272,6 +315,7 @@ fn metadata(
     file: &File,
     observed: &ObservedIdentity,
     security: Option<&File>,
+    parent_acl: Option<&Observation<SecurityDescriptor>>,
     kind: Kind,
     short: Observation<Vec<u8>>,
 ) -> Node {
@@ -352,12 +396,15 @@ fn metadata(
     values.insert(Class::ObjectId, object_id(file));
     if let Some(security) = security {
         if observe(security).is_ok_and(|s| signature(&s, observed)) {
-            let result = security_metadata(security);
+            let result = read_security_for_parent(security, kind, parent_acl);
+            values.insert(
+                Class::Owner,
+                result.as_ref().map(|v| v.owner.clone()).map_err(|e| *e),
+            );
             values.insert(
                 Class::SecurityDescriptor,
-                result.as_ref().map(|v| v.0.clone()).map_err(|e| *e),
+                result.and_then(|v| explicit_aces(&v, kind, parent_acl)),
             );
-            values.insert(Class::Owner, result.map(|v| v.1));
         }
     }
     if kind == Kind::Directory {
@@ -584,9 +631,147 @@ fn object_id(file: &File) -> Observation<Vec<u8>> {
     }
 }
 
+struct SecurityDescriptor {
+    owner: Vec<u8>,
+    group: Vec<u8>,
+    dacl: Option<Vec<Vec<u8>>>,
+    control: u16,
+}
+
+fn root_parent_security(
+    root: &Path,
+    expected: &ObservedIdentity,
+) -> Observation<SecurityDescriptor> {
+    #[cfg(test)]
+    if acl_tests::FAIL_ROOT_PARENT_READ.get() {
+        return Err("parent_security_descriptor_unreadable");
+    }
+    // Metadata-only read outside the grant, bound back to the observed root before using its ACL.
+    let parent = root
+        .parent()
+        .ok_or("parent_security_descriptor_unreadable")?;
+    let access = READ_CONTROL | FILE_READ_ATTRIBUTES;
+    #[cfg(test)]
+    record_acl_open(access);
+    let file = File::options()
+        .access_mode(access)
+        .share_mode(SHARE)
+        .custom_flags(
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_OPEN_NO_RECALL,
+        )
+        .open(parent)
+        .map_err(|_| "parent_security_descriptor_unreadable")?;
+    let borrowed = ManuallyDrop::new(Handle(file.as_raw_handle()));
+    let info = crate::win::info::<FILE_ATTRIBUTE_TAG_INFO>(&borrowed, FileAttributeTagInfo)
+        .map_err(|_| "parent_security_descriptor_unreadable")?;
+    if info.FileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)
+        != FILE_ATTRIBUTE_DIRECTORY
+    {
+        return Err("parent_security_descriptor_unreadable");
+    }
+    let name: Vec<_> = root
+        .file_name()
+        .ok_or("parent_security_descriptor_unreadable")?
+        .encode_wide()
+        .collect();
+    let child = enumerate::open_relative_mode(
+        &file,
+        &name,
+        READ_CONTROL | FILE_READ_ATTRIBUTES,
+        SHARE,
+        true,
+    )
+    .map_err(|_| "parent_security_descriptor_unreadable")?;
+    let observed = observe(&child).map_err(|_| "parent_security_descriptor_unreadable")?;
+    if observed.object.file_id != expected.object.file_id
+        || observed.object.volume_serial != expected.object.volume_serial
+        || observed.object.quality != expected.object.quality
+    {
+        return Err("parent_security_descriptor_unreadable");
+    }
+    read_security(&file)
+}
+
+// Reopen the pinned directory itself: no parent-name lookup and only READ_CONTROL access.
+fn parent_security(parent: &File) -> Observation<SecurityDescriptor> {
+    let access = READ_CONTROL;
+    #[cfg(test)]
+    record_acl_open(access);
+    let mut name = UNICODE_STRING::default();
+    let attributes = OBJECT_ATTRIBUTES {
+        Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
+        RootDirectory: parent.as_raw_handle(),
+        ObjectName: &mut name,
+        ..Default::default()
+    };
+    let mut handle = ptr::null_mut();
+    let mut status = IO_STATUS_BLOCK::default();
+    let result = unsafe {
+        NtCreateFile(
+            &mut handle,
+            access,
+            &attributes,
+            &mut status,
+            ptr::null(),
+            0,
+            SHARE,
+            FILE_OPEN,
+            FILE_OPEN_REPARSE_POINT | FILE_OPEN_NO_RECALL,
+            ptr::null(),
+            0,
+        )
+    };
+    if result < 0 {
+        return Err("parent_security_descriptor_unreadable");
+    }
+    read_security(&unsafe { File::from_raw_handle(handle) })
+}
+
+// Callers without a granted parent retain the old fail-closed classification.
+#[cfg(any(test, feature = "copy-primitives"))]
 pub(crate) fn security_metadata(file: &File) -> Observation<(Vec<u8>, Vec<u8>, bool)> {
+    let security = read_security(file)?;
+    let explicit = explicit_aces(&security, Kind::File, Some(&Err("parent_not_supplied")))?;
+    Ok((
+        explicit,
+        security.owner,
+        security.control & SE_DACL_PROTECTED != 0,
+    ))
+}
+
+fn read_security(file: &File) -> Observation<SecurityDescriptor> {
+    read_security_for_parent(file, Kind::File, None)
+}
+
+fn read_security_for_parent(
+    file: &File,
+    kind: Kind,
+    parent: Option<&Observation<SecurityDescriptor>>,
+) -> Observation<SecurityDescriptor> {
+    let needs_group = parent
+        .and_then(|p| p.as_ref().ok())
+        .and_then(|p| p.dacl.as_ref())
+        .is_some_and(|aces| {
+            aces.iter().any(|ace| {
+                matches!(ace[0], 0 | 1 | 2 | 3 | 9 | 10 | 13 | 14)
+                    && u32::from(ace[1])
+                        & if kind == Kind::File {
+                            OBJECT_INHERIT_ACE
+                        } else {
+                            CONTAINER_INHERIT_ACE
+                        }
+                        != 0
+                    && ace.get(8..20) == Some(&[1, 1, 0, 0, 0, 0, 0, 3, 1, 0, 0, 0])
+            })
+        });
     let mut needed = 0;
-    let flags = OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
+    let flags = OWNER_SECURITY_INFORMATION
+        | DACL_SECURITY_INFORMATION
+        | if needs_group {
+            GROUP_SECURITY_INFORMATION
+        } else {
+            0
+        };
     unsafe {
         GetKernelObjectSecurity(file.as_raw_handle(), flags, ptr::null_mut(), 0, &mut needed);
     }
@@ -601,6 +786,13 @@ pub(crate) fn security_metadata(file: &File) -> Observation<(Vec<u8>, Vec<u8>, b
     {
         return Err("security_descriptor_unreadable");
     }
+    decode_security(descriptor, needs_group)
+}
+
+fn decode_security(
+    descriptor: *mut std::ffi::c_void,
+    needs_group: bool,
+) -> Observation<SecurityDescriptor> {
     let mut owner = ptr::null_mut();
     let mut defaulted = 0;
     let mut dacl = ptr::null_mut();
@@ -619,24 +811,182 @@ pub(crate) fn security_metadata(file: &File) -> Observation<(Vec<u8>, Vec<u8>, b
         unsafe { std::slice::from_raw_parts(owner.cast::<u8>(), GetLengthSid(owner) as usize) }
             .to_vec();
     // A null or absent DACL does not establish inherited destination permissions.
-    let mut explicit = if present == 0 || dacl.is_null() {
-        vec![0]
-    } else {
-        vec![]
-    };
-    if !dacl.is_null() {
+    let mut aces = Vec::new();
+    if present != 0 && !dacl.is_null() {
         for index in 0..unsafe { (*dacl).AceCount } {
             let mut ace = ptr::null_mut();
             if unsafe { GetAce(dacl, index as u32, &mut ace) } == 0 {
                 return Err("acl_unreadable");
             }
             let header = unsafe { &*ace.cast::<ACE_HEADER>() };
-            if u32::from(header.AceFlags) & INHERITED_ACE == 0 {
-                explicit.push(header.AceType);
+            if usize::from(header.AceSize) < size_of::<ACE_HEADER>() {
+                return Err("acl_unreadable");
+            }
+            aces.push(
+                unsafe {
+                    std::slice::from_raw_parts(ace.cast::<u8>(), usize::from(header.AceSize))
+                }
+                .to_vec(),
+            );
+        }
+    }
+    let group = if needs_group
+        && control & (SE_DACL_AUTO_INHERITED | SE_DACL_PROTECTED) == 0
+        && aces
+            .iter()
+            .any(|ace| u32::from(ace[1]) & INHERITED_ACE == 0)
+    {
+        let mut group = ptr::null_mut();
+        if unsafe { GetSecurityDescriptorGroup(descriptor, &mut group, &mut defaulted) } == 0
+            || group.is_null()
+        {
+            return Err("security_descriptor_unknown");
+        }
+        unsafe { std::slice::from_raw_parts(group.cast::<u8>(), GetLengthSid(group) as usize) }
+            .to_vec()
+    } else {
+        vec![]
+    };
+    Ok(SecurityDescriptor {
+        owner,
+        group,
+        dacl: (present != 0 && !dacl.is_null()).then_some(aces),
+        control,
+    })
+}
+
+fn explicit_aces(
+    security: &SecurityDescriptor,
+    kind: Kind,
+    parent: Option<&Observation<SecurityDescriptor>>,
+) -> Observation<Vec<u8>> {
+    let Some(aces) = &security.dacl else {
+        return Ok(vec![0]);
+    };
+    let legacy = security.control & (SE_DACL_AUTO_INHERITED | SE_DACL_PROTECTED) == 0;
+    if legacy
+        && parent.is_none()
+        && aces
+            .iter()
+            .any(|ace| u32::from(ace[1]) & INHERITED_ACE == 0)
+    {
+        // No readable parent observation: legacy inheritance cannot be established.
+        return Err("security_descriptor_unknown");
+    }
+    let mut expected = if legacy {
+        parent
+            .and_then(|p| p.as_ref().ok())
+            .and_then(|p| p.dacl.as_ref())
+            .map(|aces| propagated_aces(aces, kind, &security.owner, &security.group))
+            .unwrap_or_default()
+    } else {
+        vec![]
+    };
+    let mut explicit = Vec::new();
+    // Flagged ACEs consume their matches first, so an extra unflagged duplicate stays explicit.
+    for inherited in [true, false] {
+        for ace in aces
+            .iter()
+            .filter(|ace| (u32::from(ace[1]) & INHERITED_ACE != 0) == inherited)
+        {
+            if let Some(index) = expected
+                .iter()
+                .position(|candidate| same_ace(ace, candidate))
+            {
+                expected.swap_remove(index);
+            } else if !inherited {
+                explicit.push(ace[0]);
             }
         }
     }
-    Ok((explicit, owner, control & SE_DACL_PROTECTED != 0))
+    Ok(explicit)
+}
+
+fn same_ace(left: &[u8], right: &[u8]) -> bool {
+    left.len() == right.len()
+        && left[0] == right[0]
+        && (left[1] ^ right[1]) & !(INHERITED_ACE as u8) == 0
+        && left[2..] == right[2..]
+}
+
+fn propagated_aces(aces: &[Vec<u8>], kind: Kind, owner: &[u8], group: &[u8]) -> Vec<Vec<u8>> {
+    let mut result = Vec::new();
+    for ace in aces {
+        // Object-specific/unknown ACE layouts need more inheritance context; leave them explicit.
+        if !matches!(ace[0], 0 | 1 | 2 | 3 | 9 | 10 | 13 | 14) || ace.len() < 16 {
+            continue;
+        }
+        let sid_len = 8 + usize::from(ace[9]) * 4;
+        let Some(sid) = ace.get(8..8 + sid_len) else {
+            continue;
+        };
+        if sid[0] != 1 {
+            continue;
+        }
+        let creator = if sid == [1, 1, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0] {
+            Some(owner)
+        } else if sid == [1, 1, 0, 0, 0, 0, 0, 3, 1, 0, 0, 0] {
+            Some(group)
+        } else {
+            None
+        };
+        let flags = u32::from(ace[1]);
+        let propagation = OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE;
+        let cleared =
+            flags & !(propagation | NO_PROPAGATE_INHERIT_ACE | INHERIT_ONLY_ACE | INHERITED_ACE);
+        let mask = u32::from_le_bytes(ace[4..8].try_into().unwrap());
+        if kind == Kind::File {
+            if flags & OBJECT_INHERIT_ACE != 0 {
+                result.push(effective_ace(ace, cleared as u8, mask, creator, sid_len));
+            }
+        } else if flags & CONTAINER_INHERIT_ACE != 0 {
+            let inherits = flags & NO_PROPAGATE_INHERIT_ACE == 0;
+            if inherits
+                && (mask & (GENERIC_READ | GENERIC_WRITE | GENERIC_EXECUTE | GENERIC_ALL) != 0
+                    || creator.is_some())
+            {
+                result.push(effective_ace(ace, cleared as u8, mask, creator, sid_len));
+                let mut inherit_only = ace.clone();
+                inherit_only[1] = (cleared | (flags & propagation) | INHERIT_ONLY_ACE) as u8;
+                result.push(inherit_only);
+            } else {
+                let flags = cleared | if inherits { flags & propagation } else { 0 };
+                result.push(effective_ace(ace, flags as u8, mask, creator, sid_len));
+            }
+        } else if flags & OBJECT_INHERIT_ACE != 0 && flags & NO_PROPAGATE_INHERIT_ACE == 0 {
+            let mut inherit_only = ace.clone();
+            inherit_only[1] = (cleared | OBJECT_INHERIT_ACE | INHERIT_ONLY_ACE) as u8;
+            result.push(inherit_only);
+        }
+    }
+    result
+}
+
+fn effective_ace(
+    ace: &[u8],
+    flags: u8,
+    mut mask: u32,
+    creator: Option<&[u8]>,
+    sid_len: usize,
+) -> Vec<u8> {
+    let mapping = GENERIC_MAPPING {
+        GenericRead: FILE_GENERIC_READ,
+        GenericWrite: FILE_GENERIC_WRITE,
+        GenericExecute: FILE_GENERIC_EXECUTE,
+        GenericAll: FILE_ALL_ACCESS,
+    };
+    unsafe {
+        MapGenericMask(&mut mask, &mapping);
+    }
+    let mut effective = ace.to_vec();
+    effective[1] = flags;
+    effective[4..8].copy_from_slice(&mask.to_le_bytes());
+    if let Some(sid) = creator {
+        effective.splice(8..8 + sid_len, sid.iter().copied());
+        let length = effective.len() as u16;
+        effective[2..4].copy_from_slice(&length.to_le_bytes());
+    }
+    effective
 }
 
 fn streams(file: &File) -> Observation<BTreeMap<Vec<u16>, u64>> {
@@ -741,6 +1091,10 @@ fn stream_hashes(
         .map_err(Reason::as_str)?;
     Ok(result)
 }
+
+#[cfg(test)]
+#[path = "tree_acl_tests.rs"]
+mod acl_tests;
 
 #[cfg(test)]
 mod tests {
@@ -992,7 +1346,7 @@ mod tests {
         );
     }
 
-    fn snapshot(path: &Path) -> Tree {
+    pub(super) fn snapshot(path: &Path) -> Tree {
         let source = NativeSource::default();
         let (_, expected) = source.open_root(path).unwrap();
         read_tree(
@@ -1144,7 +1498,7 @@ mod tests {
             );
         }
         let mut first = Tree::default();
-        let accesses = crate::enumerate::record_open_accesses(|| {
+        let accesses = record_tree_open_accesses(|| {
             first = snapshot(temp.path());
         });
         let writes = FILE_WRITE_DATA
@@ -1166,7 +1520,7 @@ mod tests {
         let report = compare(&first, &second);
         assert!(report.equal(), "{report:?}");
         std::fs::write(path.with_file_name("fixture:note"), b"stream-a").unwrap();
-        let accesses = crate::enumerate::record_open_accesses(|| {
+        let accesses = record_tree_open_accesses(|| {
             first = snapshot(temp.path());
         });
         assert!(

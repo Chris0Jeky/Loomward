@@ -16,12 +16,16 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 mod root_view;
-pub(crate) use root_view::{volume_online, RootPresenceCache, RootPresences, OFFLINE_SPACE_NOTE};
+pub(crate) use root_view::{
+    offline_space_note, volume_online, RootPresenceCache, RootPresences, OTHER_VOLUME_MESSAGE,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RootPresence {
     Online,
     Offline,
+    /// Offline because a different volume now holds the root's drive letter (#888 item 5).
+    OtherVolume,
     RootMissing,
     IdentityChanged,
 }
@@ -547,6 +551,10 @@ impl Inner {
         }
         self.session_root_gate(&root)
             .map_err(|e| self.root_admission_error(&root, e))?;
+        #[cfg(test)]
+        if let Some(hook) = self.hooks.after_root_gate.lock().unwrap().take() {
+            hook();
+        }
         let dir = root
             .dir
             .ok_or_else(|| fail(ErrorCode::InternalError, "root has no directory row"))?;
@@ -698,6 +706,12 @@ impl Inner {
             Some(RootPresence::Offline) => {
                 return Err(with_reason(
                     fail(ErrorCode::DeviceOffline, "the granted root is offline"),
+                    "volume_offline",
+                ))
+            }
+            Some(RootPresence::OtherVolume) => {
+                return Err(with_reason(
+                    fail(ErrorCode::DeviceOffline, OTHER_VOLUME_MESSAGE),
                     "volume_offline",
                 ))
             }
@@ -1415,7 +1429,7 @@ impl Inner {
                         "basis": if declared.is_some() { "declared" } else { "unknown" },
                         "declared_tier": declared,
                         "hint_tier": null,
-                        "note": if !online { OFFLINE_SPACE_NOTE } else if declared.is_some() { "Declared by the owner." } else { "No declaration and no device hint yet." },
+                        "note": if !online { offline_space_note(v, &roots, presence) } else if declared.is_some() { "Declared by the owner." } else { "No declaration and no device hint yet." },
                     },
                     "features": {"file_ids_128": null, "hard_links": null, "sparse_files": null, "compression": null, "reparse_points": null, "usn_journal": null},
                     "observed_at": ts_ns(v.observed_at_ns),
