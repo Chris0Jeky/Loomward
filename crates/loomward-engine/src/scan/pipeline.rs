@@ -1317,6 +1317,13 @@ fn run_scan_inner<S: DirSource>(
             })?;
     // The basis is part of the identity: the same IDs under another basis no longer bind what
     // the grant bound (a verified root reading unverified, or the reverse), docs/41 admission.
+    // A different volume GUID is the root away, not replaced (#912): offline, the sink is not told.
+    if root
+        .expected
+        .is_some_and(|e| e.volume_guid.is_some() && e.volume_guid != identity.volume_guid)
+    {
+        return Err(super::root_offline());
+    }
     if root.expected.is_some_and(|e| {
         e.id != identity.id
             || e.volume_serial != identity.volume_serial

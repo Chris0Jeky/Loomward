@@ -1629,9 +1629,9 @@ fn root_identity_mismatch_never_enters_writer() {
             panic!("a mismatched grant must not list the opened root")
         }
     }
-    let mut changed_guid = identity(1);
-    changed_guid.volume_guid = Some(1);
-    for expected in [identity(999), changed_guid] {
+    // The fixture source opens the root with no volume GUID, so a GUID-less expectation is the
+    // same volume (#912: a foreign GUID is offline, see the next test).
+    let scan = |expected| {
         let mut root = root();
         root.expected = Some(expected);
         let sink = Arc::new(MemorySink::default());
@@ -1645,11 +1645,67 @@ fn root_identity_mismatch_never_enters_writer() {
             ScanOptions::default(),
         )
         .unwrap_err();
-        assert_eq!(error.to_body().message.as_str(), "root_identity_changed");
+        assert!(sink.totals(root.root_id()).is_none());
+        (error, sink.identity_changed(root.root_id()))
+    };
+    let (error, told) = scan(identity(999));
+    assert_eq!(error.to_body().message.as_str(), "root_identity_changed");
+    assert!(
+        told,
+        "the writer is told, so it can record the transition (#206)"
+    );
+    // #912, docs/48 section 2: between admission and the job's root open another volume took
+    // the path (a different disk on a USB root's letter). The root is away, not replaced: the
+    // scan is refused offline and the sink, which would retire the grant, is never told.
+    for observed in [Some(2), None] {
+        let mut expected = identity(1);
+        expected.volume_guid = Some(1);
+        struct Foreign(Option<u128>);
+        impl DirSource for Foreign {
+            type Dir = u64;
+            fn strategy(&self) -> Strategy {
+                Strategy::Portable
+            }
+            fn open_root(
+                &self,
+                path: &std::path::Path,
+            ) -> Result<(u64, OpenedIdentity), SourceError> {
+                let (dir, mut identity) = Tree.open_root(path)?;
+                identity.volume_guid = self.0;
+                Ok((dir, identity))
+            }
+            fn open_child(
+                &self,
+                _: &u64,
+                _: &RawEntry<'_>,
+            ) -> Result<(u64, OpenedIdentity), SourceError> {
+                panic!("a foreign volume must not open children")
+            }
+            fn list(&self, _: &u64, _: &mut dyn FnMut(RawEntry<'_>) -> Flow) -> ListOutcome {
+                panic!("a foreign volume must not be listed")
+            }
+        }
+        let mut root = root();
+        root.expected = Some(expected);
+        let sink = Arc::new(MemorySink::default());
+        let error = run_scan(
+            &Foreign(observed),
+            &root,
+            1,
+            sink.clone(),
+            Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES)),
+            Arc::new(AtomicBool::new(false)),
+            ScanOptions::default(),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, EngineError::DeviceOffline { .. }),
+            "{observed:?}: {error:?}"
+        );
         assert!(sink.totals(root.root_id()).is_none());
         assert!(
-            sink.identity_changed(root.root_id()),
-            "the writer is told, so it can record the transition (#206)"
+            !sink.identity_changed(root.root_id()),
+            "a foreign volume never retires the grant ({observed:?})"
         );
     }
 }
@@ -2541,7 +2597,7 @@ pub(super) fn skip_elevated() -> bool {
 /// row's path, identity and dataset class; a mismatched class is refused at start and refresh.
 #[cfg(windows)]
 #[test]
-fn grant_rejects_same_serial_and_file_id_with_a_different_volume_guid() {
+fn grant_with_same_serial_and_file_id_on_a_different_volume_guid_reads_offline() {
     if skip_elevated() {
         return;
     }
@@ -2574,9 +2630,9 @@ fn grant_rejects_same_serial_and_file_id_with_a_different_volume_guid() {
     assert!(
         matches!(
             engine.granted_root(grant.root_id().clone(), 1, &CatalogRootIdentity { row: 1, instance: "fixture-instance".into() }),
-            Err(EngineError::PermissionDenied { message }) if message == "root_identity_changed"
+            Err(EngineError::DeviceOffline { .. })
         ),
-        "same serial and file ID must not authorise a different volume GUID"
+        "same serial and file ID must not authorise a different volume GUID; #912: another volume at the path is the grant's volume away (offline), never identity_changed"
     );
 }
 
@@ -2711,10 +2767,8 @@ fn migrated_legacy_grant_adopts_guid_only_after_matching_identity() {
         rusqlite::params![other_guid, grant_id],
     )
     .unwrap();
-    assert_eq!(
-        admit().unwrap_err().to_body().message.as_str(),
-        "root_identity_changed"
-    );
+    // #912: once pinned, another GUID at the path is that volume away, not a replacement.
+    assert!(matches!(admit(), Err(EngineError::DeviceOffline { .. })));
     assert_eq!(
         stored_guid(),
         Some(other_guid),

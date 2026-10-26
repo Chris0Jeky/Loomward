@@ -22,6 +22,13 @@ use std::{
     },
 };
 
+/// A different (or unreadable) volume holds the granted root's path: retryable, the grant stays.
+pub(crate) fn root_offline() -> EngineError {
+    EngineError::DeviceOffline {
+        message: "the granted root is offline".into(),
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct RootGate {
     revoked: bool,
@@ -529,10 +536,15 @@ impl Engine {
                 None => false,
             };
             let observed_guid = identity.volume_guid.map(|g| format!("{g:032x}"));
+            // docs/48 section 2, #912: the volume GUID comes first. Another (or an unreadable)
+            // volume at the path is the grant's volume away, never a replacement: offline, and the
+            // grant is kept. identity_changed is terminal and stays for the same volume only.
+            if volume_guid.is_some() && observed_guid != volume_guid {
+                return Err(root_offline());
+            }
             if !same_id
                 || identity.volume_serial.map(|s| format!("vsn_{s}")) != Some(volume_key)
                 || observed_guid.is_none()
-                || (volume_guid.is_some() && observed_guid != volume_guid)
             {
                 return Err(denied("root_identity_changed"));
             }
