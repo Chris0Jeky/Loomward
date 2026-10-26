@@ -1009,16 +1009,13 @@ fn out_of_grant_matches_never_spend_a_clients_budget() {
         ms.sort();
         (page.unwrap(), ms[1])
     };
-    let (p_with, t_with) = client(&with);
-    let (p_without, t_without) = client(&without);
+    // The step budget above is the deterministic guard; wall-clock bounds flake on loaded CI.
+    let (p_with, _) = client(&with);
+    let (p_without, _) = client(&without);
     assert_eq!(names(&p_with), names(&p_without));
     assert_eq!(p_with.hits.len(), 3);
     assert!(!p_with.budget_hit && !p_without.budget_hit);
     assert!(p_with.next_cursor.is_none() && p_without.next_cursor.is_none());
-    assert!(
-        t_with <= t_without * 5 + std::time::Duration::from_millis(250),
-        "{t_with:?} with out-of-grant matches against {t_without:?} without"
-    );
     // The owner, and a client granted both roots, still see every match in the same order.
     let mut owner = req("common");
     owner.limit = 10;

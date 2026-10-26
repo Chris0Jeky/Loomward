@@ -15,7 +15,7 @@
 -- root is still known, and the file trigger only handles files whose folder remains.
 -- Root directories are not indexed.
 -- Extension point: further facets (labels, collections, content metadata) get their own tables
--- keyed the same way, never columns here.
+-- keyed the same way; `root` is the one scoping column, never a facet.
 CREATE VIEW IF NOT EXISTS search_name_content AS
   SELECT id AS rowid, char(1)||replace(replace(name,char(1),' '),char(2),' ')||char(2) AS name, char(128+(root_id>>10&31),128+(root_id>>5&31),128+(root_id&31)) AS root FROM dir WHERE parent_id IS NOT NULL
   UNION ALL
