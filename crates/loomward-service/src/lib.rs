@@ -19,6 +19,7 @@ mod alerts;
 mod apps;
 mod ask;
 mod backups;
+mod client_refs;
 mod clients;
 mod clutter;
 mod collections;
@@ -42,6 +43,7 @@ mod sink;
 #[cfg(test)]
 mod tests;
 
+pub use client_refs::{ClientReference, ClientReferenceIds};
 pub use clients::CLIENT_FIELDS;
 use loomward_catalog::{
     Catalog, CatalogOptions, NodeKey, RootObservation, WriteCommand, WriteReply,
@@ -87,10 +89,11 @@ pub struct Service {
 }
 
 /// An in-process client's reference lifetime witness. Never sent to a model or persisted.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientViewStamp {
     epoch: i64,
     catalog_rev: i64,
+    roots: Vec<i64>,
     instance: String,
 }
 
@@ -118,6 +121,7 @@ pub(crate) struct Inner {
     db: Mutex<rusqlite::Connection>,
     instance: String,
     ids: ids::NodeIds,
+    client_open: Option<(client_refs::OpenWitness, client_refs::OpenWitness)>,
     cursors: cursors::Cursors,
     idem: idem::Idempotency,
     /// Pending root/volume replies in adapters; no root identifiers or generation history.
@@ -204,6 +208,7 @@ impl Service {
         Ok(ClientViewStamp {
             epoch: grant.epoch,
             catalog_rev: self.inner.revisions()?.0,
+            roots: grant.roots,
             instance: self.inner.instance.clone(),
         })
     }
@@ -302,6 +307,9 @@ impl Service {
             .state_dir
             .canonicalize()
             .map_err(|_| "cannot resolve the state directory".to_string())?;
+        let client_before = client_only
+            .then(|| client_refs::OpenWitness::read(&sqlite_destination))
+            .flatten();
         // The ranked token index exists only where ranked search is served (#520).
         let catalog = stores
             .open(&CatalogOptions {
@@ -332,6 +340,10 @@ impl Service {
         }
         let instance = db::instance(&conn).map_err(|e| format!("state store: {e}"))?;
         let lookups = db::open(&state_dir).map_err(|e| format!("state store: {e}"))?;
+        let client_after = client_only
+            .then(|| client_refs::OpenWitness::read(&sqlite_destination))
+            .flatten();
+        let client_open = client_before.zip(client_after);
         let inner = Arc::new_cyclic(|weak| Inner {
             weak: weak.clone(),
             freshness: Default::default(),
@@ -344,6 +356,7 @@ impl Service {
             db: Mutex::new(conn),
             instance,
             ids: ids::NodeIds::session(),
+            client_open,
             cursors: cursors::Cursors::new(4096),
             idem: idem::Idempotency::new(ttl),
             reply_delivery: loomward_protocol::ResponseDeliveryPolicy::default(),

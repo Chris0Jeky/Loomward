@@ -117,6 +117,16 @@ Docs/46 limited MCP to `find` and `describe` until "a separate grant design". Th
 | `clutter` | `clutter.developer` | `size` | build outputs and caches under granted roots |
 | `plan_archive` | composition of the reads above | `size`, `volumes` | pure; see 4.4 |
 
+E4 adapter details: `largest` requires a folder reference (omitting it never lists all roots).
+`extension_family` maps to the service's `ext_family` spelling. `volumes` returns a `volume_key`
+for `destination_volume`; USB derives `external: true`, unknown bus omits it. `plan_archive`
+sums selected items (overlap counts separately), treats incomplete directory sizes as unknown,
+and bounds optional descendant timestamp/attribute assessment to 32 pages of 200 rows and five
+seconds per plan, explicitly marking incomplete ranges/assessments. Same-volume copies warn
+"not a backup"; shared physical disks across different volumes cannot yet be identified by these
+reads. A folder name must be one new Win32 name component. Names/paths/labels are untrusted data,
+and Unicode format/line controls are emitted as visible escapes in every text value.
+
 ### 4.4 `plan_archive`: a plan, never an action
 
 Input: up to 64 session references (folders or files from `find`/`largest`), a destination volume from `volumes`,

@@ -4,6 +4,7 @@ mod cli;
 mod json;
 mod protocol;
 mod stdio;
+mod text;
 mod tools;
 
 use std::process::ExitCode;
@@ -15,14 +16,21 @@ fn main() -> ExitCode {
     ) {
         Ok(args) => args,
         Err(error) => {
-            eprintln!("loomward-mcp: {error}\n{}", cli::USAGE);
+            eprintln!(
+                "loomward-mcp: {}\n{}",
+                text::escape_string(&error),
+                cli::USAGE
+            );
             return ExitCode::from(2);
         }
     };
     match stdio::serve(protocol::Protocol::new(tools::Host::new(args))) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("loomward-mcp: stdio: {error}");
+            eprintln!(
+                "loomward-mcp: stdio: {}",
+                text::escape_string(&error.to_string())
+            );
             ExitCode::FAILURE
         }
     }
