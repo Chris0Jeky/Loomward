@@ -36,6 +36,7 @@ class DesktopPackaging(unittest.TestCase):
         self.assertLess(action.index("python scripts/build_broker.py --release"), action.index("tauri.js build"))
         self.assertIn("Join-Path $dir 'loomward-broker.exe'", action)
         self.assertIn("Join-Path $dir 'loomward-desktop.exe'", action)
+        self.assertIn("Join-Path $dir 'loomward-mcp.exe'", action)
 
 
 class StageBroker(unittest.TestCase):
