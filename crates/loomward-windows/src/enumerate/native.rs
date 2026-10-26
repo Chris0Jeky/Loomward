@@ -112,8 +112,9 @@ impl Drop for Busy {
 }
 
 /// Cancellation owns thread handles, never closes handles used by an outstanding call.
-/// A watchdog also interrupts any single native call that outlives the operation budget, which
-/// the caller reports as a timeout for that directory only (#924).
+/// A watchdog also tries to interrupt a native call that outlives the operation budget, which the
+/// caller reports as a timeout for that directory only (#924). Best effort: `CancelSynchronousIo`
+/// cannot interrupt a non-cancellable kernel wait.
 #[derive(Clone, Debug)]
 pub struct IoCancellation {
     cancelled: Arc<AtomicBool>,
@@ -252,12 +253,14 @@ impl IoRegistration {
     fn timed_out(&self) -> bool {
         self.handle.timed_out.load(Ordering::Acquire)
     }
-    /// Report an error from an interrupted call as the timeout it was.
+    /// Once the watchdog interrupted any call of this registration, the whole operation is a
+    /// timeout, even an `Ok`: identity queries that fail soft would otherwise yield an open with no
+    /// identity, which callers would read as a changed root (review of #932).
     fn result<T>(&self, result: Result<T, SourceError>) -> Result<T, SourceError> {
-        match result {
-            Err(_) if self.timed_out() => Err(SourceError::Io(ERROR_TIMEOUT as i32)),
-            other => other,
+        if self.timed_out() {
+            return Err(SourceError::Io(ERROR_TIMEOUT as i32));
         }
+        result
     }
 }
 impl Drop for IoRegistration {
@@ -2612,6 +2615,19 @@ mod cancellation_tests {
             started.elapsed() < Duration::from_secs(5),
             "{:?}",
             started.elapsed()
+        );
+    }
+    /// A timed-out operation never succeeds, so a soft-failed identity query cannot surface as an
+    /// open without identity (review of #932).
+    #[test]
+    fn a_timed_out_registration_turns_even_success_into_a_timeout() {
+        let cancel = IoCancellation::default();
+        let registration = cancel.register().unwrap();
+        assert_eq!(registration.result(Ok(7)), Ok(7));
+        registration.handle.timed_out.store(true, Ordering::Release);
+        assert_eq!(
+            registration.result(Ok(7)),
+            Err(SourceError::Io(ERROR_TIMEOUT as i32))
         );
     }
     fn cancellation_scenario(between_calls: bool) {
