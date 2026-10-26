@@ -447,4 +447,21 @@ Also answered in the same chat (agent questions, recorded so they bind):
   models than Qwen 27B worth evaluating, the categoriser a fairly high priority (docs/49).
 - New direction: browse external disks instantly and pull RAW photos for Lightroom in the background (docs/50); a
   ChatGPT Pro deep-research prompt is in `docs/research/deep-research-prompt-storage-2026-10.md` for the owner to run.
-- [ ] Owner runs the deep-research prompt in ChatGPT Pro and drops the report into `docs/research/`.
+- [x] Owner runs the deep-research prompt in ChatGPT Pro and drops the report into `docs/research/`.
+  Done 2026-10-25: `docs/research/deep-research-report-storage-2026-10.md` (#867); reconciled in docs/51.
+
+### q-49 — Research programme (docs/51) — POSED 2026-10-25 (agent-hq inbox, lane `loomward-research`)
+
+The research lane reconciled the deep-research report with the repository ([docs/51](docs/51-research-programme.md),
+section 9). Four questions only you can answer; none blocks the read-only work (reclaim planner, categoriser contract):
+- [ ] **loomward-hyperv-lab-setup**: may agents build the Hyper-V crash-test VM on `E:` (lab data only) once you add your
+  account to "Hyper-V Administrators"? (a) yes, with Microsoft's evaluation image (recommended); (b) yes, with an ISO you
+  point to; (c) not yet. Blocks G5 (LW-133).
+- [ ] **loomward-archive-second-copy**: what protection must exist before originals leave the internal disks, since `H:`
+  would then hold the only copy? (a) a second disk rotated offline (recommended); (b) cold cloud storage, each upload
+  previewed; (c) accept a single copy. Blocks retirement of originals (LW-135).
+- [ ] **loomward-power-loss-hardware**: (a) Hyper-V proof only, receipts say "not power-loss tested on this disk"
+  (recommended); (b) buy a disposable disk and a USB power switch for a physical test (LW-134).
+- [ ] **loomward-categoriser-model-downloads**: may agents download one or two small models through LM Studio onto `E:`
+  to screen a cheaper categoriser than Qwen 27B? (a) the small screen, ask again before more (recommended); (b) the full
+  set, about 20-25 GB; (c) none. Blocks LW-140.

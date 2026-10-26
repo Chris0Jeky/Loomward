@@ -1,6 +1,6 @@
 # Implementation backlog
 
-130 local, dependency-linked issue specifications: the original 64, 36 expansion tasks, 12 v3 tasks and 18 owner-decision tasks. These are **not remote GitHub issue numbers**. This inventory is not an implementation-completion claim; consult each issue and the implementation status for its evidence and remaining gates. The runnable reference work is recorded separately in `docs/37-expansion-verification.md`.
+146 local, dependency-linked issue specifications: the original 64, 36 expansion tasks, 12 v3 tasks, 18 owner-decision tasks and 16 research-programme tasks (docs/51). These are **not remote GitHub issue numbers**. This inventory is not an implementation-completion claim; consult each issue and the implementation status for its evidence and remaining gates. The runnable reference work is recorded separately in `docs/37-expansion-verification.md`.
 
 The first eight manifest entries preserve the original native critical path. Publishing helpers remain dry-run by default, at most eight unless explicitly expanded. `M1I` covers integration foundations, `M2I` advanced evidence/workload integration, and `MX` optional experiments; none bypass the original native safety milestones.
 
@@ -136,3 +136,19 @@ The first eight manifest entries preserve the original native critical path. Pub
 | [LW-128](issues/LW-128.md) | Nice-to-have: paired machines with a read-only LAN view | MX | P2 | LW-017, LW-058, LW-067 |
 | [LW-129](issues/LW-129.md) | Nice-to-have: cloud sync design (design only) | MX | P2 | LW-092, LW-067 |
 | [LW-130](issues/LW-130.md) | Observe-only Linux port after the Windows daily-use bar | MX | P2 | LW-123, LW-016 |
+| [LW-131](issues/LW-131.md) | Read-only reclaim planner for a nearly full volume | M5 | P0 | LW-119, LW-108, LW-009 |
+| [LW-132](issues/LW-132.md) | Truthful receipt vocabulary and storage-path qualification | M3 | P1 | LW-124, LW-040 |
+| [LW-133](issues/LW-133.md) | Hyper-V crash campaign for the copy gate (G5) | M3 | P0 | LW-041, LW-040 |
+| [LW-134](issues/LW-134.md) | Physical power-loss and unplug qualification on disposable media | M3 | P2 | LW-133, LW-137 |
+| [LW-135](issues/LW-135.md) | Gate the Recycle Bin retirement effect for verified archive originals | M4 | P1 | LW-124, LW-037, LW-138 |
+| [LW-136](issues/LW-136.md) | Archive custody: copy count, rolling scrub and restore drills | M4 | P1 | LW-124, LW-036, LW-084 |
+| [LW-137](issues/LW-137.md) | Storage-path identity and volume health as domain objects | M4 | P1 | LW-004 |
+| [LW-138](issues/LW-138.md) | Evidence packets, multi-axis taxonomy and the coldness vector | M2 | P1 | LW-110, LW-025 |
+| [LW-139](issues/LW-139.md) | Classical student ensemble with labelling functions | M2 | P1 | LW-138, LW-025 |
+| [LW-140](issues/LW-140.md) | Small-model tournament for categorisation and summaries | M2 | P1 | LW-138, LW-117 |
+| [LW-141](issues/LW-141.md) | Hosted categoriser fallback with a literal payload preview | M2 | P2 | LW-117, LW-111, LW-140 |
+| [LW-142](issues/LW-142.md) | RAW preview catalogue with a budgeted local cache | M6 | P1 | LW-099, LW-015 |
+| [LW-143](issues/LW-143.md) | Photo working sets and a prioritised transfer queue | M6 | P1 | LW-124, LW-142 |
+| [LW-144](issues/LW-144.md) | Measure hashing and I/O costs per storage class | M6 | P2 | LW-064 |
+| [LW-145](issues/LW-145.md) | Hostile names and metadata cannot create effects | M2 | P1 | LW-118, LW-066 |
+| [LW-146](issues/LW-146.md) | Explain interrupted staging before its removal | M3 | P1 | LW-040, LW-041 |

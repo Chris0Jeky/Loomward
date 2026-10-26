@@ -1583,5 +1583,199 @@
       "LW-016"
     ],
     "body_file": "backlog/issues/LW-130.md"
+  },
+  {
+    "id": "LW-131",
+    "title": "[LW-131] Read-only reclaim planner for a nearly full volume",
+    "milestone": "M5",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-119",
+      "LW-108",
+      "LW-009"
+    ],
+    "body_file": "backlog/issues/LW-131.md"
+  },
+  {
+    "id": "LW-132",
+    "title": "[LW-132] Truthful receipt vocabulary and storage-path qualification",
+    "milestone": "M3",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-124",
+      "LW-040"
+    ],
+    "body_file": "backlog/issues/LW-132.md"
+  },
+  {
+    "id": "LW-133",
+    "title": "[LW-133] Hyper-V crash campaign for the copy gate (G5)",
+    "milestone": "M3",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-041",
+      "LW-040"
+    ],
+    "body_file": "backlog/issues/LW-133.md"
+  },
+  {
+    "id": "LW-134",
+    "title": "[LW-134] Physical power-loss and unplug qualification on disposable media",
+    "milestone": "M3",
+    "priority": "P2",
+    "status": "planned",
+    "depends_on": [
+      "LW-133",
+      "LW-137"
+    ],
+    "body_file": "backlog/issues/LW-134.md"
+  },
+  {
+    "id": "LW-135",
+    "title": "[LW-135] Gate the Recycle Bin retirement effect for verified archive originals",
+    "milestone": "M4",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-124",
+      "LW-037",
+      "LW-138"
+    ],
+    "body_file": "backlog/issues/LW-135.md"
+  },
+  {
+    "id": "LW-136",
+    "title": "[LW-136] Archive custody: copy count, rolling scrub and restore drills",
+    "milestone": "M4",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-124",
+      "LW-036",
+      "LW-084"
+    ],
+    "body_file": "backlog/issues/LW-136.md"
+  },
+  {
+    "id": "LW-137",
+    "title": "[LW-137] Storage-path identity and volume health as domain objects",
+    "milestone": "M4",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-004"
+    ],
+    "body_file": "backlog/issues/LW-137.md"
+  },
+  {
+    "id": "LW-138",
+    "title": "[LW-138] Evidence packets, multi-axis taxonomy and the coldness vector",
+    "milestone": "M2",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-110",
+      "LW-025"
+    ],
+    "body_file": "backlog/issues/LW-138.md"
+  },
+  {
+    "id": "LW-139",
+    "title": "[LW-139] Classical student ensemble with labelling functions",
+    "milestone": "M2",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-138",
+      "LW-025"
+    ],
+    "body_file": "backlog/issues/LW-139.md"
+  },
+  {
+    "id": "LW-140",
+    "title": "[LW-140] Small-model tournament for categorisation and summaries",
+    "milestone": "M2",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-138",
+      "LW-117"
+    ],
+    "body_file": "backlog/issues/LW-140.md"
+  },
+  {
+    "id": "LW-141",
+    "title": "[LW-141] Hosted categoriser fallback with a literal payload preview",
+    "milestone": "M2",
+    "priority": "P2",
+    "status": "planned",
+    "depends_on": [
+      "LW-117",
+      "LW-111",
+      "LW-140"
+    ],
+    "body_file": "backlog/issues/LW-141.md"
+  },
+  {
+    "id": "LW-142",
+    "title": "[LW-142] RAW preview catalogue with a budgeted local cache",
+    "milestone": "M6",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-099",
+      "LW-015"
+    ],
+    "body_file": "backlog/issues/LW-142.md"
+  },
+  {
+    "id": "LW-143",
+    "title": "[LW-143] Photo working sets and a prioritised transfer queue",
+    "milestone": "M6",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-124",
+      "LW-142"
+    ],
+    "body_file": "backlog/issues/LW-143.md"
+  },
+  {
+    "id": "LW-144",
+    "title": "[LW-144] Measure hashing and I/O costs per storage class",
+    "milestone": "M6",
+    "priority": "P2",
+    "status": "planned",
+    "depends_on": [
+      "LW-064"
+    ],
+    "body_file": "backlog/issues/LW-144.md"
+  },
+  {
+    "id": "LW-145",
+    "title": "[LW-145] Hostile names and metadata cannot create effects",
+    "milestone": "M2",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-118",
+      "LW-066"
+    ],
+    "body_file": "backlog/issues/LW-145.md"
+  },
+  {
+    "id": "LW-146",
+    "title": "[LW-146] Explain interrupted staging before its removal",
+    "milestone": "M3",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-040",
+      "LW-041"
+    ],
+    "body_file": "backlog/issues/LW-146.md"
   }
 ]
