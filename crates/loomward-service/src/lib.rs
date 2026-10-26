@@ -189,6 +189,12 @@ impl Service {
         Self::open_with(config, idem::TTL, true)
     }
 
+    /// Records explicit owner grants for one-shot verification without watchers, automatic scans,
+    /// telemetry, copy recovery or backup cleanup. Store initialization/migrations still run.
+    pub fn open_for_verification(config: Config) -> Result<Service, String> {
+        Self::open_stores(config, idem::TTL, false, None, None, true)
+    }
+
     /// Opens client views without watchers, automatic scans, telemetry or backup cleanup.
     /// Store initialization/migrations still run. The adapter must use `CallContext::client`.
     pub fn open_client(config: Config) -> Result<Service, String> {
