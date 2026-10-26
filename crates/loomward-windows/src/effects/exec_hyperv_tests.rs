@@ -1,14 +1,13 @@
 //! docs/53 H2: persistent, synthetic guest steps. This entire module is test-build only.
 use super::crash_tests::{
-    abandon, cancelled_oracle, dest_snapshot, destination_oracle, fixed_tree, pattern, Snap,
-    EXISTING,
+    abandon, cancelled_oracle, dest_snapshot, fixed_tree, pattern, Snap, EXISTING,
 };
-use super::tests::{c1, set_attributes, source_snapshot, Lab};
+use super::tests::{c1, set_attributes, Lab};
 use super::*;
 use loomward_operations::{tree, Entry};
 use serde_json::{json, Value};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     os::windows::fs::{MetadataExt, OpenOptionsExt},
     panic::{catch_unwind, AssertUnwindSafe},
@@ -17,7 +16,104 @@ use std::{
 };
 
 const CHILD: &str = "effects::exec::hyperv_tests::hyperv_guest";
-type SourceSnap = Vec<(PathBuf, identity::ObservedIdentity, Vec<u8>)>;
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct StreamRecord {
+    name: String,
+    size: u64,
+    sha256: [u8; 32],
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct ObjectRecord {
+    relative: PathBuf,
+    identity: identity::ObservedIdentity,
+    streams: Vec<StreamRecord>,
+}
+
+#[derive(Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+struct SourceSnap {
+    // Every sibling has the same ancestry. Keep it once per relative parent, without losing
+    // any ObservedIdentity fields or repeating the entire ancestor chain thousands of times.
+    ancestors: BTreeMap<PathBuf, Vec<ObjectKey>>,
+    objects: Vec<ObjectRecord>,
+}
+
+fn object_record(root: &Path, path: &Path) -> ObjectRecord {
+    let mut observed = identity::observe(path).expect("hyperv: object missing");
+    observed.last_access_time.clear();
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+        .unwrap();
+    let mut named = match streams(&file) {
+        Ok(named) => named,
+        Err(error) if error.raw_os_error() == Some(ERROR_HANDLE_EOF as i32) => Vec::new(),
+        Err(error) => panic!("hyperv: stream observation failed: {error}"),
+    };
+    if !path.is_dir() {
+        named.push(("::$DATA".to_string(), file.metadata().unwrap().len()));
+    }
+    named.sort();
+    let streams = named
+        .into_iter()
+        .map(|(name, size)| {
+            if name != "::$DATA" {
+                let mut stream = path.as_os_str().to_os_string();
+                stream.push(&name);
+                file = fs::File::open(stream).unwrap();
+            }
+            let mut hash = Sha256::new();
+            let mut bytes = [0; 64 * 1024];
+            let mut read = 0;
+            loop {
+                let n = file.read(&mut bytes).unwrap();
+                if n == 0 {
+                    break;
+                }
+                read += n as u64;
+                hash.update(&bytes[..n]);
+            }
+            assert_eq!(read, size, "hyperv: stream size changed");
+            StreamRecord {
+                name,
+                size,
+                sha256: hash.finalize().into(),
+            }
+        })
+        .collect();
+    let mut after = identity::observe(path).unwrap();
+    after.last_access_time.clear();
+    assert_eq!(observed, after, "hyperv: object changed during observation");
+    ObjectRecord {
+        relative: path.strip_prefix(root).unwrap().to_path_buf(),
+        identity: observed,
+        streams,
+    }
+}
+
+fn source_record(root: &Path) -> SourceSnap {
+    let mut snapshot = SourceSnap::default();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                pending.push(path.clone());
+            }
+            let mut record = object_record(root, &path);
+            let ancestors = std::mem::take(&mut record.identity.ancestors);
+            let parent = record.relative.parent().unwrap().to_path_buf();
+            if let Some(previous) = snapshot.ancestors.insert(parent, ancestors.clone()) {
+                assert_eq!(previous, ancestors, "hyperv: ancestor changed");
+            }
+            snapshot.objects.push(record);
+        }
+    }
+    snapshot.objects.sort_by(|a, b| a.relative.cmp(&b.relative));
+    snapshot
+}
 
 #[derive(Serialize, Deserialize)]
 struct Prepared {
@@ -27,15 +123,13 @@ struct Prepared {
     final_name: String,
     source: SourceSnap,
     neighbour: SourceSnap,
-    sentinel: identity::ObservedIdentity,
-    sentinel_bytes: Vec<u8>,
+    sentinel: ObjectRecord,
     c1_sha256: [u8; 32],
-    file_sha256: BTreeMap<PathBuf, [u8; 32]>,
 }
 
 /// Hash precisely the equality-relevant C1 fields; reported metadata (e.g. access time) can change
-/// when read. The complete source identity/signature/byte snapshot is also persisted separately.
-fn c1_record(value: &tree::Tree) -> ([u8; 32], BTreeMap<PathBuf, [u8; 32]>) {
+/// when read. Source identities, signatures and all stream hashes are persisted separately.
+fn c1_record(value: &tree::Tree) -> [u8; 32] {
     let report = tree::compare(value, value);
     assert!(
         report.equal(),
@@ -43,7 +137,6 @@ fn c1_record(value: &tree::Tree) -> ([u8; 32], BTreeMap<PathBuf, [u8; 32]>) {
         report.differences,
         report.unknowns
     );
-    let mut files = BTreeMap::new();
     let mut nodes = Vec::new();
     for (path, node) in &value.nodes {
         let node = node.as_ref().unwrap();
@@ -54,17 +147,13 @@ fn c1_record(value: &tree::Tree) -> ([u8; 32], BTreeMap<PathBuf, [u8; 32]>) {
             .collect();
         let content = if node.kind == tree::Kind::File {
             let digest = node.content.unwrap();
-            files.insert(path.clone(), digest);
             Some((node.size.unwrap(), digest))
         } else {
             None
         };
         nodes.push(json!([path, node.kind, content, metadata]));
     }
-    (
-        Sha256::digest(serde_json::to_vec(&nodes).unwrap()).into(),
-        files,
-    )
+    Sha256::digest(serde_json::to_vec(&nodes).unwrap()).into()
 }
 
 /// The signal is on its own device in the VM. Never flush a lab-volume handle here.
@@ -95,7 +184,10 @@ fn write_signal(signal: &Path, name: &str, value: &impl Serialize) {
 }
 
 fn read_prepared(signal: &Path) -> Prepared {
-    serde_json::from_slice(&fs::read(signal.join("prepare.json")).unwrap()).unwrap()
+    serde_json::from_slice(
+        &fs::read(signal.join("prepare.json")).expect("hyperv: missing prepare.json"),
+    )
+    .expect("hyperv: invalid prepare.json")
 }
 
 fn flush_file(path: &Path) {
@@ -157,13 +249,11 @@ fn prepare_step(dir: &Path, signal: &Path, scenario: &str, removal: bool, large:
     flush_tree(&lab.dest());
     flush_tree(&outside);
 
-    let source = source_snapshot(&lab.src());
-    let neighbour = source_snapshot(&outside);
+    let source = source_record(&lab.src());
+    let neighbour = source_record(&outside);
     let sentinel_path = lab.dest().join(EXISTING);
-    let mut sentinel = identity::observe(&sentinel_path).unwrap();
-    sentinel.last_access_time.clear();
-    let sentinel_bytes = fs::read(sentinel_path).unwrap();
-    let (c1_sha256, file_sha256) = c1_record(&c1(&top));
+    let sentinel = object_record(&lab.dest(), &sentinel_path);
+    let c1_sha256 = c1_record(&c1(&top));
     // A fresh store starts at 1; a single selected folder keeps its name in this empty parent.
     // Check both predictions against the real admission before any executor effects.
     assert!(lab.store.lock().unwrap().operations().unwrap().is_empty());
@@ -179,9 +269,7 @@ fn prepare_step(dir: &Path, signal: &Path, scenario: &str, removal: bool, large:
             source,
             neighbour,
             sentinel,
-            sentinel_bytes,
             c1_sha256,
-            file_sha256,
         },
     );
     assert_eq!(lab.start(&["top"]), op, "hyperv: unexpected operation ID");
@@ -220,41 +308,75 @@ fn act_step(dir: &Path, signal: &Path) {
 
 fn oracle(lab: &Lab, before: &Prepared, baseline: &Snap, outcome: &Outcome) -> Snap {
     assert!(
-        source_snapshot(&lab.src()) == before.source,
+        source_record(&lab.src()) == before.source,
         "hyperv: source changed"
     );
     let source = c1(&lab.src().join("top"));
-    let (digest, files) = c1_record(&source);
+    let digest = c1_record(&source);
     assert_eq!(digest, before.c1_sha256, "hyperv: source changed (C1)");
     assert!(
-        files == before.file_sha256,
-        "hyperv: source changed (SHA-256)"
-    );
-    assert!(
-        source_snapshot(&lab.tmp.path().join("neighbour")) == before.neighbour,
+        source_record(&lab.tmp.path().join("neighbour")) == before.neighbour,
         "hyperv: neighbour changed"
     );
     let path = lab.dest().join(EXISTING);
-    let mut sentinel = identity::observe(&path).expect("hyperv: sentinel missing");
-    sentinel.last_access_time.clear();
-    assert_eq!(sentinel, before.sentinel, "hyperv: sentinel changed");
+    assert!(path.is_file(), "hyperv: sentinel missing");
     assert_eq!(
-        fs::read(path).unwrap(),
-        before.sentinel_bytes,
-        "hyperv: sentinel bytes changed"
+        object_record(&lab.dest(), &path),
+        before.sentinel,
+        "hyperv: sentinel changed"
     );
-    let now = destination_oracle(
-        lab,
-        before.op,
-        before.removal,
-        &before.final_name,
-        "hyperv",
-        baseline,
-        outcome,
-    );
+    let now = reboot_destination_oracle(lab, before, baseline, outcome);
     if outcome.state == OpState::Committed {
         let report = tree::compare(&source, &c1(&lab.dest().join(&before.final_name)));
         assert!(report.equal(), "hyperv: FALSE COMMIT {report:#?}");
+    }
+    now
+}
+
+/// Unlike C6's pre-crash allowlist, a post-boot baseline can include unrelated entries already
+/// present before recovery. Still reject every later addition and every unjournaled removal.
+fn reboot_destination_oracle(
+    lab: &Lab,
+    before: &Prepared,
+    baseline: &Snap,
+    outcome: &Outcome,
+) -> Snap {
+    assert_eq!(
+        replay(&lab.store, before.op).unwrap().state,
+        outcome.state,
+        "hyperv: receipt and journal disagree"
+    );
+    let now = dest_snapshot(&lab.dest());
+    for (path, id) in &now {
+        assert_eq!(
+            baseline.get(path),
+            Some(id),
+            "hyperv: {path} appeared after baseline"
+        );
+    }
+    let mut journaled = BTreeSet::new();
+    for row in lab.store.lock().unwrap().rows(before.op).unwrap() {
+        match serde_json::from_str::<Entry>(&row.body).unwrap().record {
+            Record::StagingCreated { id } => {
+                journaled.insert(id.file_id);
+            }
+            Record::Identities { items } => {
+                journaled.extend(items.into_iter().map(|(_, id)| id.file_id))
+            }
+            _ => {}
+        }
+    }
+    for (path, id) in baseline {
+        if now.get(path) != Some(id) {
+            assert!(
+                before.removal,
+                "hyperv: removal off, yet {path} is gone or replaced"
+            );
+            assert!(
+                journaled.contains(id),
+                "hyperv: {path} removed without a journaled identity"
+            );
+        }
     }
     now
 }
@@ -269,77 +391,145 @@ fn panic_text(error: Box<dyn std::any::Any + Send>) -> String {
     }
 }
 
-fn recover_step(dir: &Path, signal: &Path) {
+/// Catch configuration, token and step panics alike, and persist failure before libtest exits.
+/// Hard termination at a crash hook intentionally bypasses unwinding and cannot produce a receipt.
+fn step_receipt(signal: &Path, step: &str, body: impl FnOnce(&mut Value)) {
     let mut result = json!({
-        "ok": false, "recovered": null, "abandoned": null, "journal_records": 0,
+        "step": step, "ok": false, "recovered": null, "abandoned": null, "journal_records": 0,
         "last_record": null, "copy_ran": false, "failure": null,
+        "baseline_attempted": false, "lab_open_attempted": false,
     });
     let checked = catch_unwind(AssertUnwindSafe(|| {
-        let before = read_prepared(signal);
-        // Read the post-boot destination before Lab::at can create or open anything on the lab.
-        let baseline = dest_snapshot(&dir.join("dest"));
-        let lab = Lab::at(dir).expect("hyperv: elevated token refused");
-        let rows = lab.store.lock().unwrap().rows(before.op).unwrap();
-        result["journal_records"] = json!(rows.len());
-        if let Some(last) = rows.last() {
-            let entry: Entry = serde_json::from_str(&last.body).unwrap();
-            let record = serde_json::to_value(&entry.record).unwrap();
-            result["last_record"] = match record["to"].as_str() {
-                Some(to) => json!(format!("{}:{to}", record["kind"].as_str().unwrap())),
-                None => record["kind"].clone(),
-            };
+        if step == "prepare" {
+            clear_signals(signal);
         }
-        // Started puts the operation in preparing. Count only evidence durable before recovery.
-        let copy_ran = rows.len() > 1;
-        result["copy_ran"] = json!(copy_ran);
-        let control = Control::new(before.removal);
-        let recovered = recover(&lab.store, before.op, &control).unwrap();
-        result["recovered"] = json!(recovered.state);
-        let after_recovery = oracle(&lab, &before, &baseline, &recovered);
-        let abandoned = abandon(&lab, before.op, &control, "hyperv", &recovered);
-        result["abandoned"] = json!(abandoned.state);
-        let after = oracle(&lab, &before, &after_recovery, &abandoned);
-        cancelled_oracle(
-            &lab,
-            before.op,
-            before.removal,
-            "hyperv",
-            &abandoned,
-            &after,
-        );
-        assert!(copy_ran, "hyperv: no durable copy record after preparing");
+        body(&mut result);
     }));
     match checked {
         Ok(()) => result["ok"] = json!(true),
         Err(error) => result["failure"] = json!(panic_text(error)),
     }
-    write_signal(signal, "result.json", &result);
+    if step == "recover" || result["ok"] != true {
+        write_signal(signal, "result.json", &result);
+    }
     assert!(result["ok"] == true, "hyperv: {}", result["failure"]);
+}
+
+fn clear_signals(signal: &Path) {
+    if !signal.exists() {
+        return;
+    }
+    for entry in fs::read_dir(signal).unwrap() {
+        let path = entry.unwrap().path();
+        let name = path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_ascii_lowercase();
+        if matches!(name.as_str(), "result.json" | "act-done.json" | "trace.txt")
+            || name.ends_with(".tmp")
+        {
+            fs::remove_file(path).unwrap();
+        }
+    }
+}
+
+fn recover_step(dir: &Path, signal: &Path, result: &mut Value) {
+    let before = read_prepared(signal);
+    // Read the post-boot destination before Lab::at can create or open anything on the lab.
+    result["baseline_attempted"] = json!(true);
+    let baseline = dest_snapshot(&dir.join("dest"));
+    result["lab_open_attempted"] = json!(true);
+    let lab = Lab::at(dir).expect("hyperv: elevated token refused");
+    let rows = lab.store.lock().unwrap().rows(before.op).unwrap();
+    result["journal_records"] = json!(rows.len());
+    if let Some(last) = rows.last() {
+        let entry: Entry = serde_json::from_str(&last.body).unwrap();
+        let record = serde_json::to_value(&entry.record).unwrap();
+        result["last_record"] = match record["to"].as_str() {
+            Some(to) => json!(format!("{}:{to}", record["kind"].as_str().unwrap())),
+            None => record["kind"].clone(),
+        };
+    }
+    // Started puts the operation in preparing. Count only evidence durable before recovery.
+    let copy_ran = rows.len() > 1;
+    result["copy_ran"] = json!(copy_ran);
+    let control = Control::new(before.removal);
+    let recovered = recover(&lab.store, before.op, &control).unwrap();
+    result["recovered"] = json!(recovered.state);
+    let after_recovery = oracle(&lab, &before, &baseline, &recovered);
+    let abandoned = abandon(&lab, before.op, &control, "hyperv", &recovered);
+    result["abandoned"] = json!(abandoned.state);
+    let after = oracle(&lab, &before, &after_recovery, &abandoned);
+    // C6's cancellation check owns Loomward names; unrelated baseline entries are retained
+    // and already checked above, but are not staging leftovers.
+    let replayed = replay(&lab.store, before.op).unwrap();
+    let owned: Snap = after
+        .into_iter()
+        .filter(|(path, _)| {
+            let name = path.split('/').next().unwrap();
+            name == EXISTING
+                || name == before.final_name
+                || replayed.staging_tokens.iter().any(|token| token == name)
+        })
+        .collect();
+    cancelled_oracle(
+        &lab,
+        before.op,
+        before.removal,
+        "hyperv",
+        &abandoned,
+        &owned,
+    );
+    assert!(copy_ran, "hyperv: no durable copy record after preparing");
 }
 
 #[test]
 fn hyperv_guest() {
-    let Ok(step) = std::env::var("LOOMWARD_HV_STEP") else {
+    let step = std::env::var("LOOMWARD_HV_STEP");
+    // Ordinary cargo tests do not activate the runner. A partial guest configuration does.
+    if matches!(step, Err(std::env::VarError::NotPresent))
+        && std::env::var_os("LOOMWARD_HV_SIGNAL").is_none()
+        && std::env::var_os("LOOMWARD_HV_LAB").is_none()
+    {
         return;
-    };
-    if enumerate::skip_elevated_test() {
-        eprintln!("hyperv: elevated token refused");
-        panic!("hyperv: elevated token refused");
     }
-    let required_path = |name| PathBuf::from(std::env::var_os(name).expect(name));
+    let step_name = step.as_deref().unwrap_or("unknown");
+    // With no signal argument there is no caller-selected directory. Keep an error receipt
+    // at the deterministic local fallback, <working directory>/signal/result.json.
+    let signal = std::env::var_os("LOOMWARD_HV_SIGNAL")
+        .map_or_else(|| PathBuf::from("signal"), PathBuf::from);
+    step_receipt(&signal, step_name, |result| {
+        let step = step
+            .as_deref()
+            .unwrap_or_else(|_| panic!("hyperv: missing or invalid LOOMWARD_HV_STEP"));
+        guest_step(step, &signal, result);
+    });
+}
+
+fn guest_step(step: &str, signal: &Path, result: &mut Value) {
+    assert!(
+        !enumerate::skip_elevated_test(),
+        "hyperv: elevated token refused"
+    );
+    let required =
+        |name| std::env::var(name).unwrap_or_else(|_| panic!("hyperv: missing or invalid {name}"));
+    let required_path = |name| {
+        PathBuf::from(std::env::var_os(name).unwrap_or_else(|| panic!("hyperv: missing {name}")))
+    };
     let dir = required_path("LOOMWARD_HV_LAB");
-    let signal = required_path("LOOMWARD_HV_SIGNAL");
+    required_path("LOOMWARD_HV_SIGNAL");
     assert!(
         dir.is_absolute() && signal.is_absolute(),
         "hyperv: paths must be absolute"
     );
     assert!(
-        !dir.starts_with(&signal) && !signal.starts_with(&dir),
+        !dir.starts_with(signal) && !signal.starts_with(&dir),
         "hyperv: signal and lab must be separate"
     );
-    match step.as_str() {
+    match step {
         "prepare" => {
-            let scenario = std::env::var("LOOMWARD_HV_SCENARIO").expect("LOOMWARD_HV_SCENARIO");
+            let scenario = required("LOOMWARD_HV_SCENARIO");
             assert!(
                 matches!(scenario.as_str(), "run" | "abandon"),
                 "hyperv: invalid scenario"
@@ -354,10 +544,10 @@ fn hyperv_guest() {
                 Ok("large") | Err(std::env::VarError::NotPresent) => true,
                 _ => panic!("hyperv: tree must be small or large"),
             };
-            prepare_step(&dir, &signal, &scenario, removal, large);
+            prepare_step(&dir, signal, &scenario, removal, large);
         }
-        "act" => act_step(&dir, &signal),
-        "recover" => recover_step(&dir, &signal),
+        "act" => act_step(&dir, signal),
+        "recover" => recover_step(&dir, signal, result),
         _ => panic!("hyperv: unknown step"),
     }
 }
@@ -378,6 +568,17 @@ fn child_step(
     scenario: &str,
     removal: bool,
     cut: Option<u64>,
+) -> ExitStatus {
+    child_step_with(root, step, scenario, removal, cut, |_| {})
+}
+
+fn child_step_with(
+    root: &Path,
+    step: &str,
+    scenario: &str,
+    removal: bool,
+    cut: Option<u64>,
+    configure: impl FnOnce(&mut Command),
 ) -> ExitStatus {
     let signal = root.join("signal");
     fs::create_dir_all(&signal).unwrap();
@@ -403,6 +604,7 @@ fn child_step(
     if let Some(n) = cut {
         cmd.env("LOOMWARD_COPY_CRASH_AT", n.to_string());
     }
+    configure(&mut cmd);
     let mut child = cmd.spawn().unwrap();
     let start = Instant::now();
     loop {
@@ -435,16 +637,25 @@ fn result(root: &Path) -> Value {
 fn hyperv_failure_receipt_is_durable_even_without_prepare() {
     let Some(temp) = host_lab() else { return };
     let signal = temp.path().join("signal");
+    successful_step(temp.path(), "prepare", "run", false);
+    // The persisted record is valid; the absent destination must fail before Lab::at can
+    // create a lab, rather than failing early while reading a missing prepare.json.
+    read_prepared(&signal);
     write_signal(&signal, "probe.json", &json!({"version": 1}));
     write_signal(&signal, "probe.json", &json!({"version": 2}));
     let probe: Value =
         serde_json::from_slice(&fs::read(signal.join("probe.json")).unwrap()).unwrap();
     assert_eq!(probe["version"], 2);
     assert!(!signal.join("probe.json.tmp").exists());
-    assert!(catch_unwind(|| recover_step(&temp.path().join("absent-lab"), &signal)).is_err());
+    assert!(catch_unwind(|| step_receipt(&signal, "recover", |result| {
+        recover_step(&temp.path().join("absent-lab"), &signal, result);
+    }))
+    .is_err());
     let receipt = result(temp.path());
     assert_eq!(receipt["ok"], false);
     assert_eq!(receipt["copy_ran"], false);
+    assert_eq!(receipt["baseline_attempted"], true);
+    assert_eq!(receipt["lab_open_attempted"], false);
     assert!(receipt["failure"].is_string());
     assert!(!temp.path().join("absent-lab").exists());
     assert!(!signal.join("result.json.tmp").exists());
@@ -459,6 +670,10 @@ fn hyperv_steps_run_end_to_end_in_process() {
             successful_step(&root, "prepare", scenario, removal);
             successful_step(&root, "act", scenario, removal);
             successful_step(&root, "recover", scenario, removal);
+            for name in ["prepare.json", "act-done.json", "result.json"] {
+                assert!(root.join("signal").join(name).is_file());
+                assert!(!root.join("signal").join(format!("{name}.tmp")).exists());
+            }
             let receipt = result(&root);
             assert_eq!(receipt["ok"], true, "{receipt}");
             assert_eq!(receipt["copy_ran"], true);
@@ -517,4 +732,244 @@ fn hyperv_source_corruption_reports_failure() {
             .contains("source changed"),
         "{receipt}"
     );
+}
+
+#[test]
+fn hyperv_prepare_clears_stale_signals_before_validation() {
+    let Some(temp) = host_lab() else { return };
+    let signal = temp.path().join("signal");
+    for name in [
+        "result.json",
+        "act-done.json",
+        "trace.txt",
+        "prepare.json.tmp",
+        "other.tmp",
+        ".tmp",
+        "upper.TMP",
+    ] {
+        fs::create_dir_all(&signal).unwrap();
+        fs::write(signal.join(name), b"stale").unwrap();
+    }
+    assert!(!child_step(temp.path(), "prepare", "invalid", false, None).success());
+    let receipt = result(temp.path());
+    assert_eq!(receipt["ok"], false);
+    assert_eq!(receipt["step"], "prepare");
+    assert!(receipt["failure"]
+        .as_str()
+        .unwrap()
+        .contains("invalid scenario"));
+    for name in [
+        "act-done.json",
+        "trace.txt",
+        "prepare.json.tmp",
+        "other.tmp",
+        ".tmp",
+        "upper.TMP",
+    ] {
+        assert!(!signal.join(name).exists(), "stale {name}");
+    }
+}
+
+#[test]
+fn hyperv_configuration_and_missing_prepare_failures_have_receipts() {
+    let Some(temp) = host_lab() else { return };
+    for (n, (name, value, failure)) in [
+        ("LOOMWARD_HV_LAB", None, "LOOMWARD_HV_LAB"),
+        ("LOOMWARD_HV_SIGNAL", None, "LOOMWARD_HV_SIGNAL"),
+        ("LOOMWARD_HV_STEP", None, "LOOMWARD_HV_STEP"),
+        ("LOOMWARD_HV_SCENARIO", None, "LOOMWARD_HV_SCENARIO"),
+        ("LOOMWARD_HV_REMOVAL", None, "removal must"),
+        ("LOOMWARD_HV_REMOVAL", Some("bad"), "removal must"),
+        ("LOOMWARD_HV_TREE", Some("bad"), "tree must"),
+        (
+            "LOOMWARD_HV_LAB",
+            Some("relative-lab"),
+            "paths must be absolute",
+        ),
+        ("LOOMWARD_HV_STEP", Some("bad"), "unknown step"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let root = temp.path().join(n.to_string());
+        let status = child_step_with(&root, "prepare", "run", false, None, |cmd| {
+            cmd.current_dir(&root);
+            if let Some(value) = value {
+                cmd.env(name, value);
+            } else {
+                cmd.env_remove(name);
+            }
+        });
+        assert!(!status.success(), "{name} unexpectedly succeeded");
+        let receipt = result(&root);
+        assert_eq!(receipt["ok"], false);
+        assert!(receipt["step"].is_string());
+        assert!(
+            receipt["failure"].as_str().unwrap().contains(failure),
+            "{receipt}"
+        );
+        assert!(!root.join("lab").exists());
+    }
+    for step in ["act", "recover"] {
+        let root = temp.path().join(step);
+        assert!(!child_step(&root, step, "run", false, None).success());
+        let receipt = result(&root);
+        assert_eq!(receipt["ok"], false);
+        assert_eq!(receipt["step"], step);
+        assert!(
+            receipt["failure"]
+                .as_str()
+                .unwrap()
+                .contains("missing prepare.json"),
+            "{receipt}"
+        );
+    }
+}
+
+#[test]
+fn hyperv_panics_in_every_step_replace_success_with_failure() {
+    let temp = tempfile::tempdir().unwrap();
+    let signal = temp.path().join("signal");
+    for step in ["prepare", "act", "recover"] {
+        write_signal(&signal, "result.json", &json!({"ok": true}));
+        assert!(catch_unwind(|| step_receipt(&signal, step, |_| {
+            panic!("hyperv: injected {step} panic");
+        }))
+        .is_err());
+        let receipt = result(temp.path());
+        assert_eq!(receipt["ok"], false);
+        assert_eq!(receipt["step"], step);
+        assert_eq!(receipt["failure"], format!("hyperv: injected {step} panic"));
+        assert!(!signal.join("result.json.tmp").exists());
+    }
+}
+
+#[test]
+fn hyperv_sentinel_loss_or_replacement_reports_failure() {
+    let Some(temp) = host_lab() else { return };
+    for replace in [false, true] {
+        let root = temp.path().join(format!("replace-{replace}"));
+        successful_step(&root, "prepare", "run", false);
+        successful_step(&root, "act", "run", false);
+        let sentinel = root.join("lab/dest").join(EXISTING);
+        fs::remove_file(&sentinel).unwrap();
+        if replace {
+            fs::write(sentinel, b"different sentinel bytes").unwrap();
+        }
+        assert!(!child_step(&root, "recover", "run", false, None).success());
+        let receipt = result(&root);
+        assert_eq!(receipt["ok"], false);
+        assert!(
+            receipt["failure"].as_str().unwrap().contains("sentinel"),
+            "{receipt}"
+        );
+    }
+}
+
+#[test]
+fn hyperv_stream_records_preserve_hashes_and_full_identity_without_file_bytes() {
+    let Some(temp) = host_lab() else { return };
+    fs::create_dir(temp.path().join("empty")).unwrap();
+    let path = temp.path().join("streamed.txt");
+    fs::write(&path, b"default stream").unwrap();
+    fs::write(temp.path().join("streamed.txt:note"), b"named stream").unwrap();
+    let snapshot = source_record(temp.path());
+    let encoded = serde_json::to_vec(&snapshot).unwrap();
+    let decoded: SourceSnap = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(snapshot, decoded);
+    assert_eq!(decoded.objects.len(), 2);
+    assert!(decoded.objects[0].streams.is_empty());
+    let record = &decoded.objects[1];
+    assert_eq!(record.relative, Path::new("streamed.txt"));
+    assert!(!record.relative.is_absolute());
+    assert_eq!(record.streams.len(), 2);
+    for (stream, name, bytes) in [
+        (&record.streams[0], "::$DATA", b"default stream".as_slice()),
+        (
+            &record.streams[1],
+            ":note:$DATA",
+            b"named stream".as_slice(),
+        ),
+    ] {
+        assert_eq!(stream.name, name);
+        assert_eq!(stream.size, bytes.len() as u64);
+        assert_eq!(stream.sha256, <[u8; 32]>::from(Sha256::digest(bytes)));
+    }
+    let mut restored = record.identity.clone();
+    restored.ancestors = decoded.ancestors[Path::new("")].clone();
+    let mut observed = identity::observe(&path).unwrap();
+    observed.last_access_time.clear();
+    assert_eq!(restored, observed);
+    let wire: Value = serde_json::from_slice(&encoded).unwrap();
+    assert!(wire["objects"][1].get("bytes").is_none());
+    assert!(wire["objects"][1].get("content").is_none());
+}
+
+#[test]
+fn hyperv_pre_recovery_addition_is_baseline_but_later_addition_fails() {
+    let Some(temp) = host_lab() else { return };
+    let root = temp.path();
+    successful_step(root, "prepare", "run", false);
+    successful_step(root, "act", "run", false);
+    fs::write(root.join("lab/dest/baseline.txt"), b"before recovery").unwrap();
+    successful_step(root, "recover", "run", false);
+    assert_eq!(result(root)["ok"], true);
+
+    let before = read_prepared(&root.join("signal"));
+    let lab = Lab::at(&root.join("lab")).unwrap();
+    let baseline = dest_snapshot(&lab.dest());
+    let outcome = recover(&lab.store, before.op, &Control::new(false)).unwrap();
+    fs::write(lab.dest().join("late.txt"), b"after baseline").unwrap();
+    let failure = catch_unwind(AssertUnwindSafe(|| {
+        reboot_destination_oracle(&lab, &before, &baseline, &outcome)
+    }))
+    .expect_err("a name appearing after the baseline must fail");
+    let failure = panic_text(failure);
+    assert!(
+        failure.contains("late.txt") && failure.contains("appeared"),
+        "{failure}"
+    );
+}
+
+#[test]
+fn hyperv_skipping_act_is_not_a_copy_run() {
+    let Some(temp) = host_lab() else { return };
+    successful_step(temp.path(), "prepare", "run", false);
+    assert!(!child_step(temp.path(), "recover", "run", false, None).success());
+    let receipt = result(temp.path());
+    assert_eq!(receipt["ok"], false);
+    assert_eq!(receipt["copy_ran"], false);
+    assert!(receipt["failure"]
+        .as_str()
+        .unwrap()
+        .contains("no durable copy record"));
+}
+
+#[test]
+fn hyperv_large_tree_smoke_and_bounded_prepare_signal() {
+    let Some(temp) = host_lab() else { return };
+    let dir = temp.path().join("lab");
+    let signal = temp.path().join("signal");
+    let start = Instant::now();
+    // Thousands of individual durability flushes can exceed the small-child watchdog.
+    // Exercise the same steps directly in this disposable host lab.
+    step_receipt(&signal, "prepare", |_| {
+        prepare_step(&dir, &signal, "run", false, true)
+    });
+    let prepare = start.elapsed();
+    let size = fs::metadata(signal.join("prepare.json")).unwrap().len();
+    println!("hyperv large: prepare={prepare:.3?}, prepare.json={size} bytes");
+    assert!(size < 2 * 1024 * 1024, "prepare.json is {size} bytes");
+    let start = Instant::now();
+    step_receipt(&signal, "act", |_| act_step(&dir, &signal));
+    let act = start.elapsed();
+    let start = Instant::now();
+    step_receipt(&signal, "recover", |result| {
+        recover_step(&dir, &signal, result)
+    });
+    println!(
+        "hyperv large: act={act:.3?}, recover={:.3?}",
+        start.elapsed()
+    );
+    assert_eq!(result(temp.path())["ok"], true);
 }
