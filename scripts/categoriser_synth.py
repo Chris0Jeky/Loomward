@@ -13,23 +13,64 @@ AXES = {s['properties']['axis']['const']: s['properties']['label']['enum']
         for s in RECORD_SCHEMA['$defs']['labels']['items']['oneOf']}
 
 
+def check_schema_keywords(schema):
+    """Refuse unsupported rules even in an unused property or schema alternative."""
+    supported = {'$schema', 'title', 'description', '$defs', '$ref', 'oneOf', 'allOf', 'if',
+                 'then', 'contains', 'minContains', 'maxContains', 'type', 'const', 'enum',
+                 'properties', 'required', 'additionalProperties', 'maxItems', 'uniqueItems',
+                 'items', 'minLength', 'maxLength', 'pattern', 'minimum', 'maximum'}
+    unknown = schema.keys() - supported
+    if unknown:
+        raise ValueError('unsupported schema keyword: ' + ', '.join(sorted(unknown)))
+    if 'additionalProperties' in schema and type(schema['additionalProperties']) is not bool:
+        raise ValueError('unsupported schema keyword form: additionalProperties')
+    for key in ('$defs', 'properties'):
+        for child in schema.get(key, {}).values():
+            check_schema_keywords(child)
+    for key in ('oneOf', 'allOf'):
+        for child in schema.get(key, []):
+            check_schema_keywords(child)
+    for key in ('if', 'then', 'contains', 'items'):
+        if key in schema:
+            check_schema_keywords(schema[key])
+    if schema.get('$ref') == 'evidence-packet-v1.json':
+        check_schema_keywords(PACKET_SCHEMA)
+
+
 def check_structure(value, schema, document=RECORD_SCHEMA):
     """Validate the small schema vocabulary used by these two checked-in schemas, offline."""
+    check_schema_keywords(schema)
+    if document is not schema:
+        check_schema_keywords(document)
+    _check_structure(value, schema, document)
+
+
+def _check_structure(value, schema, document):
     if '$ref' in schema:
         ref = schema['$ref']
         if ref == 'evidence-packet-v1.json':
-            return check_structure(value, PACKET_SCHEMA, PACKET_SCHEMA)
-        if not ref.startswith('#/'):
-            raise ValueError('unsupported schema reference')
-        target = document
-        for key in ref[2:].split('/'):
-            target = target[key]
-        return check_structure(value, target, document)
+            _check_structure(value, PACKET_SCHEMA, PACKET_SCHEMA)
+        else:
+            if not ref.startswith('#/'):
+                raise ValueError('unsupported schema reference')
+            target = document
+            for key in ref[2:].split('/'):
+                target = target[key]
+            _check_structure(value, target, document)
+    for candidate in schema.get('allOf', []):
+        _check_structure(value, candidate, document)
+    if 'if' in schema:
+        try:
+            _check_structure(value, schema['if'], document)
+        except ValueError:
+            pass
+        else:
+            _check_structure(value, schema.get('then', {}), document)
     if 'oneOf' in schema:
         matches = 0
         for candidate in schema['oneOf']:
             try:
-                check_structure(value, candidate, document)
+                _check_structure(value, candidate, document)
                 matches += 1
             except ValueError:
                 pass
@@ -55,14 +96,24 @@ def check_structure(value, schema, document=RECORD_SCHEMA):
             raise ValueError('unexpected field')
         for key, item in value.items():
             if key in properties:
-                check_structure(item, properties[key], document)
+                _check_structure(item, properties[key], document)
     elif isinstance(value, list):
         if len(value) > schema.get('maxItems', len(value)):
             raise ValueError('too many items')
         if schema.get('uniqueItems') and any(item in value[:i] for i, item in enumerate(value)):
             raise ValueError('duplicate array item')
+        if 'contains' in schema:
+            matches = 0
+            for item in value:
+                try:
+                    _check_structure(item, schema['contains'], document)
+                    matches += 1
+                except ValueError:
+                    pass
+            if not schema.get('minContains', 1) <= matches <= schema.get('maxContains', len(value)):
+                raise ValueError('incorrect contains count')
         for item in value:
-            check_structure(item, schema.get('items', {}), document)
+            _check_structure(item, schema.get('items', {}), document)
     elif isinstance(value, str):
         if not schema.get('minLength', 0) <= len(value) <= schema.get('maxLength', len(value)):
             raise ValueError('incorrect string length')
@@ -119,17 +170,18 @@ def generate_records(count, seed):
             elif meaning == 'photo_shoot':
                 per_file *= 100
             total = files * per_file
-            age = rng.choice((2, 120, 900))
-            lifecycle = 'active' if age < 30 else 'dormant' if age < 730 else 'historical'
+            age_seconds = rng.randrange(1200 * 86400)
+            lifecycle = ('active' if age_seconds < 30 * 86400 else
+                         'dormant' if age_seconds < 730 * 86400 else 'historical')
             observed = 1_800_000_000 + rng.randint(0, 30) * 86400
-            newest = observed - age * 86400
+            newest = observed - age_seconds
             group = f'synth-group-{instance:06d}'
             packet = {
                 'schema': 'loomward.evidence-packet.v1', 'synthetic': True,
                 'packet_id': f'synth-packet-{i:06d}', 'group_id': group, 'observed_at': observed,
                 'subject': {'kind': 'folder', 'name_tokens': [rng.choice(('velnora', 'quorbin', 'zintrel')),
                                                                         'sample'], 'depth': rng.randint(1, 4)},
-                'shape': {'files': files, 'folders': rng.randint(1, 30), 'logical_bytes': total,
+                'shape': {'files': files, 'folders': rng.randint(1, min(files, 30)), 'logical_bytes': total,
                           'allocated_bytes': total, 'max_depth': 6},
                 'families': [{'family': family, 'share_files': 1.0, 'share_bytes': 1.0}],
                 'extensions': [], 'markers': list(markers),
@@ -137,7 +189,7 @@ def generate_records(count, seed):
                          'newest_source_write': newest if recreation == 'unique' else None,
                          'newest_generated_write': newest if recreation == 'generated' else None,
                          'git_last_commit': newest if 'git_dir' in markers else None,
-                         'git_dirty': age < 30 if any(m.startswith('git_') for m in markers) else None,
+                         'git_dirty': age_seconds < 30 * 86400 if any(m.startswith('git_') for m in markers) else None,
                          'last_access': 'not_evidence'},
                 'duplicates': {'duplicate_bytes': None, 'groups': None}, 'media': None,
                 'coverage': {'state': 'complete', 'allocation_known': True,
@@ -173,7 +225,7 @@ def generate_records(count, seed):
             # Sparse evidence does not inherit a confident label from its complete sibling.
             labels = dict.fromkeys(AXES, 'unknown')
         elif variant == 2:
-            packet['markers'] = []
+            packet['markers'] = ['cargo_target_dir', 'lightroom_catalog']
             packet['families'] = [{'family': 'code', 'share_files': .5, 'share_bytes': .5},
                                   {'family': 'document', 'share_files': .5, 'share_bytes': .5}]
             n, size = packet['shape']['files'], packet['shape']['logical_bytes']

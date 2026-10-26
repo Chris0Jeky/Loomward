@@ -1,6 +1,7 @@
 """Offline-corpus LW-140 runner for an explicitly selected loopback model endpoint.
 
-Metrics describe this corpus only; they do not promote a model or claim calibration.
+The synthetic corpus is a smoke screen, not a ranking. Metrics describe this corpus
+only; they do not promote a model or claim calibration.
 """
 import argparse
 import http.client
@@ -97,7 +98,7 @@ def call_endpoint(endpoint, request, timeout):
     # Pin localhost to a literal loopback address, avoiding DNS configuration entirely.
     host = '127.0.0.1' if endpoint.hostname == 'localhost' else endpoint.hostname
     cls = http.client.HTTPSConnection if endpoint.scheme == 'https' else http.client.HTTPConnection
-    connection = cls(host, endpoint.port, timeout=timeout)
+    connection = cls(host, endpoint.port or (443 if endpoint.scheme == 'https' else 80), timeout=timeout)
     try:
         connection.request('POST', endpoint.path.rstrip('/') + '/chat/completions',
                            body=json.dumps(request).encode('utf-8'),
@@ -120,20 +121,34 @@ def call_endpoint(endpoint, request, timeout):
 
 
 NUMBER = re.compile(
-    r'(?<![\w.])(?P<number>[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?:[eE][+-]?\d+)?)'
-    r'(?:\s*(?P<unit>GiB|MiB|KiB|GB|MB|KB|bytes?|files?|folders?|days?|years?)\b)?',
+    r'(?<!\w)(?P<number>[+-]?(?:(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?|(?<!\.)\.\d+)'
+    r'(?:[eE][+-]?\d+)?)'
+    r'(?:\s*(?P<unit>[a-zA-Z]+)\b)?',
     re.IGNORECASE)
 COMMON_EXTENSIONS = set('exe msi dll pdb rlib rs py js ts json toml txt bin pdf docx zip tgz 7z '
                         'gguf safetensors vhdx raw xmp lrcat lrdata jpg jpeg png mp4 csv'.split())
+NUMBER_WORDS = re.compile(r'\b(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|'
+                          r'thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|'
+                          r'hundred|thousand|million)\b', re.IGNORECASE)
+MARKER_PHRASES = {
+    r'git repository': {'git_dir', 'git_file_worktree'},
+    r'node modules': {'node_modules_dir'},
+    r'lightroom catalog(?:ue)?': {'lightroom_catalog'},
+    r'virtual disk': {'vhdx_file'},
+    r'model weights|gguf': {'gguf_file'},
+}
 
 
 def unsupported_claims(sentence, packet):
-    """Conservative lexical fact check, not a semantic-entailment or promotion claim.
+    """Return a lexical lower bound on unsupported claims.
 
     Counts must be exact, sizes within 5% (SI GB/MB/KB, binary GiB/MiB/KiB),
-    ages within one named unit. Nulls, booleans, IDs and name digits are not numbers.
+    ages within one named unit and tied to the named time field when specified.
+    Spelled-out numbers and unknown units are unsupported. This is not semantic
+    entailment: unrecognised wording can escape it. Nulls, booleans, IDs and name
+    digits are not numbers.
     """
-    counts, file_counts, folder_counts, byte_totals, timestamps = [], [], [], [], []
+    counts, file_counts, folder_counts, byte_totals, timestamps = [], [], [], [], {}
 
     def walk(value, parent=''):
         if isinstance(value, dict):
@@ -148,7 +163,7 @@ def unsupported_claims(sentence, packet):
             elif parent in ('newest_content_write', 'oldest_content_write',
                             'newest_source_write', 'newest_generated_write', 'git_last_commit',
                             'capture_start', 'capture_end'):
-                timestamps.append(value)
+                timestamps[parent] = value
             elif parent in ('files', 'folders', 'max_depth', 'depth', 'groups', 'raw_files',
                             'sidecar_files', 'raw_with_sidecar', 'camera_models'):
                 counts.append(value)
@@ -158,52 +173,69 @@ def unsupported_claims(sentence, packet):
                     folder_counts.append(value)
 
     walk(packet)
-    ages = [packet['observed_at'] - stamp for stamp in timestamps if stamp <= packet['observed_at']]
-    problems = []
+    ages = {key: packet['observed_at'] - stamp for key, stamp in timestamps.items()
+            if stamp <= packet['observed_at']}
+    problems = ['unsupported number word: ' + match.group() for match in NUMBER_WORDS.finditer(sentence)]
+    extensions = {e['ext'].casefold() for e in packet['extensions']}
+    markers = set(packet['markers'])
+    age_fields = list(re.finditer(r'\b(newest|last[ _-]modified|oldest)\b', sentence, re.IGNORECASE))
     scales = {'gb': 1e9, 'mb': 1e6, 'kb': 1e3, 'gib': 2**30, 'mib': 2**20, 'kib': 2**10,
               'byte': 1, 'bytes': 1}
     for match in NUMBER.finditer(sentence):
+        token = re.match(r'[a-zA-Z0-9_+-]+', sentence[match.start():])
+        if token and token[0].casefold() in COMMON_EXTENSIONS | extensions:
+            continue  # For example, bare 7z names an extension, not a count of seven.
         number = float(match['number'].replace(',', ''))
         unit = (match['unit'] or '').lower()
+        if unit in ('source', 'build', 'rust'):
+            count_unit = re.match(r'\s+(files?|folders?)\b', sentence[match.end():], re.IGNORECASE)
+            if count_unit:
+                unit = count_unit[1].lower()
         if number < 0 or not math.isfinite(number):
             supported = False
         elif unit in scales:
             supported = any(abs(number * scales[unit] - value) <= value * .05 for value in byte_totals)
         elif unit in ('day', 'days', 'year', 'years'):
             seconds = 86400 if unit.startswith('day') else 365.25 * 86400
-            supported = any(abs(number - age / seconds) <= 1 for age in ages)
+            candidates = ages.values()
+            if age_fields:
+                cue = min(age_fields, key=lambda field: min(abs(field.end() - match.start()),
+                                                           abs(field.start() - match.end())))
+                field = ('oldest_content_write' if cue[0].lower() == 'oldest'
+                         else 'newest_content_write')
+                candidates = [ages[field]] if field in ages else []
+            supported = any(abs(number - age / seconds) <= 1 for age in candidates)
         elif unit in ('file', 'files'):
             supported = number in file_counts
         elif unit in ('folder', 'folders'):
             supported = number in folder_counts
+        elif unit:
+            supported = False
         else:
-            supported = number in counts + byte_totals + timestamps + [packet['observed_at']]
+            supported = number in counts + byte_totals + list(timestamps.values()) + [packet['observed_at']]
         if (sentence[match.end():].lstrip().startswith('%') or
                 (not unit and re.match(r'[a-zA-Z]', sentence[match.end():]))):
             supported = False
         if not supported:
             problems.append('unsupported number: ' + match.group().strip())
 
-    allowed = {e['ext'].casefold() for e in packet['extensions']} | set(packet['markers'])
+    for phrase, required in MARKER_PHRASES.items():
+        if not required & markers:
+            problems.extend('unsupported marker phrase: ' + match[0] for match in
+                            re.finditer(r'\b(?:' + phrase + r')\b', sentence, re.IGNORECASE))
+    allowed = extensions | markers
+    if 'gguf_file' in markers:
+        allowed.add('gguf')
     mentioned = set()
     # Dot-prefixed extensions and filename suffixes, including an unseen extension vocabulary.
-    for match in re.finditer(r'(?<!\d)\.([a-zA-Z0-9_+-]+)', sentence):
+    without_abbreviations = re.sub(r'\b(?:e\.g\.|i\.e\.)', '', sentence, flags=re.IGNORECASE)
+    for match in re.finditer(r'(?<!\d)\.([a-zA-Z0-9_+-]+)', without_abbreviations):
         if re.search('[a-zA-Z]', match[1]):
             mentioned.add(match[1].casefold())
-    for token in re.findall(r'\b[a-zA-Z][a-zA-Z0-9_+-]*\b', sentence):
+    for token in re.findall(r'\b[a-zA-Z0-9][a-zA-Z0-9_+-]*\b', without_abbreviations):
         lower = token.casefold()
         if '_' in token or lower in COMMON_EXTENSIONS or lower in allowed:
             mentioned.add(lower)
-        elif token.isupper() and len(token) > 1 and lower not in ('gb', 'mb', 'kb', 'gib', 'mib', 'kib'):
-            mentioned.add(lower)
-    for match in re.finditer(r'\b([a-zA-Z][a-zA-Z0-9_+-]*)\s+(?:files?|extensions?|markers?)\b',
-                             sentence, re.IGNORECASE):
-        if match[1].lower() not in ('of', 'the', 'these', 'those', 'some', 'many', 'no', 'observed',
-                                  'total', 'contains', 'with', 'unknown'):
-            mentioned.add(match[1].casefold())
-    for match in re.finditer(r'\b(?:extension|marker)\s+[`\"\']?([a-zA-Z][a-zA-Z0-9_+-]*)',
-                             sentence, re.IGNORECASE):
-        mentioned.add(match[1].casefold())
     problems.extend('unsupported token: ' + token for token in sorted(mentioned - allowed))
     return problems
 
@@ -279,7 +311,7 @@ def metrics(rows, records, model, host, task):
     return summary
 
 
-def run(records, endpoint, model, task, timeout, temperature):
+def run(records, endpoint, model, task, timeout, temperature, details=None):
     rows = []
     for record in records:
         start = time.perf_counter()
@@ -295,7 +327,8 @@ def run(records, endpoint, model, task, timeout, temperature):
                 row['unsupported_claims'] = unsupported_claims(content, record['packet'])
                 if not valid_sentence(content):
                     raise ValueError('summary must be one plain sentence of at most 40 words')
-        except (ValueError, KeyError, IndexError, TypeError, OSError, http.client.HTTPException) as error:
+        except (ValueError, KeyError, IndexError, TypeError, OSError, RecursionError,
+                http.client.HTTPException) as error:
             row['invalid'] = True
             # Do not echo an endpoint's error body (it may include packet data).
             row['error'] = type(error).__name__ + ': ' + str(error)
@@ -307,6 +340,9 @@ def run(records, endpoint, model, task, timeout, temperature):
         else:
             row['correctness'] = not row['invalid'] and not row['unsupported_claims']
         rows.append(row)
+        if details is not None:
+            details.write(json.dumps(row, allow_nan=False) + '\n')
+            details.flush()
     return metrics(rows, records, model, endpoint.hostname, task), rows
 
 
@@ -334,6 +370,8 @@ def main(argv=None):
         stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
         out = validate_output(args.out if args.out is not None else
                               Path('E:/loomward-build/bench') / f'{model_slug}-{args.task}-{stamp}')
+        if not args.dry_run and out.exists():
+            raise ValueError('output directory already exists; choose a new --out directory')
         records = strict_json(args.corpus.read_text(encoding='utf-8'))
         if not isinstance(records, list) or not records:
             raise ValueError('corpus must be a nonempty JSON array')
@@ -346,17 +384,15 @@ def main(argv=None):
             print(json.dumps(make_request(records[0]['packet'], args.model, args.task,
                                           args.temperature), indent=2))
             return 0
-        out.mkdir(parents=True, exist_ok=True)
-        # Exclusive creation refuses existing files and symlinks before sending any packets.
-        with (out / 'records.jsonl').open('x', encoding='utf-8') as details, (
-                out / 'summary.json').open('x', encoding='utf-8') as totals:
-            summary, rows = run(records, endpoint, args.model, args.task, args.timeout, args.temperature)
-            for row in rows:
-                details.write(json.dumps(row, allow_nan=False) + '\n')
+        out.mkdir(parents=True, exist_ok=False)
+        with (out / 'records.jsonl').open('x', encoding='utf-8') as details:
+            summary, _ = run(records, endpoint, args.model, args.task, args.timeout, args.temperature,
+                             details=details)
+        with (out / 'summary.json').open('x', encoding='utf-8') as totals:
             totals.write(json.dumps(summary, indent=2, allow_nan=False) + '\n')
         print(f'Wrote {len(records)} results to {out}')
         return 0
-    except (ValueError, OSError) as error:
+    except (ValueError, OSError, RecursionError) as error:
         parser.error(str(error))
 
 
