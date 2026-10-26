@@ -1050,5 +1050,76 @@
       "/shape/logical_bytes",
       "/time/newest_content_write"
     ]
+  },
+  {
+    "schema": "loomward.categoriser-record.v1",
+    "synthetic": true,
+    "record_id": "record-denied",
+    "packet": {
+      "schema": "loomward.evidence-packet.v1",
+      "synthetic": true,
+      "packet_id": "packet-denied",
+      "group_id": "incomplete-root",
+      "observed_at": 1800000000,
+      "subject": {
+        "kind": "folder",
+        "name_tokens": [
+          "sample",
+          "incomplete",
+          "set"
+        ],
+        "depth": 2
+      },
+      "shape": {
+        "files": null,
+        "folders": null,
+        "logical_bytes": null,
+        "allocated_bytes": null,
+        "max_depth": 6
+      },
+      "families": [],
+      "extensions": [],
+      "markers": [],
+      "time": {
+        "newest_content_write": null,
+        "oldest_content_write": null,
+        "newest_source_write": null,
+        "newest_generated_write": null,
+        "git_last_commit": null,
+        "git_dirty": null,
+        "last_access": "not_evidence"
+      },
+      "duplicates": {
+        "duplicate_bytes": null,
+        "groups": null
+      },
+      "media": null,
+      "coverage": {
+        "state": "denied",
+        "allocation_known": false,
+        "link_counts_observed": false,
+        "online": false
+      }
+    },
+    "human_labels": [
+      {
+        "axis": "meaning",
+        "label": "unknown"
+      },
+      {
+        "axis": "lifecycle",
+        "label": "unknown"
+      },
+      {
+        "axis": "recreatability",
+        "label": "unknown"
+      }
+    ],
+    "teacher_labels": [],
+    "summary_facts": [
+      "/markers",
+      "/shape/logical_bytes",
+      "/time/newest_content_write"
+    ]
   }
 ]
