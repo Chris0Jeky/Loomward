@@ -10,7 +10,7 @@ use crate::features::{casefold, integer, word_runs, SIZE_MAX};
 use crate::LearnError;
 
 const UNIX_MAX: u64 = 32_503_680_000;
-const FAMILIES: &[&str] = &[
+pub const FAMILIES: &[&str] = &[
     "document",
     "spreadsheet",
     "presentation",
@@ -27,7 +27,7 @@ const FAMILIES: &[&str] = &[
     "other",
     "none",
 ];
-const MARKERS: &[&str] = &[
+pub const MARKERS: &[&str] = &[
     "cargo_toml",
     "cargo_target_dir",
     "package_json",
@@ -61,7 +61,7 @@ const MARKERS: &[&str] = &[
     "office_documents",
     "loomward_staging",
 ];
-const MEANINGS: &[&str] = &[
+pub const MEANINGS: &[&str] = &[
     "source_project",
     "generated_build",
     "dependency_install",
@@ -78,6 +78,25 @@ const MEANINGS: &[&str] = &[
     "agent_worktree",
     "unknown",
 ];
+pub const LIFECYCLES: &[&str] = &["active", "dormant", "historical", "unknown"];
+pub const RECREATABILITIES: &[&str] =
+    &["generated", "redownloadable", "unique", "mixed", "unknown"];
+pub const COVERAGE_STATES: &[&str] = &[
+    "complete",
+    "partial",
+    "stale",
+    "unscanned",
+    "denied",
+    "excluded",
+    "cancelled",
+    "unknown",
+];
+pub const MAX_NAME_TOKENS: usize = 16;
+pub const MAX_FAMILIES: usize = 15;
+pub const MAX_EXTENSIONS: usize = 16;
+pub const MAX_MARKERS: usize = 32;
+pub const MAX_LABELS: usize = 3;
+pub const MAX_SUMMARY_FACTS: usize = 12;
 
 fn exact_keys(value: &Value, name: &str, keys: &[&str]) -> Result<(), LearnError> {
     match value.as_object() {
@@ -156,7 +175,7 @@ fn share(value: &Value, name: &str) -> Result<f64, LearnError> {
 
 fn no_path(text: &str, name: &str) -> Result<(), LearnError> {
     // This also excludes drive-relative paths and both Windows and slash-form UNC paths.
-    if text.contains(['/', '\\', ':', '\0']) {
+    if text.contains(['/', '\\', ':']) {
         return Err(LearnError::new(format!("Invalid path-like {name}")));
     }
     Ok(())
@@ -166,7 +185,7 @@ fn validate_families(value: &Value) -> Result<(), LearnError> {
     let mut seen = BTreeSet::new();
     let mut files = 0.0;
     let mut bytes = 0.0;
-    for family in array(value, "families", 15)? {
+    for family in array(value, "families", MAX_FAMILIES)? {
         exact_keys(family, "family", &["family", "share_files", "share_bytes"])?;
         let name = choice(&family["family"], "family", FAMILIES)?;
         if !seen.insert(name) {
@@ -298,7 +317,7 @@ pub fn validate_packet(value: &Value) -> Result<(), LearnError> {
     exact_keys(subject, "subject", &["kind", "name_tokens", "depth"])?;
     choice(&subject["kind"], "subject.kind", &["folder", "file_set"])?;
     unsigned(&subject["depth"], "depth", 4096)?;
-    for token in array(&subject["name_tokens"], "name_tokens", 16)? {
+    for token in array(&subject["name_tokens"], "name_tokens", MAX_NAME_TOKENS)? {
         let token = text(token, "name_token", 1, 64)?;
         no_path(token, "name_token")?;
         if casefold(token) != token {
@@ -322,14 +341,16 @@ pub fn validate_packet(value: &Value) -> Result<(), LearnError> {
             "max_depth",
         ],
     )?;
-    let files = unsigned(&shape["files"], "files", SIZE_MAX)?;
-    unsigned(&shape["folders"], "folders", SIZE_MAX)?;
+    let files = nullable_unsigned(&shape["files"], "files", SIZE_MAX)?;
+    nullable_unsigned(&shape["folders"], "folders", SIZE_MAX)?;
     nullable_unsigned(&shape["logical_bytes"], "logical_bytes", SIZE_MAX)?;
     let allocated = nullable_unsigned(&shape["allocated_bytes"], "allocated_bytes", SIZE_MAX)?;
-    unsigned(&shape["max_depth"], "max_depth", 4096)?;
+    nullable_unsigned(&shape["max_depth"], "max_depth", 4096)?;
 
     validate_families(&value["families"])?;
-    for extension in array(&value["extensions"], "extensions", 16)? {
+    let mut extensions = BTreeSet::new();
+    let mut extension_files = 0u64;
+    for extension in array(&value["extensions"], "extensions", MAX_EXTENSIONS)? {
         exact_keys(extension, "extension", &["ext", "files", "bytes"])?;
         let ext = text(&extension["ext"], "ext", 0, 32)?;
         no_path(ext, "ext")?;
@@ -339,11 +360,18 @@ pub fn validate_packet(value: &Value) -> Result<(), LearnError> {
         {
             return Err(LearnError::new("Invalid ext"));
         }
-        unsigned(&extension["files"], "extension files", SIZE_MAX)?;
+        if !extensions.insert(ext) {
+            return Err(LearnError::new("Duplicate ext"));
+        }
+        // At most 16 JS-safe counts fit comfortably in u64.
+        extension_files += unsigned(&extension["files"], "extension files", SIZE_MAX)?;
         nullable_unsigned(&extension["bytes"], "extension bytes", SIZE_MAX)?;
     }
+    if files.is_some_and(|files| extension_files > files) {
+        return Err(LearnError::new("Extension files sum exceeds shape.files"));
+    }
     let mut markers = BTreeSet::new();
-    for marker in array(&value["markers"], "markers", 32)? {
+    for marker in array(&value["markers"], "markers", MAX_MARKERS)? {
         let marker = choice(marker, "marker", MARKERS)?;
         if !markers.insert(marker) {
             return Err(LearnError::new("Duplicate marker"));
@@ -371,29 +399,59 @@ pub fn validate_packet(value: &Value) -> Result<(), LearnError> {
             "online",
         ],
     )?;
-    let state = choice(
-        &coverage["state"],
-        "coverage.state",
-        &[
-            "complete",
-            "partial",
-            "stale",
-            "unscanned",
-            "denied",
-            "excluded",
-            "cancelled",
-            "unknown",
-        ],
-    )?;
+    let state = choice(&coverage["state"], "coverage.state", COVERAGE_STATES)?;
     let allocation_known = boolean(&coverage["allocation_known"], "allocation_known")?;
     boolean(&coverage["link_counts_observed"], "link_counts_observed")?;
     boolean(&coverage["online"], "online")?;
+    if matches!(
+        state,
+        "denied" | "unscanned" | "excluded" | "cancelled" | "unknown"
+    ) {
+        for pointer in [
+            "/shape/files",
+            "/shape/folders",
+            "/shape/logical_bytes",
+            "/shape/allocated_bytes",
+            "/shape/max_depth",
+            "/duplicates/duplicate_bytes",
+            "/duplicates/groups",
+            "/media",
+            "/time/newest_content_write",
+            "/time/oldest_content_write",
+            "/time/newest_source_write",
+            "/time/newest_generated_write",
+            "/time/git_last_commit",
+            "/time/git_dirty",
+        ] {
+            if !value.pointer(pointer).unwrap().is_null() {
+                return Err(LearnError::new(format!(
+                    "{pointer} must be unknown for unobserved coverage"
+                )));
+            }
+        }
+        for key in ["families", "extensions", "markers"] {
+            if !value[key].as_array().unwrap().is_empty() {
+                return Err(LearnError::new(format!(
+                    "/{key} must be unknown for unobserved coverage"
+                )));
+            }
+        }
+    }
     if !allocation_known && allocated.is_some() {
         return Err(LearnError::new(
             "allocated_bytes must be null when allocation is unknown",
         ));
     }
-    if state != "complete" && allocation_known && allocated == Some(0) && files > 0 {
+    if allocation_known && files.is_some_and(|files| files > 0) && allocated.is_none() {
+        return Err(LearnError::new(
+            "allocated_bytes must be present when allocation is known and files is positive",
+        ));
+    }
+    if state != "complete"
+        && allocation_known
+        && allocated == Some(0)
+        && files.is_some_and(|files| files > 0)
+    {
         return Err(LearnError::new(
             "Incomplete coverage cannot claim zero allocation for non-empty subjects",
         ));
@@ -403,7 +461,7 @@ pub fn validate_packet(value: &Value) -> Result<(), LearnError> {
 
 fn validate_labels(value: &Value, name: &str) -> Result<(), LearnError> {
     let mut axes = BTreeSet::new();
-    for label in array(value, name, 3)? {
+    for label in array(value, name, MAX_LABELS)? {
         exact_keys(label, "label", &["axis", "label"])?;
         let axis = choice(
             &label["axis"],
@@ -412,8 +470,8 @@ fn validate_labels(value: &Value, name: &str) -> Result<(), LearnError> {
         )?;
         let labels = match axis {
             "meaning" => MEANINGS,
-            "lifecycle" => &["active", "dormant", "historical", "unknown"],
-            _ => &["generated", "redownloadable", "unique", "mixed", "unknown"],
+            "lifecycle" => LIFECYCLES,
+            _ => RECREATABILITIES,
         };
         choice(&label["label"], "label for axis", labels)?;
         if !axes.insert(axis) {
@@ -454,7 +512,7 @@ pub fn validate_record(value: &Value) -> Result<(), LearnError> {
     }
     validate_labels(&value["human_labels"], "human_labels")?;
     validate_labels(&value["teacher_labels"], "teacher_labels")?;
-    for pointer in array(&value["summary_facts"], "summary_facts", 12)? {
+    for pointer in array(&value["summary_facts"], "summary_facts", MAX_SUMMARY_FACTS)? {
         let pointer = text(pointer, "summary_facts pointer", 2, 96)?;
         if !pointer.starts_with('/')
             || !pointer

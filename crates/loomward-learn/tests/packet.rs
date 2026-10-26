@@ -1,4 +1,8 @@
-use loomward_learn::packet::{validate_corpus, validate_packet, validate_record};
+use loomward_learn::packet::{
+    validate_corpus, validate_packet, validate_record, COVERAGE_STATES, FAMILIES, LIFECYCLES,
+    MARKERS, MAX_EXTENSIONS, MAX_FAMILIES, MAX_LABELS, MAX_MARKERS, MAX_NAME_TOKENS,
+    MAX_SUMMARY_FACTS, MEANINGS, RECREATABILITIES,
+};
 use serde_json::{json, Value};
 
 fn corpus() -> Value {
@@ -16,6 +20,189 @@ fn packet() -> Value {
     record()["packet"].clone()
 }
 
+fn unobserved_packet(state: &str) -> Value {
+    let mut packet = packet();
+    packet["coverage"]["state"] = json!(state);
+    packet["coverage"]["allocation_known"] = json!(false);
+    for key in [
+        "files",
+        "folders",
+        "logical_bytes",
+        "allocated_bytes",
+        "max_depth",
+    ] {
+        packet["shape"][key] = Value::Null;
+    }
+    packet["duplicates"] = json!({"duplicate_bytes": null, "groups": null});
+    packet["families"] = json!([]);
+    packet["extensions"] = json!([]);
+    packet["markers"] = json!([]);
+    for (key, value) in packet["time"].as_object_mut().unwrap() {
+        if key != "last_access" {
+            *value = Value::Null;
+        }
+    }
+    packet["media"] = Value::Null;
+    packet
+}
+
+macro_rules! unobserved_fact_test {
+    ($name:ident, $pointer:literal, $value:expr) => {
+        #[test]
+        fn $name() {
+            for state in ["denied", "unscanned", "excluded", "cancelled", "unknown"] {
+                let mut candidate = unobserved_packet(state);
+                validate_packet(&candidate).unwrap();
+                *candidate.pointer_mut($pointer).unwrap() = $value;
+                assert_eq!(
+                    validate_packet(&candidate).unwrap_err().message(),
+                    concat!($pointer, " must be unknown for unobserved coverage"),
+                    "{state}"
+                );
+            }
+        }
+    };
+}
+
+unobserved_fact_test!(unobserved_files_are_null, "/shape/files", json!(0));
+unobserved_fact_test!(unobserved_folders_are_null, "/shape/folders", json!(0));
+unobserved_fact_test!(
+    unobserved_logical_bytes_are_null,
+    "/shape/logical_bytes",
+    json!(0)
+);
+unobserved_fact_test!(
+    unobserved_allocated_bytes_are_null,
+    "/shape/allocated_bytes",
+    json!(0)
+);
+unobserved_fact_test!(
+    unobserved_duplicate_bytes_are_null,
+    "/duplicates/duplicate_bytes",
+    json!(0)
+);
+unobserved_fact_test!(unobserved_max_depth_is_null, "/shape/max_depth", json!(0));
+unobserved_fact_test!(
+    unobserved_markers_are_empty,
+    "/markers",
+    json!(["cargo_toml"])
+);
+unobserved_fact_test!(
+    unobserved_newest_content_write_is_null,
+    "/time/newest_content_write",
+    json!(0)
+);
+unobserved_fact_test!(
+    unobserved_oldest_content_write_is_null,
+    "/time/oldest_content_write",
+    json!(0)
+);
+unobserved_fact_test!(
+    unobserved_newest_source_write_is_null,
+    "/time/newest_source_write",
+    json!(0)
+);
+unobserved_fact_test!(
+    unobserved_newest_generated_write_is_null,
+    "/time/newest_generated_write",
+    json!(0)
+);
+unobserved_fact_test!(
+    unobserved_git_last_commit_is_null,
+    "/time/git_last_commit",
+    json!(0)
+);
+unobserved_fact_test!(
+    unobserved_git_dirty_is_null,
+    "/time/git_dirty",
+    json!(false)
+);
+unobserved_fact_test!(
+    unobserved_duplicate_groups_are_null,
+    "/duplicates/groups",
+    json!(0)
+);
+unobserved_fact_test!(
+    unobserved_families_are_empty,
+    "/families",
+    packet()["families"].clone()
+);
+unobserved_fact_test!(
+    unobserved_extensions_are_empty,
+    "/extensions",
+    packet()["extensions"].clone()
+);
+unobserved_fact_test!(
+    unobserved_media_is_null,
+    "/media",
+    corpus()[6]["packet"]["media"].clone()
+);
+
+#[test]
+fn known_allocation_requires_bytes_for_nonempty_subjects() {
+    reject_packet(
+        "/shape/allocated_bytes",
+        Value::Null,
+        "allocated_bytes must be present when allocation is known and files is positive",
+    );
+    let mut packet = packet();
+    packet["shape"]["files"] = json!(0);
+    packet["extensions"] = json!([]);
+    packet["shape"]["allocated_bytes"] = Value::Null;
+    validate_packet(&packet).unwrap();
+}
+
+#[test]
+fn duplicate_extensions_are_refused_even_with_different_counts() {
+    let mut packet = packet();
+    packet["extensions"] = json!([
+        {"ext": "rs", "files": 1, "bytes": null},
+        {"ext": "rs", "files": 2, "bytes": 100}
+    ]);
+    assert_eq!(
+        validate_packet(&packet).unwrap_err().message(),
+        "Duplicate ext"
+    );
+}
+
+#[test]
+fn extension_file_total_cannot_exceed_shape_files() {
+    let mut packet = packet();
+    packet["extensions"] = json!([
+        {"ext": "rs", "files": 1001, "bytes": null},
+        {"ext": "toml", "files": 1000, "bytes": null}
+    ]);
+    assert_eq!(
+        validate_packet(&packet).unwrap_err().message(),
+        "Extension files sum exceeds shape.files"
+    );
+    packet["extensions"][0]["files"] = json!(1000);
+    validate_packet(&packet).unwrap();
+    packet["extensions"][0]["files"] = json!(0);
+    validate_packet(&packet).unwrap();
+    packet["shape"]["files"] = Value::Null;
+    validate_packet(&packet).unwrap();
+}
+
+#[test]
+fn tokens_refuse_all_controls_and_bidi_formatting() {
+    for codepoint in (0..32)
+        .chain(127..160)
+        .chain(0x202a..0x202f)
+        .chain(0x2066..0x206a)
+        .chain([0x200e, 0x200f])
+    {
+        let mut packet = packet();
+        packet["subject"]["name_tokens"] =
+            json!([format!("a{}b", char::from_u32(codepoint).unwrap())]);
+        assert_eq!(
+            validate_packet(&packet).unwrap_err().message(),
+            "name_tokens must be single word runs",
+            "U+{codepoint:04X}"
+        );
+    }
+}
+
 fn reject_packet(pointer: &str, replacement: Value, expected: &str) {
     let mut packet = packet();
     *packet.pointer_mut(pointer).unwrap() = replacement;
@@ -31,7 +218,7 @@ fn reject_record(pointer: &str, replacement: Value, expected: &str) {
 #[test]
 fn synthetic_fixtures_validate_individually_and_as_a_corpus() {
     let corpus = corpus();
-    assert_eq!(validate_corpus(&corpus).unwrap(), 12);
+    assert_eq!(validate_corpus(&corpus).unwrap(), 13);
     for record in corpus.as_array().unwrap() {
         validate_packet(&record["packet"]).unwrap();
         validate_record(record).unwrap();
@@ -143,6 +330,7 @@ fn identifiers_are_bounded_ascii_patterns() {
         "Bad".into(),
         "-bad".into(),
         "bad/id".into(),
+        "abc\n".into(),
         "café".into(),
     ] {
         reject_packet("/packet_id", json!(invalid), "Invalid packet_id");
@@ -164,7 +352,6 @@ fn path_like_tokens_and_extensions_are_refused() {
         "c:\\folder",
         "\\\\host\\share",
         "//host/share",
-        "bad\0token",
     ] {
         reject_packet(
             "/subject/name_tokens/0",
@@ -197,6 +384,7 @@ fn token_lengths_and_extension_pattern_are_enforced() {
     for invalid in [
         json!("RS"),
         json!(".rs"),
+        json!("bad\0token"),
         json!("é"),
         json!("a".repeat(33)),
         json!(true),
@@ -288,15 +476,7 @@ fn unknown_allocation_requires_null_bytes() {
 
 #[test]
 fn incomplete_coverage_does_not_turn_unknown_allocation_into_zero() {
-    for state in [
-        "partial",
-        "stale",
-        "unscanned",
-        "denied",
-        "excluded",
-        "cancelled",
-        "unknown",
-    ] {
+    for state in ["partial", "stale"] {
         let mut packet = packet();
         packet["coverage"]["state"] = json!(state);
         packet["shape"]["allocated_bytes"] = json!(0);
@@ -305,6 +485,7 @@ fn incomplete_coverage_does_not_turn_unknown_allocation_into_zero() {
             "Incomplete coverage cannot claim zero allocation for non-empty subjects"
         );
         packet["shape"]["files"] = json!(0);
+        packet["extensions"] = json!([]);
         validate_packet(&packet).unwrap();
     }
     let mut packet = packet();
@@ -401,13 +582,7 @@ fn depths_are_bounded_integers() {
         ("/subject/depth", "depth"),
         ("/shape/max_depth", "max_depth"),
     ] {
-        for invalid in [
-            json!(-1),
-            json!(4097),
-            json!(false),
-            json!(1.5),
-            Value::Null,
-        ] {
+        for invalid in [json!(-1), json!(4097), json!(false), json!(1.5)] {
             reject_packet(
                 pointer,
                 invalid,
@@ -418,6 +593,14 @@ fn depths_are_bounded_integers() {
         *packet.pointer_mut(pointer).unwrap() = json!(4096);
         validate_packet(&packet).unwrap();
     }
+    reject_packet(
+        "/subject/depth",
+        Value::Null,
+        "depth must be an integer in [0, 4096]",
+    );
+    let mut packet = packet();
+    packet["shape"]["max_depth"] = Value::Null;
+    validate_packet(&packet).unwrap();
 }
 
 #[test]
@@ -487,11 +670,9 @@ fn nullable_fields_accept_unknown_and_reject_wrong_types() {
     validate_packet(&packet).unwrap();
     packet["media"] = Value::Null;
     validate_packet(&packet).unwrap();
-    reject_packet(
-        "/shape/files",
-        Value::Null,
-        "files must be an integer in [0, 9007199254740991]",
-    );
+    packet["shape"]["files"] = Value::Null;
+    packet["shape"]["folders"] = Value::Null;
+    validate_packet(&packet).unwrap();
     reject_packet(
         "/observed_at",
         Value::Null,
@@ -660,6 +841,11 @@ fn every_schema_enum_value_is_accepted() {
             packet["families"] = json!([{"family": "code", "share_files": 1, "share_bytes": 1}]);
             packet["markers"] = json!(["cargo_toml"]);
             *packet.pointer_mut(packet_pointer).unwrap() = value.clone();
+            if packet_pointer == "/coverage/state"
+                && !["complete", "partial", "stale"].contains(&value.as_str().unwrap())
+            {
+                packet = unobserved_packet(value.as_str().unwrap());
+            }
             validate_packet(&packet).unwrap();
         }
     }
@@ -681,9 +867,80 @@ fn every_schema_enum_value_is_accepted() {
 }
 
 #[test]
+fn rust_vocabularies_and_array_caps_equal_the_schemas_in_both_directions() {
+    let packet_schema: Value =
+        serde_json::from_str(include_str!("../../../schemas/evidence-packet-v1.json")).unwrap();
+    let record_schema: Value =
+        serde_json::from_str(include_str!("../../../schemas/categoriser-record-v1.json")).unwrap();
+    for (schema_values, rust_values) in [
+        (
+            &packet_schema["properties"]["families"]["items"]["properties"]["family"]["enum"],
+            FAMILIES,
+        ),
+        (
+            &packet_schema["properties"]["markers"]["items"]["enum"],
+            MARKERS,
+        ),
+        (
+            &packet_schema["properties"]["coverage"]["properties"]["state"]["enum"],
+            COVERAGE_STATES,
+        ),
+        (
+            &record_schema["$defs"]["labels"]["items"]["oneOf"][0]["properties"]["label"]["enum"],
+            MEANINGS,
+        ),
+        (
+            &record_schema["$defs"]["labels"]["items"]["oneOf"][1]["properties"]["label"]["enum"],
+            LIFECYCLES,
+        ),
+        (
+            &record_schema["$defs"]["labels"]["items"]["oneOf"][2]["properties"]["label"]["enum"],
+            RECREATABILITIES,
+        ),
+    ] {
+        let mut schema_values: Vec<_> = schema_values
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap())
+            .collect();
+        let mut rust_values = rust_values.to_vec();
+        schema_values.sort_unstable();
+        rust_values.sort_unstable();
+        assert_eq!(rust_values, schema_values);
+    }
+    for (schema_cap, rust_cap) in [
+        (
+            &packet_schema["properties"]["subject"]["properties"]["name_tokens"]["maxItems"],
+            MAX_NAME_TOKENS,
+        ),
+        (
+            &packet_schema["properties"]["families"]["maxItems"],
+            MAX_FAMILIES,
+        ),
+        (
+            &packet_schema["properties"]["extensions"]["maxItems"],
+            MAX_EXTENSIONS,
+        ),
+        (
+            &packet_schema["properties"]["markers"]["maxItems"],
+            MAX_MARKERS,
+        ),
+        (&record_schema["$defs"]["labels"]["maxItems"], MAX_LABELS),
+        (
+            &record_schema["properties"]["summary_facts"]["maxItems"],
+            MAX_SUMMARY_FACTS,
+        ),
+    ] {
+        assert_eq!(rust_cap as u64, schema_cap.as_u64().unwrap());
+    }
+}
+
+#[test]
 fn numeric_endpoints_and_equal_or_unknown_times_are_accepted() {
     let mut packet = corpus()[6]["packet"].clone();
     for value in [0u64, 9007199254740991] {
+        packet["extensions"].as_array_mut().unwrap().truncate(1);
         for pointer in [
             "/shape/files",
             "/shape/folders",
