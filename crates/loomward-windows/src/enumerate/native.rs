@@ -60,15 +60,112 @@ fn record_access(access: u32) {
     });
 }
 
+/// How long one native call (an open, an enumeration query, a path or attribute query) may run
+/// before the watchdog interrupts it as a timeout (#924). Measured system trees list every
+/// directory in well under a second; this only ever fires on a call that is stuck.
+pub const OPERATION_BUDGET: Duration = Duration::from_secs(30);
+
+/// One registered thread: its duplicated handle, and when its current native call began.
+#[derive(Debug)]
+struct Registered {
+    handle: OwnedHandle,
+    /// Nanoseconds since [`epoch`] at which the outermost bounded call began; zero when idle.
+    since: std::sync::atomic::AtomicU64,
+    depth: std::sync::atomic::AtomicU32,
+    timed_out: AtomicBool,
+}
+impl std::ops::Deref for Registered {
+    type Target = OwnedHandle;
+    fn deref(&self) -> &OwnedHandle {
+        &self.handle
+    }
+}
+fn epoch() -> std::time::Instant {
+    static EPOCH: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    *EPOCH.get_or_init(std::time::Instant::now)
+}
+fn now_nanos() -> u64 {
+    // Never zero, which means idle.
+    (epoch().elapsed().as_nanos() as u64).max(1)
+}
+thread_local! {
+    /// This thread's live registrations, innermost last; a bounded call charges the innermost.
+    static CURRENT: std::cell::RefCell<Vec<Arc<Registered>>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+/// Marks the innermost registration of this thread busy for the guard's lifetime.
+pub(super) struct Busy(Option<Arc<Registered>>);
+pub(super) fn busy() -> Busy {
+    Busy(CURRENT.with_borrow(|c| c.last().cloned()).inspect(|r| {
+        if r.depth.fetch_add(1, Ordering::AcqRel) == 0 {
+            r.since.store(now_nanos(), Ordering::Release);
+        }
+    }))
+}
+impl Drop for Busy {
+    fn drop(&mut self) {
+        if let Some(r) = &self.0 {
+            if r.depth.fetch_sub(1, Ordering::AcqRel) == 1 {
+                r.since.store(0, Ordering::Release);
+            }
+        }
+    }
+}
+
 /// Cancellation owns thread handles, never closes handles used by an outstanding call.
-#[derive(Clone, Default, Debug)]
+/// A watchdog also interrupts any single native call that outlives the operation budget, which
+/// the caller reports as a timeout for that directory only (#924).
+#[derive(Clone, Debug)]
 pub struct IoCancellation {
     cancelled: Arc<AtomicBool>,
-    threads: Arc<Mutex<Vec<Weak<OwnedHandle>>>>,
+    threads: Arc<Mutex<Vec<Weak<Registered>>>>,
+    budget: Duration,
+    watchdog: Arc<std::sync::Once>,
     #[cfg(test)]
     interrupt_attempts: Arc<std::sync::atomic::AtomicUsize>,
 }
+impl Default for IoCancellation {
+    fn default() -> Self {
+        Self::with_budget(OPERATION_BUDGET)
+    }
+}
 impl IoCancellation {
+    /// A cancellation whose watchdog interrupts any single native call running past `budget`.
+    pub fn with_budget(budget: Duration) -> Self {
+        Self {
+            cancelled: Default::default(),
+            threads: Default::default(),
+            budget,
+            watchdog: Arc::new(std::sync::Once::new()),
+            #[cfg(test)]
+            interrupt_attempts: Default::default(),
+        }
+    }
+    fn start_watchdog(&self) {
+        let threads = Arc::downgrade(&self.threads);
+        let budget = self.budget;
+        let tick = (budget / 4).clamp(Duration::from_millis(10), Duration::from_secs(1));
+        self.watchdog.call_once(|| {
+            // Exits once every clone of this cancellation is gone.
+            std::thread::spawn(move || loop {
+                std::thread::sleep(tick);
+                let Some(threads) = threads.upgrade() else {
+                    return;
+                };
+                let threads = threads.lock().unwrap();
+                for r in threads.iter().filter_map(Weak::upgrade) {
+                    let since = r.since.load(Ordering::Acquire);
+                    // A call that just returned may let this land on the thread's next call of
+                    // the same registration: that directory is then reported as timed out too.
+                    if since != 0 && now_nanos().saturating_sub(since) > budget.as_nanos() as u64 {
+                        r.timed_out.store(true, Ordering::Release);
+                        unsafe {
+                            CancelSynchronousIo(r.handle.as_raw_handle());
+                        }
+                    }
+                }
+            });
+        });
+    }
     /// Requests cancellation immediately; retries synchronous interruption after 500 ms until work exits.
     pub fn cancel(&self) {
         if self.cancelled.swap(true, Ordering::AcqRel) {
@@ -127,11 +224,19 @@ impl IoCancellation {
         {
             return Err(last_error());
         }
-        let handle = Arc::new(unsafe { OwnedHandle::from_raw_handle(handle) });
+        let handle = Arc::new(Registered {
+            handle: unsafe { OwnedHandle::from_raw_handle(handle) },
+            since: Default::default(),
+            depth: Default::default(),
+            timed_out: AtomicBool::new(false),
+        });
+        self.start_watchdog();
         let mut threads = self.threads.lock().unwrap();
         self.check()?;
         threads.retain(|h| h.strong_count() != 0);
         threads.push(Arc::downgrade(&handle));
+        drop(threads);
+        CURRENT.with_borrow_mut(|c| c.push(handle.clone()));
         Ok(IoRegistration {
             handle,
             threads: self.threads.clone(),
@@ -139,11 +244,25 @@ impl IoCancellation {
     }
 }
 struct IoRegistration {
-    handle: Arc<OwnedHandle>,
-    threads: Arc<Mutex<Vec<Weak<OwnedHandle>>>>,
+    handle: Arc<Registered>,
+    threads: Arc<Mutex<Vec<Weak<Registered>>>>,
+}
+impl IoRegistration {
+    /// Whether the watchdog interrupted a call of this registration for exceeding its budget.
+    fn timed_out(&self) -> bool {
+        self.handle.timed_out.load(Ordering::Acquire)
+    }
+    /// Report an error from an interrupted call as the timeout it was.
+    fn result<T>(&self, result: Result<T, SourceError>) -> Result<T, SourceError> {
+        match result {
+            Err(_) if self.timed_out() => Err(SourceError::Io(ERROR_TIMEOUT as i32)),
+            other => other,
+        }
+    }
 }
 impl Drop for IoRegistration {
     fn drop(&mut self) {
+        CURRENT.with_borrow_mut(|c| c.retain(|r| !Arc::ptr_eq(r, &self.handle)));
         self.threads
             .lock()
             .unwrap()
@@ -163,6 +282,8 @@ pub struct NativeSource {
     filesystem: Option<&'static str>,
     #[cfg(any(test, feature = "fixtures"))]
     root_hint_error: Option<u32>,
+    #[cfg(any(test, feature = "fixtures"))]
+    blocked_child: Option<&'static str>,
 }
 impl NativeSource {
     /// A source sharing this run's cancellation.
@@ -203,6 +324,71 @@ impl NativeSource {
         self.root_hint_error = Some(code);
         self
     }
+    /// Make opening the child directory `name` block like a stuck kernel open (#924), in
+    /// disposable fixtures only. Only cancellation or the operation budget releases it.
+    #[cfg(any(test, feature = "fixtures"))]
+    pub fn with_blocked_child(mut self, name: &'static str) -> Self {
+        self.blocked_child = Some(name);
+        self
+    }
+}
+
+/// A synchronous call that never completes on its own: waiting for a client on a private pipe.
+/// A rescue releases it after a minute, so a regression fails its test instead of hanging it.
+#[cfg(any(test, feature = "fixtures"))]
+fn block_like_a_stuck_open<T>() -> Result<T, SourceError> {
+    use windows_sys::Win32::System::Pipes::{ConnectNamedPipe, CreateNamedPipeW};
+    let name: Vec<u16> = format!(
+        r"\\.\pipe\loomward-stuck-open-{}-{}",
+        std::process::id(),
+        now_nanos()
+    )
+    .encode_utf16()
+    .chain(Some(0))
+    .collect();
+    let pipe =
+        unsafe { CreateNamedPipeW(name.as_ptr(), PIPE_ACCESS_INBOUND, 0, 1, 0, 0, 0, null()) };
+    if pipe == INVALID_HANDLE_VALUE {
+        return Err(last_error());
+    }
+    let pipe = unsafe { File::from_raw_handle(pipe) };
+    let mut me = null_mut();
+    if unsafe {
+        DuplicateHandle(
+            GetCurrentProcess(),
+            GetCurrentThread(),
+            GetCurrentProcess(),
+            &mut me,
+            0,
+            0,
+            DUPLICATE_SAME_ACCESS,
+        )
+    } == 0
+    {
+        return Err(last_error());
+    }
+    let me = unsafe { OwnedHandle::from_raw_handle(me) };
+    let (done, wait) = std::sync::mpsc::channel::<()>();
+    let rescue = std::thread::spawn(move || {
+        if wait.recv_timeout(Duration::from_secs(60))
+            == Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        {
+            unsafe {
+                CancelSynchronousIo(me.as_raw_handle());
+            }
+        }
+    });
+    let busy = busy();
+    let connected = unsafe { ConnectNamedPipe(pipe.as_raw_handle(), null_mut()) };
+    let error = unsafe { GetLastError() };
+    drop(busy);
+    drop(done);
+    let _ = rescue.join();
+    Err(SourceError::Io(if connected != 0 {
+        0
+    } else {
+        error as i32
+    }))
 }
 /// Validated directory. The file owns the native handle until every call has returned.
 #[derive(Debug)]
@@ -831,18 +1017,20 @@ impl DirSource for NativeSource {
     }
     fn open_root(&self, path: &Path) -> Result<(NativeDir, OpenedIdentity), SourceError> {
         non_elevated()?;
-        let _thread = self.cancel.register()?;
+        let thread = self.cancel.register()?;
         if self.cancel.is_cancelled() {
             return Err(SourceError::Io(ERROR_OPERATION_ABORTED as i32));
         }
-        let mut pins = root_handles_mode(
-            path,
-            FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-            false,
-            Some(&self.cancel),
-        )?;
-        opened(self, Arc::new(pins.pop().unwrap()), None, None)
+        thread.result(
+            root_handles_mode(
+                path,
+                FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                false,
+                Some(&self.cancel),
+            )
+            .and_then(|mut pins| opened(self, Arc::new(pins.pop().unwrap()), None, None)),
+        )
     }
     fn open_child(
         &self,
@@ -853,17 +1041,26 @@ impl DirSource for NativeSource {
         if refused_attributes(entry.attributes) {
             return Err(SourceError::Refused);
         }
-        let _thread = self.cancel.register()?;
+        let thread = self.cancel.register()?;
         if self.cancel.is_cancelled() {
             return Err(SourceError::Io(ERROR_OPERATION_ABORTED as i32));
         }
-        let file = open_relative(
-            &parent.file,
-            entry.name,
-            FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-        )?;
-        opened(self, Arc::new(file), entry.file_id, Some(parent))
+        #[cfg(any(test, feature = "fixtures"))]
+        if self
+            .blocked_child
+            .is_some_and(|name| entry.name.iter().copied().eq(name.encode_utf16()))
+        {
+            return thread.result(block_like_a_stuck_open());
+        }
+        thread.result(
+            open_relative(
+                &parent.file,
+                entry.name,
+                FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            )
+            .and_then(|file| opened(self, Arc::new(file), entry.file_id, Some(parent))),
+        )
     }
     fn can_reopen(&self, dir: &NativeDir, identity: OpenedIdentity) -> bool {
         dir.reopen_safe
@@ -881,7 +1078,55 @@ impl DirSource for NativeSource {
         if !self.can_reopen(root, identity) {
             return Err(SourceError::IdentityUnverified);
         }
-        let _thread = self.cancel.register()?;
+        let thread = self.cancel.register()?;
+        thread.result(self.reopen_registered(root, root_identity, identity))
+    }
+    fn list(&self, dir: &NativeDir, sink: &mut dyn FnMut(RawEntry<'_>) -> Flow) -> ListOutcome {
+        let _profile = profile::LIST.start();
+        let mut callback = |mut entry: RawEntry<'_>| {
+            let _profile = profile::CALLBACK.start();
+            if dir.unverified {
+                // A listed FAT/exFAT ID is recyclable: never let it reach matching or storage.
+                entry.file_id = None;
+            }
+            sink(entry)
+        };
+        let sink = &mut callback as &mut dyn FnMut(RawEntry<'_>) -> Flow;
+        let thread = match self.cancel.register() {
+            Ok(h) => h,
+            Err(SourceError::Io(code)) if code == ERROR_OPERATION_ABORTED as i32 => {
+                return ListOutcome::Incomplete(IncompleteReason::Cancelled)
+            }
+            Err(error) => return incomplete(error),
+        };
+        // Find proves containment after taking its namespace pins.
+        let contained = if dir.strategy() != Strategy::Find {
+            // shortcut: handle enumeration observes containment before listing; atomic exclusion needs pins.
+            self.containment(dir)
+        } else {
+            Ok(())
+        };
+        let outcome = match contained {
+            Err(reason) => ListOutcome::Incomplete(reason),
+            Ok(()) => self.list_validated(dir, sink, directory_attributes(&dir.file).map(|_| ())),
+        };
+        match outcome {
+            ListOutcome::Incomplete(reason)
+                if thread.timed_out() && reason != IncompleteReason::Cancelled =>
+            {
+                ListOutcome::Incomplete(IncompleteReason::Io(ERROR_TIMEOUT as i32))
+            }
+            other => other,
+        }
+    }
+}
+impl NativeSource {
+    fn reopen_registered(
+        &self,
+        root: &NativeDir,
+        root_identity: OpenedIdentity,
+        identity: OpenedIdentity,
+    ) -> Result<(NativeDir, OpenedIdentity), SourceError> {
         let (_, observed) = opened(self, root.file.clone(), None, None)?;
         if observed.id != root_identity.id
             || observed.volume_serial != root_identity.volume_serial
@@ -926,33 +1171,6 @@ impl DirSource for NativeSource {
             return Err(SourceError::IdentityChanged);
         }
         Ok(result)
-    }
-    fn list(&self, dir: &NativeDir, sink: &mut dyn FnMut(RawEntry<'_>) -> Flow) -> ListOutcome {
-        let _profile = profile::LIST.start();
-        let mut callback = |mut entry: RawEntry<'_>| {
-            let _profile = profile::CALLBACK.start();
-            if dir.unverified {
-                // A listed FAT/exFAT ID is recyclable: never let it reach matching or storage.
-                entry.file_id = None;
-            }
-            sink(entry)
-        };
-        let sink = &mut callback as &mut dyn FnMut(RawEntry<'_>) -> Flow;
-        let _thread = match self.cancel.register() {
-            Ok(h) => h,
-            Err(SourceError::Io(code)) if code == ERROR_OPERATION_ABORTED as i32 => {
-                return ListOutcome::Incomplete(IncompleteReason::Cancelled)
-            }
-            Err(error) => return incomplete(error),
-        };
-        // Find proves containment after taking its namespace pins.
-        if dir.strategy() != Strategy::Find {
-            // shortcut: handle enumeration observes containment before listing; atomic exclusion needs pins.
-            if let Err(reason) = self.containment(dir) {
-                return ListOutcome::Incomplete(reason);
-            }
-        }
-        self.list_validated(dir, sink, directory_attributes(&dir.file).map(|_| ()))
     }
 }
 
@@ -1496,6 +1714,7 @@ impl NativeSource {
         mut identity: impl FnMut(HANDLE) -> Option<FILE_ID_INFO>,
     ) -> ListOutcome {
         let mut path = vec![0u16; 32768];
+        let query = profile::PATH_QUERY.start();
         let n = unsafe {
             GetFinalPathNameByHandleW(
                 dir.file.as_raw_handle(),
@@ -1504,8 +1723,10 @@ impl NativeSource {
                 0,
             )
         } as usize;
+        let error = unsafe { GetLastError() };
+        drop(query);
         if n == 0 || n >= path.len() {
-            return ListOutcome::Incomplete(IncompleteReason::Io(unsafe { GetLastError() } as i32));
+            return ListOutcome::Incomplete(IncompleteReason::Io(error as i32));
         }
         path.truncate(n);
         let directory = std::path::PathBuf::from(std::ffi::OsString::from_wide(&path));
@@ -1538,6 +1759,7 @@ impl NativeSource {
             return ListOutcome::Incomplete(IncompleteReason::Io(ERROR_FILE_INVALID as i32));
         }
         let mut current = vec![0u16; 32768];
+        let query = profile::PATH_QUERY.start();
         let length = unsafe {
             GetFinalPathNameByHandleW(
                 dir.file.as_raw_handle(),
@@ -1546,6 +1768,7 @@ impl NativeSource {
                 0,
             )
         } as usize;
+        drop(query);
         if length == 0 || length >= current.len() || current[..length] != path {
             return ListOutcome::Incomplete(IncompleteReason::Io(ERROR_FILE_INVALID as i32));
         }
@@ -1554,6 +1777,7 @@ impl NativeSource {
         }
         path.extend([92, 42, 0]);
         let mut data: WIN32_FIND_DATAW = unsafe { zeroed() };
+        let query = profile::ENUM_QUERY.start();
         let h = unsafe {
             FindFirstFileExW(
                 path.as_ptr(),
@@ -1564,8 +1788,9 @@ impl NativeSource {
                 FIND_FIRST_EX_LARGE_FETCH,
             )
         };
+        let c = unsafe { GetLastError() };
+        drop(query);
         if h == INVALID_HANDLE_VALUE {
-            let c = unsafe { GetLastError() };
             return if c == ERROR_FILE_NOT_FOUND {
                 ListOutcome::Complete
             } else {
@@ -1608,8 +1833,12 @@ impl NativeSource {
                     return ListOutcome::Incomplete(IncompleteReason::Cancelled);
                 }
             }
-            if unsafe { FindNextFileW(h, &mut data) } == 0 {
-                return query_stop(unsafe { GetLastError() }, self.cancel.is_cancelled());
+            let query = profile::ENUM_QUERY.start();
+            let next = unsafe { FindNextFileW(h, &mut data) };
+            let c = unsafe { GetLastError() };
+            drop(query);
+            if next == 0 {
+                return query_stop(c, self.cancel.is_cancelled());
             }
         }
     }
@@ -2315,6 +2544,75 @@ mod cancellation_tests {
     #[test]
     fn cancellation_retries_when_first_interrupt_falls_between_calls() {
         cancellation_scenario(true);
+    }
+    /// #924: one stuck child open is interrupted at the operation budget and reported as a
+    /// timeout for that child alone; its parent's listing and its siblings still complete.
+    #[test]
+    fn a_stuck_child_open_times_out_without_stalling_its_listing() {
+        if skip_elevated_test() {
+            return;
+        }
+        let temp = super::super::tests::canonical_tempdir();
+        for name in ["fine", "stuck"] {
+            std::fs::create_dir(temp.path().join(name)).unwrap();
+        }
+        let source = NativeSource::new(IoCancellation::with_budget(Duration::from_millis(200)))
+            .with_blocked_child("stuck");
+        let (root, _) = source.open_root(temp.path()).unwrap();
+        let started = std::time::Instant::now();
+        let mut opened = Vec::new();
+        let outcome = source.list(&root, &mut |e| {
+            let name = String::from_utf16(e.name).unwrap();
+            opened.push((name, source.open_child(&root, &e).map(|_| ()).err()));
+            Flow::Continue
+        });
+        opened.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(outcome, ListOutcome::Complete);
+        assert_eq!(
+            opened,
+            [
+                ("fine".into(), None),
+                ("stuck".into(), Some(SourceError::Io(ERROR_TIMEOUT as i32)))
+            ]
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+    /// #924: a run-level cancel interrupts a stuck open well inside the operation budget, and
+    /// reports it as aborted, never as a timeout.
+    #[test]
+    fn cancel_interrupts_a_stuck_open_within_seconds() {
+        if skip_elevated_test() {
+            return;
+        }
+        let temp = super::super::tests::canonical_tempdir();
+        std::fs::create_dir(temp.path().join("stuck")).unwrap();
+        let cancel = IoCancellation::default();
+        let source = NativeSource::new(cancel.clone()).with_blocked_child("stuck");
+        let (root, _) = source.open_root(temp.path()).unwrap();
+        let canceller = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            cancel.cancel();
+        });
+        let started = std::time::Instant::now();
+        let mut result = None;
+        source.list(&root, &mut |e| {
+            result = Some(source.open_child(&root, &e).map(|_| ()));
+            Flow::Continue
+        });
+        canceller.join().unwrap();
+        assert_eq!(
+            result,
+            Some(Err(SourceError::Io(ERROR_OPERATION_ABORTED as i32)))
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
     }
     fn cancellation_scenario(between_calls: bool) {
         use windows_sys::Win32::System::Pipes::{ConnectNamedPipe, CreateNamedPipeW};
