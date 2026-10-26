@@ -1,6 +1,8 @@
 /// The one extension-to-family table (#908). Case-insensitive; every answer is a member of
 /// `FAMILIES`. No extension is `none`; an extension nobody classified is `other`, never a guess.
 /// Ambiguous extensions (`bin`, `dat`, `img`, `log`, `h5`, `pb`, `com`) are deliberately absent.
+/// Only add rows that move an extension out of `other`: the open-time migration in `db.rs` repairs
+/// `other` rows only, so moving an already classified extension would make existing stores refuse it.
 pub fn extension_family(ext: Option<&str>) -> &'static str {
     let Some(ext) = ext else { return "none" };
     let mut buf = [0u8; 16];
