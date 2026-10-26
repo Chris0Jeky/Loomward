@@ -55,6 +55,7 @@ class Config:
     seed: int = field(default_factory=lambda: secrets.randbits(32))
     execute: bool = False
     exe: str = GUEST_EXE
+    max_delay_ms: int = 2000
 
 
 class PowerShell:
@@ -358,6 +359,10 @@ if (-not $filesystem.dirty -and $repairs.Count -eq 0) {
 try {{
 $answer = Invoke-Command -Session $session -ScriptBlock {{
     $ErrorActionPreference = 'Stop'
+    # Server does not attach the Cloud Files filter to data volumes; without it the copy engine's
+    # sync-root query fails with ERROR_INVALID_FUNCTION. The attach does not survive a reboot.
+    & fltmc.exe attach CldFlt L: 2>&1 | Out-Null
+    if (-not ((& fltmc.exe instances -f CldFlt 2>&1 | Out-String) -match '(?m)^L:')) {{ throw 'cldflt_not_attached' }}
     {check}
     {CACHE_QUERY}
     {response}
@@ -549,7 +554,7 @@ $line = {encoded(line)}
             if prepared.get("exit_code") != 0:
                 raise CampaignError("prepare_failed")
             self._act(values)
-            delay = self.rng.randint(0, 2000)
+            delay = self.rng.randint(0, self.config.max_delay_ms)
             record["delay_ms"] = delay
             final_poll = self._cut(values, delay)
             for key in ("trace_lines", "dirty_pages", "cut_latency_ms", "last_poll_return", "stop_started", "stop_returned"):
@@ -732,6 +737,8 @@ def main(argv=None):
     parser.add_argument("--tree", choices=("small", "large"), default="small")
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--execute", action="store_true")
+    parser.add_argument("--max-delay-ms", type=int, default=2000,
+                        help="cut delay is uniform in [0, this] after the first journal record; size it to the act")
     parser.add_argument("--exe", default=None, help="mutant guest test executable (negative only)")
     args = parser.parse_args(argv)
     if args.command == "negative" and args.exe is None:
