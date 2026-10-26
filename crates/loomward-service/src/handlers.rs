@@ -1752,7 +1752,10 @@ impl Inner {
     pub(crate) fn read_reader(&self, work: Option<&crate::ReadWork>) -> Result<Reader, ErrorBody> {
         #[cfg(test)]
         if let (Some(work), Some(now)) = (work, *self.hooks.read_clock.lock().unwrap()) {
-            let reader = self.catalog.reader().map_err(catalog_error)?;
+            let mut reader = self.catalog.reader().map_err(catalog_error)?;
+            if !work.repair_on_read {
+                reader = reader.without_repairs();
+            }
             let mut handle = work.interrupt.lock().unwrap();
             if now >= work.deadline {
                 return Err(fail(

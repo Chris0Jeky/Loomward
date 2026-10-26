@@ -337,6 +337,7 @@ fn an_injected_read_clock_expires_the_receiver_and_catalogue_open() {
     let work = crate::ReadWork {
         deadline,
         interrupt: Mutex::new(None),
+        repair_on_read: true,
     };
     assert_eq!(
         svc.inner.read_reader(Some(&work)).err().unwrap().code,
@@ -739,6 +740,7 @@ fn roots_list_degrades_slow_roots_to_unknown_totals_inside_the_deadline() {
     let work = crate::ReadWork {
         deadline: Instant::now() + Duration::from_secs(1),
         interrupt: Mutex::new(None),
+        repair_on_read: true,
     };
     let started = Instant::now();
     let roots = svc.inner.root_list_sharing(Some(&work), 5).unwrap();
@@ -2160,6 +2162,7 @@ fn hardening_expired_sql_reads_do_not_start_or_resume() {
     let work = crate::ReadWork {
         deadline: Instant::now() + Duration::from_secs(10),
         interrupt: Mutex::new(None),
+        repair_on_read: true,
     };
     let mut reader = work.reader(&svc.inner.catalog).unwrap();
     reader.set_deadline(Instant::now());
@@ -2202,6 +2205,7 @@ fn hardening_expired_sql_reads_do_not_start_or_resume() {
     let expired = crate::ReadWork {
         deadline: Instant::now(),
         interrupt: Mutex::new(None),
+        repair_on_read: true,
     };
     assert!(
         matches!(expired.reader(&svc.inner.catalog), Err(e) if e.code == ErrorCode::DeadlineExceeded)
@@ -8367,10 +8371,12 @@ fn followup_all_catalogue_reads_observe_deadlines() {
     let expired = crate::ReadWork {
         deadline: Instant::now(),
         interrupt: Mutex::new(None),
+        repair_on_read: true,
     };
     let active = crate::ReadWork {
         deadline: Instant::now() + Duration::from_secs(10),
         interrupt: Mutex::new(None),
+        repair_on_read: true,
     };
     for (command, payload) in [
         ("health.get", json!({})),

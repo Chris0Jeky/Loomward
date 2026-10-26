@@ -171,6 +171,54 @@ fn ranked() -> (Lab, Root) {
 }
 
 #[test]
+fn scoped_search_budget_ignores_out_of_grant_matches() {
+    let mut lab = lab();
+    let outside = register(&lab, "vol", "Alpha", 1);
+    let granted = register(&lab, "vol", "Beta", 2);
+    let extra = register(&lab, "vol", "Gamma", 3);
+    let run = begin(&lab, &granted, "full");
+    let file = obs(&mut lab, "common.txt", 1);
+    let folder = obs(&mut lab, "common-folder", 0);
+    list(&lab, run, granted.dir, vec![file], vec![folder]);
+    list(
+        &lab,
+        run,
+        child(&lab, granted.dir, "common-folder"),
+        vec![],
+        vec![],
+    );
+    end(&lab, run);
+    let cases = [("common", None), ("", None), ("", Some("txt".to_owned()))];
+    let scopes = [vec![granted.root], vec![granted.root, extra.root], vec![]];
+    let pages = || {
+        cases
+            .iter()
+            .flat_map(|(text, ext)| {
+                scopes.iter().map(|scope| {
+                    let mut r = req(text);
+                    r.scope = Some(scope.clone());
+                    r.extension = ext.clone();
+                    r.work_budget = 50_000;
+                    let page = search(&lab, &r);
+                    (serde_json::to_value(&page.hits).unwrap(), page.budget_hit)
+                })
+            })
+            .collect::<Vec<_>>()
+    };
+    let before = pages();
+    assert!(before.iter().all(|(_, hit)| !hit), "{before:?}");
+    assert!(!before[0].0.as_array().unwrap().is_empty());
+    let db = Connection::open(lab.temp.path().join("catalog.db")).unwrap();
+    db.execute("WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<2000) INSERT INTO file(dir_id,name,ext_id,logical,attrs,born_run,seen_run) SELECT ?1,'common.txt',(SELECT id FROM ext WHERE ext='txt'),1,0,0,0 FROM n", [outside.dir]).unwrap();
+    db.execute("WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<2000) INSERT INTO dir(root_id,parent_id,name,id_quality,id_basis,depth,attrs,listing_state,born_run,seen_run) SELECT ?1,?2,'common-folder','path_observation','none',1,0,'complete',0,0 FROM n", [outside.root, outside.dir]).unwrap();
+    assert_eq!(
+        pages(),
+        before,
+        "out-of-grant rows changed results or budget_hit"
+    );
+}
+
+#[test]
 fn tiers_rank_exact_prefix_token_substring_with_folders_first_in_each() {
     let (lab, _r) = ranked();
     let page = search(&lab, &req("report"));

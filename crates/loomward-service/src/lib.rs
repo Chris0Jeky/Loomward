@@ -519,10 +519,14 @@ impl Drop for ReadPermit {
 pub(crate) struct ReadWork {
     deadline: Instant,
     interrupt: Mutex<Option<rusqlite::InterruptHandle>>,
+    repair_on_read: bool,
 }
 impl ReadWork {
     fn reader(&self, catalog: &Catalog) -> Result<loomward_catalog::Reader, ErrorBody> {
         let mut reader = catalog.reader().map_err(catalog_error)?;
+        if !self.repair_on_read {
+            reader = reader.without_repairs();
+        }
         let mut handle = self.interrupt.lock().unwrap_or_else(|e| e.into_inner());
         if Instant::now() >= self.deadline {
             return Err(fail(
@@ -808,6 +812,7 @@ impl ViewService for Service {
             let work = Arc::new(ReadWork {
                 deadline,
                 interrupt: Mutex::new(None),
+                repair_on_read: matches!(&ctx.principal, Principal::Owner),
             });
             let worker_work = work.clone();
             let metadata_cursor = Arc::new(Mutex::new(None));
@@ -997,6 +1002,7 @@ impl Service {
                             let work = ReadWork {
                                 deadline,
                                 interrupt: Mutex::new(None),
+                                repair_on_read: true,
                             };
                             // Owner scans and hashing can wait for automatic work to drain.
                             let bounded = matches!(

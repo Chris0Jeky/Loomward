@@ -27,7 +27,7 @@ pub struct Reader {
     pub(crate) deadline: Option<std::time::Instant>,
     expected_generation: Option<(NodeKey, u64)>,
 }
-pub(crate) const DIR_COLUMNS:&str="d.id,0 kind,d.name,d.sub_logical logical,d.sub_allocated allocated,d.sub_alloc_unknown unknown,d.sub_files files,d.sub_dirs dirs,d.modified_ft,d.attrs,d.flags,NULL extension,NULL family,coalesce(d.listing_outcome,CASE d.listing_state WHEN 'unlisted' THEN 'unscanned' WHEN 'incomplete' THEN 'partial' ELSE d.listing_state END),d.sub_complete complete,d.parent_id,d.root_id,d.file_id,d.created_ft,d.changed_ft,NULL accessed_ft,d.born_run,d.agg_valid_rev>=d.dirty_rev valid";
+pub(crate) const DIR_COLUMNS:&str="d.id,0 kind,d.name,d.sub_logical logical,d.sub_allocated allocated,d.sub_alloc_unknown unknown,d.sub_files files,d.sub_dirs dirs,d.modified_ft,d.attrs,d.flags,NULL extension,NULL family,CASE WHEN d.agg_valid_rev=0 AND d.dirty_rev>0 THEN 'unknown' ELSE coalesce(d.listing_outcome,CASE d.listing_state WHEN 'unlisted' THEN 'unscanned' WHEN 'incomplete' THEN 'partial' ELSE d.listing_state END) END,d.sub_complete complete,d.parent_id,d.root_id,d.file_id,d.created_ft,d.changed_ft,NULL accessed_ft,d.born_run,d.agg_valid_rev>=d.dirty_rev valid";
 pub(crate) const FILE_COLUMNS:&str="f.id,1 kind,f.name,f.logical,coalesce(f.allocated,0) allocated,(f.allocated IS NULL) unknown,1 files,0 dirs,f.modified_ft,f.attrs,f.flags,e.ext extension,e.family,CASE WHEN d.listing_state='incomplete' AND f.seen_run!=d.seen_run THEN 'stale' ELSE coalesce(d.listing_outcome,CASE d.listing_state WHEN 'unlisted' THEN 'unscanned' WHEN 'incomplete' THEN 'partial' ELSE d.listing_state END) END,1 complete,f.dir_id parent_id,d.root_id,f.file_id,f.created_ft,f.changed_ft,f.accessed_ft,f.born_run,1 valid";
 pub(crate) const FILE_FROM: &str =
     "file f JOIN dir d ON d.id=f.dir_id LEFT JOIN ext e ON e.id=f.ext_id";
@@ -97,7 +97,7 @@ pub(crate) fn raw(r: &rusqlite::Row<'_>) -> rusqlite::Result<Raw> {
                     Box::new(e),
                 )
             })?,
-            complete: r.get(14)?,
+            complete: r.get::<_, bool>(14)? && r.get::<_, bool>(22)?,
             ..Totals::default()
         },
         modified: r.get(8)?,
@@ -122,6 +122,8 @@ impl Raw {
             "denied".into()
         } else if self.flags & ((1 << 1) | (1 << 3) | (1 << 4) | (1 << 5)) != 0 {
             "excluded".into()
+        } else if !self.valid && self.state != "unknown" {
+            "stale".into()
         } else if self.state == "complete" && !self.totals.complete {
             "partial".into()
         } else if matches!(self.key, NodeKey::File(_))
@@ -139,6 +141,7 @@ impl Raw {
         }
     }
     pub(crate) fn entry(&self) -> EntryRow {
+        let known = self.state != "unknown";
         const ATTRIBUTES: [(u32, &str); 15] = [
             (1, "readonly"),
             (2, "hidden"),
@@ -167,11 +170,11 @@ impl Raw {
             name: self.name.clone(),
             extension: self.extension.clone(),
             ext_family: self.family.clone(),
-            logical_bytes: Some(self.totals.logical.to_string()),
-            allocated_bytes: (self.totals.allocation_unknown == 0)
+            logical_bytes: known.then(|| self.totals.logical.to_string()),
+            allocated_bytes: (known && self.totals.allocation_unknown == 0)
                 .then(|| self.totals.allocated.to_string()),
-            files: Some(self.totals.files),
-            dirs: Some(self.totals.dirs),
+            files: known.then_some(self.totals.files),
+            dirs: known.then_some(self.totals.dirs),
             modified_at: timestamp(self.modified),
             attributes: ATTRIBUTES
                 .into_iter()
@@ -439,6 +442,12 @@ impl Reader {
         self.deadline = Some(deadline);
     }
 
+    /// Client reads retain stale aggregates without enqueueing catalogue writes.
+    pub fn without_repairs(mut self) -> Self {
+        self.writer = None;
+        self
+    }
+
     pub fn interrupt_handle(&self) -> rusqlite::InterruptHandle {
         self.conn.get_interrupt_handle()
     }
@@ -476,6 +485,7 @@ impl Reader {
         if !(1..=200).contains(&req.limit) {
             return Err(Error::Invalid("page limit"));
         }
+        let repair_on_read = self.writer.is_some();
         self.read(|conn| {
             let parent=get(conn,NodeKey::Dir(req.dir_id))?;
             let rev:i64=conn.query_row("SELECT subtree_rev FROM dir WHERE id=?1",[req.dir_id],|r|r.get(0))?;
@@ -484,7 +494,7 @@ impl Reader {
                 if c.dir_id!=req.dir_id||c.sort!=req.sort||c.basis!=req.basis{return Err(Error::Invalid("cursor binding"));}
                 if c.subtree_rev!=rev||c.catalog_instance!=instance{return Err(Error::StaleGeneration);}
             }
-            if !parent.valid {return Err(Error::RepairRequired);}
+            if repair_on_read && !parent.valid {return Err(Error::RepairRequired);}
             let bounded=req.sort!=Sort::SizeDesc;
             if bounded && conn.query_row("SELECT (SELECT count(*) FROM file WHERE dir_id=?1)+(SELECT count(*) FROM dir WHERE parent_id=?1 AND listing_state!='absent_pending')",[req.dir_id],|r|r.get::<_,i64>(0))?>10_000{return Err(Error::Invalid("sort exceeds 10000 children"));}
             let mut rows=Vec::new();
@@ -504,7 +514,7 @@ impl Reader {
                 let mut stmt=conn.prepare_cached(&sql)?;
                 rows.extend(stmt.query_map(rusqlite::params_from_iter(values),raw)?.collect::<rusqlite::Result<Vec<_>>>()?);
             }
-            if rows.iter().any(|r|!r.valid){return Err(Error::RepairRequired);}
+            if repair_on_read && rows.iter().any(|r|!r.valid){return Err(Error::RepairRequired);}
             rows.sort_by(|a,b|compare(a,b,req.sort,req.basis));
             if bounded {if let Some(c)=&req.cursor{rows.retain(|r|after_cursor(r,c));}}
             let more=rows.len()>req.limit;rows.truncate(req.limit);
@@ -517,13 +527,14 @@ impl Reader {
     }
     pub fn inspect(&mut self, key: NodeKey) -> Result<NodeDetail> {
         self.inspect_count += 1;
+        let repair_on_read = self.writer.is_some();
         let (steps, cut, hard) = (
             self.unique_totals_steps,
             self.unique_totals_cut,
             self.deadline,
         );
         self.read(|conn|{
-            let r=get(conn,key)?;if !r.valid{return Err(Error::RepairRequired);}let path=node_path(conn,key)?;
+            let r=get(conn,key)?;if repair_on_read && !r.valid{return Err(Error::RepairRequired);}let path=node_path(conn,key)?;
             let (display,volume,volume_key):(String,Option<i64>,Option<String>)=conn.query_row("SELECT g.display_path,g.volume_id,v.volume_key FROM root_grant g LEFT JOIN volume v ON v.id=g.volume_id WHERE g.id=?1",[r.grant],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
             let mut display_path=display;
             for p in path.ancestors.iter().skip(1) {display_path.push('\\');display_path.push_str(&p.name);}
@@ -570,11 +581,11 @@ impl Reader {
             conn.query_row("SELECT subtree_rev FROM dir WHERE id=?1", [dir], |r| {
                 r.get(0)
             })?;
-        if !root.valid {
+        if self.writer.is_some() && !root.valid {
             return Err(Error::RepairRequired);
         }
         let cache_key = (dir, by.to_string(), basis, limit, subtree_rev.to_string());
-        if by != "age_band" && !live(conn, root.grant)? {
+        if root.valid && by != "age_band" && !live(conn, root.grant)? {
             if let Some(cached) = self.breakdowns.get(&cache_key) {
                 let cached = cached.clone();
                 tx.commit()?;
@@ -852,6 +863,9 @@ fn unique_totals(
 }
 impl Reader {
     fn repair_committed(&mut self) -> Result<()> {
+        let Some(writer) = &self.writer else {
+            return Ok(());
+        };
         let roots = {
             // A restart repair that hit the tree-depth limit needs a rescan or explicit repair;
             // retrying it before every read would deny reads of unrelated, healthy roots too.
@@ -862,10 +876,7 @@ impl Reader {
             rows
         };
         for root in roots {
-            self.writer
-                .as_ref()
-                .ok_or(Error::RepairRequired)?
-                .call(WriteCommand::Repair { root_id: root })?;
+            writer.call(WriteCommand::Repair { root_id: root })?;
         }
         Ok(())
     }
