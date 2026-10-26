@@ -72,7 +72,8 @@ class FakePowerShell:
                        "write_cache": {"enabled": True}},
             "recover": {"result": {"ok": True, "recovered": "open", "abandoned": "done",
                                    "journal_records": 4, "last_record": "item_verified",
-                                   "copy_ran": True, "failure": None},
+                                   "copy_ran": True, "failure": None,
+                                   "terminal_before_recover": False},
                         "last_trace_label": "item_written", "free_bytes": 4 * 1024**3,
                         "runner_output": "recovered", "exit_code": 0},
         }
@@ -417,25 +418,27 @@ foreach ($script in $scripts) {
                 self.assertEqual(window_for_label(label), window)
 
     def test_terminal_journal_before_recovery_excludes_floor_without_marker(self):
-        for label, terminal, expected in (
-            ("committed", None, True), ("cancelled", None, True), ("refused", None, True),
-            ("Committed", None, True), ("item_written", True, True),
-            ("Some(Committed)", None, True), ("cancelled { items: 2 }", None, True),
-            ("not_committed", None, False),
-            ("committed", False, False), ("item_written", None, False),
-        ):
-            with self.subTest(label=label, terminal=terminal):
+        for terminal, expected in ((True, "post_completion"), (False, "floor")):
+            with self.subTest(terminal=terminal):
                 c = self.make()
                 response = json.loads(self.ps.run("# lw-hv:recover", 1))
                 self.ps.calls.clear()
-                response["result"]["last_record"] = label
-                if terminal is not None:
-                    response["result"]["terminal_before_recover"] = terminal
+                response["result"]["terminal_before_recover"] = terminal
                 self.ps.responses["recover"] = response
                 record = c.cycle(1)
-                self.assertEqual(record["kind"], "post_completion" if expected else "floor")
-                if expected:
+                self.assertEqual(record["kind"], expected)
+                if terminal:
                     self.assertIsNone(record["floor_credit"])
+
+    def test_missing_terminal_field_is_never_guessed(self):
+        c = self.make()
+        response = json.loads(self.ps.run("# lw-hv:recover", 1))
+        self.ps.calls.clear()
+        del response["result"]["terminal_before_recover"]
+        response["result"]["last_record"] = "transition:committed"
+        self.ps.responses["recover"] = response
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(CampaignError, "invalid_guest_result"):
+            c.cycle(1)
 
     def test_filesystem_repair_evidence_stops_before_recover_and_is_logged(self):
         for dirty, events in ((True, []), (False, [{"Id": 55, "ProviderName": "Ntfs"}])):

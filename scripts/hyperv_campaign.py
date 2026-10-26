@@ -428,7 +428,7 @@ try {{
 """
         default = {"exit_code": 0, "runner_output": ""}
         if step == "recover":
-            default.update({"result": {"ok": True, "copy_ran": True, "last_record": "item_written",
+            default.update({"result": {"ok": True, "copy_ran": True, "terminal_before_recover": False, "last_record": "item_written",
                 "recovered": "dry run", "abandoned": None, "failure": None},
                 "last_trace_label": "item_written", "free_bytes": 4 * GIB})
         return self._call(step, body, default, timeout=600, guard=True)
@@ -583,10 +583,8 @@ $line = {encoded(line)}
             result = recovered.get("result")
             if not isinstance(result, dict) or not isinstance(result.get("ok"), bool):
                 raise CampaignError("invalid_guest_result")
+            # The guest reports the replayed state before recovery; a missing field is never guessed.
             terminal = result.get("terminal_before_recover")
-            if terminal is None:
-                terminal = bool(re.search(r"\b(committed|cancelled|refused)\b",
-                    str(result.get("last_record", "")), re.IGNORECASE))
             if not isinstance(terminal, bool):
                 raise CampaignError("invalid_guest_result")
             record["terminal_before_recover"] = terminal
