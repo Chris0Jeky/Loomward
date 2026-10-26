@@ -22,7 +22,12 @@ impl Inner {
         let guid = guid?;
         match self.open_observation(std::path::Path::new(&r.display_path)) {
             Ok((_, identity)) => Self::identity_triple(&identity).ok().map(|seen| {
-                if seen == (key, file, guid) {
+                if seen.2 != guid {
+                    // Another volume holds the path (a stick on a detached disk's letter): the root
+                    // is away, not replaced. identity_changed is terminal and redacts learning, so it
+                    // is kept for the same volume with a different folder (#869 deep review).
+                    RootPresence::Offline
+                } else if seen == (key, file, guid) {
                     RootPresence::Online
                 } else {
                     RootPresence::IdentityChanged

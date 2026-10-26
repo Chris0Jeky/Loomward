@@ -6916,10 +6916,11 @@ fn detachable_root_offline_retains_last_seen_sizes_and_reconnects_by_identity() 
     assert_eq!(slice_totals(&lab_slice(svc, &lab.root)), (5, 3, 165));
 }
 
-/// E0: a replacement with the same serial and folder ID but another volume GUID is never read.
+/// E0: another volume GUID at the root's path is never read, and the grant is not retired: it
+/// reads offline until its own volume returns (a stick on a detached disk's letter).
 #[cfg(windows)]
 #[test]
-fn detachable_root_replacement_guid_records_identity_changed_before_reading() {
+fn detachable_root_replacement_guid_reads_offline_and_keeps_the_grant() {
     for command in ["scan.start", "duplicates.inspect"] {
         let Some(lab) = lab() else { return };
         let svc = &lab.svc;
@@ -6938,20 +6939,20 @@ fn detachable_root_replacement_guid_records_identity_changed_before_reading() {
             .pop()
             .unwrap();
         let refused = svc.inner.session_root_gate(&row).unwrap_err();
-        assert_eq!(refused.message.as_str(), "root_identity_changed");
+        assert_eq!(refused.code, ErrorCode::DeviceOffline);
         let payload = if command == "scan.start" {
             json!({"root_id": lab.root, "mode": "full"})
         } else {
             json!({"root_id": lab.root, "budget": {"max_candidates": 20, "max_bytes": "1024", "max_ms": 1000}})
         };
         let e = err(call(svc, command, payload));
-        assert_eq!(e.code, ErrorCode::PermissionDenied);
+        assert_eq!(e.code, ErrorCode::DeviceOffline);
         let state: String = svc
             .inner
             .db()
             .query_row("SELECT state FROM st.root_grant", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(state, "identity_changed");
+        assert_eq!(state, "active", "a foreign volume never retires the grant");
         let count: i64 = svc
             .inner
             .db()
