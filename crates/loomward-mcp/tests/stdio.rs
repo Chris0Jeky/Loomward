@@ -806,7 +806,8 @@ mod live {
                     .unwrap()
                     .iter()
                     .any(|w| w["code"] == "offline_source"),
-                !online
+                // Since E0, `online` comes from live root presence, not the stored flag alone.
+                volumes["volumes"][0]["online"] == false
             );
         }
     }
