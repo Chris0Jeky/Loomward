@@ -184,6 +184,20 @@ fn request(command: &str, payload: Value) -> RequestEnvelope {
 fn as_owner(svc: &Service, command: &str, payload: Value) -> ResponseEnvelope {
     svc.call(request(command, payload), &CallContext::http())
 }
+fn as_desktop(svc: &Service, command: &str, payload: Value) -> ResponseEnvelope {
+    static IDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let ctx = CallContext {
+        adapter: Adapter::Tauri,
+        ..CallContext::http()
+    };
+    let mut req = request(command, payload);
+    req.request_id = RequestId::new(format!(
+        "r_clients_{}",
+        IDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ))
+    .unwrap();
+    svc.call(req, &ctx)
+}
 fn as_client(svc: &Service, client: &str, command: &str, payload: Value) -> ResponseEnvelope {
     svc.call(request(command, payload), &CallContext::client(client))
 }
@@ -202,6 +216,164 @@ fn err(r: ResponseEnvelope) -> ErrorBody {
         ResponseEnvelope::Err(e) => e.error,
         ResponseEnvelope::Ok(o) => panic!("expected an error, got {:?}", o.result),
     }
+}
+
+#[test]
+fn owner_commands_manage_mcp_grants_and_preserve_epochs() {
+    for dataset in [DatasetClass::Synthetic, DatasetClass::Personal] {
+        let dir = temp_root();
+        let svc = Service::open(Config {
+            state_dir: dir.path().to_path_buf(),
+            dataset,
+            allow_personal: true,
+            allow_identity_unverified: false,
+            grant_roots: vec![],
+        })
+        .unwrap();
+        let (row, _) = crate::tests::fixture(&svc, 0);
+        let rt = RootId::new(svc.inner.root_id(row)).unwrap();
+        svc.grant_client("ask:local", std::slice::from_ref(&rt), &["path"], None)
+            .unwrap();
+        let empty = ok(as_desktop(&svc, "clients.list", json!({})));
+        assert_eq!(empty["grants"], json!([]));
+        assert_eq!(empty["available_fields"], json!(crate::CLIENT_FIELDS));
+        let payload = json!({"client": "mcp:synthetic-agent", "roots": [rt], "fields": ["size"]});
+        for (command, p) in [
+            ("clients.grant", payload.clone()),
+            ("clients.list", json!({})),
+            ("clients.revoke", json!({"client": "mcp:synthetic-agent"})),
+        ] {
+            assert_eq!(
+                err(as_owner(&svc, command, p)).code,
+                ErrorCode::CapabilityUnavailable
+            );
+        }
+        let first = ok(as_desktop(&svc, "clients.grant", payload.clone()));
+        let epoch = svc.inner.client_grant("mcp:synthetic-agent").unwrap().epoch;
+        let second = ok(as_desktop(&svc, "clients.grant", payload.clone()));
+        assert_ne!(first["grant_id"], second["grant_id"]);
+        assert_ne!(
+            epoch,
+            svc.inner.client_grant("mcp:synthetic-agent").unwrap().epoch
+        );
+        let listed = ok(as_desktop(&svc, "clients.list", json!({})));
+        let grants = listed["grants"].as_array().unwrap();
+        assert_eq!(grants.len(), 2);
+        assert!(grants[0]["revoked_at"].is_string());
+        assert!(grants[1]["revoked_at"].is_null());
+        assert_eq!(grants[1]["client"], payload["client"]);
+        assert_eq!(grants[1]["roots"], payload["roots"]);
+        assert_eq!(grants[1]["fields"], payload["fields"]);
+        assert!(grants[1]["created_at"].is_string());
+        assert!(grants[1]["expires_at"].is_null());
+        for (command, p) in [
+            ("clients.grant", payload.clone()),
+            ("clients.list", json!({})),
+            ("clients.revoke", json!({"client": "mcp:synthetic-agent"})),
+        ] {
+            let client = CallContext {
+                adapter: Adapter::Tauri,
+                ..CallContext::client("mcp:synthetic-agent")
+            };
+            assert_eq!(
+                err(svc.call(request(command, p.clone()), &client)).code,
+                ErrorCode::PermissionDenied
+            );
+            assert_eq!(
+                err(as_client(&svc, "mcp:synthetic-agent", command, p)).code,
+                ErrorCode::CapabilityUnavailable
+            );
+        }
+        assert_eq!(
+            ok(as_desktop(
+                &svc,
+                "clients.revoke",
+                json!({"client": "mcp:synthetic-agent"})
+            ))["revoked"],
+            true
+        );
+        assert_eq!(
+            err(as_client(
+                &svc,
+                "mcp:synthetic-agent",
+                "search.query",
+                search("report", 10, Value::Null)
+            ))
+            .code,
+            ErrorCode::PermissionDenied
+        );
+        assert_eq!(
+            ok(as_desktop(
+                &svc,
+                "clients.revoke",
+                json!({"client": "mcp:synthetic-agent"})
+            ))["revoked"],
+            false
+        );
+        assert!(ok(as_desktop(&svc, "clients.list", json!({})))["grants"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|g| g["revoked_at"].is_string()));
+        assert!(svc.inner.client_grant("ask:local").is_ok());
+    }
+}
+
+#[test]
+fn owner_commands_reject_invalid_scope_and_keep_the_live_grant() {
+    let dir = temp_root();
+    let svc = open(dir.path());
+    let rt = root(&svc, "Synthetic scope", 92, None);
+    let payload = json!({"client": "mcp:synthetic-agent", "roots": [rt], "fields": ["size"], "expires_at": "2099-01-01T00:00:00Z"});
+    ok(as_desktop(&svc, "clients.grant", payload.clone()));
+    let before = ok(as_desktop(&svc, "clients.list", json!({})));
+    assert_eq!(
+        before["grants"][0]["expires_at"],
+        "2099-01-01T00:00:00.000Z"
+    );
+    for (key, value, code) in [
+        ("client", json!("ask:local"), ErrorCode::InvalidRequest),
+        ("client", json!("mcp:bad name"), ErrorCode::InvalidRequest),
+        ("client", json!("mcp:"), ErrorCode::InvalidRequest),
+        ("roots", json!(["rt_unknown"]), ErrorCode::NotFound),
+        ("fields", json!(["secret"]), ErrorCode::InvalidRequest),
+        (
+            "expires_at",
+            json!("9999-01-01T00:00:00Z"),
+            ErrorCode::InvalidRequest,
+        ),
+    ] {
+        let mut invalid = payload.clone();
+        invalid[key] = value;
+        assert_eq!(err(as_desktop(&svc, "clients.grant", invalid)).code, code);
+    }
+    assert_eq!(
+        err(as_desktop(
+            &svc,
+            "clients.revoke",
+            json!({"client": "ask:local"})
+        ))
+        .code,
+        ErrorCode::InvalidRequest
+    );
+    assert_eq!(before, ok(as_desktop(&svc, "clients.list", json!({}))));
+    let mut expired = payload;
+    expired["expires_at"] = json!("2020-01-01T00:00:00Z");
+    ok(as_desktop(&svc, "clients.grant", expired));
+    assert_eq!(
+        svc.inner
+            .client_grant("mcp:synthetic-agent")
+            .unwrap_err()
+            .code,
+        ErrorCode::PermissionDenied
+    );
+    assert_eq!(
+        ok(as_desktop(&svc, "clients.list", json!({})))["grants"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
 }
 /// Every page of a query, each with its cursor handle removed (handles are random).
 fn pages(call: impl Fn(Value) -> ResponseEnvelope) -> Vec<Value> {

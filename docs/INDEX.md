@@ -52,5 +52,8 @@ Chapters 00-22 preserve the initial project. Chapters 23-40 expand it. Start wit
 - [48: External archive disk and agent storage tooling](48-external-disk-and-agent-storage.md)
 - [49: Insight: an ML-first categoriser](49-insight-categoriser.md)
 - [50: External media workflow](50-external-media-workflow.md)
+- [51: Research programme: the 2026-10-25 storage report reconciled, and six months of work](51-research-programme.md)
+- [52: Reclaim planner: a read-only plan for a nearly full system disk](52-reclaim-planner.md)
+- [53: Hyper-V crash campaign for the copy gate (G5)](53-hyperv-crash-campaign.md)
 
 [Expansion research references](EXPANSION-SOURCES.md) · [Backlog](../backlog/INDEX.md) · [Contract index](../contracts/v2/README.md) · [Handoff](../handoff/START-HERE.md)

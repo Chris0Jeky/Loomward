@@ -90,10 +90,12 @@ It builds, self-tests, installs and uninstalls exactly as a preview does (both u
 [`.github/actions/desktop-installer`](.github/actions/desktop-installer/action.yml)).
 
 The shared action first runs `python scripts/build_broker.py --release`, then builds the desktop
-with `--locked`. The helper builds the Ask broker into the desktop's Cargo target directory and
-stages it in ignored `native/binaries/` with Tauri's required host-triple suffix.
-[`bundle.externalBin`](https://v2.tauri.app/develop/sidecar/) installs it as `loomward-broker.exe`
-beside `loomward-desktop.exe`; the install smoke test checks its hash and offline protocol reply.
+with `--locked`. The helper builds the Ask broker and MCP server into the desktop's Cargo target
+directory and stages them in ignored `native/binaries/` with Tauri's required host-triple suffix.
+[`bundle.externalBin`](https://v2.tauri.app/develop/sidecar/) installs `loomward-broker.exe` and
+`loomward-mcp.exe` beside `loomward-desktop.exe` in `%LOCALAPPDATA%\Loomward`. The install smoke
+test checks the broker's hash and offline protocol reply; the desktop self-test also runs the
+bundled MCP server with `--help` (no catalogue or personal state opened).
 For a local build without publishing, run the helper, then from `native/` run
 `node ../app/node_modules/@tauri-apps/cli/tauri.js build --ci --bundles nsis -- --locked`
 after building `app/dist` (see [native/README.md](native/README.md)).

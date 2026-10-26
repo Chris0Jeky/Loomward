@@ -7,6 +7,7 @@ import type { Component } from 'svelte';
 import { render } from 'svelte/server';
 import View from '../../src/views/health/View.svelte';
 import VisibleName from '../../src/lib/ui/VisibleName.svelte';
+import VolumeStatus from '../../src/lib/ui/VolumeStatus.svelte';
 import { formatBytes } from '../../src/lib/format/bytes';
 import { formatCount } from '../../src/lib/format/time';
 import { session } from '../../src/lib/stores/session.svelte';
@@ -62,12 +63,12 @@ function mount() {
 function rootsTable(view: ReturnType<typeof mount>) {
   const source = readFileSync(new URL('../../src/views/health/View.svelte', import.meta.url), 'utf8');
   const table = source.match(/<table class="tbl">[\s\S]*?<\/table>/)![0];
-  const { js } = compile(`<script>let { roots, rootActive, escapedName, ask, VisibleName, formatBytes, formatCount } = $props();</script>${table}`, { generate: 'server' });
+  const { js } = compile(`<script>let { roots, rootActive, escapedName, ask, VisibleName, VolumeStatus, formatBytes, formatCount } = $props();</script>${table}`, { generate: 'server' });
   const code = ts.transpileModule(js.code, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText;
   const exports = {} as { default: Component<Record<string, unknown>> };
   new Function('require', 'exports', code)(createRequire(import.meta.url), exports);
   return render(exports.default, { props: {
-    ...view.evaluate('({ roots, rootActive, escapedName, ask })') as Record<string, unknown>, VisibleName, formatBytes, formatCount,
+    ...view.evaluate('({ roots, rootActive, escapedName, ask })') as Record<string, unknown>, VisibleName, VolumeStatus, formatBytes, formatCount,
   } }).body;
 }
 

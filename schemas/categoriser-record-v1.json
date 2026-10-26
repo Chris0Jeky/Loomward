@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Loomward categoriser-record-v1",
+  "description": "One benchmark example for the categoriser (docs/51 section 4.8, LW-138 to LW-140): an evidence packet plus labels kept by provenance. Human and teacher labels are separate data classes and are never merged (invariant 3). Axes are meaning, lifecycle and recreatability; there is deliberately no approval or deletion axis.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "synthetic", "record_id", "packet", "human_labels", "teacher_labels", "summary_facts"],
+  "properties": {
+    "schema": {"const": "loomward.categoriser-record.v1"},
+    "synthetic": {"type": "boolean"},
+    "record_id": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-z0-9][a-z0-9._-]*$"},
+    "packet": {"$ref": "evidence-packet-v1.json"},
+    "human_labels": {"$ref": "#/$defs/labels"},
+    "teacher_labels": {"$ref": "#/$defs/labels"},
+    "summary_facts": {
+      "type": "array",
+      "maxItems": 12,
+      "description": "Packet field paths (JSON Pointer into packet) that a faithful one-line summary may rest on; used to score summary faithfulness in LW-140.",
+      "items": {"type": "string", "pattern": "^/[a-z_/0-9]+$", "maxLength": 96}
+    }
+  },
+  "$defs": {
+    "labels": {
+      "type": "array",
+      "maxItems": 3,
+      "description": "At most one label per axis.",
+      "items": {
+        "oneOf": [
+          {"type": "object", "additionalProperties": false, "required": ["axis", "label"], "properties": {
+            "axis": {"const": "meaning"},
+            "label": {"enum": ["source_project", "generated_build", "dependency_install", "package_cache", "model_weights", "virtual_disk", "photo_shoot", "photo_catalogue", "catalogue_backup", "document_collection", "archive", "download", "installer", "agent_worktree", "unknown"]}}},
+          {"type": "object", "additionalProperties": false, "required": ["axis", "label"], "properties": {
+            "axis": {"const": "lifecycle"},
+            "label": {"enum": ["active", "dormant", "historical", "unknown"]}}},
+          {"type": "object", "additionalProperties": false, "required": ["axis", "label"], "properties": {
+            "axis": {"const": "recreatability"},
+            "label": {"enum": ["generated", "redownloadable", "unique", "mixed", "unknown"]}}}
+        ]
+      }
+    }
+  }
+}

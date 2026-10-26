@@ -11,6 +11,7 @@
   import NodeMeaning from '../../lib/ui/NodeMeaning.svelte';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
   import CopyTo from '../../lib/ui/CopyTo.svelte';
+  import VolumeStatus from '../../lib/ui/VolumeStatus.svelte';
 
   interface Props {
     node: NodeInfo | null;
@@ -95,6 +96,7 @@
           {#if src.threads.residency.tier === null}<span class="unknown">unknown</span>
           {:else}Tier {src.threads.residency.tier} · {TIER[Math.min(src.threads.residency.tier, 2)]}{#if src.threads.permission.reason === 'cloud_placeholder'} · online-only placeholder{/if}
             <span class="sub">{src.threads.residency.volume_id ?? 'volume unknown'} · {human(src.threads.residency.tier_basis)}</span>{/if}
+          <VolumeStatus id={src.threads.residency.volume_id} />
         </dd></div>
         <div class="ch"><dt>Selvedge<small>permission</small></dt><dd>
           {PERM[src.threads.permission.state] ?? src.threads.permission.state}

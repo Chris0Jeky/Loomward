@@ -978,3 +978,36 @@ that anything is safe to remove.
   about the root (`budget_note` says so). A deadline expiry is still `deadline_exceeded`.
 - **Not assessed.** `not_assessed` names what no provider supplies yet: regeneration cost (LW-087), model-host
   lifecycle (LW-086) and stale worktrees (LW-076). Each candidate's `regeneration_cost` is `unknown`.
+
+
+## Owner MCP client grants (docs/48 E6)
+
+`clients.grant`, `clients.list` and `clients.revoke` accept the owner principal only, on the desktop
+Tauri adapter, in personal and synthetic sessions. HTTP answers `capability_unavailable`. A client principal is refused before dispatch, even
+with its own live grant. These are disclosure controls, with no file or process effect. They
+never manage `ask:` (use `ask.grant`/`ask.revoke`) or the teacher's `grants.*` controls.
+
+- `client` is the full principal `mcp:<name>`. The name is 1-64 ASCII letters, digits, dots,
+  underscores or hyphens, matching `valid_client`. The app accepts the name and adds `mcp:`.
+- `clients.grant {client, roots, fields, expires_at?}` wraps `grant_client`. Every root must
+  currently be granted to the owner. It replaces any unrevoked grant atomically and returns a
+  fresh `grant_id` (the new epoch); earlier cursors cannot cross that epoch. Empty fields are
+  allowed. Allowed fields come from the service's `CLIENT_FIELDS`, returned as `available_fields`
+  by `clients.list`; `ClientField` includes the space-read lane's `volumes` field. A known
+  contract field that the running service does not yet support is refused, never silently added.
+- Optional expiry is a UTC timestamp representable as nonnegative signed Unix nanoseconds
+  (1970 through April 2262). Out-of-range values refuse before replacement. Past expiry is allowed
+  and confers no current access. Returned timestamps follow the existing millisecond display
+  precision; admission compares the stored nanoseconds.
+- `clients.list {}` returns all MCP grant epochs in creation order, including revoked and
+  expired records, with roots, fields, creation, expiry and revocation timestamps. Ask grants are
+  excluded. Roots are current session IDs resolved from durable owner root grants, including
+  revoked roots retained in the catalogue. Forgotten roots and legacy unproven mappings are
+  omitted; an empty historical root list does not mean the grant originally had no roots.
+- `clients.revoke {client}` wraps `revoke_client` and returns whether it revoked an unrevoked
+  grant. It is idempotent, bypasses the mutation FIFO like `ask.revoke`, and stops client reads
+  from their next call. History remains visible.
+
+Before creating a grant that includes `path`, the Agent access panel displays: "The agent's host
+may send what it reads to its model provider. Loomward cannot see or control that."
+The connection command is `claude mcp add loomward -- "%LOCALAPPDATA%\Loomward\loomward-mcp.exe" --client <name>`.

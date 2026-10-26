@@ -141,6 +141,9 @@ commands! {
     AskStatus = "ask.status", EmptyRequest, AskStatus, [Tauri, Http], 3, [];
     AskConfigure = "ask.configure", AskConfigureRequest, AskStatus, [Tauri], 3, [];
     AskGrant = "ask.grant", AskGrantRequest, AskStatus, [Tauri, Http], 3, [];
+    ClientsGrant = "clients.grant", ClientGrantRequest, ClientGrantResult, [Tauri], 3, [];
+    ClientsList = "clients.list", EmptyRequest, ClientGrantList, [Tauri], 3, [];
+    ClientsRevoke = "clients.revoke", ClientRevokeRequest, ClientRevokeResult, [Tauri], 3, [];
     AskRevoke = "ask.revoke", EmptyRequest, AskStatus, [Tauri, Http], 3, [];
     AskTurn = "ask.turn", AskTurnRequest, AskTurnRecord, [Tauri, Http], 3, [];
     AskResult = "ask.result", AskTurnRef, AskTurnRecord, [Tauri, Http], 3, [];

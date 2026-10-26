@@ -116,6 +116,9 @@ def render():
     parts.append("// ---- $defs\n")
     for name, node in schema["$defs"].items():
         parts.append(emit_def(name, node) + "\n")
+    parts.append("/** Closed field list for the Agent access form; availability comes from clients.list. */\n"
+                 "export const CLIENT_FIELDS = " + lit(schema["$defs"]["ClientField"]["enum"])
+                 + " as const satisfies readonly ClientField[];\n")
 
     parts.append("// ---- commands (commands.json)\n")
     rows = []

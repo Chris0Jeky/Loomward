@@ -617,6 +617,14 @@ string_newtype!(
     |s| (1..=64).contains(&s.chars().count()) && s.chars().all(|c| !c.is_control())
 );
 
+string_newtype!(
+    /// Owner-managed MCP principal; Ask uses its own commands.
+    McpClient,
+    "mcp: followed by 1-64 characters of [A-Za-z0-9._-]",
+    |s| s.strip_prefix("mcp:").is_some_and(|n| (1..=64).contains(&n.len())
+        && n.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b)))
+);
+
 fn two(b: &[u8]) -> Option<u32> {
     match b {
         [a @ b'0'..=b'9', c @ b'0'..=b'9'] => Some(u32::from(a - b'0') * 10 + u32::from(c - b'0')),

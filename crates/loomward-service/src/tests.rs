@@ -1188,8 +1188,8 @@ fn a_stalled_personal_volume_shares_one_reader_across_distinct_grant_roots() {
     let Some((svc, _folder)) = personal_grant_session(&tmp) else {
         return;
     };
-    // The grants below name folders whose native identity differs from the stored one; automatic
-    // watch setup would rightly retire them as identity_changed (#669), so it stays off here.
+    // This fixture repoints a grant between verified folders while one injected volume read
+    // stalls. Keep automatic watches off: the catalogue itself is not being refreshed here.
     svc.inner.freshness.stop();
     // The stalled volume gets a key of its own, so its injected stall cannot hold up other tests
     // that read the real volume of this disk.
@@ -1259,9 +1259,11 @@ fn a_stalled_personal_volume_shares_one_reader_across_distinct_grant_roots() {
     for round in 0..10 {
         let root = tmp.path().join(format!("replacement-folder-{round}"));
         std::fs::create_dir_all(&root).unwrap();
+        let (_, identity) = svc.inner.root_observation(&root).unwrap();
+        let (_, file_id, _) = crate::Inner::identity_triple(&identity).unwrap();
         svc.inner.db().execute(
-            "UPDATE st.root_grant SET display_path=?1 WHERE id=(SELECT r.grant_id FROM main.root r JOIN main.volume v ON v.id=r.volume_id WHERE v.volume_key='vsn_stalled')",
-            [root.display().to_string()],
+            "UPDATE st.root_grant SET display_path=?1,root_file_id=?2 WHERE id=(SELECT r.grant_id FROM main.root r JOIN main.volume v ON v.id=r.volume_id WHERE v.volume_key='vsn_stalled')",
+            rusqlite::params![root.display().to_string(), file_id],
         ).unwrap();
         let (volumes, _) = ok("volumes.list", call(&svc, "volumes.list", json!({})));
         let rows = volumes["volumes"].as_array().unwrap();
@@ -1306,9 +1308,11 @@ fn a_stalled_personal_volume_shares_one_reader_across_distinct_grant_roots() {
     // A replacement root shares the stall, but can retry once the volume's reader finishes.
     let replacement = tmp.path().join("replacement-folder");
     std::fs::create_dir_all(&replacement).unwrap();
+    let (_, identity) = svc.inner.root_observation(&replacement).unwrap();
+    let (_, file_id, _) = crate::Inner::identity_triple(&identity).unwrap();
     svc.inner.db().execute(
-        "UPDATE st.root_grant SET display_path=?1 WHERE id=(SELECT r.grant_id FROM main.root r JOIN main.volume v ON v.id=r.volume_id WHERE v.volume_key='vsn_stalled')",
-        [replacement.display().to_string()],
+        "UPDATE st.root_grant SET display_path=?1,root_file_id=?2 WHERE id=(SELECT r.grant_id FROM main.root r JOIN main.volume v ON v.id=r.volume_id WHERE v.volume_key='vsn_stalled')",
+        rusqlite::params![replacement.display().to_string(), file_id],
     ).unwrap();
     svc.inner.hooks.space.lock().unwrap()[0].1 = SpaceFake::Fixed {
         capacity: 4096,
@@ -6849,6 +6853,116 @@ fn a_junction_replacing_a_directory_stays_visible_as_excluded() {
     let again = lab_slice(svc, &lab.root);
     assert_eq!(child_named(&again, "b"), Some(kept));
     assert_eq!(slice_totals(&again), (5, 2, 165));
+}
+
+/// E0: detaching a granted volume retains the catalogue, but cannot start a scan or content read.
+#[cfg(windows)]
+#[test]
+fn detachable_root_offline_retains_last_seen_sizes_and_reconnects_by_identity() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    let job = start(svc, &lab.root, "full");
+    assert_eq!(settle(svc, &job)["state"], "completed");
+    let (before, _) = ok("roots.list", call(svc, "roots.list", json!({})));
+    assert_eq!(before["roots"][0]["totals"]["logical_bytes"], "165");
+    let (volumes, _) = ok("volumes.list", call(svc, "volumes.list", json!({})));
+    let classification = loomward_windows::volumes::classify(&lab.path).unwrap();
+    assert_eq!(
+        volumes["volumes"][0]["device"]["bus_type"],
+        classification.bus_type
+    );
+    assert_eq!(
+        volumes["volumes"][0]["device"]["basis"],
+        "ioctl_storage_query_property"
+    );
+    let moved = lab.path.with_file_name("detached-lab");
+    std::fs::rename(&lab.path, &moved).unwrap();
+    let (roots, _) = ok("roots.list", call(svc, "roots.list", json!({})));
+    assert_eq!(roots["roots"][0]["grant_state"], "active");
+    assert_eq!(roots["roots"][0]["scan"]["state"], "stale");
+    assert_eq!(roots["roots"][0]["totals"], before["roots"][0]["totals"]);
+    assert_eq!(slice_totals(&lab_slice(svc, &lab.root)), (5, 3, 165));
+    let volume_key = crate::db::volumes(&svc.inner.db(), None).unwrap()[0]
+        .key
+        .clone();
+    svc.inner.hooks.space.lock().unwrap().push((
+        volume_key,
+        SpaceFake::Fixed {
+            capacity: 1024,
+            free: 512,
+        },
+    ));
+    let (volumes, _) = ok("volumes.list", call(svc, "volumes.list", json!({})));
+    assert_eq!(volumes["volumes"][0]["online"], false);
+    assert!(volumes["volumes"][0]["capacity_bytes"].is_null());
+    assert!(volumes["volumes"][0]["free_bytes"].is_null());
+    svc.inner.hooks.space.lock().unwrap().clear();
+    for (command, payload) in [
+        ("scan.start", json!({"root_id": lab.root, "mode": "full"})),
+        (
+            "duplicates.inspect",
+            json!({"root_id": lab.root, "budget": {"max_candidates": 20, "max_bytes": "1024", "max_ms": 1000}}),
+        ),
+    ] {
+        let error = err(call(svc, command, payload));
+        assert_eq!(error.code, ErrorCode::DeviceOffline, "{error:?}");
+    }
+    assert_eq!(slice_totals(&lab_slice(svc, &lab.root)), (5, 3, 165));
+    std::fs::rename(&moved, &lab.path).unwrap();
+    let (volumes, _) = ok("volumes.list", call(svc, "volumes.list", json!({})));
+    assert_eq!(volumes["volumes"][0]["online"], true);
+    let job = start(svc, &lab.root, "full");
+    assert_eq!(settle(svc, &job)["state"], "completed");
+    assert_eq!(slice_totals(&lab_slice(svc, &lab.root)), (5, 3, 165));
+}
+
+/// E0: another volume GUID at the root's path is never read, and the grant is not retired: it
+/// reads offline until its own volume returns (a stick on a detached disk's letter).
+#[cfg(windows)]
+#[test]
+fn detachable_root_replacement_guid_reads_offline_and_keeps_the_grant() {
+    for command in ["scan.start", "duplicates.inspect"] {
+        let Some(lab) = lab() else { return };
+        let svc = &lab.svc;
+        let job = start(svc, &lab.root, "full");
+        assert_eq!(settle(svc, &job)["state"], "completed");
+        // Simulate a different volume at the same mount point without USB hardware.
+        svc.inner
+            .db()
+            .execute_batch(
+                "UPDATE st.root_grant SET volume_guid='00000000000000000000000000000001';
+             UPDATE st.lab_root SET volume_guid='00000000000000000000000000000001';",
+            )
+            .unwrap();
+        let row = crate::db::roots(&svc.inner.db(), None)
+            .unwrap()
+            .pop()
+            .unwrap();
+        let refused = svc.inner.session_root_gate(&row).unwrap_err();
+        assert_eq!(refused.code, ErrorCode::DeviceOffline);
+        let payload = if command == "scan.start" {
+            json!({"root_id": lab.root, "mode": "full"})
+        } else {
+            json!({"root_id": lab.root, "budget": {"max_candidates": 20, "max_bytes": "1024", "max_ms": 1000}})
+        };
+        let e = err(call(svc, command, payload));
+        assert_eq!(e.code, ErrorCode::DeviceOffline);
+        let state: String = svc
+            .inner
+            .db()
+            .query_row("SELECT state FROM st.root_grant", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(state, "active", "a foreign volume never retires the grant");
+        let count: i64 = svc
+            .inner
+            .db()
+            .query_row("SELECT count(*) FROM main.file", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            count, 5,
+            "retained observations are never replaced with the new volume"
+        );
+    }
 }
 
 /// #206: a granted folder replaced at its path fails the identity check at scan start; the

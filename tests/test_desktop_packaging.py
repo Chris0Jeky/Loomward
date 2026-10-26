@@ -19,6 +19,10 @@ class DesktopPackaging(unittest.TestCase):
         config = json.loads((ROOT / "native/tauri.conf.json").read_text(encoding="utf-8"))
         self.assertIn("binaries/loomward-broker", config["bundle"].get("externalBin", []))
 
+    def test_mcp_is_an_external_binary(self):
+        config = json.loads((ROOT / "native/tauri.conf.json").read_text(encoding="utf-8"))
+        self.assertIn("binaries/loomward-mcp", config["bundle"].get("externalBin", []))
+
     def test_native_lock_includes_the_ask_dependency(self):
         packages = tomllib.loads((ROOT / "native/Cargo.lock").read_text(encoding="utf-8"))["package"]
         self.assertIn("loomward-ask", {p["name"] for p in packages})
@@ -43,14 +47,20 @@ class StageBroker(unittest.TestCase):
                 source = target / ("release" if release else "debug") / "loomward-broker.exe"
                 source.parent.mkdir(parents=True)
                 source.write_bytes(b"synthetic broker")
+                mcp = source.with_name("loomward-mcp.exe")
+                mcp.write_bytes(b"synthetic MCP server")
                 with mock.patch.object(broker, "ROOT", root), mock.patch.object(broker.subprocess, "check_output", side_effect=[
                     json.dumps({"target_directory": str(target)}), "x86_64-pc-windows-msvc\n",
                 ]), mock.patch.object(broker.subprocess, "run") as run:
                     broker.build(release)
                 self.assertEqual((root / "native/binaries/loomward-broker-x86_64-pc-windows-msvc.exe").read_bytes(), source.read_bytes())
+                staged_mcp = root / "native/binaries/loomward-mcp-x86_64-pc-windows-msvc.exe"
+                self.assertTrue(staged_mcp.is_file(), "MCP sidecar was not staged")
+                self.assertEqual(staged_mcp.read_bytes(), mcp.read_bytes())
                 command = run.call_args.args[0]
                 self.assertIn("--locked", command)
                 self.assertIn("loomward-broker", command)
+                self.assertIn("loomward-mcp", command)
                 self.assertEqual(command[command.index("--target-dir") + 1], str(target))
                 self.assertEqual("--release" in command, release)
                 self.assertTrue(run.call_args.kwargs["check"])

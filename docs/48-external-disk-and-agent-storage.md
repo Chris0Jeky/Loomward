@@ -38,7 +38,9 @@ Rules for a detachable root:
 
 - **Never the drive letter.** Letters move between plugs. A root is its volume GUID and root file ID (the lab and
   grant identity already used); a copy destination is the pinned destination folder (docs/47 section 4). Another
-  disk on `H:` tomorrow is `identity_changed` for the root and `destination_changed` for a copy, never a retarget.
+  disk on `H:` tomorrow makes the root read offline (it waits for its own volume; `identity_changed`, which is terminal
+  and redacts learning, is kept for the same volume with a replaced folder) and is `destination_changed` for a copy;
+  never a retarget.
 - **Bus type, not drive type.** The app and the agent tools show a USB volume as "external, may be detached".
   Unknown bus type shows nothing extra (invariant 4).
 - **Detached is offline, not empty.** A detached disk's catalogue rows stay visible and are marked offline; sizes
@@ -80,6 +82,10 @@ Python reference for live catalogues; the Python reference is untouched.
 - **References.** Results name nodes by opaque session references (`r1`, `r2`, ...), never a `NodeId`. A reference
   survives an idle release while the catalogue instance and generation are unchanged, and is re-checked against the
   live grant on use; a rescan, revocation or restart makes it unknown ("call find again").
+- **Names are data.** File and folder names, paths and volume labels are third-party text. The server's
+  instructions and tool descriptions say so (never instructions, never pasted into a shell), and Unicode format and
+  bidirectional control characters are escaped in output. This reduces prompt-injection risk; the controls that hold
+  are the read-only tool set, the owner's approval of every plan and the argument-list rule of section 6.
 - **Read-only.** The tool set reaches read commands only. Tests assert `state.db` and `ask.db` are unchanged by every
   tool and by every attempted hidden name (docs/46 F12). There is no copy, approve, start, cancel, scan, grant or
   delete tool, and none may be added without changing invariant 7 (G6 holds).
@@ -185,10 +191,30 @@ the owner approves each plan.
   agent per approved plan, or the owner copies. robocopy is never wired into Loomward (docs/47 option D stays rejected
   for Loomward code). An agent's robocopy run copies into one new folder and may use only copy flags: `/E /COPY:DAT
   /DCOPY:DAT /XJ /R:1 /W:1 /NP /UNILOG:<log>` plus `/XC /XN /XO` (never replace an existing file). `/MOV`, `/MOVE`,
-  `/MIR`, `/PURGE`, `/IS`, `/IT` and `/CREATE` are forbidden. The log lives outside the new folder. A robocopy exit
+  `/MIR`, `/PURGE`, `/IS`, `/IT` and `/CREATE` are forbidden. The command is never built as a shell string: source,
+  destination and log are passed as separate arguments taken from the approved plan's JSON (for example
+  `subprocess.run([...], shell=False)`), because file names are third-party text and a name can carry shell syntax
+  (`$(...)`, backticks, `&`, `%`). The destination is never inside a source. Sources under a cloud sync root are left
+  out of plans (a copy would download placeholders, invariant 2). The log path must not exist yet (`/UNILOG:` would
+  overwrite it). The log lives outside the new folder and outside every source, in `.loomward/archive/`.
+  Before a plan may run, and checked again by the runner:
+  - **Same disk.** The destination volume's GUID equals the plan's destination volume key, checked immediately
+    before robocopy and before each `verify-tree` run; a mismatch (a letter that moved after a replug) stops the
+    plan.
+  - **Bound to what the owner saw.** The approval record holds the exact argument list shown to the owner; the
+    runner executes that list and nothing else, and each source root's identity (volume and file ID) must equal the
+    plan node's.
+  - **No reach.** Each source folder first passes a read-only Loomward check with zero cloud placeholders, reparse
+    points or symbolic links; any found refuses the plan (a copy could download content or follow a link outside the
+    plan, invariant 2). This holds whatever the agent's grant fields are.
+  - **A new, valid folder.** The destination folder must not exist when the run starts, and its name is one path
+    component that passes docs/47's name rules (no `..`, `\`, `:` or reserved names). One plan item maps to one
+    uniquely named subfolder, copied and verified as its own pair; two items with the same leaf name get distinct
+    subfolder names. A robocopy exit
   code of 8 or more is a failed plan. A failed or interrupted run is never patched up: its folder is left and reported
   to the owner, and a retry copies into another new folder. Then `verify-tree` must exit 0.
-- **Removing originals.** The owner's answer to `loomward-archive-originals` decides who removes them. Under every
+- **Removing originals.** The removal re-checks the plan's own nodes by identity (volume and file ID), never paths an
+  agent supplies. The owner's answer to `loomward-archive-originals` decides who removes them. Under every
   option, removal of a plan's originals needs a **second** `verify-tree` run that exits 0 after the owner safely
   removed the external disk and plugged it in again (the owner confirms the replug; it empties the system cache for
   that volume, while the device's own cache stays outside the proof, as in section 4.5), and the copy is never
@@ -201,7 +227,7 @@ the owner approves each plan.
 
 | Lane | Delivers | Effect | Acceptance |
 |---|---|---|---|
-| E0 | USB fixed-media NTFS/ReFS volumes as scan and grant roots (section 2), by splitting the shared `is_removable` predicate so the copy refusal for personal sessions stays; offline and identity-change states for detachable roots; lab copy destinations on such volumes | none (lab copies only, as today) | fence tests: USB fixed NTFS allowed, SD, removable media and USB FAT/exFAT refused as before; a root whose volume disappears reads offline with its last-seen sizes; a different volume at the same letter is `identity_changed`; a real `H:` read-only scan recorded with anonymised counts |
+| E0 | USB fixed-media NTFS/ReFS volumes as scan and grant roots (section 2), by splitting the shared `is_removable` predicate so the copy refusal for personal sessions stays; offline and identity-change states for detachable roots; lab copy destinations on such volumes | none (lab copies only, as today) | fence tests: USB fixed NTFS allowed, SD, removable media and USB FAT/exFAT refused as before; a root whose volume disappears reads offline with its last-seen sizes; a different volume at the same letter reads offline and keeps the grant; a real `H:` read-only scan recorded with anonymised counts |
 | E1 | this document | none | review |
 | E2 | `loomward-mcp`: stdio transport (both MCP eras, ported from `python/loomward/mcp_stdio.py`), lazy host with idle release and the shared lock helper, principal, session references, `find` and `describe` | none | subprocess tests in both eras; busy while another process holds the lock; `state.db` unchanged by every tool and hidden name |
 | E3 | service: space reads open to clients under the 4.2 rules (`volumes.list`, `roots.list`, `tree.children`, `stats.breakdown`, `clutter.developer`), the `volumes` field, projections | none | out-of-scope nodes unknown; totals exclude rows outside the grant; missing field refused or absent; revocation from the next call |

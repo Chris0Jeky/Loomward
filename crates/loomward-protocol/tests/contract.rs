@@ -309,6 +309,8 @@ fn example_directories_hold_exactly_the_expected_files() {
     assert_eq!(
         have,
         BTreeSet::from([
+            "ClientField.json".to_string(),
+            "McpClient.json".to_string(),
             "disclosure-summary.json".to_string(),
             "duplicates-result.json".to_string(),
             "identity-observation-unverified.json".to_string(),

@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 /// Exclusive OS lock on `state_dir/lock`, held until the returned handle drops. A crashed host
 /// leaves no stale lock. Hosts must drop their service before dropping this handle.
-/// Ported from `native/src/launch.rs`; the desktop will adopt this shared helper separately.
+/// Shared by the desktop and MCP hosts.
 pub fn lock_state_dir(state_dir: &Path) -> Result<std::fs::File, String> {
     use std::fs::{File, TryLockError};
 
@@ -27,10 +27,9 @@ pub fn lock_state_dir(state_dir: &Path) -> Result<std::fs::File, String> {
         .map_err(|e| format!("cannot open the state lock in {}: {e}", state_dir.display()))?;
     match file.try_lock() {
         Ok(()) => Ok(file),
-        Err(TryLockError::WouldBlock) => Err(format!(
-            "busy: Loomward is already open on {}. Switch to that window, or close it first.",
-            state_dir.display()
-        )),
+        Err(TryLockError::WouldBlock) => Err(
+            "busy: Loomward's data is in use by another Loomward process, for example an agent's Loomward tools. Stop that agent, or try again in a moment.".into()
+        ),
         Err(TryLockError::Error(e)) => Err(format!(
             "cannot lock the state in {}: {e}",
             state_dir.display()
@@ -246,7 +245,7 @@ pub(crate) fn check_new_root(root: &Path, state: &Path) -> Result<PathBuf, Strin
         .ancestors()
         .find(|p| p.is_dir())
         .ok_or("root parent unavailable")?;
-    if loomward_windows::volumes::is_removable(ancestor).map_err(|_| "identity_unavailable")? {
+    if loomward_windows::volumes::unsupported_root(ancestor).map_err(|_| "identity_unavailable")? {
         return Err("network_or_removable_unsupported".into());
     }
     if root.starts_with(state) || state.starts_with(&root) {
@@ -340,7 +339,7 @@ pub(crate) fn check_root_with(
         return Err(Refusal::VolumeRoot);
     }
     check_profile(&canonical)?;
-    if loomward_windows::volumes::is_removable(&canonical)
+    if loomward_windows::volumes::unsupported_root(&canonical)
         .map_err(|_| Refusal::IdentityUnavailable)?
     {
         return Err(Refusal::NetworkOrRemovableUnsupported);
@@ -458,7 +457,7 @@ mod tests {
         let state = tmp.path().join("state");
         let lock = lock_state_dir(&state).unwrap();
         assert!(state.join("lock").is_file());
-        assert!(lock_state_dir(&state).unwrap_err().starts_with("busy:"));
+        assert_eq!(lock_state_dir(&state).unwrap_err(), "busy: Loomward's data is in use by another Loomward process, for example an agent's Loomward tools. Stop that agent, or try again in a moment.");
         drop(lock);
         assert!(lock_state_dir(&state).is_ok());
     }

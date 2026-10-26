@@ -1,0 +1,7 @@
+{
+  "def": "ClientRevokeRequest",
+  "reason": "MCP names only, per valid_client",
+  "value": {
+    "client": "mcp:bad name"
+  }
+}

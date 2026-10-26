@@ -1,4 +1,4 @@
-"""Build and stage the host's Ask broker for Tauri externalBin (no publishing)."""
+"""Build and stage the host's Ask broker and MCP server for Tauri externalBin (no publishing)."""
 import argparse
 import json
 import shutil
@@ -19,17 +19,18 @@ def build(release=False):
     triple = subprocess.check_output(["rustc", "--print", "host-tuple"], cwd=ROOT, text=True).strip()
     command = [
         "cargo", "build", "--locked", "--manifest-path", str(ROOT / "Cargo.toml"),
-        "-p", "loomward-broker", "--target-dir", str(target),
+        "-p", "loomward-broker", "-p", "loomward-mcp", "--target-dir", str(target),
     ]
     if release:
         command.append("--release")
     subprocess.run(command, cwd=ROOT, check=True)
     suffix = ".exe" if "windows" in triple else ""
-    source = target / ("release" if release else "debug") / f"loomward-broker{suffix}"
-    staged = ROOT / "native/binaries" / f"loomward-broker-{triple}{suffix}"
-    staged.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source, staged)
-    print(f"Staged {staged}")
+    for binary in ("loomward-broker", "loomward-mcp"):
+        source = target / ("release" if release else "debug") / f"{binary}{suffix}"
+        staged = ROOT / "native/binaries" / f"{binary}-{triple}{suffix}"
+        staged.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, staged)
+        print(f"Staged {staged}")
 
 
 if __name__ == "__main__":
