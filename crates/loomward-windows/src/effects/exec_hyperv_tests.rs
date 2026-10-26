@@ -454,6 +454,10 @@ fn recover_step(dir: &Path, signal: &Path, result: &mut Value) {
     // Started puts the operation in preparing. Count only evidence durable before recovery.
     let copy_ran = rows.len() > 1;
     result["copy_ran"] = json!(copy_ran);
+    // The host credits a cut to the G5 floor only when the act had not already finished.
+    let state_before = replay(&lab.store, before.op).ok().map(|r| r.state);
+    result["state_before_recover"] = json!(state_before);
+    result["terminal_before_recover"] = json!(state_before.is_some_and(|s| s.is_terminal()));
     let control = Control::new(before.removal);
     let recovered = recover(&lab.store, before.op, &control).unwrap();
     result["recovered"] = json!(recovered.state);
@@ -685,6 +689,7 @@ fn hyperv_steps_run_end_to_end_in_process() {
             };
             assert_eq!(receipt["recovered"], state);
             assert_eq!(receipt["abandoned"], state);
+            assert_eq!(receipt["terminal_before_recover"], true, "{receipt}");
 
             // Resolve a real mid-write / mid-cleanup boundary from this scenario's clean trace.
             let trace = fs::read_to_string(root.join("signal/trace.txt")).unwrap();
@@ -708,6 +713,7 @@ fn hyperv_steps_run_end_to_end_in_process() {
             successful_step(&cut_root, "recover", scenario, removal);
             assert_eq!(result(&cut_root)["ok"], true);
             assert_eq!(result(&cut_root)["copy_ran"], true);
+            assert_eq!(result(&cut_root)["terminal_before_recover"], false);
         }
     }
 }
