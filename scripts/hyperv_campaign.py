@@ -252,16 +252,26 @@ $password = $null; $secrets = $null
 """
 
     def _session(self, admin=False):
+        # Measured 2026-10-26: PowerShell Direct on this host can hand a new session the identity of the
+        # previous session to the VM, whatever credential was supplied. Every session proves its identity
+        # and reconnects until it matches, so an admin token never reaches the standard runner (or back).
+        account = ADMIN_ACCOUNT if admin else RUNNER_ACCOUNT
         return self._credential(admin=admin) + f"""
 $connectionDeadline = (Get-Date).AddSeconds({self.config.connect_timeout:g})
+$identityMismatches = 0
 while ($true) {{
     try {{
         $session = New-PSSession -VMName {quote(VM_NAME)} -Credential $credential -ErrorAction Stop
-        break
     }} catch {{
         if ((Get-Date) -ge $connectionDeadline) {{ throw 'guest_direct_connection_timeout' }}
         Start-Sleep -Seconds 1
+        continue
     }}
+    $who = Invoke-Command -Session $session -ScriptBlock {{ [Security.Principal.WindowsIdentity]::GetCurrent().Name }}
+    if ($who -like ('*\\' + {quote(account)})) {{ break }}
+    $identityMismatches++
+    Remove-PSSession $session
+    if ($identityMismatches -ge 6) {{ throw 'guest_session_identity_mismatch' }}
 }}
 """
 
@@ -367,7 +377,13 @@ $answer = Invoke-Command -Session $session -ScriptBlock {{
     # Server does not attach the Cloud Files filter to data volumes; without it the copy engine's
     # sync-root query fails with ERROR_INVALID_FUNCTION. The attach does not survive a reboot.
     & fltmc.exe attach CldFlt L: 2>&1 | Out-Null
-    if (-not ((& fltmc.exe instances -f CldFlt 2>&1 | Out-String) -match '(?m)^L:')) {{ throw 'cldflt_not_attached' }}
+    # fltmc sometimes prints the heading without the table; ask a few times before failing.
+    $attached = $false
+    for ($try = 0; $try -lt 10 -and -not $attached; $try++) {{
+        $attached = (& fltmc.exe instances -f CldFlt 2>&1 | Out-String) -match '(?m)^L:'
+        if (-not $attached) {{ Start-Sleep -Seconds 1; & fltmc.exe attach CldFlt L: 2>&1 | Out-Null }}
+    }}
+    if (-not $attached) {{ throw 'cldflt_not_attached' }}
     {check}
     {CACHE_QUERY}
     {response}

@@ -272,6 +272,18 @@ class CampaignTests(unittest.TestCase):
                     self.assertEqual(self.ps.records[-1]["failure"], "guest_boot_failed")
                     self.assertNotIn("cut", self.operations())
 
+    def test_every_session_proves_its_guest_identity(self):
+        # PowerShell Direct can return the previous session's identity (measured 2026-10-26).
+        c = self.make()
+        c.cycle(1)
+        scripts = {op: s for op, s, _ in self.ps.calls}
+        for op, account in (("prepare", "lwrunner"), ("recover", "lwrunner"), ("cut", "lwrunner"),
+                            ("health", "lwadmin")):
+            with self.subTest(op=op):
+                self.assertIn("WindowsIdentity]::GetCurrent().Name", scripts[op])
+                self.assertIn(f"-like ('*\\' + '{account}')", scripts[op])
+                self.assertIn("guest_session_identity_mismatch", scripts[op])
+
     def test_negative_cycles_never_earn_floor_credit(self):
         c = self.make(command="negative", cycles=1, exe=r"C:\lw\mutant.exe")
         with contextlib.redirect_stdout(io.StringIO()):
