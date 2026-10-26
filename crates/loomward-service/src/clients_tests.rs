@@ -1774,3 +1774,115 @@ fn client_volume_mount_points_need_path() {
         2
     );
 }
+
+#[test]
+fn clients_never_scanned_root_does_not_claim_an_empty_known_path() {
+    let tmp = temp_root();
+    let svc = open(tmp.path());
+    let alpha = root(&svc, "Unscanned", 71, None);
+    svc.grant_client("mcp:unscanned", &[alpha], &["path"], None)
+        .unwrap();
+    let page = ok(as_client(&svc, "mcp:unscanned", "roots.list", json!({})));
+    let root = &page["roots"][0];
+    assert!(
+        root.get("display_path")
+            .is_none_or(|p| p["text"].as_str().is_some_and(|s| !s.is_empty())),
+        "{root}"
+    );
+}
+
+#[test]
+fn clients_held_references_reopen_reseal_and_recheck_scope_and_epoch() {
+    let tmp = temp_root();
+    let svc = open(tmp.path());
+    let alpha = root(&svc, "Alpha", 81, Some(ALPHA));
+    let beta = root(&svc, "Beta", 82, Some(BETA));
+    svc.grant_client(
+        "mcp:held",
+        std::slice::from_ref(&alpha),
+        &["size", "volumes"],
+        None,
+    )
+    .unwrap();
+    let node = root_node(&svc, &alpha);
+    let foreign = root_node(&svc, &beta);
+    assert_eq!(
+        svc.client_reference("mcp:held", foreign.as_str().unwrap())
+            .unwrap_err()
+            .code,
+        ErrorCode::NotFound
+    );
+    assert_eq!(
+        svc.client_reference("mcp:held", beta.as_ref())
+            .unwrap_err()
+            .code,
+        ErrorCode::NotFound
+    );
+    let held = svc
+        .client_reference("mcp:held", node.as_str().unwrap())
+        .unwrap();
+    let root_held = svc.client_reference("mcp:held", alpha.as_ref()).unwrap();
+    drop(svc);
+    let reopened = Service::open_client(Config {
+        state_dir: tmp.path().into(),
+        dataset: DatasetClass::Synthetic,
+        allow_personal: false,
+        allow_identity_unverified: false,
+        grant_roots: vec![],
+    })
+    .unwrap();
+    let held = reopened.resume_client_reference("mcp:held", &held).unwrap();
+    let root_held = reopened
+        .resume_client_reference("mcp:held", &root_held)
+        .unwrap();
+    let ids = reopened
+        .resolve_client_reference("mcp:held", &held)
+        .unwrap();
+    assert_ne!(ids.node_id.as_deref(), node.as_str());
+    let described = ok(as_client(
+        &reopened,
+        "mcp:held",
+        "node.inspect",
+        json!({"node_id":ids.node_id}),
+    ));
+    assert_eq!(described["row"]["name"], "Alpha");
+    assert!(reopened
+        .resolve_client_reference("mcp:held", &root_held)
+        .unwrap()
+        .node_id
+        .is_some());
+    reopened.revoke_client("mcp:held").unwrap();
+    assert!(
+        matches!(reopened.resolve_client_reference("mcp:held",&held),Err(e) if e.code == ErrorCode::PermissionDenied)
+    );
+}
+
+#[test]
+fn clients_empty_root_path_is_absent_and_archive_fields_are_service_refusals() {
+    let grant = crate::clients::ClientGrant {
+        client: "mcp:projection".into(),
+        epoch: 1,
+        roots: vec![1],
+        fields: vec!["path".into()],
+    };
+    let mut value = json!({"roots":[{"root_id":"rt_1","display_path":{"text":"","truncated":false},"scan":{"state":"never_scanned"}}]}).as_object().unwrap().clone();
+    crate::clients::project(Command::RootsList, &grant, &mut value);
+    assert!(value["roots"][0].get("display_path").is_none());
+    let tmp = temp_root();
+    let svc = open(tmp.path());
+    let alpha = root(&svc, "Alpha", 83, Some(ALPHA));
+    for (fields, message) in [
+        (&[][..], "this grant does not disclose sizes"),
+        (&["size"][..], "this grant does not disclose volumes"),
+        (&["size", "volumes"][..], ""),
+    ] {
+        svc.grant_client("mcp:fields", std::slice::from_ref(&alpha), fields, None)
+            .unwrap();
+        let result = svc.client_archive_fields("mcp:fields");
+        if message.is_empty() {
+            result.unwrap();
+        } else {
+            assert_eq!(&*result.unwrap_err().message, message);
+        }
+    }
+}

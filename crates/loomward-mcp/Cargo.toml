@@ -7,6 +7,8 @@ license.workspace = true
 description = "Bounded read-only stdio MCP host for the Loomward service."
 
 [dependencies]
+loomward-operations = { path = "../loomward-operations" }
+unicode-general-category = "1.1"
 loomward-protocol = { path = "../loomward-protocol" }
 loomward-service = { path = "../loomward-service" }
 serde.workspace = true

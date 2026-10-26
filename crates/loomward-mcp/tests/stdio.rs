@@ -13,8 +13,12 @@ struct Server {
 
 impl Server {
     fn start(state: &std::path::Path, modern: bool, extra: &[&str]) -> Self {
+        Self::start_client(state, modern, "test", extra)
+    }
+
+    fn start_client(state: &std::path::Path, modern: bool, client: &str, extra: &[&str]) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_loomward-mcp"))
-            .args(["--client", "test", "--dataset", "synthetic", "--state-dir"])
+            .args(["--client", client, "--dataset", "synthetic", "--state-dir"])
             .arg(state)
             .args(extra)
             .stdin(Stdio::piped())
@@ -105,7 +109,7 @@ impl Drop for Server {
 }
 
 #[test]
-fn both_eras_discover_and_list_exactly_two_read_tools_without_opening_state() {
+fn both_eras_discover_and_list_eight_read_tools_without_opening_state() {
     let tmp = tempfile::tempdir().unwrap();
     for modern in [false, true] {
         let state = tmp.path().join(if modern { "modern" } else { "legacy" });
@@ -118,7 +122,29 @@ fn both_eras_discover_and_list_exactly_two_read_tools_without_opening_state() {
             .iter()
             .map(|t| t["name"].as_str().unwrap())
             .collect();
-        assert_eq!(names, ["find", "describe"]);
+        assert_eq!(
+            names,
+            [
+                "find",
+                "describe",
+                "volumes",
+                "roots",
+                "largest",
+                "breakdown",
+                "clutter",
+                "plan_archive"
+            ]
+        );
+        for tool in v["result"]["tools"].as_array().unwrap() {
+            assert!(tool["description"]
+                .as_str()
+                .unwrap()
+                .contains("third-party text"));
+            assert!(tool["description"]
+                .as_str()
+                .unwrap()
+                .contains("shell string"));
+        }
         assert!(server.call("ping", json!({})).get("result").is_some());
         assert_eq!(
             server.tool("scan.start", json!({}))["error"]["code"],
@@ -327,6 +353,10 @@ mod live {
         for i in 0..25 {
             std::fs::write(root.join(format!("report-{i:02}.txt")), b"synthetic").unwrap();
         }
+        std::fs::write(root.join("control-\u{202e}\u{2028}.txt"), b"synthetic").unwrap();
+        std::fs::write(root.join("Cargo.toml"), b"synthetic").unwrap();
+        std::fs::create_dir(root.join("target")).unwrap();
+        std::fs::write(root.join("target").join("build.bin"), b"synthetic").unwrap();
         let service = Service::open(Config {
             state_dir: state.clone(),
             dataset: DatasetClass::Synthetic,
@@ -360,6 +390,26 @@ mod live {
                 None,
             )
             .unwrap();
+        for (client, fields) in [
+            (
+                "all",
+                vec!["path", "size", "modified", "attributes", "volumes"],
+            ),
+            ("names", vec![]),
+            ("modified", vec!["size", "modified", "volumes"]),
+            ("attributes", vec!["size", "attributes", "volumes"]),
+            ("sizes-volumes", vec!["size", "volumes"]),
+            ("volumes-only", vec!["volumes"]),
+        ] {
+            service
+                .grant_client(
+                    &format!("mcp:{client}"),
+                    &[RootId::new(root.as_str().unwrap()).unwrap()],
+                    &fields,
+                    None,
+                )
+                .unwrap();
+        }
         let expected = owner(
             &service,
             "search.query",
@@ -460,7 +510,6 @@ mod live {
                 "approve",
                 "delete",
                 "apps",
-                "plan_archive",
             ] {
                 assert_eq!(server.tool(name, json!({}))["error"]["code"], -32602);
             }
@@ -474,7 +523,7 @@ mod live {
     }
 
     #[test]
-    fn busy_then_success_and_idle_release_expires_references_without_reuse() {
+    fn busy_then_success_and_idle_release_preserves_references() {
         if loomward_windows::enumerate::skip_elevated_test() {
             return;
         }
@@ -506,20 +555,478 @@ mod live {
             std::thread::sleep(Duration::from_millis(50));
         };
         drop(idle_lock);
-        let expired = server.tool("describe", json!({"reference":old}));
-        assert_eq!(expired["result"]["isError"], true, "{expired}");
-        assert_eq!(
-            expired["result"]["content"][0]["text"],
-            "unknown reference; call find again"
-        );
+        let described = server.tool("describe", json!({"reference":old}));
+        assert_eq!(described["result"]["isError"], false, "{described}");
         let fresh = server.tool("find", json!({"text":"report"}));
-        assert_ne!(
+        assert_eq!(
             fresh["result"]["structuredContent"]["rows"][0]["reference"],
             old
         );
+    }
+
+    #[test]
+    fn space_tools_are_scoped_field_gated_and_archive_is_read_only() {
+        if loomward_windows::enumerate::skip_elevated_test() {
+            return;
+        }
+        let f = fixture();
+        let before = dump(&f.state.join("state.db"));
+        let mut server = Server::start(&f.state, true, &[]);
+        let roots = server.tool("roots", json!({}));
+        assert_eq!(roots["result"]["isError"], false, "{roots}");
+        let reference = &roots["result"]["structuredContent"]["roots"][0]["reference"];
+        for (name, args) in [
+            ("largest", json!({"reference": reference, "limit": 3})),
+            (
+                "breakdown",
+                json!({"reference": reference, "by":"extension", "limit": 2}),
+            ),
+            ("clutter", json!({"root_reference":reference, "limit": 5})),
+        ] {
+            let value = server.tool(name, args);
+            assert_eq!(value["result"]["isError"], false, "{value}");
+            let text = value["result"]["structuredContent"].to_string();
+            for secret in ["node_id", "rt_", "cursor"] {
+                assert!(!text.contains(secret), "{value}");
+            }
+            assert_eq!(dump(&f.state.join("state.db")), before);
+        }
+        for (name, args) in [
+            ("volumes", json!({})),
+            (
+                "plan_archive",
+                json!({"references":[reference],"destination_volume":"v1"}),
+            ),
+            ("breakdown", json!({"reference":reference,"by":"age_band"})),
+        ] {
+            let value = server.tool(name, args);
+            assert_eq!(value["result"]["isError"], true, "{value}");
+            assert!(
+                value["result"]["content"][0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("does not disclose"),
+                "{value}"
+            );
+            assert_eq!(dump(&f.state.join("state.db")), before);
+        }
+        assert_eq!(server.tool("largest", json!({}))["result"]["isError"], true);
+        assert_eq!(
+            server.tool("largest", json!({"reference":"r99999"}))["result"]["isError"],
+            true
+        );
+        assert!(!f.state.join("ask.db").exists());
+    }
+
+    fn data(server: &mut Server, state: &Path, name: &str, args: Value) -> Value {
+        let before = dump(&state.join("state.db"));
+        let value = server.tool(name, args);
+        assert_eq!(
+            dump(&state.join("state.db")),
+            before,
+            "{name} changed state.db"
+        );
+        assert!(!state.join("ask.db").exists());
+        assert_eq!(value["result"]["isError"], false, "{value}");
+        let out = value["result"]["structuredContent"].clone();
+        for secret in ["node_id", "rt_", "cursor"] {
+            assert!(!out.to_string().contains(secret), "{value}");
+        }
+        let text: Value =
+            serde_json::from_str(value["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(text, out);
+        out
+    }
+
+    fn set_space(state: &Path, capacity: Option<u64>, free: Option<u64>, online: bool) {
+        let db = rusqlite::Connection::open(state.join("catalog.db")).unwrap();
+        db.execute("UPDATE volume SET capabilities_json=?1,online=?2", rusqlite::params![json!({"space":{"capacity_bytes":capacity.map(|n| n.to_string()),"free_bytes":free.map(|n| n.to_string())}}).to_string(),online]).unwrap();
+    }
+
+    #[test]
+    fn archive_arithmetic_warnings_optional_fields_and_untrusted_names_over_stdio() {
+        if loomward_windows::enumerate::skip_elevated_test() {
+            return;
+        }
+        let f = fixture();
+        // Fault injection: catalogue observations only, never real placeholder/reparse effects.
+        let db = rusqlite::Connection::open(f.state.join("catalog.db")).unwrap();
+        db.execute(
+            "UPDATE file SET attrs=attrs|1024|262144 WHERE name LIKE 'control-%'",
+            [],
+        )
+        .unwrap();
+        drop(db);
+        for (client, modified, attributes) in [
+            ("all", true, true),
+            ("sizes-volumes", false, false),
+            ("modified", true, false),
+            ("attributes", false, true),
+        ] {
+            set_space(
+                &f.state,
+                Some(1_000_000_000_000),
+                Some(10_000_000_009),
+                true,
+            );
+            let mut server = Server::start_client(&f.state, true, client, &[]);
+            let roots = data(&mut server, &f.state, "roots", json!({}));
+            let root = roots["roots"][0]["reference"].clone();
+            let volumes = data(&mut server, &f.state, "volumes", json!({}));
+            let destination = volumes["volumes"][0]["volume_key"].clone();
+            // The lab volume is internal: `external` is absent (bus unknown) or false (bus known, not USB).
+            assert_ne!(volumes["volumes"][0].get("external"), Some(&json!(true)));
+            let found = data(&mut server, &f.state, "find", json!({"text":"control-"}));
+            let item = found["rows"][0]["reference"].clone();
+            assert_eq!(
+                found["rows"][0]["row"]["name"],
+                "control-\\u202E\\u2028.txt"
+            );
+            let described = data(&mut server, &f.state, "describe", json!({"reference":item}));
+            assert_eq!(found["rows"][0]["row"]["name"], described["row"]["name"]);
+            assert_eq!(
+                found["rows"][0]["row"]["attributes"],
+                described["row"]["attributes"]
+            );
+            assert_eq!(
+                found["rows"][0]["row"]["modified_at"],
+                described["row"]["modified_at"]
+            );
+            let largest = data(
+                &mut server,
+                &f.state,
+                "largest",
+                json!({"reference":root,"limit":30}),
+            );
+            assert!(largest["rows"].as_array().unwrap().len() <= 30);
+            let clutter = data(
+                &mut server,
+                &f.state,
+                "clutter",
+                json!({"root_reference":root}),
+            );
+            let candidates = clutter["candidates"].as_array().unwrap();
+            assert_eq!(candidates.len(), 1, "{clutter}");
+            for key in ["reference", "anchor_reference"] {
+                data(
+                    &mut server,
+                    &f.state,
+                    "describe",
+                    json!({"reference":candidates[0][key]}),
+                );
+            }
+            for by in ["extension_family", "extension"] {
+                data(
+                    &mut server,
+                    &f.state,
+                    "breakdown",
+                    json!({"reference":root,"by":by}),
+                );
+            }
+            if modified {
+                data(
+                    &mut server,
+                    &f.state,
+                    "breakdown",
+                    json!({"reference":root,"by":"age_band"}),
+                );
+            } else {
+                let denied = server.tool("breakdown", json!({"reference":root,"by":"age_band"}));
+                assert_eq!(denied["result"]["isError"], true, "{denied}");
+                assert!(denied["result"]["content"][0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("does not disclose modified times"));
+            }
+            let plan = data(
+                &mut server,
+                &f.state,
+                "plan_archive",
+                json!({"references":[item],"destination_volume":destination,"folder_name":"Synthetic archive"}),
+            );
+            assert_eq!(plan["total"]["bytes"], "9");
+            assert_eq!(plan["total"]["files"], 1);
+            assert_eq!(plan["items"][0]["freshness"]["state"], "stale");
+            assert_eq!(plan["space"]["reserve_bytes"], "10000000000");
+            assert_eq!(plan["space"]["available_after_reserve_bytes"], "9");
+            assert_eq!(plan["space"]["fits"], true);
+            assert_eq!(plan["execution"], "owner_approval_required");
+            assert_eq!(plan["shape"], "new folder only");
+            assert_eq!(plan["items"][0].get("modified_range").is_some(), modified);
+            assert_eq!(plan["total"].get("modified_range").is_some(), modified);
+            assert_eq!(
+                plan["items"][0]
+                    .get("attribute_assessment_complete")
+                    .is_some(),
+                attributes
+            );
+            assert!(plan["warnings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|w| w["code"] == "same_volume"));
+            for code in ["cloud_placeholder", "reparse_point"] {
+                assert_eq!(
+                    plan["warnings"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|w| w["code"] == code),
+                    attributes,
+                    "{plan}"
+                );
+            }
+            drop(server);
+        }
+        for (capacity, free, online, fits) in [
+            (
+                Some(1_000_000_000_000),
+                Some(10_000_000_008),
+                true,
+                json!(false),
+            ),
+            (Some(1000), Some((1u64 << 30) + 9), true, json!(true)),
+            (Some(1000), None, true, json!("unknown")),
+            (None, Some(1000), false, json!("unknown")),
+        ] {
+            set_space(&f.state, capacity, free, online);
+            let mut server = Server::start_client(&f.state, true, "all", &[]);
+            let found = data(&mut server, &f.state, "find", json!({"text":"control-"}));
+            let volumes = data(&mut server, &f.state, "volumes", json!({}));
+            let plan = data(
+                &mut server,
+                &f.state,
+                "plan_archive",
+                json!({"references":[found["rows"][0]["reference"]],"destination_volume":volumes["volumes"][0]["volume_key"]}),
+            );
+            assert_eq!(plan["space"]["fits"], fits, "{plan}");
+            assert_eq!(
+                plan["warnings"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|w| w["code"] == "offline_source"),
+                // Since E0, `online` comes from live root presence, not the stored flag alone.
+                volumes["volumes"][0]["online"] == false
+            );
+        }
+    }
+
+    #[test]
+    fn every_space_field_is_enforced_by_service_and_invalid_arguments_are_refused() {
+        if loomward_windows::enumerate::skip_elevated_test() {
+            return;
+        }
+        let f = fixture();
+        for client in ["names", "volumes-only"] {
+            let mut server = Server::start_client(&f.state, true, client, &[]);
+            let root =
+                data(&mut server, &f.state, "roots", json!({}))["roots"][0]["reference"].clone();
+            data(&mut server, &f.state, "find", json!({"text":"report"}));
+            for (name, args) in [
+                ("largest", json!({"reference":root})),
+                ("breakdown", json!({"reference":root,"by":"extension"})),
+                ("clutter", json!({"root_reference":root})),
+                (
+                    "plan_archive",
+                    json!({"references":[root],"destination_volume":"synthetic"}),
+                ),
+            ] {
+                let before = dump(&f.state.join("state.db"));
+                let value = server.tool(name, args);
+                assert_eq!(value["result"]["isError"], true, "{value}");
+                assert!(
+                    value["result"]["content"][0]["text"]
+                        .as_str()
+                        .unwrap()
+                        .contains("does not disclose sizes"),
+                    "{value}"
+                );
+                assert_eq!(dump(&f.state.join("state.db")), before);
+            }
+        }
+        let mut server = Server::start(&f.state, true, &[]);
+        let root = data(&mut server, &f.state, "roots", json!({}))["roots"][0]["reference"].clone();
+        for (name, args) in [
+            ("largest", json!({"reference":root,"limit":31})),
+            ("largest", json!({"reference":root,"limit":0})),
+            (
+                "breakdown",
+                json!({"reference":root,"by":"extension","limit":17}),
+            ),
+            ("breakdown", json!({"reference":root,"by":"unsupported"})),
+            ("clutter", json!({"root_reference":root,"limit":51})),
+            ("roots", json!({"root_id":"rt_forged"})),
+            ("volumes", json!({"anything":true})),
+            (
+                "plan_archive",
+                json!({"references":[],"destination_volume":"x"}),
+            ),
+            (
+                "plan_archive",
+                json!({"references":vec!["r1";65],"destination_volume":"x"}),
+            ),
+            (
+                "plan_archive",
+                json!({"references":[root,root],"destination_volume":"x"}),
+            ),
+            (
+                "plan_archive",
+                json!({"references":[root],"destination_volume":"x","folder_name":"..\\existing"}),
+            ),
+            (
+                "plan_archive",
+                json!({"references":[root],"destination_volume":"x","folder_name":"CON"}),
+            ),
+        ] {
+            assert_eq!(server.tool(name, args)["result"]["isError"], true);
+        }
+    }
+
+    #[test]
+    fn partial_sizes_and_oversized_items_are_honest_and_scope_withdrawal_refuses_references() {
+        if loomward_windows::enumerate::skip_elevated_test() {
+            return;
+        }
+        let f = fixture();
+        set_space(
+            &f.state,
+            Some(1_000_000_000_000),
+            Some(900_000_000_000),
+            true,
+        );
+        let db = rusqlite::Connection::open(f.state.join("catalog.db")).unwrap();
+        db.execute(
+            "UPDATE dir SET sub_files=200001 WHERE parent_id IS NULL",
+            [],
+        )
+        .unwrap();
+        let mut server = Server::start_client(&f.state, true, "all", &[]);
+        let root = data(&mut server, &f.state, "roots", json!({}))["roots"][0]["reference"].clone();
+        let destination =
+            data(&mut server, &f.state, "volumes", json!({}))["volumes"][0]["volume_key"].clone();
+        let plan = data(
+            &mut server,
+            &f.state,
+            "plan_archive",
+            json!({"references":[root],"destination_volume":destination}),
+        );
+        assert!(
+            plan["warnings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|w| w["code"] == "split_item"),
+            "{plan}"
+        );
+        drop(server);
+        db.execute("UPDATE dir SET listing_state='incomplete',listing_outcome='partial',sub_complete=0 WHERE parent_id IS NULL",[]).unwrap();
+        let mut server = Server::start_client(&f.state, true, "all", &[]);
+        let root = data(&mut server, &f.state, "roots", json!({}))["roots"][0]["reference"].clone();
+        let plan = data(
+            &mut server,
+            &f.state,
+            "plan_archive",
+            json!({"references":[root],"destination_volume":destination}),
+        );
+        assert!(plan["items"][0]["bytes"].is_null(), "{plan}");
+        assert!(plan["total"]["bytes"].is_null(), "{plan}");
+        assert_eq!(plan["space"]["fits"], "unknown");
+        assert_eq!(plan["total"]["modified_range"]["complete"], false);
+        // Fault injection: the next call observes the owner's scope withdrawal, even with the
+        // same client-grant epoch. No data from the formerly granted root is returned.
+        let state = rusqlite::Connection::open(f.state.join("state.db")).unwrap();
+        state
+            .execute(
+                "UPDATE client_grant SET roots_json='[]' WHERE client='mcp:all'",
+                [],
+            )
+            .unwrap();
+        let denied = server.tool("largest", json!({"reference":root}));
+        assert_eq!(denied["result"]["isError"], true, "{denied}");
+        assert!(denied["result"].get("structuredContent").is_none());
+    }
+
+    #[test]
+    fn references_cannot_alias_the_same_first_result_after_a_process_restart() {
+        if loomward_windows::enumerate::skip_elevated_test() {
+            return;
+        }
+        let f = fixture();
+        let mut server = Server::start(&f.state, true, &[]);
+        let old = data(&mut server, &f.state, "find", json!({"text":"control-"}))["rows"][0]
+            ["reference"]
+            .clone();
+        drop(server);
+        let mut server = Server::start(&f.state, true, &[]);
+        let fresh = data(&mut server, &f.state, "find", json!({"text":"control-"}))["rows"][0]
+            ["reference"]
+            .clone();
+        assert_ne!(old, fresh);
         assert_eq!(
             server.tool("describe", json!({"reference":old}))["result"]["isError"],
             true
+        );
+    }
+
+    #[test]
+    fn rescan_after_idle_makes_references_unknown_and_restart_does_not_accept_them() {
+        if loomward_windows::enumerate::skip_elevated_test() {
+            return;
+        }
+        let f = fixture();
+        let mut server = Server::start(&f.state, true, &["--idle-release-secs", "1"]);
+        let found = data(&mut server, &f.state, "find", json!({"text":"report"}));
+        let reference = found["rows"][0]["reference"].clone();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let lock = loop {
+            if let Ok(lock) = lock_state_dir(&f.state) {
+                break lock;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        let service = Service::open(Config {
+            state_dir: f.state.clone(),
+            dataset: DatasetClass::Synthetic,
+            allow_personal: false,
+            allow_identity_unverified: false,
+            grant_roots: vec![],
+        })
+        .unwrap();
+        let root = owner(&service, "roots.list", json!({}))["roots"][0]["root_id"].clone();
+        let job = owner(
+            &service,
+            "scan.start",
+            json!({"root_id":root,"mode":"full"}),
+        );
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let status = owner(&service, "jobs.get", json!({"job_id":job["job"]["job_id"]}));
+            if status["job"]["state"] == "completed" {
+                break;
+            }
+            assert_ne!(status["job"]["state"], "failed", "{status}");
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        drop(service);
+        drop(lock);
+        let refused = server.tool("describe", json!({"reference":reference}));
+        assert_eq!(
+            refused["result"]["content"][0]["text"],
+            "unknown reference; call find again"
+        );
+        let fresh = data(&mut server, &f.state, "find", json!({"text":"report"}));
+        assert_ne!(fresh["rows"][0]["reference"], reference);
+        drop(server);
+        let mut restarted = Server::start(&f.state, true, &[]);
+        assert_eq!(
+            restarted.tool(
+                "describe",
+                json!({"reference":fresh["rows"][0]["reference"]})
+            )["result"]["content"][0]["text"],
+            "unknown reference; call find again"
         );
     }
 
