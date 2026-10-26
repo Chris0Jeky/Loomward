@@ -453,7 +453,7 @@ Also answered in the same chat (agent questions, recorded so they bind):
 ### q-49 — Research programme (docs/51) — POSED 2026-10-25 (agent-hq inbox, lane `loomward-research`)
 
 The research lane reconciled the deep-research report with the repository ([docs/51](docs/51-research-programme.md),
-section 9). Four questions only you can answer; none blocks the read-only work (reclaim planner, categoriser contract):
+section 9). Five questions only you can answer; none blocks the read-only work (reclaim planner, categoriser contract):
 - [x] **loomward-hyperv-lab-setup**: ANSWERED 2026-10-26 (a): "Go ahead with X1, the Hyper-V crash campaign: I've added my account to Hyper-V Administrators; use the evaluation image on E:."
 - [x] **loomward-archive-second-copy**: ANSWERED 2026-10-26 (c): "Accept a single copy for now but in the future I will be getting another disk"
 - [x] **loomward-power-loss-hardware**: ANSWERED 2026-10-26 (a): "Hyper-V only (Recommended)"
@@ -469,6 +469,7 @@ section 9). Four questions only you can answer; none blocks the read-only work (
   - Why: It is the official upstream build, runs all candidates, binds to localhost only, and leaves your own LM Studio setup untouched.
   - Why an agent may not decide: It downloads and runs an executable, which the owner's model-download answer did not cover.
   - Source: `decisions/loomward-model-runtime.json`
+
 ### q-50 — Disk survey setup — POSED 2026-10-26 (agent-hq inbox, owner action)
 
 The external-disk lane shipped USB scan roots, the read-only `loomward-mcp` server with space tools and `plan_archive`,
