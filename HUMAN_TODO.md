@@ -459,6 +459,16 @@ section 9). Four questions only you can answer; none blocks the read-only work (
 - [x] **loomward-power-loss-hardware**: ANSWERED 2026-10-26 (a): "Hyper-V only (Recommended)"
 - [x] **loomward-categoriser-model-downloads**: ANSWERED 2026-10-26 (Other): "If space allows it and using the slower disks is not a problem for this, you can research and download all the models you want, there are definitely some interesting ones similar to the ternary bonsai 2 (not sure if that's the best, I'm just naming a type of model that is efficient when it comes to resources used, which is good for this application)"
 
+- [ ] **loomward-model-runtime: How should agents run the downloaded small models for the categoriser screen?**
+  - (a) Agents download the official llama.cpp Windows build to E: and run llama-server on 127.0.0.1 for benchmarks (recommended): Agents fetch llama-b11890-bin-win-vulkan-x64.zip from ggml-org's GitHub releases to E:\loomward-models\runtime, record its hash, and run llama-server bound to 127.0.0.1 only while benchmarking. LM Studio is untouched.
+    + Runs every candidate, including Bonsai 2 and Laya; + Leaves your LM Studio library alone; - Runs a downloaded executable on your machine
+  - (b) Use LM Studio: agents add the models to its library and use its local server: Agents import the downloaded models into LM Studio (links, not copies) and benchmark through its 127.0.0.1 server. Bonsai 2 and Laya wait for an LM Studio update.
+    + No new executable; - Changes your LM Studio library; - Bonsai 2 and Laya cannot run yet
+  - (c) Wait: I will set up the runtime myself: The screen waits; the tooling (PR #918) is ready.
+    + You choose the runtime; - The screen does not run yet
+  - Why: It is the official upstream build, runs all candidates, binds to localhost only, and leaves your own LM Studio setup untouched.
+  - Why an agent may not decide: It downloads and runs an executable, which the owner's model-download answer did not cover.
+  - Source: `decisions/loomward-model-runtime.json`
 ### q-50 — Disk survey setup — POSED 2026-10-26 (agent-hq inbox, owner action)
 
 The external-disk lane shipped USB scan roots, the read-only `loomward-mcp` server with space tools and `plan_archive`,
