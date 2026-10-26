@@ -508,15 +508,22 @@ pub(crate) fn search_index(conn: &Connection, ranked: bool) -> Result<()> {
     };
     // Forward-only derived-layout migration; the caller's transaction also covers the backfill.
     // No catalogue rows or precious state are rewritten, and a failed rebuild restores the old index.
-    if has("search_name_docsize")? {
+    // #887: a trigram table without the `root` column (and its view) is rebuilt the same way.
+    let rootless = has("search_name")?
+        && !conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('search_name') WHERE name='root')",
+            [],
+            |r| r.get::<_, bool>(0),
+        )?;
+    if has("search_name_docsize")? || rootless {
         conn.execute_batch("DROP TRIGGER IF EXISTS search_file_insert; DROP TRIGGER IF EXISTS search_file_delete; DROP TRIGGER IF EXISTS search_file_rename;
             DROP TRIGGER IF EXISTS search_dir_insert; DROP TRIGGER IF EXISTS search_dir_delete; DROP TRIGGER IF EXISTS search_dir_rename;
-            DROP TABLE search_name")?;
+            DROP TRIGGER IF EXISTS search_dir_files_delete; DROP TABLE search_name; DROP VIEW IF EXISTS search_name_content")?;
     }
     if !has("search_name")? {
         conn.execute_batch(include_str!("search.sql"))?;
         conn.execute_batch(
-            "INSERT INTO search_name(rowid,name) SELECT rowid,name FROM search_name_content;",
+            "INSERT INTO search_name(rowid,name,root) SELECT rowid,name,root FROM search_name_content;",
         )?;
     }
     if ranked && !has("search_token")? {
