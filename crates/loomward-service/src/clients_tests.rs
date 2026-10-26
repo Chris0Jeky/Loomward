@@ -219,6 +219,141 @@ fn err(r: ResponseEnvelope) -> ErrorBody {
 }
 
 #[test]
+fn clients_read_dirty_first_aggregates_as_unknown() {
+    let tmp = temp_root();
+    let svc = open(tmp.path());
+    let alpha = root(&svc, "Alpha", 1, Some(ALPHA));
+    svc.grant_client("mcp:first", &[alpha], &["size"], None)
+        .unwrap();
+    let db = rusqlite::Connection::open(tmp.path().join("catalog.db")).unwrap();
+    db.execute("UPDATE dir SET agg_valid_rev=0,dirty_rev=1,sub_logical=0,sub_allocated=0,sub_files=0 WHERE parent_id IS NOT NULL", []).unwrap();
+    let found = ok(as_client(
+        &svc,
+        "mcp:first",
+        "search.query",
+        search("report drafts", 20, Value::Null),
+    ));
+    let row = &found["hits"][0]["row"];
+    assert_eq!(row["coverage"], "unknown");
+    assert_eq!(found["partial"], true);
+    for key in ["logical_bytes", "allocated_bytes", "files", "dirs"] {
+        assert!(
+            row[key].is_null(),
+            "{key} is unknown before the first rollup"
+        );
+    }
+    let detail = ok(as_client(
+        &svc,
+        "mcp:first",
+        "node.inspect",
+        json!({"node_id":row["node_id"]}),
+    ));
+    assert!(detail["row"]["logical_bytes"].is_null());
+}
+
+#[test]
+fn clients_read_dirty_aggregates_without_repairing_any_root() {
+    let tmp = temp_root();
+    let svc = open(tmp.path());
+    let alpha = root(&svc, "Alpha", 1, Some(ALPHA));
+    root(&svc, "Beta", 2, Some(BETA));
+    for client in ["mcp:readonly", "ask:readonly"] {
+        svc.grant_client(client, std::slice::from_ref(&alpha), &["size"], None)
+            .unwrap();
+    }
+    let db = rusqlite::Connection::open(tmp.path().join("catalog.db")).unwrap();
+    let dir = db
+        .query_row(
+            "SELECT id FROM dir WHERE parent_id IS NOT NULL ORDER BY id LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let mut cached_reader = svc.inner.catalog.reader().unwrap().without_repairs();
+    let breakdown = |reader: &mut loomward_catalog::Reader| {
+        reader
+            .breakdown(
+                dir,
+                "extension",
+                loomward_catalog::Basis::Logical,
+                16,
+                5_000_000,
+            )
+            .unwrap()
+    };
+    assert!(breakdown(&mut cached_reader).complete);
+    db.execute("UPDATE dir SET dirty_rev=agg_valid_rev+1", [])
+        .unwrap();
+    let state = || {
+        let rev: i64 = db
+            .query_row("SELECT catalog_rev FROM revision", [], |r| r.get(0))
+            .unwrap();
+        let dirs: Vec<(i64, i64, i64, i64)> = db
+            .prepare("SELECT id,dirty_rev,agg_valid_rev,sub_logical FROM dir ORDER BY id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        (rev, dirs)
+    };
+    let before = state();
+    assert!(
+        !breakdown(&mut cached_reader).complete,
+        "dirty aggregates must not reuse a complete cached breakdown"
+    );
+    for client in ["mcp:readonly", "ask:readonly"] {
+        let found = ok(as_client(
+            &svc,
+            client,
+            "search.query",
+            search("report drafts", 20, Value::Null),
+        ));
+        assert_eq!(state(), before, "{client} search repaired the catalogue");
+        assert_eq!(found["partial"], true);
+        let row = &found["hits"][0]["row"];
+        assert_eq!(row["coverage"], "stale");
+        assert_eq!(row["logical_bytes"], "7");
+        let node = row["node_id"].clone();
+        let reference = svc
+            .client_reference(client, node.as_str().unwrap())
+            .unwrap();
+        svc.resolve_client_reference(client, &reference).unwrap();
+        let detail = ok(as_client(
+            &svc,
+            client,
+            "node.inspect",
+            json!({"node_id":node}),
+        ));
+        assert_eq!(detail["row"]["coverage"], "stale");
+        assert_eq!(detail["row"]["logical_bytes"], "7");
+        ok(as_client(&svc, client, "roots.list", json!({})));
+        ok(as_client(
+            &svc,
+            client,
+            "tree.children",
+            json!({"node_id":node,"sort":"size_desc","basis":"logical","limit":20,"cursor":null}),
+        ));
+        let breakdown = ok(as_client(
+            &svc,
+            client,
+            "stats.breakdown",
+            json!({"node_id":node,"by":"extension","basis":"logical","limit":16}),
+        ));
+        assert_eq!(breakdown["complete"], false);
+        assert_eq!(state(), before, "{client} read repaired the catalogue");
+    }
+    ok(as_owner(
+        &svc,
+        "search.query",
+        search("report", 20, Value::Null),
+    ));
+    let after = state();
+    assert!(after.0 > before.0, "owner repair must advance catalog_rev");
+    assert!(after.1.iter().all(|(_, dirty, valid, _)| valid >= dirty));
+}
+
+#[test]
 fn owner_commands_manage_mcp_grants_and_preserve_epochs() {
     for dataset in [DatasetClass::Synthetic, DatasetClass::Personal] {
         let dir = temp_root();

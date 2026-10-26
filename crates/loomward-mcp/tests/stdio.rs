@@ -475,10 +475,18 @@ mod live {
             assert_eq!(find["result"]["isError"], false, "{find}");
             // Opening reconciles catalogue revisions/sequences. Reads after that open must not
             // change any table; state.db above is compared across the entire launch as required.
+            let db = rusqlite::Connection::open(f.state.join("catalog.db")).unwrap();
+            db.execute("UPDATE dir SET dirty_rev=agg_valid_rev+1", [])
+                .unwrap();
+            drop(db);
             let catalog_before = dump(&f.state.join("catalog.db"));
             assert_eq!(
                 server.tool("find", json!({"text":"report"}))["result"]["isError"],
                 false
+            );
+            assert!(
+                dump(&f.state.join("catalog.db")) == catalog_before,
+                "client find repaired catalog.db"
             );
             let data = &find["result"]["structuredContent"];
             let rows = data["rows"].as_array().unwrap();
