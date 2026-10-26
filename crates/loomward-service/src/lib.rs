@@ -148,6 +148,8 @@ pub(crate) struct Inner {
     metadata_cursors: cursors::Cursors,
     /// LW-118: the latest Ask turn and the provider factory.
     pub(crate) ask: ask::Asks,
+    /// Three-second display hints only; native admission never trusts this cache.
+    root_presence_cache: Mutex<handlers::RootPresenceCache>,
     #[cfg(test)]
     pub(crate) hooks: Arc<tests::Hooks>,
 }
@@ -379,6 +381,7 @@ impl Service {
                 .unwrap_or_else(|| inventory::provider(config.dataset)),
             metadata_cursors: cursors::Cursors::new(16),
             ask: Default::default(),
+            root_presence_cache: Default::default(),
             #[cfg(test)]
             hooks: Default::default(),
         });
@@ -1226,6 +1229,9 @@ impl Inner {
         state_rev: Option<i64>,
     ) {
         if let Value::Object(map) = data {
+            if event == EventName::VolumesChanged {
+                self.invalidate_root_presence();
+            }
             let _ = self.engine.publish_event(
                 event,
                 map,
@@ -1379,6 +1385,7 @@ impl Inner {
                     )
             })
             .collect();
+        let presence = self.cached_root_presence();
         let mutation = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
         let conn = self.db();
         // Recheck consent and candidate identity, state, mode and path after the unlocked probes.
@@ -1459,15 +1466,19 @@ impl Inner {
             .writer()
             .call(command)
             .map_err(|_| Refusal::IdentityUnavailable)?;
-        let WriteReply::Root { root_id, .. } = reply else {
+        let WriteReply::Root {
+            grant_id, root_id, ..
+        } = reply
+        else {
             return Err(Refusal::IdentityUnavailable.into());
         };
+        self.remember_root_presence(grant_id, handlers::RootPresence::Online);
         for grant in renamed {
             // Keep mutation serialised through retirement; the connection guard is released.
             let row = db::root_for_grant(&self.db(), grant);
             if let Ok(Some(row)) = row {
                 if let Ok(id) = loomward_protocol::RootId::new(self.root_id(row)) {
-                    self.identity_changed_locked(grant, &id, true, &mutation);
+                    self.identity_changed_locked(grant, &id, true, &mutation, &presence);
                 }
             }
         }
