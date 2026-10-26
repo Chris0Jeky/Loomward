@@ -56,6 +56,7 @@ class Config:
     execute: bool = False
     exe: str = GUEST_EXE
     max_delay_ms: int = 2000
+    boot_timeout: float = BOOT_TIMEOUT
 
 
 class PowerShell:
@@ -214,7 +215,7 @@ class Campaign:
         try:
             output = self.ps.run(script, timeout)
         except CampaignError as exc:
-            raise CampaignError(str(exc).replace(STATE, "<redacted-state>")) from exc
+            raise CampaignError(f"{operation}:" + str(exc).replace(STATE, "<redacted-state>")) from exc
         try:
             data = json.loads(output)
         except (ValueError, TypeError) as exc:
@@ -309,13 +310,13 @@ if ($vm.State -eq 'Off') {{ Start-VM -Name {quote(VM_NAME)} | Out-Null }}
 elseif ($vm.State -ne 'Running') {{ throw 'vm_not_off_or_running' }}
 '{{}}'
 """)
-        deadline = self.clock() + BOOT_TIMEOUT
+        deadline = self.clock() + self.config.boot_timeout
         while True:
             status = self._call("boot", f"""
 $heartbeat = Get-VMIntegrationService -VMName {quote(VM_NAME)} -Name Heartbeat
 @{{ heartbeat = [string]$heartbeat.PrimaryOperationalStatus;
     secondary = [string]$heartbeat.SecondaryOperationalStatus }} | ConvertTo-Json -Compress
-""", {"heartbeat": "OkApplicationsHealthy"}, timeout=15)
+""", {"heartbeat": "OkApplicationsHealthy"}, timeout=60)
             if status.get("heartbeat") in ("Ok", "OkApplicationsHealthy"):
                 return
             if self.clock() >= deadline:
@@ -738,6 +739,8 @@ def main(argv=None):
     parser.add_argument("--tree", choices=("small", "large"), default="small")
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--execute", action="store_true")
+    parser.add_argument("--boot-timeout", type=float, default=BOOT_TIMEOUT,
+                        help="seconds to wait for the guest heartbeat; raise it when the host disk is contended")
     parser.add_argument("--max-delay-ms", type=int, default=2000,
                         help="cut delay is uniform in [0, this] after the first journal record; size it to the act")
     parser.add_argument("--exe", default=None, help="mutant guest test executable (negative only)")
