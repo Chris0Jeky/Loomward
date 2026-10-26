@@ -57,6 +57,7 @@ class Config:
     exe: str = GUEST_EXE
     max_delay_ms: int = 2000
     boot_timeout: float = BOOT_TIMEOUT
+    connect_timeout: float = 120.0
 
 
 class PowerShell:
@@ -207,6 +208,9 @@ class Campaign:
             "try {\n" + (PATH_GUARD if guard else "") + body +
             "\n} catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }\n\n"
         )
+        if "New-PSSession" in body:
+            # The PowerShell Direct connection window is spent inside the script.
+            timeout += self.config.connect_timeout
         if not self.config.execute:
             # State is private even in a printed plan. Passwords never enter Python.
             print(script.replace(STATE, "<redacted-state>").replace(
@@ -249,7 +253,7 @@ $password = $null; $secrets = $null
 
     def _session(self, admin=False):
         return self._credential(admin=admin) + f"""
-$connectionDeadline = (Get-Date).AddSeconds(120)
+$connectionDeadline = (Get-Date).AddSeconds({self.config.connect_timeout:g})
 while ($true) {{
     try {{
         $session = New-PSSession -VMName {quote(VM_NAME)} -Credential $credential -ErrorAction Stop
@@ -739,6 +743,8 @@ def main(argv=None):
     parser.add_argument("--tree", choices=("small", "large"), default="small")
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--execute", action="store_true")
+    parser.add_argument("--connect-timeout", type=float, default=120.0,
+                        help="seconds to retry PowerShell Direct after the heartbeat is OK")
     parser.add_argument("--boot-timeout", type=float, default=BOOT_TIMEOUT,
                         help="seconds to wait for the guest heartbeat; raise it when the host disk is contended")
     parser.add_argument("--max-delay-ms", type=int, default=2000,
