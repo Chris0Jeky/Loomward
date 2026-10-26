@@ -465,3 +465,12 @@ section 9). Four questions only you can answer; none blocks the read-only work (
 - [ ] **loomward-categoriser-model-downloads**: may agents download one or two small models through LM Studio onto `E:`
   to screen a cheaper categoriser than Qwen 27B? (a) the small screen, ask again before more (recommended); (b) the full
   set, about 20-25 GB; (c) none. Blocks LW-140.
+
+### q-50 — Disk survey setup — POSED 2026-10-26 (agent-hq inbox, owner action)
+
+The external-disk lane shipped USB scan roots, the read-only `loomward-mcp` server with space tools and `plan_archive`,
+and the Agent access view (docs/48). Only you can grant whole volumes (q-7):
+- [ ] **loomward-space-survey-setup**: install the newest nightly (2026-10-26 or later), grant `C:\`, `E:\`, `G:\` and
+  `H:\` in the folder picker and scan, then create an Agent access grant named `claude` (sizes, paths, modified,
+  volumes). Steps and the verify line are in the inbox item; guide in docs/48 section 8. Unblocks the read-only disk
+  survey and the first cleanup plans.

@@ -432,3 +432,16 @@ Commands, named skips, regression controls and suite results are in
 [reference-windows.md](../evidence/v3/reference-windows.md). This closes the missing #4 witness;
 manual accessibility/field acceptance in #24/#101 remains separate. No new owner action was
 added to `HUMAN_TODO.md`.
+
+## External archive disk and agent storage — 25 to 26 October 2026
+
+The owner attached a WD Elements USB disk (`H:`) for backup and archive. Design: [docs/48](48-external-disk-and-agent-storage.md); owner answers in HUMAN_TODO q-47 and q-48. Merged, each with one fresh-context review (two lenses on effect, fence and disclosure paths) and an ai-security-red-teamer pass on the agent surface:
+
+- #860, #863, #885: design, owner answers, docs/49 (Insight categoriser seed), docs/50 (external media workflow seed), red-team runbook rules for the interim robocopy path.
+- #869 (E0): USB fixed-media NTFS/ReFS volumes are scan and grant roots; SD, removable media, USB FAT/exFAT and network stay refused; a foreign volume on a root's letter reads offline and never retires the grant; personal copy destinations on detachable volumes stay refused.
+- #864, #866, #897 (E2-E4): native read-only `loomward-mcp` (both MCP eras; lazy state lock with 10 s idle release; `find`, `describe`, `volumes`, `roots`, `largest`, `breakdown`, `clutter`, pure `plan_archive`); client space reads scoped to granted roots with per-field gating and the new `volumes` field; names treated as data.
+- #861, #902 (E5): `loomward-native verify-tree` over the C1 verifier, now non-cached with root identities in its report.
+- #868 (E6): owner-only, Tauri-only `clients.grant/list/revoke` and the Agent access view; USB volumes marked external.
+- #894 (E7): `loomward-mcp` ships beside the desktop executable; the desktop shares the state lock helper and retries for 15 s with an honest busy message.
+
+Measured on Windows 11 build 26300, non-elevated, rustc 1.97.1: each PR's named crate suites green; native shell 76 tests plus `--self-test`; app check, 685 unit tests and the Playwright suite. Known red on this host, unchanged code: eight `copy_tests::lab_copy` tests (also on main) and three `duplicate_reader::native::tree` tests when TMP has explicit ACLs. Not verified: a real MCP host end to end, a real scan of `H:`, physical unplug or replug, the installer. C8 remains closed: personal copying still needs C6, G5 (Hyper-V power-cut runs, method chosen 2026-10-25), G9 and the owner's go-ahead. Follow-ups: #865, #886, #887, #888, #895, #898, #903.
