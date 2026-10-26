@@ -661,15 +661,22 @@ $line = {encoded(line)}
                 record[key] = result.get(key)
             record["last_trace_label"] = recovered.get("last_trace_label")
             if record["copy_ran"] is not True:
-                raise CampaignError("copy_did_not_run")
-            if record["ok"] is not True and self.config.command != "negative":
-                raise CampaignError("oracle_failed")
-            if recovered.get("exit_code") != 0 and record["ok"] is True:
-                raise CampaignError("recover_failed")
-            # A negative-control cycle runs a mutant: never qualification evidence, whatever its outcome.
-            if (record["ok"] and record["kind"] == "floor" and record["dirty_pages"] > 0
-                    and self.config.command != "negative"):
-                record["floor_credit"] = window_for_label(record["last_record"])
+                # A launch-anchored cut can land before the first durable copy record: no evidence either way,
+                # so it is recorded as pre_copy and never counted as caught. Any other missing copy stops the run.
+                if self.config.anchor == "launch" and record["last_record"] in (None, "started"):
+                    record["kind"] = "pre_copy"
+                    record["ok"] = None
+                else:
+                    raise CampaignError("copy_did_not_run")
+            if record["kind"] != "pre_copy":
+                if record["ok"] is not True and self.config.command != "negative":
+                    raise CampaignError("oracle_failed")
+                if recovered.get("exit_code") != 0 and record["ok"] is True:
+                    raise CampaignError("recover_failed")
+                # A negative-control cycle runs a mutant: never qualification evidence, whatever its outcome.
+                if (record["ok"] and record["kind"] == "floor" and record["dirty_pages"] > 0
+                        and self.config.command != "negative"):
+                    record["floor_credit"] = window_for_label(record["last_record"])
             free = recovered.get("free_bytes")
             if not isinstance(free, (int, float)) or not math.isfinite(free) or free < 0:
                 raise CampaignError("lab_free_space_unavailable")
@@ -686,8 +693,10 @@ $line = {encoded(line)}
                     print("campaign_log_failed: original failure preserved", file=sys.stderr)
                 self.summary["cycles"] += 1
                 self.summary["failures"] += 1
-                failure = record["failure"]
-                if isinstance(failure, str) and (failure.startswith(("boot:", "start:", "cache:")) or failure in (
+                # Classify the host's own error, never guest text, and only before the cut: a failed boot after
+                # the hard-off may be the crash defect itself, and its volume must not be reused.
+                failure = str(exc)
+                if "cut_s" not in record["timings"] and (failure.startswith(("boot:", "start:", "cache:")) or failure in (
                     "guest_boot_failed", "powershell_unavailable_or_timeout", "guest_direct_connection_timeout"
                 )):
                     self.summary["infrastructure_failures"] += 1
@@ -696,8 +705,10 @@ $line = {encoded(line)}
         self._append(record)
         if self.config.execute:
             self.summary["cycles"] += 1
-            self.summary["failures"] += int(not record["ok"])
-            self.summary["caught"] += int(not record["ok"] and self.config.command == "negative")
+            # A pre_copy cycle (ok None) is neither a failure nor a catch.
+            self.summary["failures"] += int(record["ok"] is False)
+            self.summary["caught"] += int(record["ok"] is False and self.config.command == "negative")
+            self.summary["pre_copy"] = self.summary.get("pre_copy", 0) + int(record["kind"] == "pre_copy")
             if record["floor_credit"]:
                 self.summary["floor_credits"][record["floor_credit"]] += 1
         if number % 50 == 0 or free < 2 * GIB or not self.config.execute:
@@ -849,7 +860,8 @@ def main(argv=None):
     if args.command == "negative" and args.execute and summary["caught"] == 0:
         print("NOT CAUGHT")
         return 1
-    return 0
+    # A kept-going infrastructure failure never exits 0.
+    return 1 if summary.get("infrastructure_failures") else 0
 
 
 if __name__ == "__main__":

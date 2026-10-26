@@ -266,6 +266,7 @@ class CampaignTests(unittest.TestCase):
                 self.assertEqual(error.exception.code, 2)
                 campaign.assert_not_called()
         with patch("scripts.hyperv_campaign.Campaign") as campaign:
+            campaign.return_value.run.return_value = {"caught": 0, "infrastructure_failures": 0}
             self.assertEqual(main(["negative", "--exe", r"C:\lw\mutant.exe",
                                    "--anchor", "launch", "--keep-going", "2"]), 0)
             config = campaign.call_args.args[-1]
@@ -494,6 +495,50 @@ class CampaignTests(unittest.TestCase):
         self.assertTrue(all(r["floor_credit"] is None for r in self.ps.records))
         self.assertIn("mutant.exe", next(s for op, s, _ in self.ps.calls if op == "cut"))
 
+    def test_failed_recovery_boot_after_the_cut_is_never_skipped(self):
+        # The recovery boot follows the hard-off: its failure may be the crash defect, so keep-going stops.
+        c = self.make(command="campaign", cycles=2, keep_going=2)
+        self.ps.responses["boot"] = [{"heartbeat": "OkApplicationsHealthy"}, CampaignError("synthetic")]
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(CampaignError):
+            c.run()
+        self.assertEqual(self.operations().count("prepare"), 1)
+        self.assertEqual(c.summary["infrastructure_failures"], 0)
+        self.assertNotIn("ensure_off", self.operations())
+
+    def test_kept_going_infrastructure_failure_exits_one(self):
+        with patch("scripts.hyperv_campaign.Campaign") as campaign:
+            campaign.return_value.run.return_value = {"caught": 0, "failures": 1, "infrastructure_failures": 1}
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(main(["cycle", "--keep-going", "1"]), 1)
+
+    def test_launch_cut_before_first_copy_record_is_pre_copy_not_caught(self):
+        for last, stops in (("started", False), (None, False), ("planned", True)):
+            with self.subTest(last=last):
+                c = self.make(command="negative", cycles=2, exe=r"C:\lw\mutant.exe", anchor="launch")
+                response = json.loads(self.ps.run("# lw-hv:recover", 1))
+                self.ps.calls.clear()
+                response["result"].update(ok=False, copy_ran=False, last_record=last,
+                                          failure="hyperv: no durable copy record after preparing")
+                response["exit_code"] = 101
+                self.ps.responses["recover"] = response
+                with contextlib.redirect_stdout(io.StringIO()):
+                    if stops:
+                        with self.assertRaisesRegex(CampaignError, "copy_did_not_run"):
+                            c.run()
+                        self.assertEqual(len(self.ps.records), 1)
+                        continue
+                    summary = c.run()
+                self.assertEqual((summary["cycles"], summary["pre_copy"]), (2, 2))
+                self.assertEqual((summary["caught"], summary["failures"]), (0, 0))
+                self.assertTrue(all(r["kind"] == "pre_copy" and r["ok"] is None and r["floor_credit"] is None
+                                    for r in self.ps.records))
+        progress = self.make(command="negative", cycles=2, exe=r"C:\lw\mutant.exe")
+        response = json.loads(self.ps.run("# lw-hv:recover", 1))
+        response["result"].update(ok=False, copy_ran=False, last_record="started")
+        self.ps.responses["recover"] = response
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(CampaignError, "copy_did_not_run"):
+            progress.run()
+
     def test_negative_still_stops_on_missing_copy_or_elevation(self):
         for defect in ("copy", "elevation"):
             with self.subTest(defect=defect):
@@ -559,6 +604,12 @@ class CampaignTests(unittest.TestCase):
         c = self.make()
         c.cycle(50)
         scripts = [script for _, script, _ in self.ps.calls]
+        # make() starts a fresh fake: collect the launch-anchored cut and ensure_off scripts too.
+        launch = self.make(command="negative", exe=r"C:\lw\mutant.exe", anchor="launch")
+        launch.cycle(51)
+        launch._ensure_off()
+        self.assertIn("ensure_off", self.operations())
+        scripts += [script for _, script, _ in self.ps.calls]
         parser = """
 $scripts = ConvertFrom-Json PAYLOAD
 $problems = @()
@@ -748,6 +799,7 @@ $answers = @(foreach ($case in (ConvertFrom-Json PAYLOAD)) {
         with patch("scripts.hyperv_campaign.secrets.randbits", return_value=54321) as randbits, patch(
             "scripts.hyperv_campaign.Campaign"
         ) as campaign:
+            campaign.return_value.run.return_value = {"caught": 0, "infrastructure_failures": 0}
             self.assertEqual(main(["preflight"]), 0)
             self.assertEqual(campaign.call_args.args[-1].seed, 54321)
             randbits.assert_called_once_with(32)
