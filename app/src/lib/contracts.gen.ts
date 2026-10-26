@@ -2125,6 +2125,45 @@ export interface AskConfigureRequest {
   profile: AskProfile | null;
 }
 
+export type McpClient = string;
+
+export type ClientField = "path" | "size" | "modified" | "attributes" | "volumes";
+
+export interface ClientGrantRequest {
+  client: McpClient;
+  roots: RootId[];
+  fields: ClientField[];
+  expires_at?: Timestamp;
+}
+
+export interface ClientGrantResult {
+  grant_id: string;
+}
+
+export interface ClientGrantRecord {
+  grant_id: string;
+  client: McpClient;
+  roots: RootId[];
+  fields: ClientField[];
+  created_at: Timestamp;
+  expires_at: Timestamp | null;
+  revoked_at: Timestamp | null;
+}
+
+export interface ClientGrantList {
+  grants: ClientGrantRecord[];
+  available_fields: ClientField[];
+}
+
+export interface ClientRevokeRequest {
+  client: McpClient;
+}
+
+export interface ClientRevokeResult {
+  client: McpClient;
+  revoked: boolean;
+}
+
 /** Replaces the ask:local client grant (a new epoch). Every root must be an active granted root. */
 export interface AskGrantRequest {
   roots: RootId[];
@@ -2275,6 +2314,9 @@ export interface DeveloperClutterReport {
   not_assessed: ClutterNotAssessed[];
 }
 
+/** Closed field list for the Agent access form; availability comes from clients.list. */
+export const CLIENT_FIELDS = ["path", "size", "modified", "attributes", "volumes"] as const satisfies readonly ClientField[];
+
 // ---- commands (commands.json)
 
 export interface CommandMap {
@@ -2345,6 +2387,9 @@ export interface CommandMap {
   "copy.status": { request: CopyOperationRequest; result: CopyStatus };
   "ask.status": { request: EmptyRequest; result: AskStatus };
   "ask.configure": { request: AskConfigureRequest; result: AskStatus };
+  "clients.grant": { request: ClientGrantRequest; result: ClientGrantResult };
+  "clients.list": { request: EmptyRequest; result: ClientGrantList };
+  "clients.revoke": { request: ClientRevokeRequest; result: ClientRevokeResult };
   "ask.grant": { request: AskGrantRequest; result: AskStatus };
   "ask.revoke": { request: EmptyRequest; result: AskStatus };
   "ask.turn": { request: AskTurnRequest; result: AskTurnRecord };
@@ -2433,6 +2478,9 @@ export const COMMANDS = {
   "copy.status": { adapters: ["tauri", "http"], wave: 3, events: [] },
   "ask.status": { adapters: ["tauri", "http"], wave: 3, events: [] },
   "ask.configure": { adapters: ["tauri"], wave: 3, events: [] },
+  "clients.grant": { adapters: ["tauri"], wave: 3, events: [] },
+  "clients.list": { adapters: ["tauri"], wave: 3, events: [] },
+  "clients.revoke": { adapters: ["tauri"], wave: 3, events: [] },
   "ask.grant": { adapters: ["tauri", "http"], wave: 3, events: [] },
   "ask.revoke": { adapters: ["tauri", "http"], wave: 3, events: [] },
   "ask.turn": { adapters: ["tauri", "http"], wave: 3, events: [] },

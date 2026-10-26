@@ -6,6 +6,7 @@
   import { session } from '../../lib/stores/session.svelte';
   import { formatTime } from '../../lib/format/time';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
+  import { volumeMarkers } from '../../lib/format/volume';
   import type { BackupEvidence, Volume } from '../../lib/contracts.gen';
   import { conditions, coverage, formatAge, IMPORT_REFUSAL_WORDS, LABEL, observations, parseRequired, SNAPSHOT, topology } from './model';
 
@@ -129,11 +130,11 @@
       <label class="lw-field wide"><span class="lbl">Snapshot ID</span> <input type="text" bind:value={snapshot} maxlength="64" autocomplete="off" spellcheck="false" aria-invalid={invalidField === 'snapshot' ? 'true' : undefined} aria-describedby={invalidField === 'snapshot' ? 'backup-error' : undefined} /></label>
       <label class="lw-field"><span class="lbl">Source volume</span> <select bind:value={source}>
         <option value="">Not declared</option>
-        {#each volumes as v (v.volume_id)}<option value={v.volume_id}>{v.display_name}</option>{/each}
+        {#each volumes as v (v.volume_id)}<option value={v.volume_id}>{[v.display_name, ...volumeMarkers(v)].join(' · ')}</option>{/each}
       </select></label>
       <label class="lw-field"><span class="lbl">Backup volume</span> <select bind:value={target}>
         <option value="">Not declared (remote or unknown)</option>
-        {#each volumes as v (v.volume_id)}<option value={v.volume_id}>{v.display_name}</option>{/each}
+        {#each volumes as v (v.volume_id)}<option value={v.volume_id}>{[v.display_name, ...volumeMarkers(v)].join(' · ')}</option>{/each}
       </select></label>
       <label class="lw-field wide"><span class="lbl">Files you need back: one per line, relative name then SHA-256</span>
         <textarea bind:value={wanted} rows="3" spellcheck="false" aria-invalid={invalidField === 'receipt' ? 'true' : undefined} aria-describedby={invalidField === 'receipt' ? 'backup-error' : undefined}></textarea></label>

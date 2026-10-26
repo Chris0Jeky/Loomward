@@ -9,6 +9,7 @@
   import { formatCount, formatTime } from '../../lib/format/time';
   import { session } from '../../lib/stores/session.svelte';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
+  import VolumeStatus from '../../lib/ui/VolumeStatus.svelte';
   import { Say } from '../../lib/ui/say.svelte';
   import { firstTrusted, isSound, type Outcome } from './plan';
   import type { CandidateGroup, GroupOverride, PlacementCandidates, PlacementPlan, ProposalDetail, ProposalSummary, TierInfo, TierModel, TierVolume } from '../../lib/contracts.gen';
@@ -248,6 +249,7 @@
             <h3><VisibleName name={v.display_name} /></h3>
             <span class="tag tier" title={v.tier.note}>{tierLabel(v.tier)}</span>
             {#if !v.online}<span class="tag bad">offline</span>{/if}
+            <VolumeStatus id={v.volume_id} showOffline={false} />
           </header>
           <div class="meter" role="img" aria-label={`${escapedName(v.display_name)} free space ${percent(v.free_fraction)}; watch below ${percent(model.policy.watch_free_fraction)}, pressure below ${percent(model.policy.pressure_free_fraction)}`}>
             {#if used !== null}<div class={`used ${v.pressure}`} style={`width:${(used * 100).toFixed(1)}%`}></div>{/if}
@@ -278,7 +280,7 @@
   {#if cands}
     <p class="muted small">{cands.note}</p>
     {#if cands.excluded_volumes?.length}
-      <ul class="list" aria-label="Excluded placement volumes">{#each cands.excluded_volumes as x (x.volume_id)}<li><VisibleName name={vname(x.volume_id)} /> · {EXCLUDED[x.reason]}</li>{/each}</ul>
+      <ul class="list" aria-label="Excluded placement volumes">{#each cands.excluded_volumes as x (x.volume_id)}<li><VisibleName name={vname(x.volume_id)} /> <VolumeStatus id={x.volume_id} /> · {EXCLUDED[x.reason]}</li>{/each}</ul>
     {/if}
     <div class="tbl-wrap">
       <table class="tbl">
@@ -422,7 +424,7 @@
     <h3>Projected free space</h3>
     <ul class="list">
       {#each Object.entries(p.projected_free_bytes) as [id, bytes] (id)}
-        <li><VisibleName name={vname(id)} /> · <span class="num">{formatBytes(volume(id)?.free_bytes)}</span> now, <span class="num">{formatBytes(bytes)}</span> in this simulation</li>
+        <li><VisibleName name={vname(id)} /> <VolumeStatus id={id} /> · <span class="num">{formatBytes(volume(id)?.free_bytes)}</span> now, <span class="num">{formatBytes(bytes)}</span> in this simulation</li>
       {/each}
     </ul>
 
@@ -436,7 +438,7 @@
             {#each p.proposals as x (x.group_id)}
               <tr>
                 <th scope="row"><VisibleName name={group(x.group_id)?.name ?? x.group_id} /></th>
-                <td><VisibleName name={vname(x.source_id)} /></td><td><VisibleName name={vname(x.target_id)} /></td>
+                <td><VisibleName name={vname(x.source_id)} /> <VolumeStatus id={x.source_id} /></td><td><VisibleName name={vname(x.target_id)} /> <VolumeStatus id={x.target_id} /></td>
                 <td class="r num">{formatBytes(x.source_bytes_relieved)}</td><td class="r num">{formatBytes(x.destination_bytes_required)}</td><td class="r num">{formatBytes(x.transfer_bytes)}</td>
                 <td><span class="tag">consent required</span> <span class="tag">not executable</span></td>
               </tr>
@@ -455,7 +457,7 @@
     {/if}
     {#if p.excluded_volumes.length}
       <h3>Left out of the plan</h3>
-      <ul class="list">{#each p.excluded_volumes as x (x.volume_id)}<li><VisibleName name={vname(x.volume_id)} /> · {EXCLUDED[x.reason]}</li>{/each}</ul>
+      <ul class="list">{#each p.excluded_volumes as x (x.volume_id)}<li><VisibleName name={vname(x.volume_id)} /> <VolumeStatus id={x.volume_id} /> · {EXCLUDED[x.reason]}</li>{/each}</ul>
     {/if}
     <h3>Assumptions</h3>
     <ul class="list">

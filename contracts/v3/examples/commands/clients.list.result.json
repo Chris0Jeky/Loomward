@@ -1,0 +1,37 @@
+{
+  "grants": [
+    {
+      "grant_id": "cg_1",
+      "client": "mcp:synthetic-reader",
+      "roots": [
+        "rt_mock_1"
+      ],
+      "fields": [
+        "size"
+      ],
+      "created_at": "2026-10-01T09:00:00Z",
+      "expires_at": null,
+      "revoked_at": null
+    },
+    {
+      "grant_id": "cg_2",
+      "client": "mcp:synthetic-retired",
+      "roots": [
+        "rt_mock_1"
+      ],
+      "fields": [
+        "size"
+      ],
+      "created_at": "2026-10-01T09:00:00Z",
+      "expires_at": null,
+      "revoked_at": "2026-10-02T09:00:00Z"
+    }
+  ],
+  "available_fields": [
+    "path",
+    "size",
+    "modified",
+    "attributes",
+    "volumes"
+  ]
+}
