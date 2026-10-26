@@ -674,7 +674,8 @@ mod live {
             let root = roots["roots"][0]["reference"].clone();
             let volumes = data(&mut server, &f.state, "volumes", json!({}));
             let destination = volumes["volumes"][0]["volume_key"].clone();
-            assert!(volumes["volumes"][0].get("external").is_none());
+            // The lab volume is internal: `external` is absent (bus unknown) or false (bus known, not USB).
+            assert_ne!(volumes["volumes"][0].get("external"), Some(&json!(true)));
             let found = data(&mut server, &f.state, "find", json!({"text":"control-"}));
             let item = found["rows"][0]["reference"].clone();
             assert_eq!(
