@@ -19,9 +19,16 @@ use std::time::Duration;
 
 #[test]
 fn self_test_passes() {
-    let mut lines = Vec::new();
-    let ok = selftest::run(&mut |l| lines.push(l.to_string()));
-    assert!(ok, "{lines:#?}");
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_loomward-desktop"))
+        .arg("--self-test")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        stdout.contains("PASS bundled loomward-mcp starts with --help"),
+        "{stdout}"
+    );
 }
 
 /// A service that would grant anything, and counts how often it is asked.
@@ -1144,18 +1151,43 @@ fn a_second_instance_on_one_state_directory_is_refused_until_the_first_closes() 
             ..launch_args(args).unwrap()
         };
         let first = launch::open(&launch, None).unwrap();
+        let started = std::time::Instant::now();
         let second = launch::open(&launch, None)
             .err()
             .expect("a second instance opened the same state directory");
-        assert!(
-            second.starts_with("busy: Loomward is already open"),
-            "{second}"
+        assert_eq!(
+            second,
+            "Loomward's data is in use by another Loomward process, for example an agent's Loomward tools. Stop that agent, or try again in a moment."
         );
+        assert!(started.elapsed() >= Duration::from_secs(15));
+        assert!(started.elapsed() < Duration::from_secs(20));
         assert!(state.join("lock").is_file());
         // An OS lock on a handle, not a marker file: closing the first frees the directory.
         drop(first);
         launch::open(&launch, None).expect("reopen after the first closed");
     }
+}
+
+#[test]
+fn launch_retries_a_shared_lock_released_after_one_second() {
+    let scratch = tempfile::tempdir().unwrap();
+    let state = scratch.path().join("state");
+    let lock = loomward_service::paths::lock_state_dir(&state).unwrap();
+    let started = std::time::Instant::now();
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(1));
+        drop(lock);
+    });
+    let launch = Launch {
+        state_dir: Some(state.clone()),
+        ..launch_args(&["--dataset", "synthetic"]).unwrap()
+    };
+    let opened = launch::open(&launch, None);
+    let elapsed = started.elapsed();
+    release.join().unwrap();
+    assert!(opened.is_ok(), "launch did not wait for the shared lock");
+    assert!(elapsed >= Duration::from_secs(1));
+    assert!(state.join("state.db").is_file());
 }
 
 #[test]
