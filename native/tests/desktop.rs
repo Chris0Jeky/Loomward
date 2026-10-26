@@ -1192,7 +1192,10 @@ fn launch_retries_a_shared_lock_released_after_one_second() {
     };
     let opened = launch::open(&launch, None);
     let elapsed = started.elapsed();
-    assert!(release.join().unwrap(), "the waiting launch wrote no yield marker");
+    assert!(
+        release.join().unwrap(),
+        "the waiting launch wrote no yield marker"
+    );
     assert!(opened.is_ok(), "launch did not wait for the shared lock");
     assert!(
         !state.join("lock.wanted").exists(),
