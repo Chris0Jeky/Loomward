@@ -134,7 +134,7 @@ fn observed(files: Vec<FileEntry>) -> CandidateFiles {
     CandidateFiles { files, stop: None }
 }
 
-fn find<'a>(plan: &'a ReclaimPlan, node: NodeKey) -> (GroupKind, &'a ReclaimCandidate) {
+fn find(plan: &ReclaimPlan, node: NodeKey) -> (GroupKind, &ReclaimCandidate) {
     let id = node.reference();
     plan.groups
         .iter()
