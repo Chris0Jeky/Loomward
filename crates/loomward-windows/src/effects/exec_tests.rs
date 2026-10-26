@@ -312,8 +312,23 @@ fn assert_incomplete_listing(folder: &Path) {
     );
 }
 
+pub(super) struct LabDir {
+    _temp: Option<tempfile::TempDir>,
+    path: PathBuf,
+}
+
+impl LabDir {
+    pub(super) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn close(self) -> io::Result<()> {
+        self._temp.map_or(Ok(()), tempfile::TempDir::close)
+    }
+}
+
 pub(super) struct Lab {
-    pub(super) tmp: tempfile::TempDir,
+    pub(super) tmp: LabDir,
     pub(super) store: Mutex<Store>,
 }
 
@@ -323,11 +338,31 @@ impl Lab {
             eprintln!("skipped: elevated token (invariant 2)");
             return None;
         }
-        let tmp = tempfile::tempdir().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let tmp = LabDir {
+            path: temp.path().to_path_buf(),
+            _temp: Some(temp),
+        };
         for d in ["src", "dest", "state"] {
             fs::create_dir(tmp.path().join(d)).unwrap();
         }
         let store = Mutex::new(Store::open(&tmp.path().join("state/state.db")).unwrap());
+        Some(Lab { tmp, store })
+    }
+    /// A caller-owned synthetic lab survives both this handle and a guest reboot.
+    pub(super) fn at(dir: &Path) -> Option<Lab> {
+        if enumerate::skip_elevated_test() {
+            eprintln!("skipped: elevated token (invariant 2)");
+            return None;
+        }
+        for d in ["src", "dest", "state"] {
+            fs::create_dir_all(dir.join(d)).unwrap();
+        }
+        let tmp = LabDir {
+            _temp: None,
+            path: dir.to_path_buf(),
+        };
+        let store = Mutex::new(Store::open(&dir.join("state/state.db")).unwrap());
         Some(Lab { tmp, store })
     }
     pub(super) fn src(&self) -> PathBuf {

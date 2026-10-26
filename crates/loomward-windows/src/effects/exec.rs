@@ -2591,6 +2591,10 @@ mod tests;
 mod crash_tests;
 
 #[cfg(test)]
+#[path = "exec_hyperv_tests.rs"]
+mod hyperv_tests;
+
+#[cfg(test)]
 #[path = "exec_pending_fence_tests.rs"]
 mod pending_fence_tests;
 
