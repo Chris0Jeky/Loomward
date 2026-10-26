@@ -454,14 +454,13 @@ Also answered in the same chat (agent questions, recorded so they bind):
 
 The research lane reconciled the deep-research report with the repository ([docs/51](docs/51-research-programme.md),
 section 9). Four questions only you can answer; none blocks the read-only work (reclaim planner, categoriser contract):
-- [ ] **loomward-hyperv-lab-setup**: may agents build the Hyper-V crash-test VM on `E:` (lab data only) once you add your
-  account to "Hyper-V Administrators"? (a) yes, with Microsoft's evaluation image (recommended); (b) yes, with an ISO you
-  point to; (c) not yet. Blocks G5 (LW-133).
-- [ ] **loomward-archive-second-copy**: what protection must exist before originals leave the internal disks, since `H:`
-  would then hold the only copy? (a) a second disk rotated offline (recommended); (b) cold cloud storage, each upload
-  previewed; (c) accept a single copy. Blocks retirement of originals (LW-135).
-- [ ] **loomward-power-loss-hardware**: (a) Hyper-V proof only, receipts say "not power-loss tested on this disk"
-  (recommended); (b) buy a disposable disk and a USB power switch for a physical test (LW-134).
-- [ ] **loomward-categoriser-model-downloads**: may agents download one or two small models through LM Studio onto `E:`
-  to screen a cheaper categoriser than Qwen 27B? (a) the small screen, ask again before more (recommended); (b) the full
-  set, about 20-25 GB; (c) none. Blocks LW-140.
+- [x] **loomward-hyperv-lab-setup**: ANSWERED 2026-10-26 (a): "Go ahead with X1, the Hyper-V crash campaign: I've added my account to Hyper-V Administrators; use the evaluation image on E:."
+- [x] **loomward-archive-second-copy**: ANSWERED 2026-10-26 (c): "Accept a single copy for now but in the future I will be getting another disk"
+- [x] **loomward-power-loss-hardware**: ANSWERED 2026-10-26 (a): "Hyper-V only (Recommended)"
+- [x] **loomward-categoriser-model-downloads**: ANSWERED 2026-10-26 (Other): "If space allows it and using the slower disks is not a problem for this, you can research and download all the models you want, there are definitely some interesting ones similar to the ternary bonsai 2 (not sure if that's the best, I'm just naming a type of model that is efficient when it comes to resources used, which is good for this application)"
+
+### q-50 — Disk survey setup — POSED 2026-10-26 (agent-hq inbox, owner action)
+
+The external-disk lane shipped USB scan roots, the read-only `loomward-mcp` server with space tools and `plan_archive`,
+and the Agent access view (docs/48). Only you can grant whole volumes (q-7):
+- [x] **loomward-space-survey-setup**: ANSWERED 2026-10-26 (Other): "Why is this not something you could do yourself from start to end? if possible, do that, unless it's highly inefficient and you'd need to use the computer-use, in which case I'll do it tomorrow". Volume roots stay picker-only in code, so the agent surveys with every top-level folder of each disk granted in separate local state folders on `E:`; files sitting directly on a volume root are measured separately (a plain directory listing of sizes). This answer is the owner's authority for that piecewise whole-disk survey beyond q-4's single-folder grant: metadata only (names, sizes, times), read-only, non-elevated, with its state and survey output on `E:` outside every Git checkout. Installing the nightly and granting volumes in the app stays optional.
