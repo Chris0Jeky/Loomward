@@ -252,3 +252,18 @@ an independent oracle, removes the directory and writes the
 see [HANDOFF.md](HANDOFF.md) for the comparison and measured writer timings.
 P6/P14 are at 1M rather than 10M. Cold-cache, HTTP, peak process memory, physical
 power-loss durability and native engine/service integration remain unverified.
+
+## Machine store advice (rules v2)
+
+`Reader::machine_stores(root, cap)` recognises machine-level build outputs, package caches,
+model stores, virtual disks, worktree-shaped directories, the Recycle Bin and Windows-managed
+space from catalogue names and structure only. It reads one transaction without repairing
+aggregates, opening store paths or running tools; owner commands and relocation settings are
+display text. A recognised directory shields its descendants from double counting, and v1
+project-output detection stays separate. Results use a 2,000,000-step budget, the reader's
+deadline and a 1..=200 cap, ordered by known logical size descending, then node id (directory
+before file on equal ids). Partial, invalid or mid-scan directory sizes and unknown allocations
+stay null; a file uses its own observed sizes, also null during a scan. Observed allocation is
+never a reclaimability estimate, and a `.git` file does not prove ownership or disposability.
+Synthetic recognition, decoy, shielding, coverage and row-checksum tests are in
+`tests/machine_stores.rs`.
