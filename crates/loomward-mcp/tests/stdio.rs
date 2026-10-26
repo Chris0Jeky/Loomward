@@ -316,13 +316,17 @@ mod live {
     use loomward_protocol::{
         CallContext, DatasetClass, RequestEnvelope, ResponseEnvelope, RootId, ViewService,
     };
-    use loomward_service::{paths::lock_state_dir, Config, Service};
+    use loomward_service::{
+        paths::{lock_state_dir, unwant_lock, want_lock},
+        Config, Service,
+    };
     use std::path::{Path, PathBuf};
     use std::time::Instant;
 
     struct Fixture {
         _tmp: tempfile::TempDir,
         state: PathBuf,
+        lab: PathBuf,
         expected: Value,
     }
 
@@ -339,6 +343,11 @@ mod live {
     }
 
     fn fixture() -> Fixture {
+        fixture_with(|_| {})
+    }
+
+    /// `populate` adds synthetic entries to the lab root before the scan.
+    fn fixture_with(populate: impl FnOnce(&Path)) -> Fixture {
         let tmp = tempfile::tempdir_in(loomward_service::paths::test_roots_base()).unwrap();
         let state = tmp.path().join("state");
         let root = tmp.path().join("lab");
@@ -357,6 +366,8 @@ mod live {
         std::fs::write(root.join("Cargo.toml"), b"synthetic").unwrap();
         std::fs::create_dir(root.join("target")).unwrap();
         std::fs::write(root.join("target").join("build.bin"), b"synthetic").unwrap();
+        populate(&root);
+        let lab = root.clone();
         let service = Service::open(Config {
             state_dir: state.clone(),
             dataset: DatasetClass::Synthetic,
@@ -421,6 +432,7 @@ mod live {
         Fixture {
             _tmp: tmp,
             state,
+            lab,
             expected,
         }
     }
@@ -1092,5 +1104,253 @@ mod live {
         drop(db);
         drop(server);
         assert!(lock_state_dir(&f.state).is_ok());
+    }
+
+    fn codes(plan: &Value) -> Vec<&str> {
+        plan["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|w| w["code"].as_str().unwrap())
+            .collect()
+    }
+
+    // Root, destination and a plan of the root folder, with catalog.db unchanged across the plan.
+    fn plan_root(server: &mut Server, state: &Path) -> Value {
+        let root = data(server, state, "roots", json!({}))["roots"][0]["reference"].clone();
+        let destination =
+            data(server, state, "volumes", json!({}))["volumes"][0]["volume_key"].clone();
+        let catalog = dump(&state.join("catalog.db"));
+        let plan = data(
+            server,
+            state,
+            "plan_archive",
+            json!({"references":[root],"destination_volume":destination}),
+        );
+        assert!(
+            dump(&state.join("catalog.db")) == catalog,
+            "plan_archive changed catalog.db"
+        );
+        assert_eq!(plan["items"][0]["reference"], root);
+        assert_eq!(plan["items"][0]["kind"], "dir");
+        plan
+    }
+
+    #[test]
+    fn a_renamed_lab_root_reads_as_offline_source_and_offline_destination() {
+        if loomward_windows::enumerate::skip_elevated_test() {
+            return;
+        }
+        let f = fixture();
+        // The stored flag says online: only live presence can make the volume offline.
+        set_space(
+            &f.state,
+            Some(1_000_000_000_000),
+            Some(900_000_000_000),
+            true,
+        );
+        std::fs::rename(&f.lab, f.lab.with_file_name("lab-moved")).unwrap();
+        let mut server = Server::start_client(&f.state, true, "all", &[]);
+        let found = data(&mut server, &f.state, "find", json!({"text":"control-"}));
+        let volumes = data(&mut server, &f.state, "volumes", json!({}));
+        assert_eq!(volumes["volumes"][0]["online"], false, "{volumes}");
+        let plan = data(
+            &mut server,
+            &f.state,
+            "plan_archive",
+            json!({"references":[found["rows"][0]["reference"]],"destination_volume":volumes["volumes"][0]["volume_key"]}),
+        );
+        let codes = codes(&plan);
+        for code in ["offline_source", "offline_destination", "same_volume"] {
+            assert!(codes.contains(&code), "{plan}");
+        }
+        assert_eq!(plan["space"]["fits"], "unknown");
+    }
+
+    #[test]
+    fn a_healthy_folder_walk_is_complete_and_sees_a_nested_placeholder() {
+        if loomward_windows::enumerate::skip_elevated_test() {
+            return;
+        }
+        let f = fixture();
+        set_space(
+            &f.state,
+            Some(1_000_000_000_000),
+            Some(900_000_000_000),
+            true,
+        );
+        let mut server = Server::start_client(&f.state, true, "all", &[]);
+        let started = Instant::now();
+        let plan = plan_root(&mut server, &f.state);
+        let item = &plan["items"][0];
+        let range = &item["modified_range"];
+        // On a starved host the plan's own five-second detail budget can trip; say so.
+        let took = started.elapsed();
+        assert_eq!(range["complete"], true, "plan_root took {took:?}: {plan}");
+        let (from, to) = (
+            range["from"].as_str().unwrap(),
+            range["to"].as_str().unwrap(),
+        );
+        assert!(from <= to, "{plan}");
+        assert_eq!(plan["total"]["modified_range"], *range);
+        assert_eq!(item["attribute_assessment_complete"], true);
+        assert_eq!(item["files"], 28);
+        let seen = codes(&plan);
+        assert!(!seen.contains(&"cloud_placeholder") && !seen.contains(&"reparse_point"));
+        drop(server);
+        // Fault injection, catalogue only: a placeholder one folder down, under target/, is
+        // reachable only through the descendant walk.
+        let db = rusqlite::Connection::open(f.state.join("catalog.db")).unwrap();
+        assert_eq!(
+            db.execute(
+                "UPDATE file SET attrs=attrs|262144 WHERE name='build.bin'",
+                []
+            )
+            .unwrap(),
+            1
+        );
+        drop(db);
+        let mut server = Server::start_client(&f.state, true, "all", &[]);
+        let plan = plan_root(&mut server, &f.state);
+        let warning = plan["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|w| w["code"] == "cloud_placeholder")
+            .unwrap_or_else(|| panic!("{plan}"));
+        assert_eq!(warning["reference"], plan["items"][0]["reference"]);
+        assert!(!codes(&plan).contains(&"reparse_point"), "{plan}");
+    }
+
+    #[test]
+    fn a_real_junction_descendant_warns_reparse_point() {
+        if loomward_windows::enumerate::skip_elevated_test() {
+            return;
+        }
+        let f = fixture_with(|lab| {
+            let elsewhere = lab.with_file_name("junction-target");
+            std::fs::create_dir(&elsewhere).unwrap();
+            std::fs::create_dir(lab.join("nested")).unwrap();
+            // A junction needs no privilege; the scan never follows it.
+            let made = Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(lab.join("nested").join("link"))
+                .arg(&elsewhere)
+                .output()
+                .unwrap();
+            assert!(made.status.success(), "{made:?}");
+        });
+        set_space(
+            &f.state,
+            Some(1_000_000_000_000),
+            Some(900_000_000_000),
+            true,
+        );
+        let mut server = Server::start_client(&f.state, true, "attributes", &[]);
+        let plan = plan_root(&mut server, &f.state);
+        assert!(codes(&plan).contains(&"reparse_point"), "{plan}");
+        assert!(!codes(&plan).contains(&"cloud_placeholder"), "{plan}");
+    }
+
+    #[test]
+    fn a_folder_walk_past_32_pages_is_marked_incomplete() {
+        if loomward_windows::enumerate::skip_elevated_test() {
+            return;
+        }
+        // 40 subfolders plus target/ and the root itself: more pages than the plan's 32.
+        let f = fixture_with(|lab| {
+            for i in 0..40 {
+                std::fs::create_dir(lab.join(format!("part-{i:02}"))).unwrap();
+            }
+        });
+        set_space(
+            &f.state,
+            Some(1_000_000_000_000),
+            Some(900_000_000_000),
+            true,
+        );
+        let mut server = Server::start_client(&f.state, true, "all", &[]);
+        let plan = plan_root(&mut server, &f.state);
+        assert_eq!(
+            plan["items"][0]["modified_range"]["complete"], false,
+            "{plan}"
+        );
+        assert_eq!(plan["items"][0]["attribute_assessment_complete"], false);
+        assert_eq!(plan["total"]["modified_range"]["complete"], false);
+        // The page budget bounds detail only: the folder's own size stays known.
+        assert_eq!(plan["total"]["files"], 28);
+    }
+
+    fn busy(server: &mut Server) {
+        let v = server.tool("find", json!({"text":"report"}));
+        assert_eq!(
+            v["result"]["content"][0]["text"],
+            "busy: Loomward is open on this machine; try again after it closes",
+            "{v}"
+        );
+    }
+
+    #[test]
+    fn a_holder_with_zero_idle_release_yields_to_the_desktop_marker() {
+        if loomward_windows::enumerate::skip_elevated_test() {
+            return;
+        }
+        let f = fixture();
+        let before = dump(&f.state.join("state.db"));
+        let mut server = Server::start(&f.state, true, &["--idle-release-secs", "0"]);
+        data(&mut server, &f.state, "find", json!({"text":"report"}));
+        assert!(lock_state_dir(&f.state).unwrap_err().starts_with("busy:"));
+        // What the desktop does: mark, retry for up to 15 s, take the lock, unmark. The holder
+        // sees the marker between calls; the client sends nothing meanwhile.
+        want_lock(&f.state).unwrap();
+        let started = Instant::now();
+        let desktop = loop {
+            if let Ok(lock) = lock_state_dir(&f.state) {
+                break lock;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(15),
+                "the holder ignored the marker"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        unwant_lock(&f.state);
+        busy(&mut server);
+        drop(desktop);
+        // The yield lasts about 30 s: with the lock free and no marker, a polling client still
+        // cannot take the lock back from a desktop that is between its retries.
+        for _ in 0..3 {
+            busy(&mut server);
+            drop(lock_state_dir(&f.state).expect("the yielding server took the lock back"));
+        }
+        assert_eq!(dump(&f.state.join("state.db")), before);
+        assert!(!f.state.join("ask.db").exists());
+    }
+
+    #[test]
+    fn a_stale_marker_is_ignored_and_a_fresh_one_refuses_the_first_lock() {
+        if loomward_windows::enumerate::skip_elevated_test() {
+            return;
+        }
+        let f = fixture();
+        want_lock(&f.state).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(f.state.join("lock.wanted"))
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - Duration::from_secs(60))
+            .unwrap();
+        let mut server = Server::start(&f.state, true, &["--idle-release-secs", "0"]);
+        data(&mut server, &f.state, "find", json!({"text":"report"}));
+        // Several marker polls later the holder still holds.
+        std::thread::sleep(Duration::from_millis(1500));
+        assert!(lock_state_dir(&f.state).unwrap_err().starts_with("busy:"));
+        data(&mut server, &f.state, "find", json!({"text":"report"}));
+        drop(server);
+        // A fresh marker: a server that takes the lock for its first call releases it at once.
+        want_lock(&f.state).unwrap();
+        let mut server = Server::start(&f.state, true, &[]);
+        busy(&mut server);
+        drop(lock_state_dir(&f.state).expect("the first lock was not released"));
     }
 }

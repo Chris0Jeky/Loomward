@@ -48,7 +48,8 @@ impl Details {
     fn observe(&mut self, row: &Value) {
         self.modified |= row.get("modified_at").is_some();
         self.attributes |= row.get("attributes").is_some();
-        if self.modified {
+        // The range covers file contents: a folder's own time (null for a scan root) is not one.
+        if self.modified && row["kind"] != "dir" {
             if let Some(time) = row["modified_at"].as_str() {
                 if self
                     .from
@@ -89,6 +90,44 @@ impl Details {
             || row["flags"]
                 .as_array()
                 .is_some_and(|a| a.contains(&json!("reparse_not_followed")));
+    }
+
+    /// Observes a folder's descendants page by page, within the plan's page and time budgets.
+    fn walk(
+        &mut self,
+        node: String,
+        pages: &mut usize,
+        deadline: Instant,
+        mut children: impl FnMut(&str, &Value) -> Result<Value, String>,
+    ) -> Result<(), String> {
+        let mut pending = VecDeque::from([(node, Value::Null)]);
+        while let Some((node, cursor)) = pending.pop_front() {
+            if *pages == 0 || Instant::now() >= deadline {
+                self.complete = false;
+                break;
+            }
+            *pages -= 1;
+            let page = children(&node, &cursor)?;
+            if page["budget_hit"] == true {
+                self.complete = false;
+            }
+            for row in page["items"].as_array().ok_or("invalid detail page")? {
+                self.observe(row);
+                if row["kind"] == "dir" {
+                    pending.push_back((
+                        row["node_id"]
+                            .as_str()
+                            .ok_or("invalid detail node")?
+                            .to_owned(),
+                        Value::Null,
+                    ));
+                }
+            }
+            if !page["next_cursor"].is_null() {
+                pending.push_front((node, page["next_cursor"].clone()));
+            }
+        }
+        Ok(())
     }
 
     fn output(&self, value: &mut Value) {
@@ -222,37 +261,10 @@ impl Host {
             details.observe(row);
             // Optional details come only from projected service rows. Never infer permission
             // from a missing value, and never walk the filesystem to fill a catalogue gap.
-            if details.modified || details.attributes {
-                let mut pending = VecDeque::new();
-                if row["kind"] == "dir" {
-                    pending.push_back((node, Value::Null));
-                }
-                while let Some((node, cursor)) = pending.pop_front() {
-                    if pages == 0 || Instant::now() >= deadline {
-                        details.complete = false;
-                        break;
-                    }
-                    pages -= 1;
-                    let page = self.read("tree.children",json!({"node_id":node,"sort":"size_desc","basis":"logical","limit":200,"cursor":cursor}))?;
-                    if page["budget_hit"] == true {
-                        details.complete = false;
-                    }
-                    for row in page["items"].as_array().ok_or("invalid detail page")? {
-                        details.observe(row);
-                        if row["kind"] == "dir" {
-                            pending.push_back((
-                                row["node_id"]
-                                    .as_str()
-                                    .ok_or("invalid detail node")?
-                                    .to_owned(),
-                                Value::Null,
-                            ));
-                        }
-                    }
-                    if !page["next_cursor"].is_null() {
-                        pending.push_front((node, page["next_cursor"].clone()));
-                    }
-                }
+            if (details.modified || details.attributes) && row["kind"] == "dir" {
+                details.walk(node, &mut pages, deadline, |node, cursor| {
+                    self.read("tree.children",json!({"node_id":node,"sort":"size_desc","basis":"logical","limit":200,"cursor":cursor}))
+                })?;
             }
             if details.placeholder {
                 warning(
@@ -335,6 +347,63 @@ mod tests {
         assert_eq!(out["modified_range"]["from"], "2026-01-01T00:00:00Z");
         assert_eq!(out["modified_range"]["to"], "2026-01-01T00:00:00.1Z");
         assert_eq!(out["modified_range"]["complete"], false);
+    }
+
+    #[test]
+    fn descendant_walk_follows_cursors_and_dirs_and_marks_every_budget_incomplete() {
+        let file =
+            |t: &str| json!({"kind":"file","coverage":"complete","modified_at":t,"attributes":[]});
+        let walk = |pages: usize, deadline: Instant, budget_hit: bool| {
+            let mut details = Details {
+                complete: true,
+                ..Details::default()
+            };
+            details.observe(
+                &json!({"kind":"dir","coverage":"complete","modified_at":null,"attributes":[]}),
+            );
+            let mut pages = pages;
+            let mut seen = Vec::new();
+            details
+                .walk("top".into(), &mut pages, deadline, |node, cursor| {
+                    seen.push(format!("{node}:{cursor}"));
+                    Ok(match (node, cursor.as_str()) {
+                        ("top", None) => {
+                            json!({"items":[file("2026-01-03T00:00:00Z"),{"kind":"dir","node_id":"sub","coverage":"complete","modified_at":"2026-01-02T00:00:00Z","attributes":[]}],"next_cursor":"c1","budget_hit":false})
+                        }
+                        ("top", Some("c1")) => {
+                            json!({"items":[file("2026-01-01T00:00:00Z")],"next_cursor":null,"budget_hit":budget_hit})
+                        }
+                        _ => {
+                            json!({"items":[{"kind":"file","coverage":"complete","modified_at":"2026-01-04T00:00:00Z","attributes":["reparse_point"]}],"next_cursor":null,"budget_hit":false})
+                        }
+                    })
+                })
+                .unwrap();
+            let mut out = json!({});
+            details.output(&mut out);
+            (out, details.reparse, seen)
+        };
+        let later = Instant::now() + Duration::from_secs(60);
+        let (out, reparse, seen) = walk(32, later, false);
+        // A page's cursor is followed before the queued subfolder.
+        assert_eq!(seen, ["top:null", "top:\"c1\"", "sub:null"]);
+        assert!(reparse);
+        assert_eq!(
+            out["modified_range"],
+            json!({"from":"2026-01-01T00:00:00Z","to":"2026-01-04T00:00:00Z","complete":true})
+        );
+        assert_eq!(out["attribute_assessment_complete"], true);
+        // The page budget (32 per plan), the five-second deadline and a service budget_hit.
+        for (pages, deadline, budget_hit, fetched) in [
+            (2, later, false, 2),
+            (32, Instant::now(), false, 0),
+            (32, later, true, 3),
+        ] {
+            let (out, _, seen) = walk(pages, deadline, budget_hit);
+            assert_eq!(seen.len(), fetched);
+            assert_eq!(out["modified_range"]["complete"], false);
+            assert_eq!(out["attribute_assessment_complete"], false);
+        }
     }
 
     #[test]
