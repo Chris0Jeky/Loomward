@@ -1842,7 +1842,11 @@ fn verification_open_starts_no_telemetry_copy_recovery_or_backup_threads() {
         weak(&open),
         weak(&verify)
     );
-    assert_eq!(weak(&verify), weak(&client), "same footprint as a client host");
+    assert_eq!(
+        weak(&verify),
+        weak(&client),
+        "same footprint as a client host"
+    );
 }
 
 #[test]

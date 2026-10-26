@@ -48,6 +48,9 @@ pub enum Reason {
     EntryBudget,
     /// The root lists identity-unverified (#219): no content read, ever.
     IdentityUnverified,
+    /// The volume's sector geometry could not be queried (some USB bridges and card readers), so
+    /// non-cached content reads cannot be sized (#903).
+    GeometryUnavailable,
 }
 impl Reason {
     pub fn as_str(self) -> &'static str {
@@ -69,6 +72,7 @@ impl Reason {
             Self::TimeBudget => "time_budget",
             Self::EntryBudget => "entry_budget",
             Self::IdentityUnverified => "identity_unverified",
+            Self::GeometryUnavailable => "sector_geometry_unavailable",
         }
     }
 }
