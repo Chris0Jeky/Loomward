@@ -92,7 +92,7 @@ def window_for_label(label: str | None) -> str:
     for parts, window in (
         (("item_removed", "staging_removed", "cancelling"), "cleanup"),
         (("create", "identities"), "create_batch"),
-        (("written", "verif", "chunk"), "write"),
+        (("planned", "written", "verif", "chunk"), "write"),  # planned: the last record before data writes
         (("publish", "rename", "committed"), "publish"),
     ):
         if any(part in label for part in parts):
@@ -434,7 +434,7 @@ $ErrorActionPreference = 'Stop'
 $result = Get-Content -LiteralPath (Join-Path $destination 'result.json') -Raw | ConvertFrom-Json
 $trace = @(Get-Content -LiteralPath (Join-Path $destination 'trace.tsv'))
 $last = if ($trace.Count) {{ ($trace[-1] -split "`t", 2)[-1] }} else {{ $null }}
-$free = Invoke-Command -Session $session -ScriptBlock {{ [IO.DriveInfo]::new('L').AvailableFreeSpace }}
+$free = [long](Invoke-Command -Session $session -ScriptBlock {{ [IO.DriveInfo]::new('L').AvailableFreeSpace }})
 @{{ result = $result; last_trace_label = $last; free_bytes = $free;
     exit_code = $answer.exit_code; runner_output = $answer.runner_output; act_done = $answer.act_done }} |
     ConvertTo-Json -Depth 10 -Compress

@@ -437,7 +437,7 @@ foreach ($script in $scripts) {
     def test_label_mapping(self):
         table = {
             "create": "create_batch", "identities_recorded": "create_batch",
-            "create_batch": "create_batch", "item_written": "write", "verified": "write",
+            "create_batch": "create_batch", "planned": "write", "item_written": "write", "verified": "write",
             "chunk_flushed": "write", "publish_intent": "publish", "renamed": "publish",
             "committed": "publish", "item_removed": "cleanup", "staging_removed": "cleanup",
             "cancelling": "cleanup", "preparing": "other", "": "other", None: "other",
