@@ -199,9 +199,7 @@ fn shares_sum_to_at_most_one_and_zero_files_do_not_divide_by_zero() {
 }
 
 #[test]
-fn denied_coverage_uses_nulls_and_surfaces_the_checked_out_validator_limit() {
-    // Before #914 the validator requires integer counts. Pin the requested null encoding
-    // independently, then require build to surface its error; after #914 this proves success.
+fn unobserved_coverage_builds_valid_packets_with_nulls() {
     let mut expected = build(&facts("denied"), ids()).unwrap();
     for state in ["denied", "unscanned", "excluded", "cancelled", "unknown"] {
         let mut input = facts("denied");
@@ -225,10 +223,8 @@ fn denied_coverage_uses_nulls_and_surfaces_the_checked_out_validator_limit() {
         ] {
             expected["time"][key] = Value::Null;
         }
-        match validate_packet(&expected) {
-            Ok(()) => assert_eq!(build(&input, ids()).unwrap(), expected),
-            Err(error) => assert_eq!(build(&input, ids()).unwrap_err(), error.to_string()),
-        }
+        validate_packet(&expected).unwrap();
+        assert_eq!(build(&input, ids()).unwrap(), expected);
     }
 }
 
