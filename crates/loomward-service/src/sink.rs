@@ -222,8 +222,7 @@ fn observation(e: &Entry, unverified: bool) -> Observation {
         file_id,
         logical: e.logical,
         allocated: e.allocated,
-        // Family classification belongs to a later lane: an extension is only "other" here.
-        family: if extension.is_some() { "other" } else { "none" }.into(),
+        family: loomward_catalog::extension_family(extension.as_deref()).into(),
         extension,
         created_ft: e.creation,
         modified_ft: e.last_write,

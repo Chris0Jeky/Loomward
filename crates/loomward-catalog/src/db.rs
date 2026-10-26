@@ -464,6 +464,25 @@ pub(crate) fn open_pair_validated(
             ))?;
         }
     }
+    // #908: native scans once wrote every extension as family 'other', and the writer refuses a
+    // changed family. Re-derive those rows from the one table; any other family is left alone.
+    // Idempotent and bounded by the number of distinct extensions, so it needs no version bump.
+    let unclassified = {
+        let mut s = tx.prepare("SELECT id,ext FROM ext WHERE family='other'")?;
+        let rows = s
+            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    for (id, ext) in unclassified {
+        let family = crate::extension_family(Some(&ext));
+        if family != "other" {
+            tx.execute(
+                "UPDATE ext SET family=?1 WHERE id=?2",
+                rusqlite::params![family, id],
+            )?;
+        }
+    }
     search_index(&tx, ranked)?;
     bulk_tables(&tx, false)?;
     tx.execute("UPDATE revision SET catalog_rev=catalog_rev+1", [])?;

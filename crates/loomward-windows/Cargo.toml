@@ -35,7 +35,7 @@ tempfile.workspace = true
 
 # H7 measurement only: a child process keeps a writable mapped view of a staged file.
 [target.'cfg(windows)'.dev-dependencies]
-windows-sys = { version = "0.61", features = ["Win32_System_Memory"] }
+windows-sys = { version = "0.61", features = ["Win32_System_Memory", "Win32_Security_Authorization"] }
 
 [[bin]]
 name = "loomward-fixtures"
