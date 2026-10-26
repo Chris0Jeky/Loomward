@@ -1835,9 +1835,10 @@ fn verification_open_starts_no_telemetry_copy_recovery_or_backup_threads() {
     assert!(open.inner.copies.store.is_some());
     assert!(verify.inner.copies.store.is_none());
     let weak = |svc: &Service| std::sync::Arc::weak_count(&svc.inner);
-    // Telemetry pump and backup-scrub retry: two threads, each holding one Weak.
+    // Telemetry pump, backup-scrub retry and the freshness scan writer each hold one Weak; all three
+    // are absent from a verification open, so dropping any one gate fails this (review of #906).
     assert!(
-        weak(&open) >= weak(&verify) + 2,
+        weak(&open) >= weak(&verify) + 3,
         "open {} verify {}",
         weak(&open),
         weak(&verify)

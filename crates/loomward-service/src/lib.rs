@@ -423,7 +423,7 @@ pub(crate) fn grant_refusal(number: usize, refused: &Refused, flag_offered: bool
         Refused::IdentityUnverified if flag_offered => {
             "identity_unverified (pass --allow-identity-unverified to list it read-only)".into()
         }
-        Refused::IdentityUnverified => "identity_unverified (a FAT, exFAT or unknown filesystem             cannot prove file identity, so this command reads no content there; no option or             state directory changes that)"
+        Refused::IdentityUnverified => "identity_unverified (a FAT, exFAT or unknown filesystem cannot prove file identity, so this command reads no content there; no option or state directory changes that)"
             .into(),
     };
     format!("grant root #{number} refused: {rule}")
