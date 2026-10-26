@@ -166,6 +166,7 @@ class CampaignTests(unittest.TestCase):
         self.assertEqual(self.ps.records, [record])
         self.assertEqual(record["cycle"], 7)
         self.assertEqual(record["kind"], "floor")
+        self.assertEqual(record["anchor"], "progress")
         self.assertEqual(record["floor_credit"], "write")
         self.assertEqual(record["last_record"], "item_verified")
         self.assertEqual(record["last_trace_label"], "item_written")
@@ -214,6 +215,183 @@ class CampaignTests(unittest.TestCase):
         self.assertEqual(record["trace_lines"], 18)
         self.assertEqual(record["dirty_pages"], 32)
         self.assertIn("cut", self.operations())
+
+    def test_launch_anchor_negative_cut_and_completion(self):
+        for completion in (None, "marker", "terminal"):
+            with self.subTest(completion=completion):
+                c = self.make(command="negative", anchor="launch", exe=r"C:\lw\mutant.exe")
+                self.ps.responses["cut"] = {
+                    "trace_lines": None, "dirty_pages": None, "act_done": None,
+                    "delay_ms": 88, "cut_latency_ms": 98.5, "last_poll_return": None,
+                    "launch_returned": "2026-10-26T12:00:00.0000000Z",
+                    "stop_started": "2026-10-26T12:00:00.0880000Z",
+                    "stop_returned": "2026-10-26T12:00:00.0985000Z",
+                }
+                recovered = json.loads(self.ps.run("# lw-hv:recover", 1))
+                self.ps.calls.clear()
+                recovered["act_done"] = completion == "marker"
+                recovered["result"]["terminal_before_recover"] = completion == "terminal"
+                self.ps.responses["recover"] = recovered
+                record = c.cycle(1)
+                self.assertEqual(record["anchor"], "launch")
+                self.assertEqual(record["kind"], "negative_control" if completion is None else "post_completion")
+                self.assertIsNone(record["floor_credit"])
+                self.assertEqual(sum(c.summary["floor_credits"].values()), 0)
+                for key in ("trace_lines", "dirty_pages", "last_poll_return"):
+                    self.assertIsNone(record[key])
+                self.assertEqual(record["launch_returned"], "2026-10-26T12:00:00.0000000Z")
+                self.assertEqual(record["cut_latency_ms"], 98.5)
+                self.assertEqual(self.ps.records, [record])
+                cut = next(s for op, s, _ in self.ps.calls if op == "cut")
+                after_launch = cut.split(c._launch, 1)[1]
+                before_stop = after_launch.split("Stop-VM", 1)[0]
+                self.assertNotIn("Invoke-Command", before_stop)
+                self.assertNotIn("Get-Counter", after_launch)
+                self.assertLess(before_stop.index("$launchReturned = Get-Date"),
+                                before_stop.index("Start-Sleep -Milliseconds $delay"))
+                self.assertIn("$delay = " + str(record["delay_ms"]), before_stop)
+                self.assertIn("-TurnOff -Force", after_launch)
+                self.assertIn("($stopReturned - $launchReturned).TotalMilliseconds", after_launch)
+                for field in ("trace_lines", "dirty_pages", "act_done", "last_poll_return"):
+                    self.assertIn(field + " = $null", after_launch)
+                for field, variable in (("launch_returned", "launchReturned"),
+                                        ("stop_started", "stopStarted"), ("stop_returned", "stopReturned")):
+                    self.assertIn(f"{field} = ${variable}.ToString('o')", after_launch)
+
+    def test_parser_launch_anchor_is_negative_only(self):
+        for command in ("campaign", "cycle", "preflight"):
+            with self.subTest(command=command), patch("scripts.hyperv_campaign.Campaign") as campaign:
+                with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
+                    main([command, "--anchor", "launch"])
+                self.assertEqual(error.exception.code, 2)
+                campaign.assert_not_called()
+        with patch("scripts.hyperv_campaign.Campaign") as campaign:
+            self.assertEqual(main(["negative", "--exe", r"C:\lw\mutant.exe",
+                                   "--anchor", "launch", "--keep-going", "2"]), 0)
+            config = campaign.call_args.args[-1]
+            self.assertEqual((config.anchor, config.keep_going), ("launch", 2))
+
+    def test_keep_going_bounds_consecutive_infrastructure_failures(self):
+        cases = (
+            (1, [True, False], False, 2, 1, 1),
+            (1, [True, True, False], True, 2, 2, 1),
+            (1, [True, False, True, False], False, 4, 2, 2),
+            (0, [True, False], True, 1, 1, 0),
+            (1, [True], False, 1, 1, 0),
+        )
+        for budget, failures, stops, cycles, infra, offs in cases:
+            with self.subTest(budget=budget, failures=failures):
+                c = self.make(command="campaign", cycles=len(failures), keep_going=budget)
+                boot = []
+                for failed in failures:
+                    boot.extend([CampaignError("powershell_unavailable_or_timeout")] if failed else
+                                [{"heartbeat": "Ok"}, {"heartbeat": "Ok"}])
+                self.ps.responses["boot"] = boot
+                with contextlib.redirect_stdout(io.StringIO()):
+                    if stops:
+                        with self.assertRaisesRegex(CampaignError, "boot:"):
+                            c.run()
+                    else:
+                        c.run()
+                self.assertEqual(c.summary["cycles"], cycles)
+                self.assertEqual(c.summary["failures"], infra)
+                self.assertEqual(c.summary["infrastructure_failures"], infra)
+                self.assertEqual([r["cycle"] for r in self.ps.records], list(range(1, cycles + 1)))
+                self.assertTrue(all(r["anchor"] == "progress" for r in self.ps.records))
+                operations = self.operations()
+                self.assertEqual(operations.count("ensure_off"), offs)
+                for index, operation in enumerate(operations):
+                    if operation == "ensure_off":
+                        self.assertEqual(operations[index - 1:index + 3],
+                                         ["append", "ensure_off", "preflight", "start"])
+                for operation, script, _ in self.ps.calls:
+                    if operation == "ensure_off":
+                        self.assertIn("(Get-VM -Name 'LoomwardCrashLab').State -ne 'Off'", script)
+                        self.assertIn("Stop-VM -Name 'LoomwardCrashLab' -TurnOff -Force", script)
+                        self.assertIn("function Resolve-LabPath", script)
+
+    def test_keep_going_start_and_cache_failures(self):
+        for operation, success in (("start", {}), ("cache", {"enabled": True})):
+            with self.subTest(operation=operation):
+                c = self.make(command="campaign", cycles=2, keep_going=1)
+                self.ps.responses[operation] = [CampaignError("synthetic failure"), success, success]
+                with contextlib.redirect_stdout(io.StringIO()):
+                    summary = c.run()
+                self.assertEqual((summary["cycles"], summary["failures"], summary["infrastructure_failures"]),
+                                 (2, 1, 1))
+                self.assertEqual(self.ps.records[0]["failure"], operation + ":synthetic failure")
+                self.assertEqual(self.operations().count("ensure_off"), 1)
+
+    def test_keep_going_exact_infrastructure_failures(self):
+        for failure in ("guest_boot_failed", "powershell_unavailable_or_timeout", "guest_direct_connection_timeout"):
+            with self.subTest(failure=failure):
+                c = self.make(command="campaign", cycles=2, keep_going=1)
+                with patch.object(c, "_boot", side_effect=[CampaignError(failure), None, None]), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    summary = c.run()
+                self.assertEqual(self.ps.records[0]["failure"], failure)
+                self.assertEqual((summary["cycles"], summary["infrastructure_failures"]), (2, 1))
+
+    def test_keep_going_does_not_match_failure_substrings_or_absent_vm(self):
+        for failure in ("guest_boot_failed_extra", "prepare:guest_direct_connection_timeout"):
+            with self.subTest(failure=failure):
+                c = self.make(command="campaign", cycles=2, keep_going=5)
+                with patch.object(c, "_boot", side_effect=CampaignError(failure)), \
+                        contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(CampaignError, failure):
+                    c.run()
+                self.assertEqual(c.summary["infrastructure_failures"], 0)
+                self.assertNotIn("ensure_off", self.operations())
+        c = self.make(command="campaign", cycles=2, keep_going=5)
+        self.ps.preflight["vm"] = None
+        with self.assertRaisesRegex(CampaignError, "vm_absent"):
+            c.run()
+        self.assertEqual(self.operations(), ["preflight"])
+
+    def test_keep_going_never_retries_safety_or_oracle_failures(self):
+        for reason in ("oracle_failed", "filesystem_repaired", "write_cache_not_enabled",
+                       "chkdsk_dirty_or_failed", "copy_did_not_run", "elevated_token",
+                       "prepare_failed", "lab_free_space_unavailable", "invalid_guest_result"):
+            with self.subTest(reason=reason):
+                c = self.make(command="campaign", cycles=3, keep_going=5)
+                if reason in ("oracle_failed", "copy_did_not_run", "invalid_guest_result",
+                              "lab_free_space_unavailable"):
+                    response = json.loads(self.ps.run("# lw-hv:recover", 1))
+                    if reason == "oracle_failed":
+                        response["result"]["ok"] = False
+                    elif reason == "copy_did_not_run":
+                        response["result"]["copy_ran"] = False
+                    elif reason == "invalid_guest_result":
+                        response["result"] = None
+                    else:
+                        response["free_bytes"] = None
+                    self.ps.responses["recover"] = response
+                elif reason in ("filesystem_repaired", "chkdsk_dirty_or_failed"):
+                    health = json.loads(self.ps.run("# lw-hv:health", 1))
+                    if reason == "filesystem_repaired":
+                        health["filesystem"]["dirty"] = True
+                    else:
+                        health["chkdsk"]["clean"] = False
+                    self.ps.responses["health"] = health
+                elif reason == "write_cache_not_enabled":
+                    self.ps.responses["cache"] = {"enabled": False}
+                else:
+                    self.ps.responses["prepare"] = {"exit_code": 1, "elevated_token": reason == "elevated_token"}
+                self.ps.calls.clear()
+                with contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(CampaignError, reason):
+                    c.run()
+                self.assertEqual(c.summary["infrastructure_failures"], 0)
+                self.assertEqual(self.ps.records[-1]["failure"], reason)
+                self.assertEqual(c.summary["cycles"], 1)
+                self.assertNotIn("ensure_off", self.operations())
+
+    def test_keep_going_stops_if_ensure_off_fails(self):
+        c = self.make(command="campaign", cycles=2, keep_going=1)
+        self.ps.responses.update(boot=CampaignError("synthetic boot failure"),
+                                 ensure_off=CampaignError("synthetic turn-off failure"))
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(CampaignError, "ensure_off:"):
+            c.run()
+        self.assertEqual(self.operations().count("start"), 1)
+        self.assertEqual(c.summary["cycles"], 1)
 
     def test_zero_dirty_pages_gets_no_credit(self):
         c = self.make()
@@ -363,6 +541,12 @@ class CampaignTests(unittest.TestCase):
                 self.make(exe=path)
         with self.assertRaises(CampaignError):
             self.make(cycles=0)
+        for options in ({"anchor": "launch"}, {"anchor": "unknown"}, {"keep_going": -1}):
+            with self.subTest(options=options), self.assertRaisesRegex(CampaignError, "invalid_configuration"):
+                self.make(**options)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
+            main(["campaign", "--keep-going", "-1"])
+        self.assertEqual(error.exception.code, 2)
 
     @unittest.skipUnless(sys.platform == "win32" and shutil.which("powershell"), "Windows PowerShell parser")
     def test_generated_powershell_syntax_only_never_invokes_generated_scripts(self):
