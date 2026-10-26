@@ -31,9 +31,10 @@ rules AS NOT MATERIALIZED (
           AND f.name IN ('build.gradle','build.gradle.kts')) THEN 'pruned'
       WHEN d.name='packages' AND p.name='.nuget' THEN 'nuget'
       WHEN d.name='models' AND p.name='.lmstudio' THEN 'lmstudio'
-      WHEN d.name='$Recycle.Bin' AND p.id=?1 THEN 'recycle-bin'
+      -- Root-level advice is queried first; keep shielding its subtrees here.
+      WHEN d.name='$Recycle.Bin' AND p.id=?1 THEN 'pruned'
       WHEN d.name IN ('WinSxS','SoftwareDistribution') AND p.name='Windows'
-        AND p.parent_id=?1 THEN 'system'
+        AND p.parent_id=?1 THEN 'pruned'
       WHEN d.listing_state IN ('complete','incomplete')
         AND coalesce(d.listing_outcome,'complete') NOT IN ('stale','excluded','denied','unscanned')
       THEN CASE
@@ -93,13 +94,11 @@ candidates(id,kind,rule,logical,allocation_unknown) AS (
   UNION ALL
   SELECT f.id,1,
     CASE WHEN f.name='ext4.vhdx' THEN 'wsl'
-      WHEN f.name COLLATE NOCASE IN ('docker_data.vhdx','Docker.vhdx') THEN 'docker'
-      ELSE 'system' END,
+      ELSE 'docker' END,
     CASE WHEN NOT ?4 THEN f.logical END, f.allocated IS NULL
   FROM tree t JOIN files f ON f.dir_id=t.id
   WHERE t.rule IS NULL AND (f.name='ext4.vhdx'
-    OR f.name COLLATE NOCASE IN ('docker_data.vhdx','Docker.vhdx')
-    OR (f.dir_id=?1 AND f.name IN ('hiberfil.sys','pagefile.sys','swapfile.sys')))
+    OR f.name COLLATE NOCASE IN ('docker_data.vhdx','Docker.vhdx'))
 )
 SELECT id,kind,rule,max(logical IS NULL OR allocation_unknown!=0) OVER ()
 FROM candidates ORDER BY logical DESC,id,kind LIMIT ?3
