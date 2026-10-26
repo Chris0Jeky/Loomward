@@ -98,6 +98,15 @@ fn within(dest: &Destination, root: (u64, [u8; 16]), guid: Option<u128>) -> io::
     Ok(false)
 }
 
+/// docs/48 E0: a detachable destination is lab-only until C8 opens; anything but a synthetic lab
+/// session is treated as personal.
+fn destination_unsupported(
+    volume: &crate::volumes::Classification,
+    synthetic_lab: bool,
+) -> io::Result<bool> {
+    volume.unsupported_copy_destination(!synthetic_lab)
+}
+
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message.to_string())
 }
@@ -261,8 +270,10 @@ fn prepare_with_limit(
         ancestors,
         verified_volume: enumerate::verifies_identity(&filesystem(request.destination)?),
         cloud_synced: dest.cloud_synced()?,
-        unsupported_volume: crate::volumes::classify(request.destination)?
-            .unsupported_copy_destination(!request.synthetic_lab)?,
+        unsupported_volume: destination_unsupported(
+            &crate::volumes::classify(request.destination)?,
+            request.synthetic_lab,
+        )?,
         protected: request.protected,
         case_sensitive: dest.case_sensitive()?,
         existing_names,
