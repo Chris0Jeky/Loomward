@@ -9,7 +9,7 @@ pub enum Kind {
 }
 
 /// Section 6 of docs/47. Report-only classes are retained without requiring equality.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
 pub enum MetadataClass {
     NamedStreams,
     CreationTime,
@@ -90,13 +90,13 @@ pub struct Tree {
     pub nodes: BTreeMap<PathBuf, Observation<Node>>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum Side {
     Source,
     Destination,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub enum Field {
     Entry,
     Listing,
@@ -105,7 +105,7 @@ pub enum Field {
     Metadata(MetadataClass),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub enum DifferenceKind {
     Missing,
     Extra,
@@ -116,13 +116,13 @@ pub enum DifferenceKind {
     Refused { side: Side, class: MetadataClass },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Difference {
     pub path: PathBuf,
     pub kind: DifferenceKind,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Unknown {
     pub path: PathBuf,
     pub side: Side,
@@ -130,7 +130,7 @@ pub struct Unknown {
     pub reason: &'static str,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct ReportedMetadata {
     pub path: PathBuf,
     pub class: MetadataClass,
@@ -138,7 +138,7 @@ pub struct ReportedMetadata {
     pub destination: Observation<Vec<u8>>,
 }
 
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub struct Report {
     pub differences: Vec<Difference>,
     pub unknowns: Vec<Unknown>,

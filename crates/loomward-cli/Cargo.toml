@@ -11,4 +11,18 @@ path = "src/main.rs"
 
 [dependencies]
 loomward-core = { path = "../loomward-core" }
+loomward-catalog = { path = "../loomward-catalog" }
+loomward-engine = { path = "../loomward-engine" }
+loomward-operations = { path = "../loomward-operations" }
+loomward-protocol = { path = "../loomward-protocol" }
+loomward-service = { path = "../loomward-service" }
+rusqlite = { version = "0.39.0", features = ["bundled"] }
 serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+loomward-windows = { path = "../loomward-windows", features = ["fixtures"] }
+
+[dev-dependencies.loomward-service]
+path = "../loomward-service"
+features = ["test-support"]
