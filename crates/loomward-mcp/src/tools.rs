@@ -548,8 +548,14 @@ impl Host {
     }
 }
 
+/// True for USB, false only for buses known to be internal; anything else (sd, virtual, other,
+/// unknown) is an honest unknown and the field is omitted (invariant 4).
 fn external(bus: &Value) -> Option<bool> {
-    bus.as_str().filter(|s| *s != "unknown").map(|s| s == "usb")
+    match bus.as_str()? {
+        "usb" => Some(true),
+        "nvme" | "sata" | "ata" | "atapi" | "scsi" | "sas" | "raid" | "spaces" => Some(false),
+        _ => None,
+    }
 }
 
 fn service_error(error: loomward_protocol::ErrorBody) -> String {
@@ -566,6 +572,9 @@ mod tests {
         assert_eq!(external(&json!("usb")), Some(true));
         assert_eq!(external(&json!("nvme")), Some(false));
         assert_eq!(external(&json!("unknown")), None);
+        for unsure in ["other", "sd", "virtual"] {
+            assert_eq!(external(&json!(unsure)), None, "{unsure}");
+        }
         assert_eq!(external(&Value::Null), None);
     }
 }
