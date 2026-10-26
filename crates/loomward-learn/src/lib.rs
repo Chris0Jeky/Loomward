@@ -7,6 +7,7 @@ use std::fmt;
 
 pub mod evaluation;
 pub mod features;
+pub mod labelling;
 pub mod packet;
 pub mod student;
 
