@@ -106,7 +106,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     )?;
     let db = Connection::open(temp.path().join("catalog.db"))?;
     if !indexed {
-        db.execute_batch("DROP TRIGGER search_file_insert; DROP TRIGGER search_file_delete; DROP TRIGGER search_file_rename; DROP TRIGGER search_dir_insert; DROP TRIGGER search_dir_delete; DROP TRIGGER search_dir_rename; DROP TABLE search_name;")?;
+        db.execute_batch("DROP TRIGGER search_file_insert; DROP TRIGGER search_file_delete; DROP TRIGGER search_file_rename; DROP TRIGGER search_dir_insert; DROP TRIGGER search_dir_delete; DROP TRIGGER search_dir_rename; DROP TRIGGER search_dir_files_delete; DROP TABLE search_name;")?;
     }
     c.writer().set_bulk_first_scan(true);
     let WriteReply::Root {
@@ -489,7 +489,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     if indexed {
         // Recreate a pre-search store, then time the real on-open backfill transaction.
         let db = Connection::open(temp.path().join("catalog.db"))?;
-        db.execute_batch("DROP TABLE search_name; DROP TRIGGER search_file_insert; DROP TRIGGER search_file_delete; DROP TRIGGER search_file_rename; DROP TRIGGER search_dir_insert; DROP TRIGGER search_dir_delete; DROP TRIGGER search_dir_rename;")?;
+        db.execute_batch("DROP TABLE search_name; DROP TRIGGER search_file_insert; DROP TRIGGER search_file_delete; DROP TRIGGER search_file_rename; DROP TRIGGER search_dir_insert; DROP TRIGGER search_dir_delete; DROP TRIGGER search_dir_rename; DROP TRIGGER search_dir_files_delete;")?;
         if ranked {
             db.execute_batch("DROP TABLE search_token; DROP TABLE search_dirty; DROP TRIGGER search_tok_file_insert; DROP TRIGGER search_tok_file_delete; DROP TRIGGER search_tok_file_rename; DROP TRIGGER search_tok_dir_insert; DROP TRIGGER search_tok_dir_delete; DROP TRIGGER search_tok_dir_rename;")?;
         }
