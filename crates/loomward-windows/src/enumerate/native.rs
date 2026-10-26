@@ -35,6 +35,7 @@ use windows_sys::{
 
 #[cfg(test)]
 thread_local! {
+    static OPEN_OPTIONS: std::cell::RefCell<Option<Vec<(u32, u32, u32)>>> = const { std::cell::RefCell::new(None) };
     static OPEN_ACCESSES: std::cell::RefCell<Option<Vec<u32>>> = const { std::cell::RefCell::new(None) };
     static CANCEL_BETWEEN_COMPONENTS: std::cell::RefCell<Option<IoCancellation>> = const { std::cell::RefCell::new(None) };
 }
@@ -43,6 +44,12 @@ pub(crate) fn record_open_accesses(run: impl FnOnce()) -> Vec<u32> {
     OPEN_ACCESSES.with(|v| *v.borrow_mut() = Some(Vec::new()));
     run();
     OPEN_ACCESSES.with(|v| v.borrow_mut().take().unwrap())
+}
+#[cfg(test)]
+pub(crate) fn record_open_options(run: impl FnOnce()) -> Vec<(u32, u32, u32)> {
+    OPEN_OPTIONS.with_borrow_mut(|v| *v = Some(Vec::new()));
+    run();
+    OPEN_OPTIONS.with_borrow_mut(|v| v.take().unwrap())
 }
 #[cfg(test)]
 fn record_access(access: u32) {
@@ -272,7 +279,35 @@ fn open_relative_with_attributes(
 ) -> Result<File, SourceError> {
     non_elevated()?;
     checked_child(name)?;
-    open_relative_checked(parent, name, access, share, asynchronous, object_attributes)
+    open_relative_checked(
+        parent,
+        name,
+        access,
+        share,
+        asynchronous,
+        object_attributes,
+        0,
+    )
+}
+
+#[cfg(any(feature = "content-read", test))]
+pub(crate) fn open_relative_noncached(
+    parent: &File,
+    name: &[u16],
+    access: u32,
+    share: u32,
+) -> Result<File, SourceError> {
+    non_elevated()?;
+    checked_child(name)?;
+    open_relative_checked(
+        parent,
+        name,
+        access,
+        share,
+        true,
+        0,
+        windows_sys::Wdk::Storage::FileSystem::FILE_NO_INTERMEDIATE_BUFFERING,
+    )
 }
 
 /// Only enumerated named $DATA streams; fixed read-only access and no-recall open.
@@ -305,6 +340,7 @@ pub(crate) fn open_data_stream(
         FILE_SHARE_READ | FILE_SHARE_DELETE,
         true,
         0,
+        windows_sys::Wdk::Storage::FileSystem::FILE_NO_INTERMEDIATE_BUFFERING,
     )
 }
 
@@ -315,6 +351,7 @@ fn open_relative_checked(
     share: u32,
     asynchronous: bool,
     object_attributes: u32,
+    extra_options: u32,
 ) -> Result<File, SourceError> {
     #[cfg(test)]
     record_access(access);
@@ -335,6 +372,17 @@ fn open_relative_checked(
     let mut status: IO_STATUS_BLOCK = unsafe { zeroed() };
     let mut handle = null_mut();
     let _profile = profile::OPEN.start();
+    let options = if asynchronous {
+        FILE_OPEN_REPARSE_POINT | FILE_OPEN_NO_RECALL
+    } else {
+        directory_create_options()
+    } | extra_options;
+    #[cfg(test)]
+    OPEN_OPTIONS.with_borrow_mut(|v| {
+        if let Some(v) = v {
+            v.push((access, share, options));
+        }
+    });
     let code = unsafe {
         NtCreateFile(
             &mut handle,
@@ -345,11 +393,7 @@ fn open_relative_checked(
             0,
             share,
             FILE_OPEN,
-            if asynchronous {
-                FILE_OPEN_REPARSE_POINT | FILE_OPEN_NO_RECALL
-            } else {
-                directory_create_options()
-            },
+            options,
             null(),
             0,
         )

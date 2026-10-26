@@ -110,9 +110,11 @@ fn whole_environment_profile_is_refused_with_a_plain_reason() {
         .unwrap();
     assert_eq!(output.status.code(), Some(2));
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("whole user-profile folder"),
+        String::from_utf8_lossy(&output.stderr)
+            .contains("the whole user-profile folder is not eligible (q-4); choose a child folder"),
         "{output:?}"
     );
+    assert!(output.stdout.is_empty());
     assert!(!state.exists());
 }
 
@@ -195,6 +197,19 @@ fn identical_trees_exit_zero_with_a_json_report() {
     let output = verify(&source, &destination, &state, &[]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    for (side, root) in [("source", &source), ("destination", &destination)] {
+        use loomward_windows::enumerate::{DirSource, FileIdObs, NativeSource};
+        let (_, identity) = NativeSource::default().open_root(root).unwrap();
+        let Some(FileIdObs::Id128(id)) = identity.id else {
+            panic!("128-bit fixture identity")
+        };
+        assert_eq!(
+            report["roots"][side]["volume_guid"],
+            format!("{:032x}", identity.volume_guid.unwrap())
+        );
+        let hex: String = id.iter().map(|byte| format!("{byte:02x}")).collect();
+        assert_eq!(report["roots"][side]["root_file_id"], hex);
+    }
     assert_eq!(report["differences"], serde_json::json!([]));
     assert_eq!(report["unknowns"], serde_json::json!([]));
     assert!(report["reported_metadata"].as_array().unwrap().len() > 1);
@@ -282,4 +297,92 @@ fn byte_time_and_entry_budget_exhaustion_exit_two() {
         );
         assert!(String::from_utf8_lossy(&output.stderr).contains("unknown"));
     }
+}
+
+#[test]
+fn capabilities_describe_native_read_only_verification() {
+    let output = Command::new(env!("CARGO_BIN_EXE_loomward-native"))
+        .arg("capabilities")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["native_content_hash"], cfg!(windows));
+    assert_eq!(report["file_mutation"], false);
+    assert_eq!(report["process_mutation"], false);
+}
+
+#[cfg(windows)]
+#[test]
+fn reused_state_with_stale_same_path_grant_requires_fresh_state() {
+    if elevated() {
+        return;
+    }
+    let (temp, source, destination) = populated_fixture();
+    let state = temp.path().join("state");
+    assert_eq!(
+        verify(&source, &destination, &state, &[]).status.code(),
+        Some(0)
+    );
+    let db = rusqlite::Connection::open(state.join("state.db")).unwrap();
+    // Keep the stale active grant and let the next open grant the new live identity.
+    db.execute(
+        "UPDATE root_grant SET root_file_id=zeroblob(16) WHERE id=(SELECT min(id) FROM root_grant)",
+        [],
+    )
+    .unwrap();
+    drop(db);
+    let output = verify(&source, &destination, &state, &[]);
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("use a fresh --state-dir"),
+        "{output:?}"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn reparse_children_and_partial_listings_exit_two_with_json_unknowns() {
+    if elevated() {
+        return;
+    }
+    let (temp, source, destination) = populated_fixture();
+    let target = temp.path().join("target");
+    std::fs::create_dir(&target).unwrap();
+    // Junction fixture setup; the verifier must not follow it.
+    let output = Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(source.join("link"))
+        .arg(&target)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let output = verify(&source, &destination, &temp.path().join("state"), &[]);
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(
+        report["unknowns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|u| u["reason"] == "reparse_point"),
+        "{report}"
+    );
+    let output = verify(
+        &source,
+        &destination,
+        &temp.path().join("partial-state"),
+        &["--max-entries", "1"],
+    );
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(
+        report["unknowns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|u| u["reason"] == "entry_budget"),
+        "{report}"
+    );
 }

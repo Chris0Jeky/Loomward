@@ -170,6 +170,10 @@ impl Tracked {
 
 impl Tracker {
     #[cfg(all(test, windows))]
+    pub(crate) fn is_started(&self) -> bool {
+        self.enabled.load(Ordering::Acquire)
+    }
+    #[cfg(all(test, windows))]
     pub(crate) fn pause_pump(&self) {
         self.stopped.store(true, Ordering::Release);
         if let Some(pump) = self.pump.lock().unwrap().take() {

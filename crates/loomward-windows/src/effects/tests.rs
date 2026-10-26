@@ -1378,8 +1378,8 @@ fn physical_sector_geometry_requires_known_compatible_powers_of_two() {
     if skip_elevated() {
         return;
     }
-    assert_eq!(sector_alignment(512, 4096).unwrap(), 4096);
-    assert_eq!(sector_alignment(512, 512).unwrap(), 512);
+    assert_eq!(crate::noncached::sector_alignment(512, 4096).unwrap(), 4096);
+    assert_eq!(crate::noncached::sector_alignment(512, 512).unwrap(), 512);
     for (logical, physical) in [
         (0, 512),
         (512, 0),
@@ -1387,7 +1387,7 @@ fn physical_sector_geometry_requires_known_compatible_powers_of_two() {
         (512, 768),
         (512, 2_097_152),
     ] {
-        assert!(sector_alignment(logical, physical).is_err());
+        assert!(crate::noncached::sector_alignment(logical, physical).is_err());
     }
 }
 

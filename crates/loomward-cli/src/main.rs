@@ -1,4 +1,4 @@
-//! Native read-only source CLI. No Windows/native build was available in authoring.
+//! Native read-only CLI: metadata scans, tier simulation and admitted Windows tree verification.
 #![forbid(unsafe_code)]
 use std::io::{self, Read, Write};
 use std::path::Path;
@@ -11,7 +11,7 @@ const USAGE: &str = "Usage: loomward-native capabilities | scan ROOT [MAX_ENTRIE
 fn execute(args: &[String]) -> Result<serde_json::Value, String> {
     match args.first().map(String::as_str) {
         Some("capabilities") if args.len() == 1 => Ok(
-            serde_json::json!({"native_build":"local_build","metadata_scan":true,"tier_simulation":true,"file_mutation":false,"process_mutation":false,"native_content_hash":false}),
+            serde_json::json!({"native_build":"local_build","metadata_scan":true,"tier_simulation":true,"file_mutation":false,"process_mutation":false,"native_content_hash":cfg!(windows)}),
         ),
         Some("scan") if (2..=3).contains(&args.len()) => {
             let limit = if args.len() == 3 {
