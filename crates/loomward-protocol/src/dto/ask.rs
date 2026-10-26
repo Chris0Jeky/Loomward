@@ -20,6 +20,7 @@ pub enum AskField {
     Size,
     Modified,
     Attributes,
+    Volumes,
 }
 
 /// `local` is the only class that runs: a cloud profile is refused when configured (q-5).
@@ -51,7 +52,7 @@ pub struct AskConfigureRequest {
 #[serde(deny_unknown_fields)]
 pub struct AskGrantRequest {
     pub roots: UniqueVec<RootId, 1, 64>,
-    pub fields: UniqueVec<AskField, 0, 4>,
+    pub fields: UniqueVec<AskField, 0, 5>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -59,7 +60,7 @@ pub struct AskGrantRequest {
 pub struct AskGrant {
     /// Granted roots whose own root grant is still active.
     pub roots: BoundedVec<RootId, 0, 64>,
-    pub fields: BoundedVec<AskField, 0, 4>,
+    pub fields: BoundedVec<AskField, 0, 5>,
     pub granted_at: Timestamp,
 }
 

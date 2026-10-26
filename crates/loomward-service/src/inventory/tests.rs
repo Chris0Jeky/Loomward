@@ -26,6 +26,7 @@ fn open(
         true,
         None,
         provider,
+        false,
     )
     .unwrap()
 }

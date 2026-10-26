@@ -195,3 +195,49 @@ pub struct ClientNodeDetail {
     )]
     pub display_path: Option<DisplayPath>,
 }
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClientRootScanState {
+    pub state: RootScanStateState,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub generation: Option<Generation>,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub finished_at: Option<Timestamp>,
+    pub coverage: CoverageState,
+}
+
+/// A granted root's coverage and freshness; no owner grant metadata or subtree totals.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClientRoot {
+    pub root_id: RootId,
+    #[serde(
+        default,
+        deserialize_with = "crate::types::optional_present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub display_path: Option<DisplayPath>,
+    pub scan: ClientRootScanState,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClientRootList {
+    pub roots: BoundedVec<ClientRoot, 0, 64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClientEntryPage {
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub anchor: Option<EntryPageAnchor>,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub generation: Option<Generation>,
+    pub items: BoundedVec<ClientEntryRow, 0, 200>,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub next_cursor: Option<Cursor>,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub total: Option<Count>,
+    pub budget_hit: bool,
+}

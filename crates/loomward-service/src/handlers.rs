@@ -487,7 +487,7 @@ impl Inner {
             LearningRefit => self.learning_refit(),
             ThreadsMeaning => self.meaning(req.decode_payload()?, work),
             TreeSlice => self.tree_slice(req, work),
-            TreeChildren => self.tree_children(req, work),
+            TreeChildren => self.tree_children(req, work, None),
             TreePath => self.node_read(req, work, |reader, key| {
                 reader.path(key).map(|p| encode(&p))
             }),
@@ -839,7 +839,44 @@ impl Inner {
         work: Option<&crate::ReadWork>,
         share_percent: u32,
     ) -> Result<Value, ErrorBody> {
-        let rows = db::roots(&self.db(), None).map_err(sql_error)?;
+        self.root_list_scoped(work, share_percent, None)
+    }
+
+    pub(crate) fn client_roots(
+        &self,
+        work: Option<&crate::ReadWork>,
+        grant: &crate::clients::ClientGrant,
+    ) -> Handled {
+        let revs = self.revisions()?;
+        Ok(out(
+            self.root_list_scoped(work, 75, Some(&grant.roots))?,
+            Some(revs),
+        ))
+    }
+
+    fn root_list_scoped(
+        &self,
+        work: Option<&crate::ReadWork>,
+        share_percent: u32,
+        scope: Option<&[i64]>,
+    ) -> Result<Value, ErrorBody> {
+        // Select roots before reading any aggregates; an ungranted root consumes no read budget.
+        let rows = match scope {
+            None => db::roots(&self.db(), None).map_err(sql_error)?,
+            Some(roots) => {
+                let conn = self.db();
+                let mut rows = Vec::new();
+                for root in roots {
+                    rows.extend(
+                        db::roots(&conn, Some(*root))
+                            .map_err(sql_error)?
+                            .into_iter()
+                            .filter(|r| r.grant_state == "active"),
+                    );
+                }
+                rows
+            }
+        };
         let mut reader = self.read_reader(work)?;
         // Unique totals share the request's budget (#722): keep the rest of it (a quarter) for the
         // response, split the remainder over the roots still to measure, and let time a small
@@ -855,7 +892,7 @@ impl Inner {
         let mut left = rows.iter().filter(|r| measured(r)).count();
         let roots = rows
             .iter()
-            .map(|r| {
+            .map(|r| -> Result<Value, ErrorBody> {
                 if let Some(end) = budget_end {
                     let now = std::time::Instant::now();
                     reader.unique_totals_cut =
@@ -864,7 +901,21 @@ impl Inner {
                         left -= 1;
                     }
                 }
-                self.root_json(r, Some(&mut reader))
+                let mut root = self.root_json(r, Some(&mut reader))?;
+                if scope.is_some() {
+                    let path = r.dir
+                        .map(|dir| reader.path(NodeKey::Dir(dir)))
+                        .transpose()
+                        .map_err(catalog_error)?;
+                    let text = path.as_ref().map(|p| {
+                        p.ancestors.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join("\\")
+                    }).unwrap_or_default();
+                    root["display_path"] = json!({
+                        "text": text.chars().take(1024).collect::<String>(),
+                        "truncated": path.is_some_and(|p| p.truncated) || text.chars().count() > 1024,
+                    });
+                }
+                Ok(root)
             })
             .collect::<Result<Vec<_>, _>>()?;
         Ok(json!({"roots": roots}))
@@ -1427,7 +1478,12 @@ impl Inner {
         self.sealed(encode(&slice)?, revs)
     }
 
-    fn tree_children(&self, req: &RequestEnvelope, work: Option<&crate::ReadWork>) -> Handled {
+    pub(crate) fn tree_children(
+        &self,
+        req: &RequestEnvelope,
+        work: Option<&crate::ReadWork>,
+        client: Option<&crate::clients::ClientGrant>,
+    ) -> Handled {
         let r: TreeChildrenRequest = req.decode_payload()?;
         let revs = self.revisions()?;
         let mut reader = self.read_reader(work)?;
@@ -1439,7 +1495,10 @@ impl Inner {
             ));
         };
         self.check_generation(req.expected_generation, key, &mut reader)?;
-        let bind = binding(req);
+        let bind = match client {
+            Some(g) => format!("{}:{}:{}", binding(req), g.client, g.epoch),
+            None => binding(req),
+        };
         let cursor = match &r.cursor {
             None => None,
             Some(handle) => match self
@@ -1629,7 +1688,11 @@ impl Inner {
         self.sealed(value, revs)
     }
 
-    fn breakdown(&self, req: &RequestEnvelope, work: Option<&crate::ReadWork>) -> Handled {
+    pub(crate) fn breakdown(
+        &self,
+        req: &RequestEnvelope,
+        work: Option<&crate::ReadWork>,
+    ) -> Handled {
         let r: BreakdownRequest = req.decode_payload()?;
         let revs = self.revisions()?;
         let mut reader = self.read_reader(work)?;

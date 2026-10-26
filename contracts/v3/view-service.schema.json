@@ -1064,6 +1064,126 @@
       },
       "$comment": "LW-067 client projection: root-relative display_path is present only with path disclosure. Owner-only detail is never exposed."
     },
+    "ClientRootScanState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "generation",
+        "finished_at",
+        "coverage"
+      ],
+      "properties": {
+        "state": {
+          "enum": [
+            "never_scanned",
+            "scanning",
+            "complete",
+            "partial",
+            "stale",
+            "failed"
+          ]
+        },
+        "generation": {
+          "$ref": "#/$defs/NullableGeneration"
+        },
+        "finished_at": {
+          "$ref": "#/$defs/NullableTimestamp"
+        },
+        "coverage": {
+          "$ref": "#/$defs/CoverageState"
+        }
+      }
+    },
+    "ClientRoot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "root_id",
+        "scan"
+      ],
+      "properties": {
+        "root_id": {
+          "$ref": "#/$defs/RootId"
+        },
+        "display_path": {
+          "$ref": "#/$defs/DisplayPath"
+        },
+        "scan": {
+          "$ref": "#/$defs/ClientRootScanState"
+        }
+      },
+      "$comment": "Client root coverage and freshness only; display_path starts at the root name and is absent without path disclosure. Owner grant metadata and totals stay with the owner."
+    },
+    "ClientRootList": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "roots"
+      ],
+      "properties": {
+        "roots": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/ClientRoot"
+          }
+        }
+      }
+    },
+    "ClientEntryPage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "anchor",
+        "generation",
+        "items",
+        "next_cursor",
+        "total",
+        "budget_hit"
+      ],
+      "properties": {
+        "anchor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NodeId"
+            },
+            {
+              "$ref": "#/$defs/CollectionId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "generation": {
+          "$ref": "#/$defs/NullableGeneration"
+        },
+        "items": {
+          "type": "array",
+          "maxItems": 200,
+          "items": {
+            "$ref": "#/$defs/ClientEntryRow"
+          }
+        },
+        "next_cursor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Cursor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "total": {
+          "$ref": "#/$defs/NullableCount"
+        },
+        "budget_hit": {
+          "type": "boolean"
+        }
+      }
+    },
     "NodeDetail": {
       "type": "object",
       "additionalProperties": false,
@@ -3076,7 +3196,7 @@
     "CopyOperationRequest": {"type": "object", "additionalProperties": false, "required": ["operation_id"], "properties": {"operation_id": {"$ref": "#/$defs/CopyOperationId"}}},
     "CopyStatus": {"type": "object", "additionalProperties": false, "required": ["operation_id", "state", "digest", "items_total", "items_verified", "staging_folder", "leftover_staging_folders", "refusal", "unjournaled_items", "unjournaled_item_count"], "properties": {"operation_id": {"$ref": "#/$defs/CopyOperationId"}, "state": {"$ref": "#/$defs/CopyState"}, "digest": {"$ref": "#/$defs/Digest"}, "items_total": {"$ref": "#/$defs/Count"}, "items_verified": {"$ref": "#/$defs/Count"}, "staging_folder": {"anyOf": [{"type": "string", "minLength": 1, "maxLength": 255}, {"type": "null"}], "$comment": "docs/47 Q1 default: the name (never a path) of the staging folder Loomward left in the destination parent on cancel or abandon, for the owner to remove; null otherwise."}, "leftover_staging_folders": {"type": "array", "maxItems": 64, "items": {"type": "string", "minLength": 1, "maxLength": 255}, "$comment": "Names (never paths) of staging folders that were intended but never identity-journaled (a crash between intent and identity): possibly empty leftovers Loomward never adopts or removes; reported for the owner (docs/47 section 5)."}, "refusal": {"anyOf": [{"$ref": "#/$defs/CopyRefusal"}, {"type": "null"}]}, "unjournaled_items": {"type": "array", "maxItems": 64, "items": {"type": "string", "minLength": 1, "maxLength": 32768}, "$comment": "First 64 staging-relative manifest names observed without journaled identities; never adopted or removed."}, "unjournaled_item_count": {"$ref": "#/$defs/Count", "$comment": "Total observed, including names beyond the bounded list."}}},
     "AskTurnId": {"type": "string", "pattern": "^at_[A-Za-z0-9_-]{1,64}$", "$comment": "An Ask turn (LW-118), held in memory for this session only."},
-    "AskField": {"enum": ["path", "size", "modified", "attributes"], "$comment": "Optional fields an Ask grant discloses to the model (LW-067). Name, kind, extension, coverage and match type are always part of a row."},
+    "AskField": {"enum": ["path", "size", "modified", "attributes", "volumes"], "$comment": "Optional fields an Ask grant discloses to the model (LW-067). Name, kind, extension, coverage and match type are always part of a row."},
     "AskProviderState": {"enum": ["not_configured", "local"], "$comment": "local is the only class that runs; a cloud profile is refused when configured (q-5 not met)."},
     "AskProfile": {"type": "object", "additionalProperties": false, "required": ["base_url", "model"], "properties": {"base_url": {"type": "string", "minLength": 1, "maxLength": 160}, "model": {"type": "string", "minLength": 1, "maxLength": 128}}, "$comment": "Owner-entered loopback endpoint (http on 127.0.0.1, [::1] or localhost, port required) and model. No default; nothing is discovered."},
     "AskConfigureRequest": {"type": "object", "additionalProperties": false, "required": ["profile"], "properties": {"profile": {"anyOf": [{"$ref": "#/$defs/AskProfile"}, {"type": "null"}]}}, "$comment": "Tauri adapter only (docs/46 section 8.1). A cloud-class profile is refused with capability_unavailable, detail.reason ask_cloud_gated. null clears the profile."},
@@ -3088,8 +3208,8 @@
     "ClientGrantList": {"type": "object", "additionalProperties": false, "required": ["grants", "available_fields"], "properties": {"grants": {"type": "array", "items": {"$ref": "#/$defs/ClientGrantRecord"}}, "available_fields": {"type": "array", "items": {"$ref": "#/$defs/ClientField"}, "maxItems": 5, "uniqueItems": true}}},
     "ClientRevokeRequest": {"type": "object", "additionalProperties": false, "required": ["client"], "properties": {"client": {"$ref": "#/$defs/McpClient"}}},
     "ClientRevokeResult": {"type": "object", "additionalProperties": false, "required": ["client", "revoked"], "properties": {"client": {"$ref": "#/$defs/McpClient"}, "revoked": {"type": "boolean"}}},
-    "AskGrantRequest": {"type": "object", "additionalProperties": false, "required": ["roots", "fields"], "properties": {"roots": {"type": "array", "minItems": 1, "maxItems": 64, "uniqueItems": true, "items": {"$ref": "#/$defs/RootId"}}, "fields": {"type": "array", "maxItems": 4, "uniqueItems": true, "items": {"$ref": "#/$defs/AskField"}}}, "$comment": "Replaces the ask:local client grant (a new epoch). Every root must be an active granted root."},
-    "AskGrant": {"type": "object", "additionalProperties": false, "required": ["roots", "fields", "granted_at"], "properties": {"roots": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/RootId"}}, "fields": {"type": "array", "maxItems": 4, "items": {"$ref": "#/$defs/AskField"}}, "granted_at": {"$ref": "#/$defs/Timestamp"}}},
+    "AskGrantRequest": {"type": "object", "additionalProperties": false, "required": ["roots", "fields"], "properties": {"roots": {"type": "array", "minItems": 1, "maxItems": 64, "uniqueItems": true, "items": {"$ref": "#/$defs/RootId"}}, "fields": {"type": "array", "maxItems": 5, "uniqueItems": true, "items": {"$ref": "#/$defs/AskField"}}}, "$comment": "Replaces the ask:local client grant (a new epoch). Every root must be an active granted root."},
+    "AskGrant": {"type": "object", "additionalProperties": false, "required": ["roots", "fields", "granted_at"], "properties": {"roots": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/RootId"}}, "fields": {"type": "array", "maxItems": 5, "items": {"$ref": "#/$defs/AskField"}}, "granted_at": {"$ref": "#/$defs/Timestamp"}}},
     "AskTool": {"type": "object", "additionalProperties": false, "required": ["name", "backed_by", "read_only"], "properties": {"name": {"type": "string", "maxLength": 32}, "backed_by": {"$ref": "#/$defs/CommandName"}, "read_only": {"const": true}}},
     "AskStatus": {"type": "object", "additionalProperties": false, "required": ["provider", "profile", "profile_digest", "principal", "grant", "tools", "last_turn"], "properties": {"provider": {"$ref": "#/$defs/AskProviderState"}, "profile": {"anyOf": [{"$ref": "#/$defs/AskProfile"}, {"type": "null"}]}, "profile_digest": {"anyOf": [{"$ref": "#/$defs/Digest"}, {"type": "null"}]}, "principal": {"const": "ask:local"}, "grant": {"anyOf": [{"$ref": "#/$defs/AskGrant"}, {"type": "null"}]}, "tools": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"$ref": "#/$defs/AskTool"}}, "last_turn": {"anyOf": [{"$ref": "#/$defs/AskTurnId"}, {"type": "null"}]}}, "$comment": "Reading the status never contacts the model endpoint."},
     "AskTurnRequest": {"type": "object", "additionalProperties": false, "required": ["question"], "properties": {"question": {"type": "string", "minLength": 1, "maxLength": 2000}}},
