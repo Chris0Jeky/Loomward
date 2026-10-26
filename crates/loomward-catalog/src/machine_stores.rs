@@ -64,7 +64,7 @@ fn detect(
     cap: usize,
     deadline: Option<Instant>,
 ) -> Result<MachineStores> {
-    let _guard = query::WorkGuard::new(conn, 2_000_000, deadline)?;
+    let guard = query::WorkGuard::new(conn, 2_000_000, deadline)?;
     query::revisions(conn, Some(root))?;
     let root_dir = conn.query_row(
         "SELECT id FROM dir WHERE root_id=?1 AND parent_id IS NULL",
@@ -104,7 +104,7 @@ fn detect(
             report.truncated |= report.candidates.len() > cap;
             report.candidates.truncate(cap);
         }
-        Err(e) if query::is_budget_interrupt(&e) => {
+        Err(e) if query::is_budget_interrupt(&e) && guard.hit() => {
             report.partial = true;
             report.budget_hit = true;
         }
