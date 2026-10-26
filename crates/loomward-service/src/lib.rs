@@ -394,17 +394,7 @@ impl Service {
         for (i, root) in roots.iter().enumerate() {
             inner
                 .grant(root, "cli_flag", config.allow_identity_unverified)
-                .map_err(|r| {
-                let rule = match r {
-                    Refused::Rule(r) => refusal_name(r),
-                    Refused::RootLimit => "root_limit_reached".into(),
-                    Refused::IdentityUnverified => {
-                        "identity_unverified (pass --allow-identity-unverified to list it read-only)"
-                            .into()
-                    }
-                };
-                format!("grant root #{} refused: {rule}", i + 1)
-            })?;
+                .map_err(|r| grant_refusal(i + 1, &r, !client_only))?;
         }
         if scan_writer {
             freshness::start(&inner);
@@ -422,6 +412,21 @@ impl Service {
     pub fn dataset(&self) -> DatasetClass {
         self.inner.dataset
     }
+}
+
+/// `flag_offered`: the host has `--allow-identity-unverified`. Client-only hosts, including the
+/// one-shot verification open, have none, so the text must not send their users to it (#903).
+pub(crate) fn grant_refusal(number: usize, refused: &Refused, flag_offered: bool) -> String {
+    let rule = match refused {
+        Refused::Rule(r) => refusal_name(*r),
+        Refused::RootLimit => "root_limit_reached".into(),
+        Refused::IdentityUnverified if flag_offered => {
+            "identity_unverified (pass --allow-identity-unverified to list it read-only)".into()
+        }
+        Refused::IdentityUnverified => "identity_unverified (a FAT, exFAT or unknown filesystem cannot prove file identity, so this command reads no content there; no option or state directory changes that)"
+            .into(),
+    };
+    format!("grant root #{number} refused: {rule}")
 }
 
 pub(crate) fn class_name(class: DatasetClass) -> &'static str {

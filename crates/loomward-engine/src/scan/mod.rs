@@ -194,6 +194,29 @@ fn native_source(
 /// The C1 comparison budget, re-exported so consumers stay outside the content reader.
 pub use loomward_windows::duplicate_reader::Budget as TreeBudget;
 
+/// The refusal text for a failed tree read. Only a geometry failure is about the volume rather than
+/// a file, so only it names one: the root's display path (the owner's own argument, never a GUID),
+/// because the letter alone is wrong for a mounted folder. The text reaches the local CLI only.
+pub(crate) fn tree_refusal(
+    reason: loomward_windows::duplicate_reader::Reason,
+    side: &str,
+    root: &std::path::Path,
+) -> String {
+    use loomward_windows::duplicate_reader::Reason;
+    match reason {
+        Reason::GeometryUnavailable => {
+            let text = root.to_string_lossy();
+            let shown = text.strip_prefix(r"\\?\").unwrap_or(&text);
+            format!(
+                "sector_geometry_unavailable: the volume holding the {side} root ({shown}) does \
+                 not report its sector size (some USB bridges and card readers), which \
+                 non-cached content verification needs; nothing was compared"
+            )
+        }
+        other => other.as_str().into(),
+    }
+}
+
 impl Engine {
     /// Read-only C1 evidence. Both roots must pass the existing q-10 admission gate.
     /// No service, HTTP, IPC or MCP command is exposed.
@@ -210,7 +233,7 @@ impl Engine {
         let right_cancel = self.duplicate_read_admission(destination)?;
         let started = Instant::now();
         let mut remaining_bytes = budget.bytes;
-        let mut read = |root: &GrantedRoot, cancel| {
+        let mut read = |side: &str, root: &GrantedRoot, cancel| {
             let (tree, bytes) = read_tree(
                 root.path(),
                 root.expected.as_ref().unwrap(),
@@ -222,15 +245,15 @@ impl Engine {
                 cancel,
             )
             .map_err(|reason| EngineError::PermissionDenied {
-                message: reason.as_str().into(),
+                message: tree_refusal(reason, side, root.path()),
             })?;
             remaining_bytes = remaining_bytes.saturating_sub(bytes);
             Ok::<_, EngineError>(tree)
         };
-        let left = read(source, left_cancel.clone())?;
+        let left = read("source", source, left_cancel.clone())?;
         #[cfg(test)]
         tree_gate_tests::point(tree_gate_tests::TreePoint::AfterSourceRead);
-        let right = read(destination, right_cancel.clone())?;
+        let right = read("destination", destination, right_cancel.clone())?;
         #[cfg(test)]
         tree_gate_tests::point(tree_gate_tests::TreePoint::AfterDestinationRead);
         let report = loomward_operations::tree::compare(&left, &right);
