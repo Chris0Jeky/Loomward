@@ -49,6 +49,10 @@ impl Inner {
             self.session_root_gate(&root)
                 .map_err(|e| self.root_admission_error(&root, e))?;
         }
+        #[cfg(test)]
+        if let Some(hook) = self.hooks.after_root_gate.lock().unwrap().take() {
+            hook();
+        }
         let granted = self.engine.granted_root(
             request.root_id.clone(),
             root.grant,

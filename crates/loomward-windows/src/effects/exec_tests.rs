@@ -5,6 +5,25 @@ use super::*;
 use loomward_operations::{approve, tree, Code};
 use std::{fs, sync::atomic::AtomicU32};
 
+/// #888 item 6: the lab flag reaches the fence negated. A fixed NTFS USB disk is a copy
+/// destination only in a synthetic lab session; any other session is refused.
+#[test]
+fn detachable_destination_is_refused_outside_a_synthetic_lab() {
+    let usb = crate::volumes::Classification {
+        drive_type: 3,
+        bus_type: "usb".into(),
+        removable_media: false,
+        filesystem: "NTFS".into(),
+    };
+    assert!(!destination_unsupported(&usb, true).unwrap());
+    assert!(destination_unsupported(&usb, false).unwrap());
+    let internal = crate::volumes::Classification {
+        bus_type: "nvme".into(),
+        ..usb
+    };
+    assert!(!destination_unsupported(&internal, false).unwrap());
+}
+
 #[test]
 fn copy_fence_append_failure_still_stops_admission() {
     use loomward_operations::store::fault::{Kind, Stage};
