@@ -1775,6 +1775,44 @@ fn client_volume_mount_points_need_path() {
     );
 }
 
+#[cfg(windows)]
+#[test]
+fn verification_open_grants_roots_without_background_work() {
+    if loomward_windows::enumerate::skip_elevated_test() {
+        return;
+    }
+    let temp = tempfile::tempdir_in(crate::paths::test_roots_base()).unwrap();
+    let root = temp.path().join("synthetic-fixture");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::write(root.join("fixture"), b"synthetic").unwrap();
+    let svc = Service::open_for_verification(Config {
+        state_dir: temp.path().join("state"),
+        dataset: DatasetClass::Personal,
+        allow_personal: true,
+        allow_identity_unverified: false,
+        grant_roots: vec![root],
+    })
+    .unwrap();
+    assert!(svc.inner.copies.store.is_none());
+    assert!(!svc.inner.freshness.is_started());
+    assert!(svc.inner.freshness.automatic_jobs().is_empty());
+    let conn = svc.inner.db();
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM st.root_grant WHERE state='active'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM main.file", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+}
+
 #[test]
 fn clients_never_scanned_root_does_not_claim_an_empty_known_path() {
     let tmp = temp_root();

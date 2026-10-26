@@ -36,6 +36,7 @@ pub(super) fn non_elevated() -> Result<(), Reason> {
 pub(super) struct Reader<F> {
     pins: Vec<File>,
     hook: F,
+    sector: Option<usize>,
 }
 struct Opened {
     file: File,
@@ -142,7 +143,11 @@ impl<F: FnMut(Event, usize)> Reader<F> {
         {
             return Err(Reason::ChangedDuringRead);
         }
-        Ok(Self { pins, hook })
+        Ok(Self {
+            pins,
+            hook,
+            sector: None,
+        })
     }
     fn open(&self, entry: &Entry, content: bool, meter: &Meter) -> Result<Opened, Reason> {
         meter.check()?;
@@ -220,13 +225,22 @@ impl<F: FnMut(Event, usize)> Reader<F> {
             attributes(observe(&metadata)?.attributes)?;
         }
         let file = if content {
-            enumerate::open_relative_mode(
-                parent,
-                &name,
-                FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-                FILE_SHARE_READ | FILE_SHARE_DELETE,
-                true,
-            )
+            if self.sector.is_some() {
+                enumerate::open_relative_noncached(
+                    parent,
+                    &name,
+                    FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                    FILE_SHARE_READ | FILE_SHARE_DELETE,
+                )
+            } else {
+                enumerate::open_relative_mode(
+                    parent,
+                    &name,
+                    FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                    FILE_SHARE_READ | FILE_SHARE_DELETE,
+                    true,
+                )
+            }
             .map_err(source)?
         } else {
             metadata
@@ -274,7 +288,22 @@ impl<F: FnMut(Event, usize)> Reader<F> {
         buffer: &mut [u8],
         meter: &mut Meter,
     ) -> Result<(), Reason> {
-        meter.reserve(buffer.len() as u64)?;
+        let count = self.read_count(index, file, offset, buffer, meter, buffer.len())?;
+        if count != buffer.len() {
+            return Err(Reason::ChangedDuringRead);
+        }
+        Ok(())
+    }
+    fn read_count(
+        &mut self,
+        index: usize,
+        file: &File,
+        offset: u64,
+        buffer: &mut [u8],
+        meter: &mut Meter,
+        logical: usize,
+    ) -> Result<usize, Reason> {
+        meter.reserve(logical as u64)?;
         let event = unsafe { CreateEventW(ptr::null(), 1, 0, ptr::null()) };
         if event.is_null() {
             return Err(error(io::Error::last_os_error()));
@@ -328,10 +357,25 @@ impl<F: FnMut(Event, usize)> Reader<F> {
             return Err(error(io::Error::last_os_error()));
         }
         (self.hook)(Event::Read, index);
-        if count as usize != buffer.len() {
-            return Err(Reason::ChangedDuringRead);
-        }
-        meter.check()
+        meter.check()?;
+        Ok(count as usize)
+    }
+    fn hash_noncached(
+        &mut self,
+        index: usize,
+        file: &File,
+        size: u64,
+        meter: &mut Meter,
+    ) -> Result<[u8; 32], Reason> {
+        let sector = self.sector.ok_or(Reason::Unsupported)?;
+        let mut buffer = crate::noncached::AlignedBuffer::new(sector);
+        crate::noncached::sector_hash(
+            size,
+            sector,
+            buffer.bytes(),
+            |offset, buffer, logical| self.read_count(index, file, offset, buffer, meter, logical),
+            || Reason::ChangedDuringRead,
+        )
     }
 }
 impl<F: FnMut(Event, usize)> ContentReader for Reader<F> {
@@ -354,6 +398,14 @@ impl<F: FnMut(Event, usize)> ContentReader for Reader<F> {
             .size
             .parse::<u64>()
             .map_err(|_| Reason::Unsupported)?;
+        if self.sector.is_some() {
+            if partial {
+                return Err(Reason::Unsupported);
+            }
+            let digest = self.hash_noncached(index, &opened.file, size, meter)?;
+            self.finish(&opened, entry, meter)?;
+            return Ok(digest);
+        }
         let ranges = if partial {
             let head = size.min(BLOCK as u64);
             vec![
@@ -563,6 +615,7 @@ mod tests {
         let mut pending = false;
         let mut reader = Reader {
             pins: vec![],
+            sector: None,
             hook: |event, _| {
                 if event == Event::PendingRead {
                     pending = true;
@@ -585,6 +638,7 @@ mod tests {
         writer.write_all(b"same").unwrap();
         let mut reader = Reader {
             pins: vec![],
+            sector: None,
             hook: |_, _| {},
         };
         let mut buffer = [0; 4];
@@ -631,6 +685,7 @@ mod tests {
         let file = unsafe { File::from_raw_handle(handle) };
         let reader = Reader {
             pins: vec![],
+            sector: None,
             hook: |_, _| {},
         };
         assert_eq!(reader.verify(&file, &[], &entry), Err(Reason::SpecialFile));

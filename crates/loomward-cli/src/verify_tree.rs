@@ -68,23 +68,42 @@ fn granted_root(
     };
     let text = path.to_str().ok_or("invalid_path")?;
     let display_path = text.strip_prefix(r"\\?\").unwrap_or(text);
-    let grant = open("state.db")?
-        .query_row(
-            "SELECT id FROM root_grant WHERE display_path=?1 AND state='active'",
-            [display_path],
-            |r| r.get::<_, i64>(0),
-        )
-        .map_err(|_| "grant_not_active")?;
+    let conn = open("state.db")?;
+    let mut statement = conn
+        .prepare("SELECT id FROM root_grant WHERE display_path=?1 AND state='active'")
+        .map_err(|_| "grant store unavailable")?;
+    let grants = statement
+        .query_map([display_path], |r| r.get::<_, i64>(0))
+        .map_err(|_| "grant store unavailable")?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|_| "grant store unavailable")?;
+    let [grant] = grants.as_slice() else {
+        return Err("grant selection is ambiguous or stale; use a fresh --state-dir".into());
+    };
     let (row, instance) = open("catalog.db")?
         .query_row("SELECT id,(SELECT value FROM meta WHERE key='instance_id') FROM root WHERE grant_id=?1", [grant], |r| Ok((r.get(0)?, r.get(1)?)))
         .map_err(|_| "grant_root_mismatch")?;
     engine
         .granted_root(
             RootId::new(name).map_err(|e| e.to_string())?,
-            grant,
+            *grant,
             &CatalogRootIdentity { row, instance },
         )
         .map_err(|e| e.to_string())
+}
+
+// These are the admitted identities compare_trees bound its pinned opens to, never new path probes.
+fn root_identity(root: &GrantedRoot) -> Result<serde_json::Value, String> {
+    use loomward_engine::scan::source::FileIdObs;
+    let identity = root
+        .expected_identity()
+        .ok_or("root identity unavailable")?;
+    let volume = identity.volume_guid.ok_or("root volume GUID unavailable")?;
+    let Some(FileIdObs::Id128(id)) = identity.id else {
+        return Err("root file ID unavailable".into());
+    };
+    let file_id: String = id.iter().map(|byte| format!("{byte:02x}")).collect();
+    Ok(serde_json::json!({"volume_guid": format!("{volume:032x}"), "root_file_id": file_id}))
 }
 
 fn exit_status(report: &Report) -> u8 {
@@ -124,7 +143,7 @@ pub(super) fn run(args: Args) -> Result<(serde_json::Value, u8), String> {
         }
     }
     // As with --grant-root, consent is durable in state.db. No server or command transport starts.
-    let service = Service::open(Config {
+    let service = Service::open_for_verification(Config {
         state_dir: args.state_dir.clone(),
         dataset: DatasetClass::Personal,
         allow_personal: true,
@@ -148,7 +167,11 @@ pub(super) fn run(args: Args) -> Result<(serde_json::Value, u8), String> {
         )
         .map_err(|e| e.to_string())?;
     let status = exit_status(&report);
-    let json = serde_json::to_value(&report).map_err(|_| "cannot serialize tree report")?;
+    let mut json = serde_json::to_value(&report).map_err(|_| "cannot serialize tree report")?;
+    json["roots"] = serde_json::json!({
+        "source": root_identity(&source)?,
+        "destination": root_identity(&destination)?,
+    });
     let outcome = match status {
         0 => "equal",
         1 => "differences",

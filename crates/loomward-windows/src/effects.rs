@@ -6,6 +6,7 @@
 use crate::{
     duplicate_reader, enumerate,
     identity::{self, ObjectKey},
+    noncached::{self, physical_sector, AlignedBuffer},
     win,
 };
 use sha2::{Digest, Sha256};
@@ -1147,58 +1148,14 @@ fn stream_name(name: &str) -> io::Result<Vec<u16>> {
     component(name)?;
     Ok(format!(":{name}:$DATA").encode_utf16().collect())
 }
-fn physical_sector(volume: &File) -> io::Result<usize> {
-    use windows_sys::Win32::System::{Ioctl::*, IO::DeviceIoControl};
-    let query = STORAGE_PROPERTY_QUERY {
-        PropertyId: StorageAccessAlignmentProperty,
-        QueryType: PropertyStandardQuery,
-        ..Default::default()
-    };
-    let mut alignment = STORAGE_ACCESS_ALIGNMENT_DESCRIPTOR::default();
-    let mut returned = 0;
-    if unsafe {
-        DeviceIoControl(
-            volume.as_raw_handle(),
-            IOCTL_STORAGE_QUERY_PROPERTY,
-            ptr::from_ref(&query).cast(),
-            size_of::<STORAGE_PROPERTY_QUERY>() as u32,
-            ptr::from_mut(&mut alignment).cast(),
-            size_of::<STORAGE_ACCESS_ALIGNMENT_DESCRIPTOR>() as u32,
-            &mut returned,
-            ptr::null_mut(),
-        )
-    } == 0
-    {
-        return Err(io::Error::last_os_error());
-    }
-    if returned < size_of::<STORAGE_ACCESS_ALIGNMENT_DESCRIPTOR>() as u32 {
-        return Err(refused("truncated sector geometry"));
-    }
-    sector_alignment(
-        alignment.BytesPerLogicalSector,
-        alignment.BytesPerPhysicalSector,
-    )
-}
-fn sector_alignment(logical: u32, physical: u32) -> io::Result<usize> {
-    if !logical.is_power_of_two()
-        || !physical.is_power_of_two()
-        || physical < logical
-        || physical as usize > BLOCK
-    {
-        return Err(refused("unknown sector alignment"));
-    }
-    Ok(physical as usize)
-}
 fn noncached_hash(file: &File, sector: usize) -> io::Result<([u8; 32], u64)> {
     let size = info::<FILE_STANDARD_INFO>(file, FileStandardInfo)?.EndOfFile;
     if size < 0 {
         return Err(refused("negative size"));
     }
     let size = size as u64;
-    let mut storage = vec![0u8; BLOCK + sector];
-    let offset = storage.as_ptr().align_offset(sector);
-    let buffer = &mut storage[offset..offset + BLOCK];
-    Ok((sector_hash(file, size, sector, buffer)?, size))
+    let mut buffer = AlignedBuffer::new(sector);
+    Ok((sector_hash(file, size, sector, buffer.bytes())?, size))
 }
 
 /// Hash `size` bytes read in sector-multiple requests. A read may legally return less than asked: it
@@ -1210,24 +1167,13 @@ fn sector_hash(
     sector: usize,
     buffer: &mut [u8],
 ) -> io::Result<[u8; 32]> {
-    let changed = || io::Error::new(io::ErrorKind::UnexpectedEof, "noncached read size changed");
-    let mut remaining = size;
-    let mut digest = Sha256::new();
-    while remaining != 0 {
-        let logical = remaining.min(buffer.len() as u64) as usize;
-        let request = logical.div_ceil(sector) * sector;
-        let mut got = 0;
-        while got < logical {
-            let count = file.read(&mut buffer[got..request])?;
-            got += count;
-            if count == 0 || got > logical || (got < logical && got % sector != 0) {
-                return Err(changed());
-            }
-        }
-        digest.update(&buffer[..got]);
-        remaining -= got as u64;
-    }
-    Ok(digest.finalize().into())
+    noncached::sector_hash(
+        size,
+        sector,
+        buffer,
+        |_, buffer, _| file.read(buffer),
+        || io::Error::new(io::ErrorKind::UnexpectedEof, "noncached read size changed"),
+    )
 }
 
 /// Deny-write, no-recall source reader reusing the duplicate reader's signatures,

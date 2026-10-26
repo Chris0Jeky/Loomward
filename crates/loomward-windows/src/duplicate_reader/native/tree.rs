@@ -54,6 +54,8 @@ fn read_tree_from(
         return Ok((tree, 0));
     }
     let mut reader = Reader::new(root, expected, |_, _| {})?;
+    reader.sector =
+        Some(crate::noncached::sector_for_file(reader.pins.last().unwrap()).map_err(error)?);
     let (dir, identity) = source.open_root(root).map_err(super::source)?;
     if enumerate::expected_identity_matches(identity, *expected).is_err()
         || !matches!(
@@ -716,17 +718,9 @@ fn stream_hashes(
         if before.object != entry.expected.object || before.size.parse::<u64>().ok() != Some(size) {
             return Err("changed_during_read");
         }
-        let mut digest = Sha256::new();
-        let mut buffer = vec![0; BLOCK];
-        let mut offset = 0;
-        while offset < size {
-            let count = (size - offset).min(BLOCK as u64) as usize;
-            reader
-                .read(0, &file, offset, &mut buffer[..count], meter)
-                .map_err(Reason::as_str)?;
-            digest.update(&buffer[..count]);
-            offset += count as u64;
-        }
+        let digest = reader
+            .hash_noncached(0, &file, size, meter)
+            .map_err(Reason::as_str)?;
         if !signature(&before, &observe(&file).map_err(Reason::as_str)?) {
             return Err("changed_during_read");
         }
@@ -735,7 +729,7 @@ fn stream_hashes(
             result.extend_from_slice(&unit.to_le_bytes());
         }
         result.extend_from_slice(&size.to_le_bytes());
-        result.extend_from_slice(&digest.finalize());
+        result.extend_from_slice(&digest);
     }
     reader
         .finish(opened, entry, meter)
@@ -1072,6 +1066,53 @@ mod tests {
     }
 
     #[test]
+    fn tree_content_opens_are_noncached_deny_write_and_no_recall() {
+        use windows_sys::Wdk::Storage::FileSystem::{
+            FILE_NO_INTERMEDIATE_BUFFERING, FILE_OPEN_NO_RECALL, FILE_OPEN_REPARSE_POINT,
+        };
+        if crate::enumerate::skip_elevated_test() {
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let data = vec![0x5a; 1024 * 1024 + 17];
+        std::fs::write(temp.path().join("fixture"), &data).unwrap();
+        std::fs::write(temp.path().join("fixture:note"), b"stream").unwrap();
+        let (_, expected) = NativeSource::default().open_root(temp.path()).unwrap();
+        let options = enumerate::record_open_options(|| {
+            let (tree, bytes) = read_tree(
+                temp.path(),
+                &expected,
+                Budget {
+                    bytes: data.len() as u64 + 6,
+                    time: Duration::from_secs(30),
+                },
+                100,
+                Default::default(),
+            )
+            .unwrap();
+            assert_eq!(bytes, data.len() as u64 + 6);
+            let node = tree.nodes[Path::new("fixture")].as_ref().unwrap();
+            assert_eq!(node.content, Ok(Sha256::digest(&data).into()));
+            assert!(node.metadata[&Class::NamedStreams].is_ok(), "{tree:?}");
+        });
+        let content: Vec<_> = options
+            .into_iter()
+            .filter(|(access, share, _)| {
+                access & FILE_READ_DATA != 0 && *share == FILE_SHARE_READ | FILE_SHARE_DELETE
+            })
+            .collect();
+        assert_eq!(content.len(), 2, "default and named streams: {content:?}");
+        for (access, share, options) in content {
+            assert_eq!(access, FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE);
+            assert_eq!(share, FILE_SHARE_READ | FILE_SHARE_DELETE);
+            // NtCreateFile's equivalent of FILE_FLAG_NO_BUFFERING.
+            let required =
+                FILE_NO_INTERMEDIATE_BUFFERING | FILE_OPEN_NO_RECALL | FILE_OPEN_REPARSE_POINT;
+            assert_eq!(options & required, required);
+        }
+    }
+
+    #[test]
     fn native_control_and_named_stream_content_are_read_only() {
         if crate::enumerate::skip_elevated_test() {
             return;
@@ -1091,7 +1132,7 @@ mod tests {
                 enumerate::open_data_stream(
                     dir.file(),
                     &name.encode_utf16().collect::<Vec<_>>(),
-                    &stream.encode_utf16().collect::<Vec<_>>()
+                    &stream.encode_utf16().collect::<Vec<_>>(),
                 )
                 .unwrap_err(),
                 enumerate::SourceError::Refused
