@@ -587,7 +587,7 @@ $answers = @(foreach ($case in (ConvertFrom-Json PAYLOAD)) {
         # Container inheritance flags on the folder only: on a file they make icacls fail after
         # inheritance was removed, leaving an empty DACL (measured 2026-10-26).
         self.assertIn('icacls $State /inheritance:r /grant:r "${env:USERNAME}:(OI)(CI)F"', script)
-        self.assertIn('icacls $guest /inheritance:r /grant:r "${env:USERNAME}:F" 'SYSTEM:F'', script)
+        self.assertIn("""icacls $guest /inheritance:r /grant:r "${env:USERNAME}:F" 'SYSTEM:F'""", script)
         self.assertLess(script.index("iso_outside_allowlist"), script.index("New-Item"))
         self.assertIn("[IO.Path]::GetFullPath($Iso)", script)
         self.assertIn("$Root + '\\'", script)
