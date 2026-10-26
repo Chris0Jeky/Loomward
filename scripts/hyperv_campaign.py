@@ -58,6 +58,8 @@ class Config:
     max_delay_ms: int = 2000
     boot_timeout: float = BOOT_TIMEOUT
     connect_timeout: float = 120.0
+    anchor: str = "progress"
+    keep_going: int = 0
 
 
 class PowerShell:
@@ -194,11 +196,14 @@ class Campaign:
                 or not re.fullmatch(r"[A-Za-z]:\\[^\r\n\x00\"%!?&|<>^*]*\.exe", config.exe)
                 or config.scenario not in ("run", "abandon", "mixed")
                 or config.removal not in ("0", "1", "mixed")
-                or config.tree not in ("small", "large")):
+                or config.tree not in ("small", "large")
+                or config.anchor not in ("progress", "launch")
+                or (config.anchor == "launch" and config.command != "negative")
+                or config.keep_going < 0):
             raise CampaignError("invalid_configuration")
         self.summary = {"cycles": 0, "floor_credits": dict.fromkeys(
             ("create_batch", "write", "publish", "cleanup", "other"), 0),
-            "failures": 0, "caught": 0, "dry_run": not config.execute}
+            "failures": 0, "infrastructure_failures": 0, "caught": 0, "dry_run": not config.execute}
 
     def _call(self, operation, body, default=None, timeout=120, guard=False):
         script = (
@@ -337,6 +342,20 @@ $heartbeat = Get-VMIntegrationService -VMName {quote(VM_NAME)} -Name Heartbeat
                 raise CampaignError("guest_boot_failed")
             if self.config.execute:
                 self.sleep(min(1.0, max(0.0, deadline - self.clock())))
+
+    def _ensure_off(self):
+        self._call("ensure_off", f"""
+if ((Get-VM -Name {quote(VM_NAME)}).State -ne 'Off') {{
+    # A VM that just failed to start can refuse Stop-VM while it settles; only the final state counts.
+    try {{ Stop-VM -Name {quote(VM_NAME)} -TurnOff -Force -ErrorAction Stop }} catch {{ }}
+    $deadline = [DateTime]::UtcNow.AddSeconds(120)
+    while ((Get-VM -Name {quote(VM_NAME)}).State -ne 'Off') {{
+        if ([DateTime]::UtcNow -ge $deadline) {{ throw 'vm_not_off' }}
+        Start-Sleep -Seconds 2
+    }}
+}}
+'{{}}'
+""", guard=True)
 
     def _admin(self, health=False):
         check = r"""
@@ -521,15 +540,35 @@ $stopReturned = Get-Date
     stop_returned = $stopReturned.ToString('o') }} | ConvertTo-Json -Compress
 }} finally {{ Remove-PSSession $session -ErrorAction SilentlyContinue }}
 """
-        result = self._call("cut", body, {"trace_lines": 3, "dirty_pages": 1, "act_done": False,
-            "cut_latency_ms": None, "last_poll_return": None, "stop_started": None, "stop_returned": None},
+        default = {"trace_lines": 3, "dirty_pages": 1, "act_done": False,
+            "cut_latency_ms": None, "last_poll_return": None, "stop_started": None, "stop_returned": None}
+        if self.config.anchor == "launch":
+            body = self._session() + f"""
+try {{
+{self._launch}
+$launchReturned = Get-Date
+$delay = {delay}
+Start-Sleep -Milliseconds $delay
+$stopStarted = Get-Date
+Stop-VM -Name {quote(VM_NAME)} -TurnOff -Force
+$stopReturned = Get-Date
+@{{ trace_lines = $null; dirty_pages = $null; act_done = $null;
+    delay_ms = $delay; cut_latency_ms = ($stopReturned - $launchReturned).TotalMilliseconds;
+    last_poll_return = $null; launch_returned = $launchReturned.ToString('o');
+    stop_started = $stopStarted.ToString('o'); stop_returned = $stopReturned.ToString('o') }} |
+    ConvertTo-Json -Compress
+}} finally {{ Remove-PSSession $session -ErrorAction SilentlyContinue }}
+"""
+            default.update(trace_lines=None, dirty_pages=None, act_done=None, delay_ms=delay, launch_returned=None)
+        result = self._call("cut", body, default,
             timeout=120 + ACT_TIMEOUT + 32, guard=True)
-        dirty = result.get("dirty_pages")
-        if not isinstance(dirty, (int, float)) or isinstance(dirty, bool) or not math.isfinite(dirty) or dirty < 0:
-            raise CampaignError("dirty_pages_unavailable")
-        lines = result.get("trace_lines")
-        if not isinstance(lines, int) or isinstance(lines, bool) or lines < 0 or not isinstance(result.get("act_done"), bool):
-            raise CampaignError("invalid_progress_response")
+        if self.config.anchor == "progress":
+            dirty = result.get("dirty_pages")
+            if not isinstance(dirty, (int, float)) or isinstance(dirty, bool) or not math.isfinite(dirty) or dirty < 0:
+                raise CampaignError("dirty_pages_unavailable")
+            lines = result.get("trace_lines")
+            if not isinstance(lines, int) or isinstance(lines, bool) or lines < 0 or not isinstance(result.get("act_done"), bool):
+                raise CampaignError("invalid_progress_response")
         latency = result.get("cut_latency_ms")
         if self.config.execute and (not isinstance(latency, (int, float)) or isinstance(latency, bool)
                                    or not math.isfinite(latency) or latency < 0):
@@ -553,6 +592,7 @@ $line = {encoded(line)}
         if scenario == "abandon":
             removal = 1
         record = {"cycle": number, "command": self.config.command, "exe": self.config.exe,
+            "anchor": self.config.anchor,
             "kind": "negative_control" if self.config.command == "negative" else "floor", "scenario": scenario, "removal": removal,
             "tree": self.config.tree, "seed": self.config.seed, "delay_ms": None, "trace_lines": None,
             "cut_latency_ms": None, "last_poll_return": None, "stop_started": None, "stop_returned": None,
@@ -579,6 +619,8 @@ $line = {encoded(line)}
             final_poll = self._cut(values, delay)
             for key in ("trace_lines", "dirty_pages", "cut_latency_ms", "last_poll_return", "stop_started", "stop_returned"):
                 record[key] = final_poll.get(key)
+            if "launch_returned" in final_poll:
+                record["launch_returned"] = final_poll["launch_returned"]
             if final_poll["act_done"]:
                 record["kind"] = "post_completion"
             record["timings"]["cut_s"] = self.clock() - start
@@ -619,15 +661,22 @@ $line = {encoded(line)}
                 record[key] = result.get(key)
             record["last_trace_label"] = recovered.get("last_trace_label")
             if record["copy_ran"] is not True:
-                raise CampaignError("copy_did_not_run")
-            if record["ok"] is not True and self.config.command != "negative":
-                raise CampaignError("oracle_failed")
-            if recovered.get("exit_code") != 0 and record["ok"] is True:
-                raise CampaignError("recover_failed")
-            # A negative-control cycle runs a mutant: never qualification evidence, whatever its outcome.
-            if (record["ok"] and record["kind"] == "floor" and record["dirty_pages"] > 0
-                    and self.config.command != "negative"):
-                record["floor_credit"] = window_for_label(record["last_record"])
+                # A launch-anchored cut can land before the first durable copy record: no evidence either way,
+                # so it is recorded as pre_copy and never counted as caught. Any other missing copy stops the run.
+                if self.config.anchor == "launch" and record["last_record"] in (None, "started"):
+                    record["kind"] = "pre_copy"
+                    record["ok"] = None
+                else:
+                    raise CampaignError("copy_did_not_run")
+            if record["kind"] != "pre_copy":
+                if record["ok"] is not True and self.config.command != "negative":
+                    raise CampaignError("oracle_failed")
+                if recovered.get("exit_code") != 0 and record["ok"] is True:
+                    raise CampaignError("recover_failed")
+                # A negative-control cycle runs a mutant: never qualification evidence, whatever its outcome.
+                if (record["ok"] and record["kind"] == "floor" and record["dirty_pages"] > 0
+                        and self.config.command != "negative"):
+                    record["floor_credit"] = window_for_label(record["last_record"])
             free = recovered.get("free_bytes")
             if not isinstance(free, (int, float)) or not math.isfinite(free) or free < 0:
                 raise CampaignError("lab_free_space_unavailable")
@@ -644,13 +693,22 @@ $line = {encoded(line)}
                     print("campaign_log_failed: original failure preserved", file=sys.stderr)
                 self.summary["cycles"] += 1
                 self.summary["failures"] += 1
+                # Classify the host's own error, never guest text, and only before the cut: a failed boot after
+                # the hard-off may be the crash defect itself, and its volume must not be reused.
+                failure = str(exc)
+                if "cut_s" not in record["timings"] and (failure.startswith(("boot:", "start:", "cache:")) or failure in (
+                    "guest_boot_failed", "powershell_unavailable_or_timeout", "guest_direct_connection_timeout"
+                )):
+                    self.summary["infrastructure_failures"] += 1
             raise
         # Do not retry an append that may already have reached disk.
         self._append(record)
         if self.config.execute:
             self.summary["cycles"] += 1
-            self.summary["failures"] += int(not record["ok"])
-            self.summary["caught"] += int(not record["ok"] and self.config.command == "negative")
+            # A pre_copy cycle (ok None) is neither a failure nor a catch.
+            self.summary["failures"] += int(record["ok"] is False)
+            self.summary["caught"] += int(record["ok"] is False and self.config.command == "negative")
+            self.summary["pre_copy"] = self.summary.get("pre_copy", 0) + int(record["kind"] == "pre_copy")
             if record["floor_credit"]:
                 self.summary["floor_credits"][record["floor_credit"]] += 1
         if number % 50 == 0 or free < 2 * GIB or not self.config.execute:
@@ -738,9 +796,22 @@ if (Test-Path -LiteralPath $root) {{
         if not self.config.execute:
             self.summary["planned_cycles"] = count
         failures_before = self.summary["failures"]
+        consecutive = 0
         try:
             for number in range(next_cycle, next_cycle + count):
-                self.cycle(number)
+                infrastructure_before = self.summary["infrastructure_failures"]
+                try:
+                    self.cycle(number)
+                except CampaignError:
+                    if self.summary["infrastructure_failures"] == infrastructure_before:
+                        raise
+                    consecutive += 1
+                    if consecutive > self.config.keep_going:
+                        raise
+                    if number + 1 < next_cycle + count:
+                        self._ensure_off()
+                else:
+                    consecutive = 0
         except CampaignError:
             if self.summary["failures"] == failures_before:
                 self.summary["failures"] += 1
@@ -764,13 +835,20 @@ def main(argv=None):
     parser.add_argument("--boot-timeout", type=float, default=BOOT_TIMEOUT,
                         help="seconds to wait for the guest heartbeat; raise it when the host disk is contended")
     parser.add_argument("--max-delay-ms", type=int, default=2000,
-                        help="cut delay is uniform in [0, this] after the first journal record; size it to the act")
+                        help="uniform in [0, this] after the first journal record (progress) or after the act launch returns (launch); size it to the act")
+    parser.add_argument("--anchor", choices=("progress", "launch"), default="progress")
+    parser.add_argument("--keep-going", type=int, default=0,
+                        help="continue past at most N consecutive infrastructure failures")
     parser.add_argument("--exe", default=None, help="mutant guest test executable (negative only)")
     args = parser.parse_args(argv)
     if args.command == "negative" and args.exe is None:
         parser.error("negative requires --exe")
     if args.command != "negative" and args.exe is not None:
         parser.error("--exe is only valid for negative")
+    if args.anchor == "launch" and args.command != "negative":
+        parser.error("--anchor launch is only valid for negative")
+    if args.keep_going < 0:
+        parser.error("--keep-going must be nonnegative")
     args.exe = args.exe or GUEST_EXE
     if args.seed is None:
         args.seed = secrets.randbits(32)
@@ -782,7 +860,8 @@ def main(argv=None):
     if args.command == "negative" and args.execute and summary["caught"] == 0:
         print("NOT CAUGHT")
         return 1
-    return 0
+    # A kept-going infrastructure failure never exits 0.
+    return 1 if summary.get("infrastructure_failures") else 0
 
 
 if __name__ == "__main__":
