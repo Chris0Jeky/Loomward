@@ -32,9 +32,9 @@ qualification is LW-134). The evidence file states this scope verbatim (section 
 | Checkpoints | `-CheckpointType Disabled`, `AutomaticCheckpointsEnabled $false`, so no differencing disk sits under the guest |
 | Disks | system VHDX; an 8 GB **lab VHDX** (NTFS; copy source, destination and `state.db`); a separate 1 GB **signal VHDX** (its own device, never written by the copy) |
 | Lab disk cache | write caching enabled in the guest, pinned and read back each boot, recorded per cycle |
-| Guest account | a **standard** local user runs the runner; the runner and the orchestrator treat an elevated token (the copy primitives skip under one, `exec_crash_tests.rs`) as a cycle **failure**, never a skip |
+| Guest accounts | a **standard** local user runs the runner; a separate guest administrator PowerShell Direct session does only `chkdsk /scan` and the write-cache read-back, and is never used for the runner; the runner and the orchestrator treat an elevated token (the copy primitives skip under one, `exec_crash_tests.rs`) as a cycle **failure**, never a skip |
 | Guest tooling | the `loomward-windows` **cargo test executable** built with `copy-primitives` (the hooks are `#[cfg(test)]`), copied in through PowerShell Direct |
-| Guest image | the owner's ISO, or Microsoft's evaluation image downloaded to `E:` and checked against Microsoft's published hash (q-49) |
+| Guest image | the owner's ISO, or Microsoft's evaluation image downloaded to `E:`, checked against Microsoft's published hash where one exists, otherwise its observed SHA-256 recorded (q-49) |
 | Guest credentials | held in the orchestrator's state outside Git (`.loomward/` of the primary checkout); never printed |
 
 The orchestrator refuses to start if `E:` has less than 80 GB free.
@@ -45,14 +45,17 @@ The orchestrator refuses to start if `E:` has less than 80 GB free.
 
 1. Start the VM; wait for the integration-services heartbeat (5-minute timeout; a guest that fails to boot stops the
    campaign and is kept for diagnosis).
-2. Through PowerShell Direct, start the runner on the Run scenario. Before the copy it writes a **source snapshot**
-   (identity, signature and SHA-256 of every source object) to the **signal disk**, and the host copies it off.
+2. Through PowerShell Direct, start the runner on the Run scenario, or on the **Abandon** scenario with staging removal
+   on (a copy stopped after its first verified batch, then abandoned; the cut lands during cleanup). Before arming it
+   writes a **pre-arm snapshot** to the **signal disk**: identity, signature and SHA-256 of every source object and of
+   the sentinel entries pre-seeded in the destination parent; the host copies it to the orchestrator's state outside
+   Git. Each cycle copies into a fresh destination parent, removed by the orchestrator through the reset below.
 3. The runner reports progress on the signal disk only (never the lab disk), so no signal write can flush the lab
    volume. Once the copy has passed its first journal record, the host waits a random 0-2,000 ms and calls
    `Stop-VM -TurnOff -Force`. The lab disk's IOPS are capped (`Set-VMHardDiskDrive -MaximumIOPS`) and the tree holds
    thousands of small files plus large ones, so the create-batch, write, publish and cleanup windows are seconds wide.
-4. The guest's dirty-cache size at the last progress report (`\Cache\Dirty Pages`) is recorded, so a cycle with no
-   dirty data in guest RAM is visible as weak evidence.
+4. The guest's dirty-cache size at the last progress report (`\Cache\Dirty Pages`) is recorded; a cycle with none
+   is not credited to the floor.
 
 **Coverage cycles (pause at boundary N; never counted toward the floor).** The runner sets
 `LOOMWARD_COPY_PAUSE_AT=N` (new, beside C6's `LOOMWARD_COPY_CRASH_AT`, test builds only), signals `armed N label` on the
@@ -62,8 +65,9 @@ cut.
 
 **Recovery (every cycle).** Boot. Before `recover`, the runner records a destination baseline. Then: `recover`; the
 oracle; Abandon if the operation is open; the oracle again. The oracle is C6's seven checks adapted to a reboot:
-check 2 compares the source against the snapshot taken before arming (not an in-memory copy); checks 4 and 6 compare
-against the post-boot baseline, because entries that existed at the cut may legitimately be lost; check 5 allows an
+check 2 compares the source against the pre-arm snapshot (not an in-memory copy); the sentinel entries must match the
+pre-arm snapshot exactly (never the post-boot baseline, so a deleted or replaced sentinel always fails); checks 4 and
+6 compare Loomward-created entries against the post-boot baseline, because those may legitimately be lost at the cut; check 5 allows an
 entry to be absent only when the journal never recorded it as durable, and requires every Loomward removal to be
 identity-bound as before. A cycle passes only if it shows a copy actually ran (a journal with at least one record
 after `preparing`).
@@ -71,8 +75,8 @@ after `preparing`).
 **Record.** One JSON line on the host: cycle kind, scenario, Q1 policy, cut delay or boundary, last durable journal
 record after reboot, states after recovery and after Abandon, oracle result, dirty pages, `chkdsk /scan` result for the
 lab volume, timings. The window a floor cycle is credited to is the one its **last durable journal record** names;
-cycles cut after the copy completed are excluded from the floor. Both VHDXs are reset from pristine copies every 50
-cycles.
+cycles cut after the copy completed are excluded from the floor. The lab and signal VHDXs are reset from pristine copies every 50 cycles, or earlier when the lab volume falls below
+2 GB free.
 
 Any oracle failure, elevated token, or dirty `chkdsk` stops the campaign and keeps the VM and disks for diagnosis.
 
