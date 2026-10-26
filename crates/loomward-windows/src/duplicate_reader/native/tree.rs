@@ -22,6 +22,28 @@ use windows_sys::{
 /// Most entries one tree read may list (the root, every listed directory and every listed file).
 const MAX_TREE_ENTRIES: usize = 200_000;
 
+#[cfg(test)]
+thread_local! {
+    static ACL_OPEN_ACCESSES: std::cell::RefCell<Option<Vec<u32>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn record_acl_open(access: u32) {
+    ACL_OPEN_ACCESSES.with_borrow_mut(|accesses| {
+        if let Some(accesses) = accesses {
+            accesses.push(access);
+        }
+    });
+}
+
+#[cfg(test)]
+fn record_tree_open_accesses(run: impl FnOnce()) -> Vec<u32> {
+    ACL_OPEN_ACCESSES.with_borrow_mut(|accesses| *accesses = Some(Vec::new()));
+    let mut accesses = enumerate::record_open_accesses(run);
+    ACL_OPEN_ACCESSES.with_borrow_mut(|acl| accesses.extend(acl.take().unwrap()));
+    accesses
+}
+
 /// One entry budget: the root and every listed child, files and directories alike, count once.
 /// A request above `MAX_TREE_ENTRIES` is refused as `entry_budget` rather than clamped.
 pub(crate) fn read_tree(
@@ -82,7 +104,9 @@ fn read_tree_from(
     // The root's parent is outside the grant; never enumerate it for an alternate name.
     let root_short = short_name(dir.file(), || Err("metadata_unreadable"));
     // A failed parent read leaves legacy root ACEs unknown, rather than treating them as explicit.
-    let root_parent_acl = root_parent_security(root).ok().map(|acl| Arc::new(Ok(acl)));
+    let root_parent_acl = root_parent_security(root, &observe(dir.file())?)
+        .ok()
+        .map(|acl| Arc::new(Ok(acl)));
     let mut pending = vec![(
         PathBuf::new(),
         dir,
@@ -140,7 +164,7 @@ fn read_tree_from(
         tree.nodes.insert(path.clone(), Ok(node));
         let mut short_names = None;
         let short_name_limit = children.len();
-        let parent_acl = Arc::new(parent_security(dir.file()));
+        let parent_acl = parent_security(dir.file()).ok().map(|a| Arc::new(Ok(a)));
         for (name, id, attributes, size, creation, write, change) in children {
             let relative = path.join(std::ffi::OsString::from_wide(&name));
             let result = (|| {
@@ -179,13 +203,7 @@ fn read_tree_from(
                             short_name_limit,
                         )
                     });
-                    pending.push((
-                        relative.clone(),
-                        child,
-                        security,
-                        short,
-                        Some(Arc::clone(&parent_acl)),
-                    ));
+                    pending.push((relative.clone(), child, security, short, parent_acl.clone()));
                     return Ok(None);
                 }
                 let opened = reader.open_relative(&relative, None, false, &meter)?;
@@ -234,7 +252,7 @@ fn read_tree_from(
                     &opened.file,
                     &observed,
                     security.as_ref().ok(),
-                    Some(&parent_acl),
+                    parent_acl.as_deref(),
                     Kind::File,
                     short,
                 );
@@ -373,7 +391,7 @@ fn metadata(
     values.insert(Class::ObjectId, object_id(file));
     if let Some(security) = security {
         if observe(security).is_ok_and(|s| signature(&s, observed)) {
-            let result = read_security(security);
+            let result = read_security_for_parent(security, kind, parent_acl);
             values.insert(
                 Class::Owner,
                 result.as_ref().map(|v| v.owner.clone()).map_err(|e| *e),
@@ -615,20 +633,27 @@ struct SecurityDescriptor {
     control: u16,
 }
 
-fn root_parent_security(root: &Path) -> Observation<SecurityDescriptor> {
+fn root_parent_security(
+    root: &Path,
+    expected: &ObservedIdentity,
+) -> Observation<SecurityDescriptor> {
     #[cfg(test)]
     if acl_tests::FAIL_ROOT_PARENT_READ.get() {
         return Err("parent_security_descriptor_unreadable");
     }
-    // Metadata-only read of one directory outside the grant, solely to classify the root's own
-    // ACEs. A swapped parent can at worst misclassify this ACL observation; it is not effect authority.
+    // Metadata-only read outside the grant, bound back to the observed root before using its ACL.
     let parent = root
         .parent()
         .ok_or("parent_security_descriptor_unreadable")?;
+    let access = READ_CONTROL | FILE_READ_ATTRIBUTES;
+    #[cfg(test)]
+    record_acl_open(access);
     let file = File::options()
-        .access_mode(READ_CONTROL | FILE_READ_ATTRIBUTES)
+        .access_mode(access)
         .share_mode(SHARE)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .custom_flags(
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_OPEN_NO_RECALL,
+        )
         .open(parent)
         .map_err(|_| "parent_security_descriptor_unreadable")?;
     let borrowed = ManuallyDrop::new(Handle(file.as_raw_handle()));
@@ -639,11 +664,34 @@ fn root_parent_security(root: &Path) -> Observation<SecurityDescriptor> {
     {
         return Err("parent_security_descriptor_unreadable");
     }
+    let name: Vec<_> = root
+        .file_name()
+        .ok_or("parent_security_descriptor_unreadable")?
+        .encode_wide()
+        .collect();
+    let child = enumerate::open_relative_mode(
+        &file,
+        &name,
+        READ_CONTROL | FILE_READ_ATTRIBUTES,
+        SHARE,
+        true,
+    )
+    .map_err(|_| "parent_security_descriptor_unreadable")?;
+    let observed = observe(&child).map_err(|_| "parent_security_descriptor_unreadable")?;
+    if observed.object.file_id != expected.object.file_id
+        || observed.object.volume_serial != expected.object.volume_serial
+        || observed.object.quality != expected.object.quality
+    {
+        return Err("parent_security_descriptor_unreadable");
+    }
     read_security(&file)
 }
 
 // Reopen the pinned directory itself: no parent-name lookup and only READ_CONTROL access.
 fn parent_security(parent: &File) -> Observation<SecurityDescriptor> {
+    let access = READ_CONTROL;
+    #[cfg(test)]
+    record_acl_open(access);
     let mut name = UNICODE_STRING::default();
     let attributes = OBJECT_ATTRIBUTES {
         Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
@@ -656,7 +704,7 @@ fn parent_security(parent: &File) -> Observation<SecurityDescriptor> {
     let result = unsafe {
         NtCreateFile(
             &mut handle,
-            READ_CONTROL,
+            access,
             &attributes,
             &mut status,
             ptr::null(),
@@ -687,8 +735,38 @@ pub(crate) fn security_metadata(file: &File) -> Observation<(Vec<u8>, Vec<u8>, b
 }
 
 fn read_security(file: &File) -> Observation<SecurityDescriptor> {
+    read_security_for_parent(file, Kind::File, None)
+}
+
+fn read_security_for_parent(
+    file: &File,
+    kind: Kind,
+    parent: Option<&Observation<SecurityDescriptor>>,
+) -> Observation<SecurityDescriptor> {
+    let needs_group = parent
+        .and_then(|p| p.as_ref().ok())
+        .and_then(|p| p.dacl.as_ref())
+        .is_some_and(|aces| {
+            aces.iter().any(|ace| {
+                matches!(ace[0], 0 | 1 | 2 | 3 | 9 | 10 | 13 | 14)
+                    && u32::from(ace[1])
+                        & if kind == Kind::File {
+                            OBJECT_INHERIT_ACE
+                        } else {
+                            CONTAINER_INHERIT_ACE
+                        }
+                        != 0
+                    && ace.get(8..20) == Some(&[1, 1, 0, 0, 0, 0, 0, 3, 1, 0, 0, 0])
+            })
+        });
     let mut needed = 0;
-    let flags = OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
+    let flags = OWNER_SECURITY_INFORMATION
+        | DACL_SECURITY_INFORMATION
+        | if needs_group {
+            GROUP_SECURITY_INFORMATION
+        } else {
+            0
+        };
     unsafe {
         GetKernelObjectSecurity(file.as_raw_handle(), flags, ptr::null_mut(), 0, &mut needed);
     }
@@ -703,8 +781,14 @@ fn read_security(file: &File) -> Observation<SecurityDescriptor> {
     {
         return Err("security_descriptor_unreadable");
     }
+    decode_security(descriptor, needs_group)
+}
+
+fn decode_security(
+    descriptor: *mut std::ffi::c_void,
+    needs_group: bool,
+) -> Observation<SecurityDescriptor> {
     let mut owner = ptr::null_mut();
-    let mut group = ptr::null_mut();
     let mut defaulted = 0;
     let mut dacl = ptr::null_mut();
     let mut present = 0;
@@ -712,8 +796,6 @@ fn read_security(file: &File) -> Observation<SecurityDescriptor> {
     let mut revision = 0;
     if unsafe { GetSecurityDescriptorOwner(descriptor, &mut owner, &mut defaulted) } == 0
         || owner.is_null()
-        || unsafe { GetSecurityDescriptorGroup(descriptor, &mut group, &mut defaulted) } == 0
-        || group.is_null()
         || unsafe { GetSecurityDescriptorDacl(descriptor, &mut present, &mut dacl, &mut defaulted) }
             == 0
         || unsafe { GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) } == 0
@@ -722,9 +804,6 @@ fn read_security(file: &File) -> Observation<SecurityDescriptor> {
     }
     let owner =
         unsafe { std::slice::from_raw_parts(owner.cast::<u8>(), GetLengthSid(owner) as usize) }
-            .to_vec();
-    let group =
-        unsafe { std::slice::from_raw_parts(group.cast::<u8>(), GetLengthSid(group) as usize) }
             .to_vec();
     // A null or absent DACL does not establish inherited destination permissions.
     let mut aces = Vec::new();
@@ -746,6 +825,23 @@ fn read_security(file: &File) -> Observation<SecurityDescriptor> {
             );
         }
     }
+    let group = if needs_group
+        && control & (SE_DACL_AUTO_INHERITED | SE_DACL_PROTECTED) == 0
+        && aces
+            .iter()
+            .any(|ace| u32::from(ace[1]) & INHERITED_ACE == 0)
+    {
+        let mut group = ptr::null_mut();
+        if unsafe { GetSecurityDescriptorGroup(descriptor, &mut group, &mut defaulted) } == 0
+            || group.is_null()
+        {
+            return Err("security_descriptor_unknown");
+        }
+        unsafe { std::slice::from_raw_parts(group.cast::<u8>(), GetLengthSid(group) as usize) }
+            .to_vec()
+    } else {
+        vec![]
+    };
     Ok(SecurityDescriptor {
         owner,
         group,
@@ -1397,7 +1493,7 @@ mod tests {
             );
         }
         let mut first = Tree::default();
-        let accesses = crate::enumerate::record_open_accesses(|| {
+        let accesses = record_tree_open_accesses(|| {
             first = snapshot(temp.path());
         });
         let writes = FILE_WRITE_DATA
@@ -1419,7 +1515,7 @@ mod tests {
         let report = compare(&first, &second);
         assert!(report.equal(), "{report:?}");
         std::fs::write(path.with_file_name("fixture:note"), b"stream-a").unwrap();
-        let accesses = crate::enumerate::record_open_accesses(|| {
+        let accesses = record_tree_open_accesses(|| {
             first = snapshot(temp.path());
         });
         assert!(
