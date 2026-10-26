@@ -22,3 +22,4 @@ WHERE f.flags & ?2=0 AND f.attrs & 1024=0
   AND d.listing_state IN ('complete','incomplete')
   AND coalesce(d.listing_outcome,'complete') NOT IN ('stale','excluded','denied','unscanned','cancelled')
   AND (d.listing_state='complete' OR f.seen_run=d.seen_run)
+ORDER BY kind

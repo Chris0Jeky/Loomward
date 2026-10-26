@@ -67,7 +67,11 @@ fn tokens_are_ordered_deduplicated_casefolded_bounded_word_runs_never_raw_names(
             "Old Camera-Tool_2023",
             json!(["old", "camera", "tool", "2023"]),
         ),
-        ("../../etc/passwd", json!(["etc", "passwd"])),
+        ("../../etc/passwd", json!([])),
+        (r"C:\Users\someone\Pictures", json!([])),
+        (r"root\Pictures", json!([])),
+        ("root/Pictures", json!([])),
+        ("C:Pictures", json!([])),
         ("Camera CAMERA tool_camera", json!(["camera", "tool"])),
         ("Straße STRASSE", json!(["strasse"])),
     ] {
@@ -330,4 +334,28 @@ fn catalogue_snapshot_to_validated_packet_exercises_the_real_sqlite_boundary() {
         .as_array()
         .unwrap()
         .contains(&json!("cargo_target_dir")));
+    // An incomplete subject beneath a shield is unobserved, not an observed empty folder.
+    db.execute(
+        "UPDATE dir SET attrs=16,listing_state='incomplete' WHERE id=?1",
+        [target],
+    )
+    .unwrap();
+    db.execute("UPDATE dir SET flags=64 WHERE id=?1", [dir_id])
+        .unwrap();
+    let packet = build(&reader.evidence_facts(target).unwrap(), ids()).unwrap();
+    assert_eq!(packet["coverage"]["state"], "excluded");
+    assert!(packet["shape"]
+        .as_object()
+        .unwrap()
+        .values()
+        .all(Value::is_null));
+    for key in ["families", "extensions", "markers"] {
+        assert_eq!(packet[key], json!([]));
+    }
+    assert!(packet["media"].is_null());
+    assert!(packet["duplicates"]
+        .as_object()
+        .unwrap()
+        .values()
+        .all(Value::is_null));
 }

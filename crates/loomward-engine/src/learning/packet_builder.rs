@@ -1,5 +1,6 @@
 //! Pure projection from catalogue facts to the closed evidence-packet-v1 contract.
 //! No filesystem, process, Git, EXIF or network probes; unknown evidence stays null.
+//! `online` is the catalogue's online bit, currently not maintained by any scanner (always 1 outside tests).
 
 use loomward_catalog::EvidenceFacts;
 use loomward_learn::{
@@ -26,11 +27,15 @@ pub struct PacketIds {
 /// unobserved counts rejects denied/unscanned packets here, rather than inventing zeroes.
 pub fn build(facts: &EvidenceFacts, ids: PacketIds) -> Result<Value, String> {
     let mut seen = BTreeSet::new();
-    let tokens: Vec<_> = word_runs(&casefold(&facts.name))
-        .into_iter()
-        .filter(|word| word.chars().count() <= 64 && seen.insert(word.clone()))
-        .take(16)
-        .collect();
+    let tokens: Vec<_> = if facts.name.contains(['\\', '/', ':']) {
+        Vec::new()
+    } else {
+        word_runs(&casefold(&facts.name))
+            .into_iter()
+            .filter(|word| word.chars().count() <= 64 && seen.insert(word.clone()))
+            .take(16)
+            .collect()
+    };
     let observed = !matches!(
         facts.coverage.as_str(),
         "denied" | "unscanned" | "excluded" | "cancelled" | "unknown"

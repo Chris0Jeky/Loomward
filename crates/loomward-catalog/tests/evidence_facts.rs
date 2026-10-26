@@ -191,7 +191,17 @@ fn shields_stale_rows_and_unreadable_ancestors_are_not_evidence() {
                 params![flags, attrs, state, hidden],
             )
             .unwrap();
-        assert_eq!(lab.facts(child).files, 0);
+        for child_state in ["complete", "incomplete", "unlisted"] {
+            lab.db
+                .execute(
+                    "UPDATE dir SET listing_state=?1 WHERE id=?2",
+                    params![child_state, child],
+                )
+                .unwrap();
+            let facts = lab.facts(child);
+            assert_eq!(facts.files, 0);
+            assert_eq!(facts.coverage, "excluded", "{state}/{child_state}");
+        }
     }
     let reparse = lab.file(lab.dir, "skip.gguf", "model", 999, Some(999), 500);
     lab.db
@@ -406,4 +416,115 @@ fn top_extensions_are_stable_capped_and_unknown_allocations_are_not_zero() {
         Some(30)
     );
     assert_eq!(facts.allocated_bytes, None);
+}
+
+#[test]
+fn partial_extensions_keep_the_sixteen_with_the_most_files() {
+    let lab = Lab::new();
+    lab.db.execute_batch("BEGIN").unwrap();
+    for i in 0..18 {
+        for j in 0..=i {
+            lab.file(
+                lab.dir,
+                &format!("fixture{j}.e{i:02}"),
+                "other",
+                1,
+                Some(1),
+                100,
+            );
+        }
+    }
+    lab.db
+        .execute(
+            "UPDATE dir SET listing_state='incomplete',seen_run=1 WHERE id=?1",
+            [lab.dir],
+        )
+        .unwrap();
+    lab.db.execute_batch("COMMIT").unwrap();
+    let facts = lab.facts(lab.dir);
+    assert_eq!(facts.coverage, "partial");
+    assert_eq!(facts.extensions.len(), 16);
+    for (i, ext) in facts.extensions.iter().enumerate() {
+        assert_eq!(ext.ext, format!("e{:02}", 17 - i));
+        assert_eq!(ext.files, (18 - i) as u64);
+        assert_eq!(ext.bytes, None);
+    }
+}
+
+#[test]
+fn extension_ranking_breaks_byte_ties_by_files_then_name_with_unknowns_last() {
+    let lab = Lab::new();
+    for (name, size, allocated) in [
+        ("one.a", 10, Some(10)),
+        ("one.b", 5, Some(5)),
+        ("two.b", 5, Some(5)),
+        ("one.z", 5, Some(5)),
+        ("two.z", 5, Some(5)),
+        ("one.unknown", 100, None),
+    ] {
+        lab.file(lab.dir, name, "other", size, allocated, 100);
+    }
+    let facts = lab.facts(lab.dir);
+    assert_eq!(
+        facts
+            .extensions
+            .iter()
+            .map(|e| e.ext.as_str())
+            .collect::<Vec<_>>(),
+        ["b", "z", "a", "unknown"]
+    );
+}
+
+#[test]
+fn unrepresentable_extensions_are_dropped_without_losing_family_counts() {
+    let lab = Lab::new();
+    for ext in [
+        "rs".to_owned(),
+        "é".to_owned(),
+        "x".repeat(32),
+        "y".repeat(33),
+    ] {
+        lab.file(lab.dir, &format!("fixture.{ext}"), "other", 1, Some(1), 100);
+    }
+    let facts = lab.facts(lab.dir);
+    assert_eq!(facts.files, 4);
+    assert_eq!(facts.families[0].files, 4);
+    assert_eq!(facts.families[0].bytes, Some(4));
+    assert_eq!(facts.extensions.len(), 2);
+    assert_eq!(facts.extensions[0].ext, "rs");
+    assert_eq!(facts.extensions[1].ext, "x".repeat(32));
+}
+
+#[test]
+fn backup_dates_with_out_of_range_months_or_days_are_not_markers() {
+    let lab = Lab::new();
+    for date in ["2026-00-10", "2026-13-10", "2026-10-00", "2026-10-32"] {
+        let subject = lab.directory(lab.dir, date);
+        let backups = lab.directory(subject, "Backups");
+        lab.directory(backups, date);
+        assert!(
+            !lab.facts(subject)
+                .markers
+                .contains(&"lightroom_backups_dated"),
+            "{date}"
+        );
+    }
+}
+
+#[test]
+fn hub_and_ollama_layouts_require_both_children() {
+    let lab = Lab::new();
+    for (name, child, marker) in [
+        ("models--synthetic", "blobs", "hf_hub_layout"),
+        ("datasets--synthetic", "snapshots", "hf_hub_layout"),
+        ("models", "blobs", "ollama_blobs_layout"),
+        ("models", "manifests", "ollama_blobs_layout"),
+    ] {
+        let subject = lab.directory(lab.dir, name);
+        lab.directory(subject, child);
+        assert!(
+            !lab.facts(subject).markers.contains(&marker),
+            "{name}/{child}"
+        );
+    }
 }

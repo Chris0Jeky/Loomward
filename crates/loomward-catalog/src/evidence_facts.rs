@@ -89,7 +89,8 @@ pub struct EvidenceFacts {
     pub coverage: String,
     pub allocation_known: bool,
     pub link_counts_observed: bool,
-    /// The recorded root volume's online bit; true only as a fallback if it has no volume.
+    /// The catalogue's online bit, currently not maintained by any scanner (always 1 outside tests).
+    /// Falls back to true if the root has no volume.
     pub online: bool,
     pub partial: bool,
 }
@@ -167,9 +168,7 @@ fn extract(conn: &Connection, dir: i64, deadline: Option<Instant>) -> Result<Evi
             OR coalesce(listing_outcome,'complete') IN ('stale','excluded','denied','unscanned','cancelled'))))",
         params![dir,SHIELDS], |r| r.get(0))?;
     if blocked {
-        if facts.coverage == "complete" {
-            facts.coverage = "excluded".into();
-        }
+        facts.coverage = "excluded".into();
         facts.partial = true;
         return Ok(facts);
     }
@@ -361,9 +360,12 @@ fn extract(conn: &Connection, dir: i64, deadline: Option<Instant>) -> Result<Evi
             bytes: (known && !b.unknown).then_some(b.bytes),
         })
         .collect();
-    facts
-        .extensions
-        .sort_by(|a, b| b.bytes.cmp(&a.bytes).then_with(|| a.ext.cmp(&b.ext)));
+    facts.extensions.sort_by(|a, b| {
+        b.bytes
+            .cmp(&a.bytes)
+            .then_with(|| b.files.cmp(&a.files))
+            .then_with(|| a.ext.cmp(&b.ext))
+    });
     // Unrepresentable extension names stay in family totals but never enter the closed packet.
     facts.extensions.retain(|e| {
         e.ext.len() <= 32
