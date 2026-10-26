@@ -27,17 +27,22 @@ qualification is LW-134). The evidence file states this scope verbatim (section 
 
 | Item | Choice |
 |---|---|
-| VM | Generation 2, `LoomwardCrashLab`, 2 vCPU, 4 GB static memory, no network adapter |
+| VM | Generation 2, `LoomwardCrashLab`, 2 vCPU, 4 GB static memory, no network adapter; built by `scripts/hyperv_build_vm.ps1` without elevation |
 | Every VM path on `E:` | `New-VM -Path`, `-NewVHDPath`, `Set-VM -SnapshotFileLocation`, `-SmartPagingFilePath` all under `E:\loomward-lab\hyperv\`; the orchestrator reads back every path the VM reports (configuration, runtime state, VHDX, checkpoints) and refuses anything outside that prefix after resolving junctions and mount points (an allowlist, not a `C:`/`H:` denylist); the host defaults (`Get-VMHost`) are never relied on |
 | Checkpoints | `-CheckpointType Disabled`, `AutomaticCheckpointsEnabled $false`, so no differencing disk sits under the guest |
 | Disks | system VHDX; an 8 GB **lab VHDX** (NTFS; copy source, destination and `state.db`); a separate 1 GB **signal VHDX** (its own device, never written by the copy) |
 | Lab disk cache | write caching enabled in the guest, pinned and read back each boot, recorded per cycle |
 | Guest accounts | a **standard** local user runs the runner; a separate guest administrator PowerShell Direct session does only `chkdsk /scan` and the write-cache read-back, and is never used for the runner; the runner and the orchestrator treat an elevated token (the copy primitives skip under one, `exec_crash_tests.rs`) as a cycle **failure**, never a skip |
-| Guest tooling | the `loomward-windows` **cargo test executable** built with `copy-primitives` (the hooks are `#[cfg(test)]`), copied in through PowerShell Direct |
-| Guest image | the owner's ISO, or Microsoft's evaluation image downloaded to `E:`, checked against Microsoft's published hash where one exists, otherwise its observed SHA-256 recorded (q-49) |
-| Guest credentials | held in the orchestrator's state outside Git (`.loomward/` of the primary checkout); never printed |
+| Guest tooling | the `loomward-windows` **cargo test executable** built with `copy-primitives` (the hooks are `#[cfg(test)]`), in release mode with a static C runtime (`-C target-feature=+crt-static`), copied in through PowerShell Direct and checked by SHA-256 on both sides |
+| Guest image | Windows Server 2025 Standard Evaluation, **Desktop Experience** (image index 2), from Microsoft's evaluation ISO downloaded to `E:` (owner go-ahead 2026-10-26, q-49); no published hash, so the observed SHA-256 is recorded. Server Core does not work: it lacks `cldapi.dll`, which the copy engine imports |
+| Guest credentials | random passwords in `E:\loomward-lab\hyperv\state\guest.json` (outside Git, ACL limited to the owner's account and SYSTEM); never printed |
+| Cloud Files filter | Windows Server leaves `CldFlt` running but attached to no volume, and the copy engine's sync-root query then fails with `ERROR_INVALID_FUNCTION`; the admin session attaches it to `L:` after every boot (`fltmc attach CldFlt L:`) |
+| Lab folder ACL | `L:\lab` gets a protected, auto-inherited DACL (`icacls /inheritance:d`, SDDL `D:PAI`): under a fresh volume root's legacy DACL every child ACE reads as explicit and C1 reports a security-descriptor difference on every node (#899) |
+| Session identity | PowerShell Direct on this host was measured handing a new session the identity of the **previous** session to the VM, whatever credential was supplied; every session therefore checks `WindowsIdentity.GetCurrent()` and reconnects until it is the requested account |
 
-The orchestrator refuses to start if `E:` has less than 80 GB free.
+The orchestrator refuses to start if `E:` has less than 80 GB free. The act starts inside the same PowerShell Direct
+session that polls and cuts: a process started through PowerShell Direct ends when its session closes, so a separate
+launch session would kill the act before the hard-off.
 
 ## 3. One cycle
 
