@@ -8,12 +8,13 @@ from __future__ import annotations
 
 import argparse
 import base64
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 import math
 import ntpath
 import random
 import re
+import secrets
 import subprocess
 import sys
 import time
@@ -51,7 +52,7 @@ class Config:
     scenario: str = "run"
     removal: str = "0"
     tree: str = "small"
-    seed: int = 0
+    seed: int = field(default_factory=lambda: secrets.randbits(32))
     execute: bool = False
     exe: str = GUEST_EXE
 
@@ -244,6 +245,20 @@ try {{
 $password = $null; $secrets = $null
 """
 
+    def _session(self, admin=False):
+        return self._credential(admin=admin) + f"""
+$connectionDeadline = (Get-Date).AddSeconds(120)
+while ($true) {{
+    try {{
+        $session = New-PSSession -VMName {quote(VM_NAME)} -Credential $credential -ErrorAction Stop
+        break
+    }} catch {{
+        if ((Get-Date) -ge $connectionDeadline) {{ throw 'guest_direct_connection_timeout' }}
+        Start-Sleep -Seconds 1
+    }}
+}}
+"""
+
     def preflight(self):
         body = f"""
 $module = [bool](Get-Command Get-VM -ErrorAction SilentlyContinue)
@@ -309,21 +324,49 @@ $heartbeat = Get-VMIntegrationService -VMName {quote(VM_NAME)} -Name Heartbeat
 
     def _admin(self, health=False):
         check = r"""
-$summary = (& chkdsk L: /scan 2>&1 | Out-String)
-$code = $LASTEXITCODE
+$dirtyQuery = (& fsutil dirty query L: 2>&1 | Out-String)
+if ($LASTEXITCODE -ne 0) { throw 'dirty_query_failed' }
+if ($dirtyQuery -notmatch '\bis (?:NOT )?Dirty\b') { throw 'dirty_query_unrecognised' }
+$bootTime = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime
+$eventErrors = @()
+$events = @(Get-WinEvent -FilterHashtable @{LogName='Application','System'; StartTime=$bootTime} `
+    -ErrorAction SilentlyContinue -ErrorVariable eventErrors)
+if (@($eventErrors | Where-Object { $_.FullyQualifiedErrorId -notlike 'NoMatchingEventsFound*' }).Count) {
+    throw 'filesystem_events_unavailable'
+}
+$repairs = @($events | Where-Object {
+    $_.ProviderName -in @('Wininit', 'Microsoft-Windows-Wininit', 'Chkdsk', 'Ntfs', 'Microsoft-Windows-Ntfs') -and (
+        $_.Level -in @(1, 2, 3) -or
+        ($_.ProviderName -in @('Ntfs', 'Microsoft-Windows-Ntfs') -and $_.Id -in @(55, 130, 131, 140)) -or
+        ($_.Id -eq 98 -and $_.Message -match 'needs.*(repair|chkdsk)|corrupt') -or
+        ($_.Id -in @(1001, 26226) -and $_.Message -match 'made corrections|correcting|repairing|repaired')
+    )
+} | Select-Object TimeCreated, ProviderName, Id, Level, Message)
+$filesystem = @{ dirty = [bool]($dirtyQuery -match '\bis Dirty\b'); dirty_query = $dirtyQuery;
+    boot_time = $bootTime.ToString('o'); repair_events = @($repairs) }
+$chkdsk = $null
+# Preserve boot-time repair evidence; /scan must not mask a dirty/auto-repaired volume.
+if (-not $filesystem.dirty -and $repairs.Count -eq 0) {
+    $summary = (& chkdsk L: /scan 2>&1 | Out-String)
+    $code = $LASTEXITCODE
+    $chkdsk = @{ code = $code; clean = ($code -eq 0); summary = $summary }
+}
 """ if health else ""
-        response = ("@{ chkdsk = @{ code = $code; clean = ($code -eq 0); summary = $summary }; "
+        response = ("@{ chkdsk = $chkdsk; filesystem = $filesystem; "
                     "write_cache = $cache }") if health else "$cache"
-        body = self._credential(admin=True) + f"""
-$answer = Invoke-Command -VMName {quote(VM_NAME)} -Credential $credential -ScriptBlock {{
+        body = self._session(admin=True) + f"""
+try {{
+$answer = Invoke-Command -Session $session -ScriptBlock {{
     $ErrorActionPreference = 'Stop'
     {check}
     {CACHE_QUERY}
     {response}
 }}
 $answer | ConvertTo-Json -Depth 8 -Compress
+}} finally {{ Remove-PSSession $session }}
 """
         default = {"chkdsk": {"code": 0, "clean": True, "summary": "dry run"},
+                   "filesystem": {"dirty": False, "repair_events": [], "dirty_query": "dry run"},
                    "write_cache": {"enabled": True}} if health else {"enabled": True}
         return self._call("health" if health else "cache", body, default, timeout=600, guard=True)
 
@@ -370,11 +413,10 @@ $free = Invoke-Command -Session $session -ScriptBlock {{ (Get-PSDrive L).Free }}
     exit_code = $answer.exit_code; runner_output = $answer.runner_output; act_done = $answer.act_done }} |
     ConvertTo-Json -Depth 10 -Compress
 """
-        body = self._credential() + f"""
+        body = f"""
 $destination = Resolve-LabPath {quote(host_dir)}
 """ + ("if (Test-Path -LiteralPath $destination) { throw 'cycle_directory_exists' }\n"
-        "New-Item -ItemType Directory -Path $destination | Out-Null\n" if step == "prepare" else "") + f"""
-$session = New-PSSession -VMName {quote(VM_NAME)} -Credential $credential
+        "New-Item -ItemType Directory -Path $destination | Out-Null\n" if step == "prepare" else "") + self._session() + f"""
 try {{
     $answer = Invoke-Command -Session $session -ScriptBlock {{
         $ErrorActionPreference = 'Stop'
@@ -399,26 +441,31 @@ try {{
         commands += [f'set "{key}={value}"' for key, value in values.items()]
         commands += [f'"{self.config.exe}" {TEST_ARGS} > "{signal}\\act.log" 2>&1']
         cmd = "\r\n".join(commands) + "\r\n"
-        body = self._credential() + f"""
-Invoke-Command -VMName {quote(VM_NAME)} -Credential $credential -ScriptBlock {{
+        body = self._session() + f"""
+try {{
+Invoke-Command -Session $session -ScriptBlock {{
     $ErrorActionPreference = 'Stop'
     [IO.File]::WriteAllText({quote(wrapper)}, {encoded(cmd)}, [Text.Encoding]::ASCII)
     Start-Process -FilePath 'cmd.exe' -ArgumentList {quote('/d /c ""' + wrapper + '""')} -WindowStyle Hidden
     @{{ started = $true }}
 }} | ConvertTo-Json -Compress
+}} finally {{ Remove-PSSession $session }}
 """
         # Keep the wrapper readable in the dry plan without ever including secrets.
         body = "# Detached wrapper:\n" + "\n".join("# " + line for line in commands) + "\n" + body
-        answer = self._call("act", body, {"started": True}, guard=True)
+        answer = self._call("act", body, {"started": True}, timeout=150, guard=True)
         if answer.get("started") is not True:
             raise CampaignError("act_start_failed")
 
-    def _poll(self, values):
+    def _cut(self, values, delay):
         trace = values["LOOMWARD_COPY_CRASH_TRACE"]
         signal = values["LOOMWARD_HV_SIGNAL"]
         act_log, act_done = signal + r"\act.log", signal + r"\act-done.json"
-        body = self._credential() + rf"""
-Invoke-Command -VMName {quote(VM_NAME)} -Credential $credential -ScriptBlock {{
+        body = self._session() + rf"""
+try {{
+$deadline = (Get-Date).AddSeconds({ACT_TIMEOUT})
+while ($true) {{
+$poll = Invoke-Command -Session $session -ScriptBlock {{
     $ErrorActionPreference = 'Stop'
     $lines = if (Test-Path -LiteralPath {quote(trace)}) {{ @(Get-Content -LiteralPath {quote(trace)}) }} else {{ @() }}
     $dirty = (Get-Counter '\Cache\Dirty Pages' -ErrorAction Stop).CounterSamples.CookedValue
@@ -428,15 +475,41 @@ Invoke-Command -VMName {quote(VM_NAME)} -Credential $credential -ScriptBlock {{
     @{{ trace_lines = @($lines).Count; dirty_pages = $dirty;
         act_done = (Test-Path -LiteralPath {quote(act_done)});
         elevated_token = [bool]($output -match 'elevated[-_ ]token|token[^\r\n]*elevated|running as (an? )?admin') }}
-}} | ConvertTo-Json -Compress
+}}
+$lastPollReturn = Get-Date
+if ($poll.elevated_token) {{ throw 'elevated_token' }}
+if ($null -eq $poll.dirty_pages -or $poll.dirty_pages -lt 0 -or
+    [double]::IsNaN($poll.dirty_pages) -or [double]::IsInfinity($poll.dirty_pages)) {{
+    throw 'dirty_pages_unavailable'
+}}
+if ($poll.trace_lines -gt 2 -or $poll.act_done) {{ break }}
+if ((Get-Date) -ge $deadline) {{ throw 'act_progress_timeout' }}
+Start-Sleep -Milliseconds {int(POLL_SECONDS * 1000)}
+}}
+$delay = {delay}
+Start-Sleep -Milliseconds $delay
+$stopStarted = Get-Date
+Stop-VM -Name {quote(VM_NAME)} -TurnOff -Force
+$stopReturned = Get-Date
+@{{ trace_lines = $poll.trace_lines; dirty_pages = $poll.dirty_pages; act_done = $poll.act_done;
+    delay_ms = $delay; cut_latency_ms = ($stopReturned - $lastPollReturn).TotalMilliseconds;
+    last_poll_return = $lastPollReturn.ToString('o'); stop_started = $stopStarted.ToString('o');
+    stop_returned = $stopReturned.ToString('o') }} | ConvertTo-Json -Compress
+}} finally {{ Remove-PSSession $session -ErrorAction SilentlyContinue }}
 """
-        result = self._call("poll", body, {"trace_lines": 3, "dirty_pages": 1, "act_done": False}, guard=True)
+        result = self._call("cut", body, {"trace_lines": 3, "dirty_pages": 1, "act_done": False,
+            "cut_latency_ms": None, "last_poll_return": None, "stop_started": None, "stop_returned": None},
+            timeout=120 + ACT_TIMEOUT + 32, guard=True)
         dirty = result.get("dirty_pages")
         if not isinstance(dirty, (int, float)) or isinstance(dirty, bool) or not math.isfinite(dirty) or dirty < 0:
             raise CampaignError("dirty_pages_unavailable")
         lines = result.get("trace_lines")
         if not isinstance(lines, int) or isinstance(lines, bool) or lines < 0 or not isinstance(result.get("act_done"), bool):
             raise CampaignError("invalid_progress_response")
+        latency = result.get("cut_latency_ms")
+        if self.config.execute and (not isinstance(latency, (int, float)) or isinstance(latency, bool)
+                                   or not math.isfinite(latency) or latency < 0):
+            raise CampaignError("cut_latency_unavailable")
         return result
 
     def _append(self, record):
@@ -457,9 +530,10 @@ $line = {encoded(line)}
             removal = 1
         record = {"cycle": number, "kind": "floor", "scenario": scenario, "removal": removal,
             "tree": self.config.tree, "seed": self.config.seed, "delay_ms": None, "trace_lines": None,
+            "cut_latency_ms": None, "last_poll_return": None, "stop_started": None, "stop_returned": None,
             "last_trace_label": None, "dirty_pages": None, "recovered": None, "abandoned": None,
             "last_record": None, "copy_ran": False, "ok": False, "failure": None,
-            "chkdsk": None, "write_cache": {}, "floor_credit": None, "timings": {}}
+            "chkdsk": None, "filesystem": None, "write_cache": {}, "floor_credit": None, "timings": {}}
         validated = False
         try:
             if self.preflight()["vm"] is None:
@@ -475,44 +549,49 @@ $line = {encoded(line)}
             if prepared.get("exit_code") != 0:
                 raise CampaignError("prepare_failed")
             self._act(values)
-            deadline = self.clock() + ACT_TIMEOUT
-            while True:
-                poll = self._poll(values)
-                if poll["trace_lines"] > 2 or poll["act_done"]:
-                    break
-                if self.clock() >= deadline:
-                    raise CampaignError("act_progress_timeout")
-                if self.config.execute:
-                    self.sleep(POLL_SECONDS)
             delay = self.rng.randint(0, 2000)
-            if self.config.execute:
-                self.sleep(delay / 1000)
-            final_poll = self._poll(values)
-            record.update(delay_ms=delay, trace_lines=final_poll["trace_lines"],
-                          dirty_pages=final_poll["dirty_pages"])
-            if poll["act_done"] or final_poll["act_done"]:
+            record["delay_ms"] = delay
+            final_poll = self._cut(values, delay)
+            for key in ("trace_lines", "dirty_pages", "cut_latency_ms", "last_poll_return", "stop_started", "stop_returned"):
+                record[key] = final_poll.get(key)
+            if final_poll["act_done"]:
                 record["kind"] = "post_completion"
-            self._call("cut", f"Stop-VM -Name {quote(VM_NAME)} -TurnOff -Force\n'{{}}'")
             record["timings"]["cut_s"] = self.clock() - start
             reboot = self.clock()
             self._boot()
             record["timings"]["recovery_boot_s"] = self.clock() - reboot
             health = self._admin(health=True)
             record["chkdsk"] = health.get("chkdsk")
+            record["filesystem"] = health.get("filesystem")
             record["write_cache"]["after"] = health.get("write_cache", {})
+            filesystem = record["filesystem"]
+            if (not isinstance(filesystem, dict) or not isinstance(filesystem.get("dirty"), bool)
+                    or not isinstance(filesystem.get("repair_events"), list)):
+                raise CampaignError("filesystem_evidence_unavailable")
+            if filesystem["dirty"] or filesystem["repair_events"]:
+                raise CampaignError("filesystem_repaired")
             check = record["chkdsk"]
             if not check or check.get("code") != 0 or check.get("clean") is not True:
                 raise CampaignError("chkdsk_dirty_or_failed")
             if record["write_cache"]["after"].get("enabled") is not True:
                 raise CampaignError("write_cache_not_enabled")
             recovered = self._runner("recover", number, values)
-            # A durable completion marker also catches completion between the
-            # last Direct poll and TurnOff (another host PowerShell invocation).
+            # A durable marker or pre-recovery terminal record catches completion
+            # during the delay or between the last Direct poll and TurnOff.
             if recovered.get("act_done") is True:
                 record["kind"] = "post_completion"
             result = recovered.get("result")
             if not isinstance(result, dict) or not isinstance(result.get("ok"), bool):
                 raise CampaignError("invalid_guest_result")
+            terminal = result.get("terminal_before_recover")
+            if terminal is None:
+                terminal = bool(re.search(r"\b(committed|cancelled|refused)\b",
+                    str(result.get("last_record", "")), re.IGNORECASE))
+            if not isinstance(terminal, bool):
+                raise CampaignError("invalid_guest_result")
+            record["terminal_before_recover"] = terminal
+            if terminal:
+                record["kind"] = "post_completion"
             for key in ("ok", "recovered", "abandoned", "last_record", "copy_ran", "failure", "journal_records"):
                 record[key] = result.get(key)
             record["last_trace_label"] = recovered.get("last_trace_label")
@@ -534,7 +613,10 @@ $line = {encoded(line)}
             record["failure"] = record["failure"] or str(exc)
             record["timings"]["total_s"] = self.clock() - start
             if validated:
-                self._append(record)
+                try:
+                    self._append(record)
+                except Exception:
+                    print("campaign_log_failed: original failure preserved", file=sys.stderr)
                 self.summary["cycles"] += 1
                 self.summary["failures"] += 1
             raise
@@ -565,24 +647,37 @@ while ((Get-VM -Name {quote(VM_NAME)}).State -ne 'Off') {{
 $attached = @(Get-VMHardDiskDrive -VMName {quote(VM_NAME)} | ForEach-Object {{
     Get-VHD -Path (Resolve-LabPath $_.Path)
 }})
+$manifestPath = Resolve-LabPath {quote(STATE + chr(92) + 'pristine.json')}
+$manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
 $pairs = @()
 foreach ($spec in @(@{{ source = {quote(PRISTINE_LAB)}; size = {LAB_DISK_BYTES} }},
                     @{{ source = {quote(PRISTINE_SIGNAL)}; size = {SIGNAL_DISK_BYTES} }})) {{
     $source = Resolve-LabPath $spec.source
     $image = Get-VHD -Path $source
     if ($image.Size -ne $spec.size) {{ throw 'pristine_disk_size_unexpected' }}
-    $matches = @($attached | Where-Object {{ $_.Size -eq $image.Size }})
-    if ($matches.Count -ne 1) {{ throw 'reset_disk_identity_ambiguous' }}
-    $target = Resolve-LabPath $matches[0].Path
+    $candidates = @($attached | Where-Object {{ $_.Size -eq $image.Size }})
+    if ($candidates.Count -ne 1) {{ throw 'reset_disk_identity_ambiguous' }}
+    $target = Resolve-LabPath $candidates[0].Path
     if ($source -eq $target) {{ throw 'reset_source_is_attached' }}
-    $pairs += @{{ source = $source; target = $target }}
+    $entries = @($manifest.files | Where-Object {{ $_.name -eq (Split-Path -Leaf $source) }})
+    if ($entries.Count -ne 1 -or $entries[0].sha256 -notmatch '^[0-9a-fA-F]{{64}}$') {{
+        throw 'pristine_manifest_invalid'
+    }}
+    $pairs += @{{ source = $source; target = $target; expected = $entries[0] }}
 }}
 if ($pairs[0].target -eq $pairs[1].target) {{ throw 'reset_disk_identity_ambiguous' }}
 foreach ($pair in $pairs) {{
-    Copy-Item -LiteralPath $pair.source -Destination $pair.target -Force -ErrorAction Stop
-    if ((Get-Item -LiteralPath $pair.source).Length -ne (Get-Item -LiteralPath $pair.target).Length) {{
-        throw 'reset_size_mismatch'
+    $temporary = Resolve-LabPath ($pair.target + '.tmp')
+    Copy-Item -LiteralPath $pair.source -Destination $temporary -Force -ErrorAction Stop
+    if ((Get-FileHash -LiteralPath $temporary -Algorithm SHA256).Hash -ne $pair.expected.sha256 -or
+        (Get-Item -LiteralPath $temporary).Length -ne $pair.expected.size) {{
+        throw 'reset_hash_mismatch'
     }}
+    $pair.temporary = $temporary
+}}
+# Verify both copies before atomically replacing either live disk.
+foreach ($pair in $pairs) {{
+    [IO.File]::Replace($pair.temporary, $pair.target, $null)
 }}
 '{{}}'
 """, timeout=900, guard=True)
@@ -637,7 +732,7 @@ def main(argv=None):
     parser.add_argument("--scenario", choices=("run", "abandon", "mixed"), default="run")
     parser.add_argument("--removal", choices=("0", "1", "mixed"), default="0")
     parser.add_argument("--tree", choices=("small", "large"), default="small")
-    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--exe", default=None, help="mutant guest test executable (negative only)")
     args = parser.parse_args(argv)
@@ -646,10 +741,15 @@ def main(argv=None):
     if args.command != "negative" and args.exe is not None:
         parser.error("--exe is only valid for negative")
     args.exe = args.exe or GUEST_EXE
+    if args.seed is None:
+        args.seed = secrets.randbits(32)
     try:
-        Campaign(PowerShell(), random.Random(args.seed), time.monotonic, time.sleep, Config(**vars(args))).run()
+        summary = Campaign(PowerShell(), random.Random(args.seed), time.monotonic, time.sleep, Config(**vars(args))).run()
     except CampaignError as exc:
         print(f"campaign_refused: {exc}", file=sys.stderr)
+        return 1
+    if args.command == "negative" and args.execute and summary["caught"] == 0:
+        print("NOT CAUGHT")
         return 1
     return 0
 

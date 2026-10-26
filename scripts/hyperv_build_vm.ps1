@@ -3,8 +3,9 @@
   Builds the LoomwardCrashLab VM for the G5 Hyper-V crash campaign (docs/53, lane H4).
 
 .DESCRIPTION
-  Non-elevated: needs only membership of "Hyper-V Administrators" (owner, HUMAN_TODO q-49). Every file lives under
-  E:\loomward-lab\hyperv (the allowlist prefix); nothing touches C: or H:. Lab data only.
+  Non-elevated: needs only membership of "Hyper-V Administrators" (owner, HUMAN_TODO q-49). VM data lives under
+  E:\loomward-lab\hyperv (the allowlist prefix). No VM file lives on C:, but Hyper-V keeps its own
+  registration link under C:\ProgramData\Microsoft\Windows\Hyper-V. Lab data only; nothing touches H:.
 
   Steps (each idempotent where practical):
     unattend  write state\guest.json (random passwords, never printed) and iso\unattend.iso (IMAPI2, built in)
@@ -18,16 +19,32 @@
 param(
     [Parameter(Mandatory)][ValidateSet('unattend', 'create', 'install', 'disks', 'pristine')][string]$Step,
     [string]$Iso = 'E:\loomward-lab\hyperv\iso\server2025-eval.iso',
-    [int]$LabIops = 400
+    [int]$LabIops = 400,
+    [switch]$Force
 )
 $ErrorActionPreference = 'Stop'
 $Root = 'E:\loomward-lab\hyperv'
+$Iso = [IO.Path]::GetFullPath($Iso)
+if (-not $Iso.StartsWith($Root + '\', [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'iso_outside_allowlist'
+}
+$isoAncestor = $Iso
+while ($isoAncestor) {
+    if (Test-Path -LiteralPath $isoAncestor) {
+        if ((Get-Item -LiteralPath $isoAncestor -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw 'iso_reparse_point'
+        }
+    }
+    $isoAncestor = Split-Path -Parent $isoAncestor
+}
 $Name = 'LoomwardCrashLab'
 $State = Join-Path $Root 'state'
 $Disks = Join-Path $Root 'disks'
 foreach ($d in @($State, $Disks, (Join-Path $Root 'vm'), (Join-Path $Root 'iso'), (Join-Path $Root 'results'))) {
     New-Item -ItemType Directory -Force -Path $d | Out-Null
 }
+icacls $State /inheritance:r /grant:r "${env:USERNAME}:(OI)(CI)F" 'SYSTEM:(OI)(CI)F' | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'state_acl_failed' }
 
 function New-Password {
     $bytes = New-Object byte[] 18
@@ -54,10 +71,14 @@ function Wait-Heartbeat([int]$seconds) {
 
 switch ($Step) {
     'unattend' {
+        $stage = Join-Path $State 'unattend-stage'
+        try {
         $guest = Join-Path $State 'guest.json'
         if (-not (Test-Path $guest)) {
             @{ admin = (New-Password); runner = (New-Password) } | ConvertTo-Json | Set-Content -Encoding utf8 $guest
         }
+        icacls $guest /inheritance:r /grant:r "${env:USERNAME}:(OI)(CI)F" 'SYSTEM:(OI)(CI)F' | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw 'guest_acl_failed' }
         $g = Get-Content $guest -Raw | ConvertFrom-Json
         $xml = @"
 <?xml version="1.0" encoding="utf-8"?>
@@ -108,7 +129,6 @@ switch ($Step) {
   </settings>
 </unattend>
 "@
-        $stage = Join-Path $State 'unattend-stage'
         New-Item -ItemType Directory -Force -Path $stage | Out-Null
         Set-Content -Path (Join-Path $stage 'autounattend.xml') -Value $xml -Encoding utf8
         # IMAPI2 builds the answer-file ISO without elevation or extra tools.
@@ -140,8 +160,10 @@ public static class IsoWriter {
 '@
         }
         [Loomward.IsoWriter]::Write($out, $image.ImageStream, $image.BlockSize, $image.TotalBlocks)
-        Remove-Item -Recurse -Force $stage
         "unattend.iso written ($((Get-Item $out).Length) bytes); passwords in state\guest.json (not printed)"
+        } finally {
+            if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
+        }
     }
     'create' {
         if (Get-VM -Name $Name -ErrorAction SilentlyContinue) { throw "$Name already exists" }
@@ -180,6 +202,7 @@ public static class IsoWriter {
             catch { if ((Get-Date) -gt $deadline) { throw }; Start-Sleep 10 }
         }
         Get-VMDvdDrive -VMName $Name | Remove-VMDvdDrive
+        Remove-Item -LiteralPath (Join-Path $Root 'iso\unattend.iso') -Force
         "installed"
     }
     'disks' {
@@ -212,10 +235,22 @@ public static class IsoWriter {
         }
     }
     'pristine' {
+        if (-not $Force -and @(Get-ChildItem -LiteralPath $State -Filter 'pristine-*').Count) {
+            throw 'pristine_already_exists_use_force'
+        }
         Stop-VM -Name $Name   # clean shutdown, not TurnOff
-        Copy-Item (Join-Path $Disks 'lab.vhdx') (Join-Path $State 'pristine-lab.vhdx') -Force
-        Copy-Item (Join-Path $Disks 'signal.vhdx') (Join-Path $State 'pristine-signal.vhdx') -Force
-        Copy-Item (Join-Path $Disks 'system.vhdx') (Join-Path $State 'pristine-system.vhdx') -Force
-        Get-ChildItem $State -Filter 'pristine-*' | Select-Object Name, Length
+        $deadline = (Get-Date).AddSeconds(300)
+        while ((Get-VM -Name $Name).State -ne 'Off') {
+            if ((Get-Date) -ge $deadline) { throw 'clean_shutdown_timeout' }
+            Start-Sleep -Milliseconds 250
+        }
+        $files = @(foreach ($disk in @('lab', 'signal', 'system')) {
+            $destination = Join-Path $State "pristine-$disk.vhdx"
+            Copy-Item -LiteralPath (Join-Path $Disks "$disk.vhdx") -Destination $destination -Force
+            @{ name = "pristine-$disk.vhdx"; size = (Get-Item -LiteralPath $destination).Length;
+                sha256 = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash }
+        })
+        @{ files = $files } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $State 'pristine.json') -Encoding utf8
+        $files | ForEach-Object { [PSCustomObject]$_ } | Select-Object name, size, sha256
     }
 }

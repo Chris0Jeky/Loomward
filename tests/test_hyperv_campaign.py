@@ -1,4 +1,4 @@
-"""No host access: the PowerShell boundary is entirely scripted."""
+"""No Hyper-V access: fake runner, syntax parsing and a disposable path-guard lab."""
 
 import base64
 import ast
@@ -7,12 +7,16 @@ import copy
 import io
 import json
 import re
+import shutil
+import subprocess
 import sys
+from pathlib import Path
 import unittest
+import uuid
 from unittest.mock import patch
 
 from scripts.hyperv_campaign import (
-    Campaign, CampaignError, Config, LAB_ROOT, PowerShell, encoded, main, window_for_label,
+    Campaign, CampaignError, Config, LAB_ROOT, PATH_GUARD, PowerShell, encoded, main, quote, window_for_label,
 )
 
 
@@ -57,9 +61,14 @@ class FakePowerShell:
             "cache": {"enabled": True},
             "prepare": {"exit_code": 0, "runner_output": "prepared"},
             "act": {"started": True},
-            "poll": {"trace_lines": 4, "last_trace_label": "item_written",
-                     "dirty_pages": 128, "act_done": False, "elevated_token": False},
+            "cut": {"trace_lines": 4, "dirty_pages": 128, "act_done": False,
+                    "elevated_token": False, "cut_latency_ms": 1400.125,
+                    "last_poll_return": "2026-10-26T12:00:00.0000000Z",
+                    "stop_started": "2026-10-26T12:00:01.3000000Z",
+                    "stop_returned": "2026-10-26T12:00:01.4001250Z"},
             "health": {"chkdsk": {"code": 0, "clean": True, "summary": "No problems"},
+                       "filesystem": {"dirty": False, "dirty_query": "Volume L: is NOT Dirty",
+                                      "repair_events": []},
                        "write_cache": {"enabled": True}},
             "recover": {"result": {"ok": True, "recovered": "open", "abandoned": "done",
                                    "journal_records": 4, "last_record": "item_verified",
@@ -96,7 +105,9 @@ class CampaignTests(unittest.TestCase):
                     args += ["--exe", r"C:\lw\mutant.exe"]
                 with contextlib.redirect_stdout(output), patch(
                     "scripts.hyperv_campaign.PowerShell", return_value=fake
-                ), patch("scripts.hyperv_campaign.time.sleep", side_effect=AssertionError("sleep")):
+                ), patch("scripts.hyperv_campaign.time.sleep", side_effect=AssertionError("sleep")), patch(
+                    "scripts.hyperv_campaign.subprocess.run", side_effect=AssertionError("subprocess")
+                ):
                     self.assertEqual(main(args), 0)
                 self.assertFalse(fake.calls)
                 text = output.getvalue()
@@ -172,13 +183,24 @@ class CampaignTests(unittest.TestCase):
         self.assertIn("'lwadmin'", scripts["health"])
         self.assertNotIn("'lwadmin'", scripts["recover"])
         self.assertIn("chkdsk L: /scan", scripts["health"])
-        self.assertEqual(self.operations().count("poll"), 2)
+        self.assertEqual(self.operations().count("cut"), 1)
+        self.assertNotIn("poll", self.operations())
+        self.assertEqual(record["seed"], 19)
+        self.assertEqual(record["cut_latency_ms"], 1400.125)
+        self.assertEqual(record["stop_returned"], "2026-10-26T12:00:01.4001250Z")
+        cut = scripts["cut"]
+        self.assertLess(cut.index("New-PSSession"), cut.index("$poll = Invoke-Command -Session"))
+        self.assertLess(cut.index("$lastPollReturn = Get-Date"), cut.index("Start-Sleep -Milliseconds $delay"))
+        self.assertLess(cut.index("Start-Sleep -Milliseconds $delay"), cut.index("Stop-VM"))
+        self.assertIn("($stopReturned - $lastPollReturn).TotalMilliseconds", cut)
+        self.assertEqual(self.time.sleeps, [])
 
     def test_post_completion_detected_during_delay_gets_no_credit(self):
         c = self.make()
-        initial = {"trace_lines": 3, "dirty_pages": 128, "act_done": False}
-        final = {"trace_lines": 18, "dirty_pages": 32, "act_done": True}
-        self.ps.responses["poll"] = [initial, final]
+        final = json.loads(self.ps.run("# lw-hv:cut", 1))
+        self.ps.calls.clear()
+        final.update(trace_lines=18, dirty_pages=32, act_done=True)
+        self.ps.responses["cut"] = final
         record = c.cycle(1)
         self.assertEqual(record["kind"], "post_completion")
         self.assertIsNone(record["floor_credit"])
@@ -188,7 +210,10 @@ class CampaignTests(unittest.TestCase):
 
     def test_zero_dirty_pages_gets_no_credit(self):
         c = self.make()
-        self.ps.responses["poll"] = {"trace_lines": 4, "dirty_pages": 0, "act_done": False}
+        response = json.loads(self.ps.run("# lw-hv:cut", 1))
+        self.ps.calls.clear()
+        response["dirty_pages"] = 0
+        self.ps.responses["cut"] = response
         self.assertIsNone(c.cycle(1)["floor_credit"])
 
     def test_durable_completion_marker_catches_the_final_poll_cut_race(self):
@@ -203,13 +228,11 @@ class CampaignTests(unittest.TestCase):
 
     def test_waits_until_more_than_two_trace_lines(self):
         c = self.make()
-        self.ps.responses["poll"] = [
-            {"trace_lines": 2, "dirty_pages": 1, "act_done": False},
-            {"trace_lines": 3, "dirty_pages": 1, "act_done": False},
-            {"trace_lines": 3, "dirty_pages": 1, "act_done": False},
-        ]
         c.cycle(1)
-        self.assertIn(0.25, self.time.sleeps)
+        script = next(s for op, s, _ in self.ps.calls if op == "cut")
+        self.assertIn("while ($true)", script)
+        self.assertIn("$poll.trace_lines -gt 2 -or $poll.act_done", script)
+        self.assertIn("Start-Sleep -Milliseconds 250", script)
 
     def test_failure_stops_campaign_and_preserves_evidence(self):
         for defect in ("oracle", "elevated", "copy", "chkdsk", "heartbeat", "cache"):
@@ -278,7 +301,7 @@ class CampaignTests(unittest.TestCase):
 
     def test_poll_detects_elevation_and_preparation_exit_failure(self):
         for operation, response in (
-            ("poll", {"trace_lines": 4, "dirty_pages": 1, "act_done": False, "elevated_token": True}),
+            ("cut", {"trace_lines": 4, "dirty_pages": 1, "act_done": False, "elevated_token": True}),
             ("prepare", {"exit_code": 101, "runner_output": "ordinary test failure"}),
         ):
             with self.subTest(operation=operation):
@@ -286,16 +309,16 @@ class CampaignTests(unittest.TestCase):
                 self.ps.responses[operation] = response
                 with self.assertRaises(CampaignError):
                     c.cycle(1)
-                self.assertNotIn("cut", self.operations())
+                self.assertNotIn("recover", self.operations())
 
     def test_powershell_failure_and_invalid_response_refuse_without_vm_cleanup(self):
         for response in (CampaignError("synthetic I/O failure"), None):
             with self.subTest(response=response):
                 c = self.make()
-                self.ps.responses["poll"] = response
+                self.ps.responses["cut"] = response
                 with self.assertRaises(CampaignError):
                     c.cycle(1)
-                self.assertNotIn("cut", self.operations())
+                self.assertNotIn("recover", self.operations())
                 self.assertNotIn("reset", self.operations())
 
     def test_seed_repeatability_and_abandon_forces_removal(self):
@@ -311,7 +334,7 @@ class CampaignTests(unittest.TestCase):
         with self.assertRaises(CampaignError):
             self.make(cycles=0)
 
-    @unittest.skipUnless(sys.platform == "win32", "Windows PowerShell parser")
+    @unittest.skipUnless(sys.platform == "win32" and shutil.which("powershell"), "Windows PowerShell parser")
     def test_generated_powershell_syntax_only_never_invokes_generated_scripts(self):
         # The campaign uses the fake. The real PowerShell invocation ONLY parses
         # strings as ASTs; none of the Hyper-V, credential or guest code is run.
@@ -372,12 +395,12 @@ foreach ($script in $scripts) {
 
     def test_bounded_act_timeout_and_unknown_dirty_pages(self):
         c = self.make()
-        self.ps.responses["poll"] = {"trace_lines": 0, "dirty_pages": 1, "act_done": False}
+        self.ps.responses["cut"] = CampaignError("act_progress_timeout")
         with self.assertRaisesRegex(CampaignError, "act_progress_timeout"):
             c.cycle(1)
-        self.assertNotIn("cut", self.operations())
+        self.assertNotIn("recover", self.operations())
         c = self.make()
-        self.ps.responses["poll"] = {"trace_lines": 4, "dirty_pages": None, "act_done": False}
+        self.ps.responses["cut"] = {"trace_lines": 4, "dirty_pages": None, "act_done": False}
         with self.assertRaisesRegex(CampaignError, "dirty_pages_unavailable"):
             c.cycle(1)
 
@@ -392,6 +415,212 @@ foreach ($script in $scripts) {
         for label, window in table.items():
             with self.subTest(label=label):
                 self.assertEqual(window_for_label(label), window)
+
+    def test_terminal_journal_before_recovery_excludes_floor_without_marker(self):
+        for label, terminal, expected in (
+            ("committed", None, True), ("cancelled", None, True), ("refused", None, True),
+            ("Committed", None, True), ("item_written", True, True),
+            ("Some(Committed)", None, True), ("cancelled { items: 2 }", None, True),
+            ("not_committed", None, False),
+            ("committed", False, False), ("item_written", None, False),
+        ):
+            with self.subTest(label=label, terminal=terminal):
+                c = self.make()
+                response = json.loads(self.ps.run("# lw-hv:recover", 1))
+                self.ps.calls.clear()
+                response["result"]["last_record"] = label
+                if terminal is not None:
+                    response["result"]["terminal_before_recover"] = terminal
+                self.ps.responses["recover"] = response
+                record = c.cycle(1)
+                self.assertEqual(record["kind"], "post_completion" if expected else "floor")
+                if expected:
+                    self.assertIsNone(record["floor_credit"])
+
+    def test_filesystem_repair_evidence_stops_before_recover_and_is_logged(self):
+        for dirty, events in ((True, []), (False, [{"Id": 55, "ProviderName": "Ntfs"}])):
+            with self.subTest(dirty=dirty):
+                c = self.make(command="campaign", cycles=3)
+                health = json.loads(self.ps.run("# lw-hv:health", 1))
+                self.ps.calls.clear()
+                health["filesystem"].update(dirty=dirty, repair_events=events)
+                self.ps.responses["health"] = health
+                with contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(
+                    CampaignError, "filesystem_repaired"
+                ):
+                    c.run()
+                self.assertEqual(self.ps.records[-1]["filesystem"], health["filesystem"])
+                self.assertEqual(self.ps.records[-1]["failure"], "filesystem_repaired")
+                self.assertNotIn("recover", self.operations())
+                self.assertNotIn("reset", self.operations())
+                script = next(s for op, s, _ in self.ps.calls if op == "health")
+                self.assertLess(script.index("fsutil dirty query L:"), script.index("chkdsk L: /scan"))
+                self.assertLess(script.index("Get-WinEvent"), script.index("chkdsk L: /scan"))
+                for text in ("LastBootUpTime", "'Application','System'", "Wininit", "Chkdsk",
+                             "Microsoft-Windows-Ntfs", "$filesystem.dirty"):
+                    self.assertIn(text, script)
+
+    @unittest.skipUnless(sys.platform == "win32" and shutil.which("powershell"), "Windows PowerShell required")
+    def test_filesystem_prescan_runs_with_fake_guest_commands(self):
+        c = self.make()
+        c._admin(health=True)
+        script = self.ps.calls[-1][1]
+        # Execute only the pre-scan fragment, with every guest command replaced.
+        # No session, VM cmdlet, counter or physical-disk query is executed.
+        check = script[script.index("$dirtyQuery ="):script.index("if (-not ('LwCacheQuery'")]
+        cases = [
+            {"dirty": True, "events": [], "scan": False, "repairs": 0},
+            {"dirty": False, "events": [], "scan": True, "repairs": 0},
+        ]
+        for provider, event_id, level, message, repairs in (
+            ("Ntfs", 98, 4, "Volume L: is healthy. No action is needed.", 0),
+            ("Ntfs", 55, 4, "File system corruption", 1),
+            ("Microsoft-Windows-Ntfs", 140, 3, "Flush failed", 1),
+            ("Wininit", 1001, 4, "Windows has made corrections to the file system", 1),
+            ("Chkdsk", 26226, 4, "No problems found", 0),
+            ("Other", 55, 2, "Unrelated warning", 0),
+        ):
+            cases.append({"dirty": False, "events": [{"ProviderName": provider, "Id": event_id,
+                "Level": level, "Message": message}], "scan": not repairs, "repairs": repairs})
+        harness = r"""
+$ErrorActionPreference = 'Stop'
+function fsutil { $global:LASTEXITCODE = 0; if ($case.dirty) { 'Volume L: is Dirty' } else { 'Volume L: is NOT Dirty' } }
+function chkdsk { $script:scanned = $true; $global:LASTEXITCODE = 0; 'No problems' }
+function Get-CimInstance { @{ LastBootUpTime = [DateTime]'2026-10-26T00:00:00Z' } }
+function Get-WinEvent { param($FilterHashtable, $ErrorAction, $ErrorVariable) $case.events }
+$answers = @(foreach ($case in (ConvertFrom-Json PAYLOAD)) {
+    $script:scanned = $false
+    CHECK
+    @{ dirty = $filesystem.dirty; repairs = @($filesystem.repair_events).Count; scan = $script:scanned }
+})
+@{ answers = $answers } | ConvertTo-Json -Depth 5 -Compress
+
+""".replace("PAYLOAD", "(" + encoded(json.dumps(cases)) + ")").replace("CHECK", check)
+        answers = json.loads(PowerShell().run(harness, 30))["answers"]
+        self.assertEqual(answers, [{key: case[key] for key in ("dirty", "scan", "repairs")} for case in cases])
+
+    def test_connection_retries_cover_both_guest_accounts(self):
+        c = self.make()
+        c.cycle(1)
+        for op, script, timeout in self.ps.calls:
+            if op in ("cache", "health", "prepare", "act", "cut", "recover"):
+                with self.subTest(operation=op):
+                    self.assertIn("AddSeconds(120)", script)
+                    self.assertIn("New-PSSession -VMName", script)
+                    self.assertIn("Start-Sleep -Seconds 1", script)
+                    self.assertIn("guest_direct_connection_timeout", script)
+                    self.assertGreater(timeout, 120)
+
+    def test_failure_logging_cannot_mask_original_error(self):
+        c = self.make()
+        self.ps.responses["prepare"] = CampaignError("original failure")
+        self.ps.responses["append"] = CampaignError("logging failure")
+        with self.assertRaisesRegex(CampaignError, "original failure"):
+            c.cycle(1)
+        self.assertEqual(self.operations().count("append"), 1)
+        self.assertEqual(c.summary["failures"], 1)
+
+    def test_random_seed_default_and_explicit_seed(self):
+        with patch("scripts.hyperv_campaign.secrets.randbits", return_value=12345) as randbits:
+            config = Config()
+            self.assertEqual(config.seed, 12345)
+            randbits.assert_called_once_with(32)
+        with patch("scripts.hyperv_campaign.secrets.randbits", return_value=54321) as randbits, patch(
+            "scripts.hyperv_campaign.Campaign"
+        ) as campaign:
+            self.assertEqual(main(["preflight"]), 0)
+            self.assertEqual(campaign.call_args.args[-1].seed, 54321)
+            randbits.assert_called_once_with(32)
+            randbits.reset_mock()
+            self.assertEqual(main(["preflight", "--seed", "19"]), 0)
+            self.assertEqual(campaign.call_args.args[-1].seed, 19)
+            randbits.assert_not_called()
+
+    def test_negative_not_caught_exits_one(self):
+        output = io.StringIO()
+        with patch("scripts.hyperv_campaign.PowerShell", return_value=FakePowerShell()), contextlib.redirect_stdout(output):
+            self.assertEqual(main(["negative", "--execute", "--exe", r"C:\lw\mutant.exe", "--seed", "19"]), 1)
+        self.assertIn("NOT CAUGHT", output.getvalue())
+        with patch("scripts.hyperv_campaign.Campaign") as campaign:
+            campaign.return_value.run.return_value = {"caught": 1}
+            self.assertEqual(main(["negative", "--execute", "--exe", r"C:\lw\mutant.exe", "--seed", "19"]), 0)
+
+    def test_reset_stages_and_hashes_before_replacing_either_disk(self):
+        c = self.make()
+        c._reset()
+        script = next(s for op, s, _ in self.ps.calls if op == "reset")
+        self.assertNotIn("$matches", script.lower())
+        self.assertIn("pristine.json", script)
+        self.assertIn("$pair.target + '.tmp'", script)
+        self.assertIn("Get-FileHash -LiteralPath $temporary -Algorithm SHA256", script)
+        self.assertIn("reset_hash_mismatch", script)
+        self.assertLess(script.index("reset_hash_mismatch"), script.index("[IO.File]::Replace"))
+        self.assertIn("$manifest", script)
+        self.ps.responses["reset"] = CampaignError("reset_hash_mismatch")
+        with self.assertRaisesRegex(CampaignError, "reset_hash_mismatch"):
+            c._reset()
+        c = self.make(command="campaign", cycles=3)
+        response = json.loads(self.ps.run("# lw-hv:recover", 1))
+        self.ps.calls.clear()
+        response["free_bytes"] = 1024**3
+        self.ps.responses.update(recover=response, reset=CampaignError("reset_hash_mismatch"))
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(CampaignError, "reset_hash_mismatch"):
+            c.run()
+        self.assertEqual(self.operations().count("prepare"), 1)
+
+    def test_build_script_pristine_and_credential_hygiene(self):
+        script = (Path(__file__).resolve().parents[1] / "scripts" / "hyperv_build_vm.ps1").read_text(encoding="utf-8")
+        pristine = script.split("    'pristine' {", 1)[1]
+        self.assertLess(pristine.index("pristine_already_exists_use_force"), pristine.index("Stop-VM"))
+        self.assertIn("-not $Force", pristine)
+        self.assertIn("-Filter 'pristine-*'", pristine)
+        self.assertIn("Get-FileHash -LiteralPath $destination -Algorithm SHA256", pristine)
+        self.assertIn("size = (Get-Item -LiteralPath $destination).Length", pristine)
+        self.assertIn("'pristine.json'", pristine)
+        unattend = script.split("    'unattend' {", 1)[1].split("    'create' {", 1)[0]
+        self.assertIn("try {", unattend)
+        self.assertIn("} finally {", unattend)
+        self.assertIn("Remove-Item -LiteralPath $stage -Recurse -Force", unattend)
+        for target in ("$State", "$guest"):
+            self.assertIn(f'icacls {target} /inheritance:r /grant:r "${{env:USERNAME}}:(OI)(CI)F"', script)
+        self.assertLess(script.index("iso_outside_allowlist"), script.index("New-Item"))
+        self.assertIn("[IO.Path]::GetFullPath($Iso)", script)
+        self.assertIn("$Root + '\\'", script)
+        install = script.split("    'install' {", 1)[1].split("    'disks' {", 1)[0]
+        self.assertLess(install.index("Remove-VMDvdDrive"), install.index("Remove-Item -LiteralPath"))
+        self.assertIn("'iso\\unattend.iso'", install)
+        self.assertIn(r"C:\ProgramData\Microsoft\Windows\Hyper-V", script)
+
+    @unittest.skipUnless(sys.platform == "win32" and shutil.which("powershell"), "Windows PowerShell required")
+    def test_path_guard_executes_against_junction_and_escapes(self):
+        root = Path(LAB_ROOT)
+        if not root.is_dir():
+            self.skipTest("E:\\loomward-lab\\hyperv does not exist")
+        folder = root / ("test-guard-" + uuid.uuid4().hex)
+        folder.mkdir()
+        junction = folder / "junction"
+        try:
+            # cmd expands its own TEMP; never read or print the host environment.
+            result = subprocess.run(
+                f'cmd /d /c mklink /J "{junction}" "%TEMP%"',
+                capture_output=True, text=True, timeout=15, check=False,
+            )
+            self.assertEqual(result.returncode, 0, "junction creation failed")
+            script = "$ErrorActionPreference = 'Stop'\n. {\n" + PATH_GUARD + "\n}\n"
+            script += """
+function Refused([string]$path) {
+    try { Resolve-LabPath $path | Out-Null; return $false } catch { return $true }
+}
+"""
+            for path in (str(junction / "x"), str(folder) + r"\..\..\..\escape", LAB_ROOT + r"-other\x"):
+                script += f"if (-not (Refused {quote(path)})) {{ throw 'guard_accepted_escape' }}\n"
+            script += f"Resolve-LabPath {quote(str(folder / 'plain-child'))} | Out-Null\n'{{}}'\n\n"
+            self.assertEqual(json.loads(PowerShell().run(script, 30)), {})
+        finally:
+            # Remove the junction itself before traversing the disposable folder.
+            if junction.is_junction():
+                junction.rmdir()
+            shutil.rmtree(folder)
 
     def test_powershell_uses_stdin_and_propagates_stderr(self):
         with patch("scripts.hyperv_campaign.subprocess.run") as run:
