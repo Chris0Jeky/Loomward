@@ -259,11 +259,20 @@ power-loss durability and native engine/service integration remain unverified.
 model stores, virtual disks, worktree-shaped directories, the Recycle Bin and Windows-managed
 space from catalogue names and structure only. It reads one transaction without repairing
 aggregates, opening store paths or running tools; owner commands and relocation settings are
-display text. A recognised directory shields its descendants from double counting, and v1
-project-output detection stays separate. Results use a 2,000,000-step budget, the reader's
+display text. A recognised directory shields its descendants from double counting. The walk
+also prunes `node_modules`, `.git` directories and the manifest/output pairs listed for v1
+above; project-output detection stays separate. Any recorded parent `Cargo.toml` prunes
+`target` and vetoes a shared Cargo target, even if the manifest is stale or shielded.
+Shared Cargo targets require a complete parent listing, so a granted root with no observed
+parent cannot match. Other v1 pairs use observed manifests, including the same-run requirement
+under incomplete listings. pnpm requires `store`, `.pnpm-store` or a parent named `pnpm`,
+plus a `v<digits>/files` child. Results use a 2,000,000-step budget, the reader's
 deadline and a 1..=200 cap, ordered by known logical size descending, then node id (directory
 before file on equal ids). Partial, invalid or mid-scan directory sizes and unknown allocations
 stay null; a file uses its own observed sizes, also null during a scan. Observed allocation is
-never a reclaimability estimate, and a `.git` file does not prove ownership or disposability.
+never a reclaimability estimate. The `agent_worktree` class means only that a `.git` file
+marks a linked worktree, a submodule or a separate-git-dir checkout; names alone cannot tell
+which. Check `git worktree list` and `git submodule status` in the owning repository before
+removing anything; the marker does not prove ownership or disposability.
 Synthetic recognition, decoy, shielding, coverage and row-checksum tests are in
 `tests/machine_stores.rs`.

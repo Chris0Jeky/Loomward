@@ -210,10 +210,20 @@ fn every_directory_rule_has_the_expected_class_provider_and_bounded_advice() {
                 "HEAD",
                 "uncommitted",
                 "git worktree list",
-                "git worktree remove",
+                "git submodule status",
                 "owning repository",
+                "before removing anything",
             ] {
                 assert!(candidate.owner_step.contains(text));
+            }
+            for text in [
+                ".git file",
+                "linked worktree",
+                "submodule",
+                "separate-git-dir",
+                "names alone",
+            ] {
+                assert!(candidate.reason.contains(text), "{}", candidate.reason);
             }
         } else if class == "recycle_bin" {
             assert!(candidate.owner_step.contains("owner"));
@@ -286,6 +296,20 @@ fn decoy_names_incomplete_signatures_and_v1_project_outputs_are_not_candidates()
     let repo = lab.directory(lab.dir, "ordinary-repository", 1);
     lab.directory(repo, ".git", 0);
     lab.directory(lab.dir, "packages", 1);
+    lab.directory(lab.dir, "pip", 1);
+    let caches = lab.directory(lab.dir, "caches", 1);
+    lab.directory(caches, "modules-2", 0);
+    let cargo = lab.directory(lab.dir, ".cargo", 0);
+    lab.directory(cargo, "registry", 1);
+    let tag_only = lab.directory(lab.dir, "tag-only", 0);
+    lab.file(tag_only, "CACHEDIR.TAG", 1, Some(1));
+    let rustc_only = lab.directory(lab.dir, "rustc-only", 0);
+    lab.file(rustc_only, ".rustc_info.json", 1, Some(1));
+    let archive_only = lab.directory(lab.dir, "archive-only", 0);
+    lab.directory(archive_only, "archive-v0", 0);
+    let uploads = lab.directory(lab.dir, "uploads", 0);
+    let version = lab.directory(uploads, "v1", 0);
+    lab.directory(version, "files", 0);
     lab.file(lab.dir, "CACHEDIR.TAG", 1, Some(1));
     lab.file(lab.dir, "ext4.vhdx.bak", 1, Some(1));
     lab.file(lab.dir, "EXT4.VHDX", 1, Some(1));
@@ -304,7 +328,8 @@ fn decoy_names_incomplete_signatures_and_v1_project_outputs_are_not_candidates()
         .into_iter()
         .enumerate()
     {
-        let parent = lab.directory(lab.dir, &format!("pnpm-decoy-{i}"), 0);
+        let wrapper = lab.directory(lab.dir, &format!("pnpm-decoy-{i}"), 0);
+        let parent = lab.directory(wrapper, "store", 0);
         let version = lab.directory(parent, version, 0);
         lab.directory(version, "files", 0);
     }
@@ -339,6 +364,163 @@ fn recognized_stores_shield_all_nested_directory_and_file_candidates() {
 }
 
 #[test]
+fn node_modules_interiors_do_not_exhaust_the_default_budget() {
+    let lab = Lab::new();
+    let project = lab.directory(lab.dir, "project", 0);
+    lab.file(project, "package.json", 1, Some(1));
+    let modules = lab.directory(project, "node_modules", 0);
+    lab.db.execute("WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<20000)
+        INSERT INTO dir(root_id,parent_id,name,id_quality,id_basis,depth,attrs,flags,listing_state,born_run,seen_run,sub_complete)
+        SELECT ?1,?2,'synthetic-'||i,'path_observation','none',1,16,0,'complete',1,1,1 FROM n", params![lab.root, modules]).unwrap();
+    let npm = lab.store(project, "npm", 42);
+    let pip = lab.store(lab.dir, "pip", 10);
+    assert_eq!(
+        lab.report(200)
+            .candidates
+            .iter()
+            .map(|c| c.node)
+            .collect::<Vec<_>>(),
+        [NodeKey::Dir(npm), NodeKey::Dir(pip)]
+    );
+}
+
+#[test]
+fn stores_inside_node_modules_or_git_directories_are_not_reported() {
+    let lab = Lab::new();
+    for name in ["node_modules", ".git"] {
+        // Neither pruning rule needs a project manifest.
+        let hidden = lab.directory(lab.dir, name, 0);
+        lab.store(hidden, "npm", 42);
+        lab.file(hidden, "ext4.vhdx", 1, Some(1));
+        lab.file(hidden, ".git", 1, Some(1));
+    }
+    assert!(lab.report(200).candidates.is_empty());
+}
+
+#[test]
+fn v1_manifest_output_pairs_prune_nested_stores() {
+    let lab = Lab::new();
+    for (i, (manifest, outputs)) in [
+        ("Cargo.toml", &["target"][..]),
+        ("pyproject.toml", &[".venv", "venv", "__pycache__"][..]),
+        ("requirements.txt", &[".venv", "venv", "__pycache__"][..]),
+        ("synthetic.csproj", &["bin", "obj"][..]),
+        ("synthetic.sln", &["bin", "obj"][..]),
+        ("build.gradle", &["build", ".gradle"][..]),
+        ("build.gradle.kts", &["build", ".gradle"][..]),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let project = lab.directory(lab.dir, &format!("project-{i}"), 0);
+        lab.file(project, manifest, 1, Some(1));
+        for output in outputs {
+            let output = lab.directory(project, output, 0);
+            // Give the output its own signature too: pruning must happen first.
+            lab.file(output, ".git", 1, Some(1));
+            lab.store(output, "npm", 42);
+            lab.file(output, "ext4.vhdx", 1, Some(1));
+        }
+    }
+    assert!(lab.report(200).candidates.is_empty());
+}
+
+#[test]
+fn unpaired_outputs_and_stale_v1_manifests_do_not_prune_stores() {
+    let lab = Lab::new();
+    let project = lab.directory(lab.dir, "project", 0);
+    let manifest = lab.file(project, "pyproject.toml", 1, Some(1));
+    let venv = lab.directory(project, ".venv", 0);
+    let npm = lab.store(venv, "npm", 42);
+    let source = lab.directory(project, "bin", 0);
+    let pip = lab.store(source, "pip", 10);
+    lab.db
+        .execute(
+            "UPDATE dir SET listing_state='incomplete',seen_run=2 WHERE id=?1",
+            [project],
+        )
+        .unwrap();
+    assert_eq!(lab.report(200).candidates.len(), 2);
+    lab.db
+        .execute("UPDATE file SET seen_run=2 WHERE id=?1", [manifest])
+        .unwrap();
+    let report = lab.report(200);
+    assert_eq!(report.candidates.len(), 1);
+    assert_eq!(report.candidates[0].node, NodeKey::Dir(pip));
+    lab.db
+        .execute(
+            "UPDATE dir SET listing_state='complete' WHERE id=?1",
+            [project],
+        )
+        .unwrap();
+    lab.db
+        .execute("UPDATE file SET seen_run=1 WHERE id=?1", [manifest])
+        .unwrap();
+    assert!(!lab
+        .report(200)
+        .candidates
+        .iter()
+        .any(|c| c.node == NodeKey::Dir(npm)));
+}
+
+#[test]
+fn granted_root_with_shared_cargo_signature_has_no_observed_parent() {
+    let lab = Lab::new();
+    lab.file(lab.dir, "CACHEDIR.TAG", 1, Some(1));
+    lab.file(lab.dir, ".rustc_info.json", 1, Some(1));
+    lab.directory(lab.dir, "debug", 0);
+    assert!(lab.report(200).candidates.is_empty());
+}
+
+#[test]
+fn shared_cargo_requires_a_complete_parent_listing() {
+    let lab = Lab::new();
+    let parent = lab.directory(lab.dir, "parent", 0);
+    lab.store(parent, "shared-cargo", 42);
+    assert_eq!(lab.report(200).candidates.len(), 1);
+    for update in [
+        "listing_state='incomplete'",
+        "listing_state='complete',listing_outcome='partial'",
+        "listing_state='complete',listing_outcome='stale'",
+    ] {
+        lab.db
+            .execute(&format!("UPDATE dir SET {update} WHERE id=?1"), [parent])
+            .unwrap();
+        assert!(lab.report(200).candidates.is_empty(), "{update}");
+    }
+}
+
+#[test]
+fn stale_cargo_manifest_in_an_incomplete_parent_still_vetoes_shared_target() {
+    let lab = Lab::new();
+    let parent = lab.directory(lab.dir, "parent", 0);
+    lab.store(parent, "shared-cargo", 42);
+    let manifest = lab.file(parent, "Cargo.toml", 1, Some(1));
+    lab.db
+        .execute(
+            "UPDATE dir SET listing_state='incomplete',seen_run=2 WHERE id=?1",
+            [parent],
+        )
+        .unwrap();
+    assert!(lab.report(200).candidates.is_empty());
+    // A complete relisting must retain the recorded-manifest veto too.
+    lab.db
+        .execute(
+            "UPDATE dir SET listing_state='complete' WHERE id=?1",
+            [parent],
+        )
+        .unwrap();
+    assert!(lab.report(200).candidates.is_empty());
+    lab.db
+        .execute(
+            "UPDATE file SET flags=?2 WHERE id=?1",
+            params![manifest, EXCLUDED_FLAGS],
+        )
+        .unwrap();
+    assert!(lab.report(200).candidates.is_empty());
+}
+
+#[test]
 fn alternate_signature_children_are_recognized() {
     let lab = Lab::new();
     for (i, child) in ["http", "http-v2", "wheels"].into_iter().enumerate() {
@@ -346,8 +528,9 @@ fn alternate_signature_children_are_recognized() {
         let pip = lab.directory(wrapper, "pip", 1);
         lab.directory(pip, child, 0);
     }
-    for (i, version) in ["v0", "v3", "v10"].into_iter().enumerate() {
-        let store = lab.directory(lab.dir, &format!("pnpm-{i}"), 1);
+    for (name, version) in [("store", "v0"), (".pnpm-store", "v3"), ("custom", "v10")] {
+        let parent = lab.directory(lab.dir, if name == "custom" { "pnpm" } else { "home" }, 0);
+        let store = lab.directory(parent, name, 1);
         let version = lab.directory(store, version, 0);
         lab.directory(version, "files", 0);
     }

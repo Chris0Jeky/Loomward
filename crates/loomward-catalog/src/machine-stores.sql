@@ -1,5 +1,5 @@
 -- Rules v2: safe rows are inlined into indexed lookups, never materialised across the catalogue.
--- The top-down walk stops at a store; only its signature is read, never its interior candidates.
+-- The top-down walk stops at stores, dependency/git directories and v1 project outputs.
 WITH RECURSIVE
 safe AS NOT MATERIALIZED (
   SELECT * FROM dir WHERE flags & ?2=0 AND attrs & 1024=0
@@ -15,6 +15,20 @@ files AS NOT MATERIALIZED (
 rules AS NOT MATERIALIZED (
   SELECT d.id,
     CASE
+      WHEN d.name IN ('node_modules','.git') THEN 'pruned'
+      -- A recorded Cargo manifest vetoes shared targets even if it is shielded or stale.
+      WHEN d.name='target'
+        AND EXISTS(SELECT 1 FROM file f WHERE f.dir_id=d.parent_id AND f.name='Cargo.toml') THEN 'pruned'
+      -- Exact v1 output/manifest pairs, with its safe-file and same-run observation rules.
+      WHEN d.name IN ('.venv','venv','__pycache__')
+        AND EXISTS(SELECT 1 FROM files f WHERE f.dir_id=d.parent_id
+          AND f.name IN ('pyproject.toml','requirements.txt')) THEN 'pruned'
+      WHEN d.name IN ('bin','obj')
+        AND EXISTS(SELECT 1 FROM files f WHERE f.dir_id=d.parent_id
+          AND (f.name GLOB '?*.csproj' OR f.name GLOB '?*.sln')) THEN 'pruned'
+      WHEN d.name IN ('build','.gradle')
+        AND EXISTS(SELECT 1 FROM files f WHERE f.dir_id=d.parent_id
+          AND f.name IN ('build.gradle','build.gradle.kts')) THEN 'pruned'
       WHEN d.name='packages' AND p.name='.nuget' THEN 'nuget'
       WHEN d.name='models' AND p.name='.lmstudio' THEN 'lmstudio'
       WHEN d.name='$Recycle.Bin' AND p.id=?1 THEN 'recycle-bin'
@@ -37,18 +51,19 @@ rules AS NOT MATERIALIZED (
         WHEN d.name='models'
           AND EXISTS(SELECT 1 FROM safe c WHERE c.parent_id=d.id AND c.name='blobs')
           AND EXISTS(SELECT 1 FROM safe c WHERE c.parent_id=d.id AND c.name='manifests') THEN 'ollama'
-        WHEN EXISTS(SELECT 1 FROM safe c WHERE c.parent_id=d.id AND c.name IN ('debug','release'))
-          AND EXISTS(SELECT 1 FROM files f WHERE f.dir_id=d.id AND f.name='CACHEDIR.TAG')
-          AND EXISTS(SELECT 1 FROM files f WHERE f.dir_id=d.id AND f.name='.rustc_info.json')
-          -- Any recorded manifest vetoes a shared target, even if it is shielded or stale.
-          AND NOT EXISTS(SELECT 1 FROM file f WHERE f.dir_id=d.parent_id AND f.name='Cargo.toml') THEN 'cargo-target'
-        WHEN EXISTS(SELECT 1 FROM safe c WHERE c.parent_id=d.id AND c.name GLOB 'archive-v*')
-          AND EXISTS(SELECT 1 FROM files f WHERE f.dir_id=d.id AND f.name='CACHEDIR.TAG') THEN 'uv'
-        WHEN EXISTS(SELECT 1 FROM safe c WHERE c.parent_id=d.id
+        WHEN (d.name IN ('store','.pnpm-store') OR p.name='pnpm')
+          AND EXISTS(SELECT 1 FROM safe c WHERE c.parent_id=d.id
           AND c.name GLOB 'v[0-9]*' AND substr(c.name,2) NOT GLOB '*[^0-9]*'
           AND c.listing_state IN ('complete','incomplete')
           AND coalesce(c.listing_outcome,'complete') NOT IN ('stale','excluded','denied','unscanned')
           AND EXISTS(SELECT 1 FROM safe g WHERE g.parent_id=c.id AND g.name='files')) THEN 'pnpm'
+        WHEN p.listing_state='complete' AND coalesce(p.listing_outcome,'complete')='complete'
+          AND NOT EXISTS(SELECT 1 FROM file f WHERE f.dir_id=d.parent_id AND f.name='Cargo.toml')
+          AND EXISTS(SELECT 1 FROM files f WHERE f.dir_id=d.id AND f.name='CACHEDIR.TAG')
+          AND EXISTS(SELECT 1 FROM files f WHERE f.dir_id=d.id AND f.name='.rustc_info.json')
+          AND EXISTS(SELECT 1 FROM safe c WHERE c.parent_id=d.id AND c.name IN ('debug','release')) THEN 'cargo-target'
+        WHEN EXISTS(SELECT 1 FROM files f WHERE f.dir_id=d.id AND f.name='CACHEDIR.TAG')
+          AND EXISTS(SELECT 1 FROM safe c WHERE c.parent_id=d.id AND c.name GLOB 'archive-v*') THEN 'uv'
         WHEN EXISTS(SELECT 1 FROM safe c WHERE c.parent_id=d.id
           AND (c.name GLOB 'models--*' OR c.name GLOB 'datasets--*')
           AND c.listing_state IN ('complete','incomplete')
@@ -74,7 +89,7 @@ candidates(id,kind,rule,logical,allocation_unknown) AS (
       AND coalesce(d.listing_outcome,'complete')='complete'
       AND d.agg_valid_rev>=d.dirty_rev AND NOT ?4 THEN d.sub_logical END,
     d.sub_alloc_unknown
-  FROM tree t JOIN dir d ON d.id=t.id WHERE t.rule IS NOT NULL
+  FROM tree t JOIN dir d ON d.id=t.id WHERE t.rule IS NOT NULL AND t.rule!='pruned'
   UNION ALL
   SELECT f.id,1,
     CASE WHEN f.name='ext4.vhdx' THEN 'wsl'
