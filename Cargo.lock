@@ -767,6 +767,7 @@ dependencies = [
 name = "loomward-mcp"
 version = "0.1.0"
 dependencies = [
+ "loomward-operations",
  "loomward-protocol",
  "loomward-service",
  "loomward-windows",
@@ -774,6 +775,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "unicode-general-category",
 ]
 
 [[package]]

@@ -61,7 +61,7 @@ pub(crate) struct ClientGrant {
 }
 
 impl ClientGrant {
-    fn has(&self, field: &str) -> bool {
+    pub(crate) fn has(&self, field: &str) -> bool {
         self.fields.iter().any(|f| f == field)
     }
 
@@ -330,7 +330,7 @@ impl Inner {
     }
 
     /// The catalogue root a directory or file lies under.
-    fn node_root(&self, key: NodeKey) -> Result<Option<i64>, ErrorBody> {
+    pub(crate) fn node_root(&self, key: NodeKey) -> Result<Option<i64>, ErrorBody> {
         let (sql, id) = match key {
             NodeKey::Dir(id) => ("SELECT root_id FROM main.dir WHERE id=?1", id),
             NodeKey::File(id) => (
@@ -428,6 +428,14 @@ pub(crate) fn project(command: Command, grant: &ClientGrant, map: &mut Map<Strin
                             || key == "scan"
                             || (key == "display_path" && grant.has("path"))
                     });
+                    if root
+                        .get("display_path")
+                        .and_then(|p| p.get("text"))
+                        .and_then(Value::as_str)
+                        == Some("")
+                    {
+                        root.remove("display_path");
+                    }
                     if let Some(scan) = root.get_mut("scan").and_then(Value::as_object_mut) {
                         scan.remove("last_job_id");
                     }

@@ -65,6 +65,8 @@ fn read_frames(mut source: impl BufRead, tx: SyncSender<Frame>) {
 }
 
 fn encode(response: &Value) -> Vec<u8> {
+    let mut response = response.clone();
+    crate::text::escape(&mut response);
     let encoded = response.to_string().into_bytes();
     if encoded.len() > MAX_OUTPUT {
         error(-32603, "Response size budget exceeded", response.get("id"))
