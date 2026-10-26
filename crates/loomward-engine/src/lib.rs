@@ -23,6 +23,7 @@ pub mod events;
 pub mod jobs;
 pub mod learning;
 pub mod placement;
+pub mod reclaim;
 pub mod scan;
 pub mod teacher;
 pub mod telemetry;
