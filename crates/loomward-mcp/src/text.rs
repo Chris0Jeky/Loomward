@@ -14,8 +14,25 @@ pub fn escape(value: &mut Value) {
 pub fn escape_string(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
+        // Format characters, every control, line separators and the default-ignorable fillers and
+        // variation selectors that can hide text (review of #897; cf. loomward_ask::turn::clean).
         if get_general_category(c) == GeneralCategory::Format
-            || matches!(c, '\u{2028}' | '\u{2029}' | '\u{85}')
+            || c.is_control()
+            || matches!(
+                c,
+                '\u{2028}'
+                    | '\u{2029}'
+                    | '\u{034F}'
+                    | '\u{115F}'
+                    | '\u{1160}'
+                    | '\u{17B4}'
+                    | '\u{17B5}'
+                    | '\u{180B}'..='\u{180F}'
+                    | '\u{3164}'
+                    | '\u{FE00}'..='\u{FE0F}'
+                    | '\u{FFA0}'
+                    | '\u{E0100}'..='\u{E01EF}'
+            )
         {
             for unit in c.encode_utf16(&mut [0; 2]) {
                 out.push_str(&format!("\\u{unit:04X}"));
@@ -41,6 +58,9 @@ mod tests {
             value["rows"][0]["name"],
             "synthetic\\u202E\\u2028\\u0085\\u2029\\uDB40\\uDC01"
         );
+        let mut hidden = json!("a\u{1b}b\nc\u{fe0f}d\u{e0100}e\u{3164}f");
+        escape(&mut hidden);
+        assert_eq!(hidden, "a\\u001Bb\\u000Ac\\uFE0Fd\\uDB40\\uDD00e\\u3164f");
         let once = value.clone();
         escape(&mut value);
         assert_eq!(value, once);

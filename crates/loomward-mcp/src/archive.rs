@@ -21,13 +21,16 @@ fn space(total: Option<u64>, destination: &Value) -> Value {
     let available = free
         .zip(reserve)
         .map(|(free, reserve)| free.saturating_sub(reserve));
+    // An offline destination's free space is a stored observation: never a fit (review of #897).
+    let online = destination["online"] != false;
     let fits = match (total, free, reserve) {
-        (Some(total), Some(free), Some(reserve)) => json!(total
+        (Some(total), Some(free), Some(reserve)) if online => json!(total
             .checked_add(reserve)
             .is_some_and(|needed| needed <= free)),
         _ => json!("unknown"),
     };
-    json!({"reserve_bytes":byte_value(reserve),"available_after_reserve_bytes":byte_value(available),"fits":fits})
+    json!({"reserve_bytes":byte_value(reserve),"available_after_reserve_bytes":byte_value(available),"fits":fits,
+        "fits_basis":"logical bytes plus reserve; cluster rounding and folder entries are not counted, so the copy's own preflight may still refuse"})
 }
 
 #[derive(Default)]
@@ -293,6 +296,14 @@ impl Host {
         }
         let mut total = json!({"bytes":byte_value(total_bytes),"files":total_files,"coverage":if coverage_complete {"complete"} else {"partial"},"freshness":freshness});
         total_details.output(&mut total);
+        if destination["online"] == false {
+            warning(
+                &mut warnings,
+                &Value::Null,
+                "offline_destination",
+                "Destination volume is offline; its free space is a stored observation.",
+            );
+        }
         let mut out = json!({"items":items,"total":total,"destination":destination,"space":space(total_bytes,&destination),"warnings":warnings,"shape":"new folder only","execution":"owner_approval_required","reason":"Personal copy gate C8 is closed: docs/47 section 11 requires C6, G5, G9 and the owner's Q1-Q3 decisions and approval. MCP cannot approve or execute a copy.","totals_basis":"sum of selected items; overlapping selections count separately"});
         if let Some(name) = args.get("folder_name") {
             out["folder_name"] = name.clone();
@@ -346,6 +357,9 @@ mod tests {
             assert_eq!(space(Some(1), &destination)["fits"], "unknown");
             assert!(space(Some(1), &destination)["available_after_reserve_bytes"].is_null());
         }
+        let offline =
+            json!({"capacity_bytes":"1000000000000","free_bytes":"999999999999","online":false});
+        assert_eq!(space(Some(1), &offline)["fits"], "unknown");
         assert_eq!(space(None, &small)["fits"], "unknown");
         assert_eq!(
             space(Some(0), &json!({"capacity_bytes":"100","free_bytes":"0"}))["fits"],
