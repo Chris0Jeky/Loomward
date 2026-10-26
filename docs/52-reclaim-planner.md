@@ -42,7 +42,7 @@ statement of which tool owns the data and what its owner-run command is. Recogni
 | Package caches | npm `_cacache`; pnpm `store/v*`; NuGet `packages` under `.nuget`; pip `http-v2`/`wheels` under a `pip` cache; uv cache (`CACHEDIR.TAG` + `archive-v*`); Gradle `caches/` under a Gradle home; Cargo `registry/cache` and `git/db` under a Cargo home | `npm cache verify`; `pnpm store prune`; `dotnet nuget locals all --list` then `--clear`; `pip cache info` / `pip cache purge`; `uv cache prune`; Gradle's own retention; `cargo cache` tools are third-party, so for Cargo the step is "delete `registry/cache` by hand" marked **owner judgement** | `npm_config_cache`, `PNPM_STORE_DIR`, `NUGET_PACKAGES`, `PIP_CACHE_DIR`, `UV_CACHE_DIR`, `GRADLE_USER_HOME`, `CARGO_HOME` |
 | Model stores | Hugging Face `hub/models--*` with `blobs/` and `snapshots/`; LM Studio `models/<publisher>/<model>/*.gguf`; Ollama `models/blobs/sha256-*` | the host's own model manager (LM Studio "My Models", `ollama rm`, `huggingface-cli delete-cache`) | `HF_HOME` / `HF_HUB_CACHE`; LM Studio models directory setting; `OLLAMA_MODELS` |
 | Virtual disks | `ext4.vhdx` under a WSL distro folder; `docker_data.vhdx` / `Docker.vhdx` | `docker system df -v` then targeted `docker ... prune`; WSL compaction by its documented offline procedure | Docker Desktop disk-image location; `wsl --manage <distro> --move` |
-| Agent worktrees | a folder with a `.git` **file** (not a directory) whose `gitdir:` target is under another repository's `.git/worktrees/` | `git worktree list` / `git worktree remove` in the owning repository, after the owner checks branch, HEAD and dirty state | none |
+| Agent worktrees | a directory with a `.git` **file**: a linked worktree, a submodule or a separate-git-dir checkout; names alone cannot tell which, so the owner step checks with `git worktree list` and `git submodule status` | check branch, HEAD and dirty state in the owning repository before removing anything | none |
 | Recycle Bin contents | `$Recycle.Bin` on the volume (per-volume, system-managed) | empty the Recycle Bin (owner, Explorer) | none |
 | System-managed space | `hiberfil.sys`, `pagefile.sys`, `swapfile.sys`, `WinSxS`, `SoftwareDistribution` | informational only: Disk Cleanup / `DISM /Online /Cleanup-Image /AnalyzeComponentStore`; never summed as reclaimable | none |
 
@@ -101,6 +101,8 @@ tool `reclaim_plan` would mirror it under docs/48 section 4.2's field rules (`si
 crate is owned by the external-disk lane, so this is proposed there as an issue, not built here.
 
 ## 6. Coverage: which roots the planner sees
+
+A volume-root grant reports the Recycle Bin and system-managed space first and still returns them when the walk runs out of budget (`budget_hit`).
 
 The planner reads the catalogue, so it sees only owner-granted, scanned roots (invariant 2). Two reads touch the live
 volume, both metadata only and both limited to granted roots: placement's link-count pass, and the Recycle Bin size,

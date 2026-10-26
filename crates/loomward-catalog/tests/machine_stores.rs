@@ -77,6 +77,7 @@ fn machine_store_signature_produces_catalogue_advice() {
     assert_eq!(report.rules_version, 2);
     assert!(!report.partial);
     assert!(!report.truncated);
+    assert!(!report.budget_hit);
     assert_eq!(report.candidates.len(), 1);
     let candidate = &report.candidates[0];
     assert_eq!(candidate.node, NodeKey::Dir(cache));
@@ -682,7 +683,7 @@ fn caps_truncation_and_ordering_distinguish_known_zero_from_unknown() {
             Err(Error::Invalid(_))
         ));
     }
-    let small = lab.store(lab.dir, "git", 10);
+    let small = lab.file(lab.dir, "pagefile.sys", 10, Some(10));
     let large = lab.store(lab.dir, "npm", 100);
     let empty = lab.store(lab.dir, "ollama", 0);
     let unknown = lab.store(lab.dir, "pnpm", 9999);
@@ -691,7 +692,7 @@ fn caps_truncation_and_ordering_distinguish_known_zero_from_unknown() {
         .unwrap();
     let expected = vec![
         NodeKey::Dir(large),
-        NodeKey::Dir(small),
+        NodeKey::File(small),
         NodeKey::Dir(empty),
         NodeKey::Dir(unknown),
     ];
@@ -726,8 +727,8 @@ fn caps_truncation_and_ordering_distinguish_known_zero_from_unknown() {
 fn equal_sizes_sort_by_node_id_with_directory_before_file_on_id_ties() {
     let lab = Lab::new();
     let store = lab.store(lab.dir, "git", 10);
-    // Give the disk file the same numeric id as the directory, in a separate key space.
-    lab.db.execute("INSERT INTO file(id,dir_id,name,logical,allocated,attrs,flags,born_run,seen_run) VALUES(?1,?2,'ext4.vhdx',10,10,32,0,1,1)", params![store, lab.dir]).unwrap();
+    // Tie a root-query file with a walk-query directory, in separate key spaces.
+    lab.db.execute("INSERT INTO file(id,dir_id,name,logical,allocated,attrs,flags,born_run,seen_run) VALUES(?1,?2,'pagefile.sys',10,10,32,0,1,1)", params![store, lab.dir]).unwrap();
     let other = lab.file(lab.dir, "Docker.vhdx", 10, Some(10));
     assert_eq!(
         lab.report(200)
@@ -899,16 +900,16 @@ fn reading_never_changes_dir_or_file_rows_even_when_the_root_needs_repair() {
 }
 
 #[test]
-fn exhausted_work_budget_is_an_error_and_does_not_poison_the_reader() {
+fn exhausted_walk_budget_returns_partial_advice_and_does_not_poison_the_reader() {
     let lab = Lab::new();
     lab.db.execute("WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<20000)
         INSERT INTO dir(root_id,parent_id,name,id_quality,id_basis,depth,attrs,flags,listing_state,born_run,seen_run,sub_complete)
         SELECT ?1,?2,'synthetic-'||i,'path_observation','none',1,16,0,'complete',1,1,1 FROM n", params![lab.root, lab.dir]).unwrap();
     let mut reader = lab.catalog.reader().unwrap();
-    assert!(matches!(
-        reader.machine_stores(lab.root, 200),
-        Err(Error::ResourceBudget)
-    ));
+    let report = reader.machine_stores(lab.root, 200).unwrap();
+    assert!(report.partial);
+    assert!(report.budget_hit);
+    assert!(report.candidates.is_empty());
     lab.db
         .execute("DELETE FROM dir WHERE parent_id=?1", [lab.dir])
         .unwrap();
@@ -921,4 +922,104 @@ fn exhausted_work_budget_is_an_error_and_does_not_poison_the_reader() {
             .len(),
         1
     );
+}
+
+#[test]
+fn root_candidates_survive_an_exhausted_walk_budget() {
+    let lab = Lab::new();
+    lab.db.execute("WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<30000)
+        INSERT INTO dir(root_id,parent_id,name,id_quality,id_basis,depth,attrs,flags,listing_state,born_run,seen_run,sub_complete)
+        SELECT ?1,?2,'synthetic-'||i,'path_observation','none',1,16,0,'complete',1,1,1 FROM n", params![lab.root, lab.dir]).unwrap();
+    let bin = lab.directory(lab.dir, "$Recycle.Bin", 100);
+    let pagefile = lab.file(lab.dir, "pagefile.sys", 200, Some(200));
+    let report = lab.report(200);
+    assert!(report.partial);
+    assert!(report.budget_hit);
+    assert!(!report.truncated);
+    assert_eq!(
+        report
+            .candidates
+            .iter()
+            .map(|c| (c.node, c.class, c.logical_bytes))
+            .collect::<Vec<_>>(),
+        [
+            (NodeKey::File(pagefile), "system_managed", Some(200)),
+            (NodeKey::Dir(bin), "recycle_bin", Some(100))
+        ]
+    );
+}
+
+#[test]
+fn root_query_respects_shields_and_same_run_file_observations() {
+    let lab = Lab::new();
+    let bin = lab.directory(lab.dir, "$Recycle.Bin", 100);
+    let windows = lab.directory(lab.dir, "Windows", 0);
+    let system = lab.directory(windows, "WinSxS", 200);
+    let pagefile = lab.file(lab.dir, "pagefile.sys", 300, Some(300));
+    for id in [bin, windows, system, lab.dir] {
+        lab.db
+            .execute(
+                "UPDATE dir SET flags=?2 WHERE id=?1",
+                params![id, EXCLUDED_FLAGS],
+            )
+            .unwrap();
+        let report = lab.report(200);
+        assert!(!report
+            .candidates
+            .iter()
+            .any(|c| { c.node == NodeKey::Dir(if id == windows { system } else { id }) }));
+        if id == lab.dir {
+            assert!(report.candidates.is_empty());
+        }
+        lab.db
+            .execute("UPDATE dir SET flags=0 WHERE id=?1", [id])
+            .unwrap();
+    }
+    lab.db
+        .execute("UPDATE file SET attrs=attrs|1024 WHERE id=?1", [pagefile])
+        .unwrap();
+    assert_eq!(lab.report(200).candidates.len(), 2);
+    lab.db
+        .execute("UPDATE file SET attrs=32 WHERE id=?1", [pagefile])
+        .unwrap();
+    lab.db
+        .execute(
+            "UPDATE dir SET listing_state='incomplete',seen_run=2 WHERE id=?1",
+            [lab.dir],
+        )
+        .unwrap();
+    assert_eq!(lab.report(200).candidates.len(), 2);
+    lab.db
+        .execute("UPDATE file SET seen_run=2 WHERE id=?1", [pagefile])
+        .unwrap();
+    assert_eq!(lab.report(200).candidates.len(), 3);
+    lab.db
+        .execute(
+            "UPDATE dir SET listing_outcome='stale' WHERE id=?1",
+            [windows],
+        )
+        .unwrap();
+    assert!(!lab
+        .report(200)
+        .candidates
+        .iter()
+        .any(|c| c.node == NodeKey::Dir(system)));
+}
+
+#[test]
+fn exhausted_root_query_budget_is_still_an_error() {
+    let lab = Lab::new();
+    // Many synthetic observations of a root-level candidate exhaust the first query itself.
+    lab.db
+        .execute(
+            "WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<100000)
+        INSERT INTO file(dir_id,name,logical,allocated,attrs,flags,born_run,seen_run)
+        SELECT ?1,'pagefile.sys',1,1,32,0,1,1 FROM n",
+            [lab.dir],
+        )
+        .unwrap();
+    assert!(matches!(
+        lab.catalog.reader().unwrap().machine_stores(lab.root, 200),
+        Err(Error::ResourceBudget)
+    ));
 }
