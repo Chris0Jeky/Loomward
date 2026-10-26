@@ -4634,6 +4634,50 @@ fn scan_jobs_get_reports_progress_while_a_lab_scan_is_running() {
     assert_eq!(done["progress"]["logical_bytes"], "165");
 }
 
+/// #908: a native scan classifies by extension, so `ext_family` is not one big `other` bucket.
+#[cfg(windows)]
+#[test]
+fn scan_classifies_extensions_into_families_for_the_ext_family_breakdown() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    for (name, size) in [
+        ("synthetic-photo.jpg", 11),
+        ("synthetic-RAW.CR3", 12),
+        ("synthetic-clip.mp4", 13),
+        ("synthetic-notes.pdf", 14),
+        ("synthetic-noext", 15),
+    ] {
+        std::fs::write(lab.path.join(name), vec![0u8; size]).unwrap();
+    }
+    let done = settle(svc, &start(svc, &lab.root, "full"));
+    assert_eq!(done["state"], "completed", "{done:?}");
+    let anchor = lab_slice(svc, &lab.root)["anchor_node_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (b, _) = ok(
+        "stats.breakdown",
+        call(
+            svc,
+            "stats.breakdown",
+            json!({"node_id": anchor, "by": "ext_family", "basis": "logical", "limit": 8}),
+        ),
+    );
+    let files = |key: &str| {
+        b["buckets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|k| k["key"] == key)
+            .map(|k| k["files"].as_u64().unwrap())
+    };
+    assert_eq!(files("image"), Some(2), "{b:?}");
+    assert_eq!(files("video"), Some(1), "{b:?}");
+    assert_eq!(files("document"), Some(1), "{b:?}");
+    assert_eq!(files("none"), Some(1), "{b:?}");
+    assert_eq!(files("other"), Some(5), "the .bin fixture files: {b:?}");
+}
+
 /// #719/#808: a directory-budget stop remains a named, finished partial scan at the service boundary.
 #[cfg(windows)]
 #[test]

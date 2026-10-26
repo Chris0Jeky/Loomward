@@ -20,6 +20,7 @@
 //!   `idempotent_replay: true`, a different payload under the same key is `invalid_request`.
 use crate::{jobs::JobSpec, Component, Engine, EngineError, EngineResult};
 mod meaning;
+pub mod packet_builder;
 use loomward_learn::student::{Student, DEFAULT_LABELS};
 use loomward_protocol::*;
 pub use meaning::WORK_BUDGET as MEANING_WORK_BUDGET;
