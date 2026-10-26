@@ -346,7 +346,13 @@ $heartbeat = Get-VMIntegrationService -VMName {quote(VM_NAME)} -Name Heartbeat
     def _ensure_off(self):
         self._call("ensure_off", f"""
 if ((Get-VM -Name {quote(VM_NAME)}).State -ne 'Off') {{
-    Stop-VM -Name {quote(VM_NAME)} -TurnOff -Force
+    # A VM that just failed to start can refuse Stop-VM while it settles; only the final state counts.
+    try {{ Stop-VM -Name {quote(VM_NAME)} -TurnOff -Force -ErrorAction Stop }} catch {{ }}
+    $deadline = [DateTime]::UtcNow.AddSeconds(120)
+    while ((Get-VM -Name {quote(VM_NAME)}).State -ne 'Off') {{
+        if ([DateTime]::UtcNow -ge $deadline) {{ throw 'vm_not_off' }}
+        Start-Sleep -Seconds 2
+    }}
 }}
 '{{}}'
 """, guard=True)

@@ -392,6 +392,10 @@ class CampaignTests(unittest.TestCase):
             c.run()
         self.assertEqual(self.operations().count("start"), 1)
         self.assertEqual(c.summary["cycles"], 1)
+        script = next(s for op, s, _ in self.ps.calls if op == "ensure_off")
+        # A refused Stop-VM is tolerated; only a VM still not Off after the deadline fails.
+        self.assertIn("catch {", script)
+        self.assertIn("throw 'vm_not_off'", script)
 
     def test_zero_dirty_pages_gets_no_credit(self):
         c = self.make()
