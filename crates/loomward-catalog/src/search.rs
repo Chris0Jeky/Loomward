@@ -6,8 +6,7 @@
 //! a separator), substring; then, for several words, all words at word starts, all words anywhere.
 //! Inside a pass, folders come before files and both run in key order, which makes the cursor a
 //! plain keyset position. An empty text lists by filters only (files of one extension largest
-//! first). Client root scope bounds the SQL walk; remaining visibility is checked per hit:
-//! active grant, requested root, no hidden ancestor.
+//! first). Visibility is checked per hit: active grant, requested root, no hidden ancestor.
 use crate::query::{
     instance, is_budget_interrupt, raw, revisions, Raw, WorkGuard, DIR_COLUMNS, FILE_COLUMNS,
 };
@@ -286,43 +285,15 @@ fn visible(files: bool, scope: Option<&[i64]>) -> String {
 }
 /// The SQL of one streaming pass: a pass's folders or files, or a filter-only listing of either.
 fn statement(filter: bool, files: bool, by_size: bool, scope: Option<&[i64]>) -> String {
-    let matched = format!("coalesce({},0)", visible(files, None));
-    // Start at granted roots: filtering a global FTS stream still spends the client's VM budget.
-    let (dirs, file_rows, named_dirs, named_files, scope_filter) = if let Some(ids) = scope {
-        let ids: Vec<String> = ids.iter().map(i64::to_string).collect();
-        let dirs = "dir d INDEXED BY dir_by_root";
-        let file_rows = format!("{dirs} CROSS JOIN file f INDEXED BY file_by_logical ON f.dir_id=d.id LEFT JOIN ext e ON e.id=f.ext_id");
-        (
-            dirs,
-            file_rows.clone(),
-            format!("{dirs} CROSS JOIN search_name s ON s.rowid=d.id"),
-            format!("{file_rows} CROSS JOIN search_name s ON s.rowid=f.id+{FILE_KEY}"),
-            format!(" AND d.root_id IN ({})", ids.join(",")),
-        )
-    } else {
-        (
-            "dir d",
-            "file f JOIN dir d ON d.id=f.dir_id LEFT JOIN ext e ON e.id=f.ext_id".into(),
-            "search_name s JOIN dir d ON d.id=s.rowid".into(),
-            format!("search_name s JOIN file f ON f.id=s.rowid-{FILE_KEY} JOIN dir d ON d.id=f.dir_id LEFT JOIN ext e ON e.id=f.ext_id"),
-            String::new(),
-        )
-    };
+    let matched = format!("coalesce({},0)", visible(files, scope));
     match (filter, files) {
-        (false, false) => format!("SELECT {DIR_COLUMNS},{matched},s.rowid FROM {named_dirs} WHERE search_name MATCH ?1 AND s.rowid>?2 AND s.rowid<{FILE_KEY}{scope_filter} ORDER BY s.rowid"),
-        (false, true) => format!("SELECT {FILE_COLUMNS},{matched},s.rowid FROM {named_files} WHERE search_name MATCH ?1 AND s.rowid>?2{scope_filter} ORDER BY s.rowid"),
-        (true, false) => format!("SELECT {DIR_COLUMNS},{matched},d.id FROM {dirs} WHERE ?1 IS NOT NULL AND d.id>?2 AND d.parent_id IS NOT NULL{scope_filter} ORDER BY d.id"),
-        // One extension: its index for the owner; a client always starts at its granted roots.
-        (true, true) if by_size => {
-            let from = if scope.is_none() {
-                "file f INDEXED BY file_by_ext JOIN dir d ON d.id=f.dir_id LEFT JOIN ext e ON e.id=f.ext_id"
-            } else {
-                &file_rows
-            };
-            format!("SELECT {FILE_COLUMNS},{matched},f.id+{FILE_KEY} FROM {from} WHERE ?1 IS NOT NULL AND f.ext_id=(SELECT id FROM ext WHERE ext=?4) AND (?9 IS NULL OR f.logical<?9 OR (f.logical=?9 AND f.id>?2-{FILE_KEY})){scope_filter} ORDER BY f.logical DESC,f.id")
-        }
-        (true, true) => format!("SELECT {FILE_COLUMNS},{matched},f.id+{FILE_KEY} FROM {file_rows} WHERE ?1 IS NOT NULL AND f.id>?2-{FILE_KEY}{scope_filter} ORDER BY f.id"),
-    }
+        (false, false) => format!("SELECT {DIR_COLUMNS},{matched},s.rowid FROM search_name s JOIN dir d ON d.id=s.rowid WHERE search_name MATCH ?1 AND s.rowid>?2 AND s.rowid<{FILE_KEY} ORDER BY s.rowid"),
+        (false, true) => format!("SELECT {FILE_COLUMNS},{matched},s.rowid FROM search_name s JOIN file f ON f.id=s.rowid-{FILE_KEY} JOIN dir d ON d.id=f.dir_id LEFT JOIN ext e ON e.id=f.ext_id WHERE search_name MATCH ?1 AND s.rowid>?2 ORDER BY s.rowid"),
+        (true, false) => format!("SELECT {DIR_COLUMNS},{matched},d.id FROM dir d WHERE ?1 IS NOT NULL AND d.id>?2 AND d.parent_id IS NOT NULL ORDER BY d.id"),
+        // One extension: its index, largest first, then by id.
+        (true, true) if by_size => format!("SELECT {FILE_COLUMNS},{matched},f.id+{FILE_KEY} FROM file f INDEXED BY file_by_ext JOIN dir d ON d.id=f.dir_id LEFT JOIN ext e ON e.id=f.ext_id WHERE ?1 IS NOT NULL AND f.ext_id=(SELECT id FROM ext WHERE ext=?4) AND (?9 IS NULL OR f.logical<?9 OR (f.logical=?9 AND f.id>?2-{FILE_KEY})) ORDER BY f.logical DESC,f.id"),
+        (true, true) => format!("SELECT {FILE_COLUMNS},{matched},f.id+{FILE_KEY} FROM file f JOIN dir d ON d.id=f.dir_id LEFT JOIN ext e ON e.id=f.ext_id WHERE ?1 IS NOT NULL AND f.id>?2-{FILE_KEY} ORDER BY f.id"),
+}
 }
 
 /// A keyset position: pass, last key, and the last size of a by-size listing.
