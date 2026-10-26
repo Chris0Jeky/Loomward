@@ -333,8 +333,9 @@ fn oracle(lab: &Lab, before: &Prepared, baseline: &Snap, outcome: &Outcome) -> S
     now
 }
 
-/// Unlike C6's pre-crash allowlist, a post-boot baseline can include unrelated entries already
-/// present before recovery. Still reject every later addition and every unjournaled removal.
+/// C6 checks 4-6 after a reboot: nothing appears after the post-boot baseline, only journaled
+/// identities are removed (and only with removal on), and the destination parent holds only the
+/// sentinel, the final name and journaled staging tokens, whether a name predates the baseline or not.
 fn reboot_destination_oracle(
     lab: &Lab,
     before: &Prepared,
@@ -377,6 +378,13 @@ fn reboot_destination_oracle(
                 "hyperv: {path} removed without a journaled identity"
             );
         }
+    }
+    let tokens = replay(&lab.store, before.op).unwrap().staging_tokens;
+    for name in now.keys().filter(|p| !p.contains('/')) {
+        assert!(
+            name == EXISTING || *name == before.final_name || tokens.contains(name),
+            "hyperv: unexpected {name} in the destination parent"
+        );
     }
     now
 }
@@ -426,8 +434,10 @@ fn clear_signals(signal: &Path) {
             .unwrap()
             .to_string_lossy()
             .to_ascii_lowercase();
-        if matches!(name.as_str(), "result.json" | "act-done.json" | "trace.txt")
-            || name.ends_with(".tmp")
+        if matches!(
+            name.as_str(),
+            "result.json" | "act-done.json" | "trace.txt" | "prepare.json"
+        ) || name.ends_with(".tmp")
         {
             fs::remove_file(path).unwrap();
         }
@@ -467,23 +477,13 @@ fn recover_step(dir: &Path, signal: &Path, result: &mut Value) {
     let after = oracle(&lab, &before, &after_recovery, &abandoned);
     // C6's cancellation check owns Loomward names; unrelated baseline entries are retained
     // and already checked above, but are not staging leftovers.
-    let replayed = replay(&lab.store, before.op).unwrap();
-    let owned: Snap = after
-        .into_iter()
-        .filter(|(path, _)| {
-            let name = path.split('/').next().unwrap();
-            name == EXISTING
-                || name == before.final_name
-                || replayed.staging_tokens.iter().any(|token| token == name)
-        })
-        .collect();
     cancelled_oracle(
         &lab,
         before.op,
         before.removal,
         "hyperv",
         &abandoned,
-        &owned,
+        &after,
     );
     assert!(copy_ran, "hyperv: no durable copy record after preparing");
 }
@@ -615,7 +615,8 @@ fn child_step_with(
         if let Some(status) = child.try_wait().unwrap() {
             return status;
         }
-        if start.elapsed() > Duration::from_secs(120) {
+        // A hang detector only: under host disk contention a large step can take minutes.
+        if start.elapsed() > Duration::from_secs(600) {
             let _ = child.kill();
             let _ = child.wait();
             panic!("hyperv: {step} child timed out");
@@ -912,12 +913,23 @@ fn hyperv_stream_records_preserve_hashes_and_full_identity_without_file_bytes() 
 }
 
 #[test]
-fn hyperv_pre_recovery_addition_is_baseline_but_later_addition_fails() {
+fn hyperv_stray_names_fail_before_or_after_the_baseline() {
     let Some(temp) = host_lab() else { return };
-    let root = temp.path();
+    let stray = temp.path().join("stray");
+    successful_step(&stray, "prepare", "run", false);
+    successful_step(&stray, "act", "run", false);
+    fs::write(stray.join("lab/dest/baseline.txt"), b"before recovery").unwrap();
+    assert!(!child_step(&stray, "recover", "run", false, None).success());
+    let receipt = result(&stray);
+    assert_eq!(receipt["ok"], false);
+    assert!(receipt["failure"]
+        .as_str()
+        .unwrap()
+        .contains("unexpected baseline.txt"));
+
+    let root = &temp.path().join("late");
     successful_step(root, "prepare", "run", false);
     successful_step(root, "act", "run", false);
-    fs::write(root.join("lab/dest/baseline.txt"), b"before recovery").unwrap();
     successful_step(root, "recover", "run", false);
     assert_eq!(result(root)["ok"], true);
 
