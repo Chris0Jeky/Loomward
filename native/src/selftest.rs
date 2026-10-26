@@ -100,6 +100,27 @@ pub fn run(log: &mut dyn FnMut(&str)) -> bool {
             log(&format!("FAIL {name}: {e}"));
         }
     };
+    report(
+        "bundled loomward-mcp starts with --help",
+        (|| {
+            let executable = std::env::current_exe().map_err(|e| e.to_string())?;
+            let mcp =
+                executable.with_file_name(format!("loomward-mcp{}", std::env::consts::EXE_SUFFIX));
+            let output = std::process::Command::new(&mcp)
+                .arg("--help")
+                .output()
+                .map_err(|e| format!("cannot start {}: {e}", mcp.display()))?;
+            check(
+                matches!(output.status.code(), Some(0 | 2)),
+                format!("loomward-mcp --help exited with {}", output.status),
+            )?;
+            check(
+                String::from_utf8_lossy(&output.stdout).contains("usage: loomward-mcp")
+                    || String::from_utf8_lossy(&output.stderr).contains("usage: loomward-mcp"),
+                "loomward-mcp --help did not print usage",
+            )
+        })(),
+    );
     let (service, desktop) = match fixture_desktop(TEST_HEARTBEAT) {
         Ok(x) => x,
         Err(e) => {
