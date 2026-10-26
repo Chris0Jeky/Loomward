@@ -368,9 +368,10 @@ def main(argv=None):
             raise ValueError('max-records must be positive')
         model_slug = re.sub(r'[^a-zA-Z0-9_-]+', '-', args.model).strip('-')[:80] or 'model'
         stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
-        out = validate_output(args.out if args.out is not None else
-                              Path('E:/loomward-build/bench') / f'{model_slug}-{args.task}-{stamp}')
-        if not args.dry_run and out.exists():
+        out = None if args.dry_run else validate_output(
+            args.out if args.out is not None else
+            Path('E:/loomward-build/bench') / f'{model_slug}-{args.task}-{stamp}')
+        if out is not None and out.exists():
             raise ValueError('output directory already exists; choose a new --out directory')
         records = strict_json(args.corpus.read_text(encoding='utf-8'))
         if not isinstance(records, list) or not records:
