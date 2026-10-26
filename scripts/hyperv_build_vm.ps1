@@ -20,6 +20,8 @@ param(
     [Parameter(Mandatory)][ValidateSet('unattend', 'create', 'install', 'disks', 'pristine')][string]$Step,
     [string]$Iso = 'E:\loomward-lab\hyperv\iso\server2025-eval.iso',
     [int]$LabIops = 400,
+    # 2 = Standard Evaluation (Desktop Experience): Server Core lacks cldapi.dll, which the copy engine imports.
+    [ValidateRange(1, 4)][int]$ImageIndex = 2,
     [switch]$Force
 )
 $ErrorActionPreference = 'Stop'
@@ -77,7 +79,7 @@ switch ($Step) {
         if (-not (Test-Path $guest)) {
             @{ admin = (New-Password); runner = (New-Password) } | ConvertTo-Json | Set-Content -Encoding utf8 $guest
         }
-        icacls $guest /inheritance:r /grant:r "${env:USERNAME}:(OI)(CI)F" 'SYSTEM:(OI)(CI)F' | Out-Null
+        icacls $guest /inheritance:r /grant:r "${env:USERNAME}:F" 'SYSTEM:F' | Out-Null
         if ($LASTEXITCODE -ne 0) { throw 'guest_acl_failed' }
         $g = Get-Content $guest -Raw | ConvertFrom-Json
         $xml = @"
@@ -104,7 +106,7 @@ switch ($Step) {
         </Disk>
       </DiskConfiguration>
       <ImageInstall><OSImage>
-        <InstallFrom><MetaData wcm:action="add"><Key>/IMAGE/INDEX</Key><Value>1</Value></MetaData></InstallFrom>
+        <InstallFrom><MetaData wcm:action="add"><Key>/IMAGE/INDEX</Key><Value>$ImageIndex</Value></MetaData></InstallFrom>
         <InstallTo><DiskID>0</DiskID><PartitionID>3</PartitionID></InstallTo>
       </OSImage></ImageInstall>
       <UserData><AcceptEula>true</AcceptEula></UserData>
