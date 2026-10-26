@@ -25,7 +25,9 @@ mod db;
 #[cfg(feature = "test-hooks")]
 pub use db::take_integrity_checks;
 mod duplicates;
+mod family;
 pub use duplicates::{DuplicateCandidate, DuplicateCandidates};
+pub use family::extension_family;
 mod machine_stores;
 mod model;
 pub use machine_stores::{MachineStoreCandidate, MachineStores};
