@@ -523,10 +523,9 @@ impl<'a> Input<'a> {
                 }
             }
             let device = match &classification {
-                Some(c) => json!({"bus_type": match c.bus_type.as_str() {
-                    "nvme" | "sata" | "sas" | "scsi" | "usb" | "raid" | "virtual" | "sd" => c.bus_type.as_str(),
-                    _ => "other",
-                }, "seek_penalty": null, "multiple_disks": null, "basis": "ioctl_storage_query_property"}),
+                Some(c) => {
+                    json!({"bus_type": wire_bus_type(&c.bus_type), "seek_penalty": null, "multiple_disks": null, "basis": "ioctl_storage_query_property"})
+                }
                 None => {
                     json!({"bus_type":"unknown", "seek_penalty":null, "multiple_disks":null, "basis":"unavailable"})
                 }
@@ -644,11 +643,11 @@ impl<'a> Input<'a> {
             let declared = v.declared.flatten();
             let volume = serde_json::from_value(json!({
                 "volume_id":format!("vo_{}",v.id), "display_name":v.display_name.chars().take(64).collect::<String>(),
-                "mount_points":[],"filesystem":v.filesystem.map(|s| s.chars().take(32).collect::<String>()),"label":null,
+                "mount_points":[],"filesystem":v.filesystem.as_ref().map(|s| s.chars().take(32).collect::<String>()),"label":null,
                 "online":online,"read_only":space.get("read_only").and_then(Value::as_bool),"removable":null,
                 "capacity_bytes":bytes("capacity_bytes"),"free_bytes":bytes("free_bytes"),
                 "device":device,
-                "tier":{"tier":declared,"basis":if declared.is_some(){"declared"}else{"unknown"},"declared_tier":declared,"hint_tier":null,"note":if !online {crate::handlers::OFFLINE_SPACE_NOTE} else if inactive.contains(&v.id){"No active grant; excluded from placement simulation. Device speed is unmeasured."}else{"Declared tier; device speed is unmeasured."}},
+                "tier":{"tier":declared,"basis":if declared.is_some(){"declared"}else{"unknown"},"declared_tier":declared,"hint_tier":null,"note":if !online {crate::handlers::offline_space_note(&v, &roots, &presence)} else if inactive.contains(&v.id){"No active grant; excluded from placement simulation. Device speed is unmeasured."}else{"Declared tier; device speed is unmeasured."}},
                 "features":{"file_ids_128":null,"hard_links":null,"sparse_files":null,"compression":null,"reparse_points":null,"usn_journal":null},
                 "observed_at":ts_ns(observed_at)
             })).map_err(|_| EngineError::Internal { message: "invalid volume observation".into(), detail: None })?;
@@ -1177,6 +1176,14 @@ impl ProposalStore for Store<'_> {
                 message: "unknown proposal".into(),
             })?;
         self.detail(self.conn, row)
+    }
+}
+
+/// The protocol's bus names; any other native bus is `other` (#888 item 6 keeps tests on this map).
+pub(crate) fn wire_bus_type(native: &str) -> &str {
+    match native {
+        "nvme" | "sata" | "sas" | "scsi" | "usb" | "raid" | "virtual" | "sd" => native,
+        _ => "other",
     }
 }
 
