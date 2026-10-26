@@ -542,7 +542,7 @@ Checked at preview (P), at start or resume (S) and per item at open (I). "Resuma
 | `access_denied` | source unreadable, or destination write blocked (for example by Controlled Folder Access) | I | yes |
 | `insufficient_space` | caller-available bytes < need + reserve, or preallocation failed | P, S, I | yes |
 | `destination_inside_source` | a copied folder is the destination parent or one of its ancestors (compared by identity) | P, S | no |
-| `destination_cloud_synced`, `destination_unsupported_volume`, `destination_protected` | sync root; removable, network or non-NTFS/ReFS volume; state directory or the scan fences of #284/#286 | P, S | no |
+| `destination_cloud_synced`, `destination_unsupported_volume`, `destination_protected` | sync root; removable, network or non-NTFS/ReFS volume (fixed USB NTFS/ReFS without removable media is allowed only for synthetic lab sessions); state directory or the scan fences of #284/#286 | P, S | no |
 | `destination_changed` | the destination parent no longer opens as its pinned identity, or its ancestry no longer holds its grant's root (renamed, replaced, removed or moved after approval) | S | no |
 | `case_collision` | two names fold equal under the destination's rules (CompareStringOrdinal, ignore case) | P | no |
 | `name_unrepresentable` | reserved device name, trailing dot or space, component over 255 units [W13] | P | no |

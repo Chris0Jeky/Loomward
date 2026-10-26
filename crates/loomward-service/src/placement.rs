@@ -498,6 +498,45 @@ impl<'a> Input<'a> {
             let stored: Value = serde_json::from_str(&capabilities).unwrap_or(Value::Null);
             let mut space = stored.get("space").cloned().unwrap_or(Value::Null);
             let mut observed_at = v.observed_at_ns;
+            let roots = if observe_personal_grants {
+                db::roots(&self.conn, None).map_err(sql)?
+            } else {
+                Vec::new()
+            };
+            let mut online = None;
+            let mut classification = None;
+            for root in roots
+                .iter()
+                .filter(|r| r.volume == Some(v.id) && r.grant_state == "active")
+            {
+                check(deadline)?;
+                match self.inner.root_presence(root) {
+                    Some(crate::handlers::RootPresence::Online) => {
+                        online = Some(true);
+                        if classification.is_none() {
+                            classification = loomward_windows::volumes::classify(
+                                std::path::Path::new(&root.display_path),
+                            )
+                            .ok();
+                        }
+                    }
+                    Some(
+                        crate::handlers::RootPresence::Offline
+                        | crate::handlers::RootPresence::IdentityChanged,
+                    ) if online != Some(true) => online = Some(false),
+                    _ => {}
+                }
+            }
+            let online = online.unwrap_or(v.online);
+            let device = match &classification {
+                Some(c) => json!({"bus_type": match c.bus_type.as_str() {
+                    "nvme" | "sata" | "sas" | "scsi" | "usb" | "raid" | "virtual" | "sd" => c.bus_type.as_str(),
+                    _ => "other",
+                }, "seek_penalty": null, "multiple_disks": null, "basis": "ioctl_storage_query_property"}),
+                None => {
+                    json!({"bus_type":"unknown", "seek_penalty":null, "multiple_disks":null, "basis":"unavailable"})
+                }
+            };
             // Only an active grant's own root may supply fresh volume physics: a registered lab root
             // in a synthetic session, or an owner grant for `volumes.list` in a personal session.
             let observed_origin = match self.inner.dataset {
@@ -556,7 +595,7 @@ impl<'a> Input<'a> {
                     let observed = if origin == "owner_granted" {
                         // A personal volume waits briefly and alone: an offline volume is not read, and a
                         // stall, a timeout or a busy reader leaves only that volume unknown (#519 review).
-                        if v.online {
+                        if online {
                             #[cfg(test)]
                             let budget = self
                                 .inner
@@ -584,7 +623,7 @@ impl<'a> Input<'a> {
                         } else {
                             None
                         }
-                    } else {
+                    } else if online {
                         bounded_space(
                             deadline,
                             None,
@@ -592,6 +631,8 @@ impl<'a> Input<'a> {
                             #[cfg(test)]
                             None,
                         )?
+                    } else {
+                        None
                     };
                     if let Some((observation, at)) = observed {
                         space = serde_json::to_value(observation).expect("space serialises");
@@ -610,9 +651,9 @@ impl<'a> Input<'a> {
             let volume = serde_json::from_value(json!({
                 "volume_id":format!("vo_{}",v.id), "display_name":v.display_name.chars().take(64).collect::<String>(),
                 "mount_points":[],"filesystem":v.filesystem.map(|s| s.chars().take(32).collect::<String>()),"label":null,
-                "online":v.online,"read_only":space.get("read_only").and_then(Value::as_bool),"removable":null,
+                "online":online,"read_only":space.get("read_only").and_then(Value::as_bool),"removable":null,
                 "capacity_bytes":bytes("capacity_bytes"),"free_bytes":bytes("free_bytes"),
-                "device":{"bus_type":"unknown","seek_penalty":null,"multiple_disks":null,"basis":"unavailable"},
+                "device":device,
                 "tier":{"tier":declared,"basis":if declared.is_some(){"declared"}else{"unknown"},"declared_tier":declared,"hint_tier":null,"note":if inactive.contains(&v.id){"No active grant; excluded from placement simulation. Device speed is unmeasured."}else{"Declared tier; device speed is unmeasured."}},
                 "features":{"file_ids_128":null,"hard_links":null,"sparse_files":null,"compression":null,"reparse_points":null,"usn_journal":null},
                 "observed_at":ts_ns(observed_at)

@@ -642,12 +642,17 @@ fn granted(
     inner: &Inner,
     row: &db::RootRow,
 ) -> Result<Option<loomward_engine::scan::GrantedRoot>, RootId> {
-    if inner.session_root_gate(row).is_err() {
-        return Ok(None);
-    }
     let (Ok(id), Some(dir)) = (RootId::new(inner.root_id(row.root)), row.dir) else {
         return Ok(None);
     };
+    if let Err(error) = inner.session_root_gate(row) {
+        // The caller drops setup before retiring a changed identity, as for engine refusals.
+        return if error.message.as_str() == "root_identity_changed" {
+            Err(id)
+        } else {
+            Ok(None)
+        };
+    }
     inner.scan.bind(&id, row.grant, dir);
     match inner.engine.granted_root(
         id.clone(),

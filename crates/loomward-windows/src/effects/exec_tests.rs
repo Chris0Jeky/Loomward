@@ -343,6 +343,7 @@ impl Lab {
             destination: dest,
             destination_grant: 2,
             grants_active: true,
+            synthetic_lab: true,
             protected: false,
             date: DATE,
             destination_root: self.grant(),
