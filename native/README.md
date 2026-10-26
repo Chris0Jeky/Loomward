@@ -79,7 +79,8 @@ reads the examples from there (for `--fixtures` and the self-test) because it ha
 The self-test needs no checkout: it runs
 the protocol checks against those examples, then opens the engine service as `main` does, synthetic
 and personal, each in a scratch state directory that it removes. It also starts the adjacent
-`loomward-mcp.exe` with `--help` and checks its usage output, without opening personal state.
+`loomward-mcp.exe` with `--help` and checks its usage output, without opening personal state. From a build directory
+that file is Cargo's own output; only the installed app's self-test proves the bundled copy.
 
 The sidecar helper uses Cargo's desktop target directory (`CARGO_TARGET_DIR` included), builds with
 `--locked`, and stages Tauri's host-triple filenames in ignored `native/binaries/`. Tauri copies them
