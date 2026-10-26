@@ -1,6 +1,6 @@
 //! LW-119: `clutter.developer`. Advice from recorded names and aggregates only, for one active granted
 //! root: the detector in `loomward-catalog` supplies the candidates, this module words them for the wire.
-//! Read-only and owner-only (a client principal is refused before dispatch). A detector that hits its
+//! Read-only; a client needs size disclosure and this root in its grant. A detector that hits its
 //! work budget is reported as such, never as an empty list; unknown stays unknown (invariant 4).
 use crate::{catalog_error, db, fail, sql_error, Inner, Out, ReadWork};
 use loomward_protocol::*;
