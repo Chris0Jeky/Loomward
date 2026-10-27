@@ -72,9 +72,19 @@ fn encode(response: &Value) -> Vec<u8> {
             crate::text::escape(value);
         }
     }
-    if let Some(value) = response["result"].get("structuredContent") {
-        // Serialize after escaping once, so JSON syntax and data escapes remain distinct.
-        response["result"]["content"][0]["text"] = value.to_string().into();
+    if let Some(text) = response["result"]
+        .get("structuredContent")
+        .map(Value::to_string)
+    {
+        // Serialize after escaping once, so JSON syntax and data escapes remain distinct. A result
+        // without a text block keeps its shape: never index into absent content (#954).
+        if let Some(block) = response["result"]
+            .get_mut("content")
+            .and_then(|c| c.get_mut(0))
+            .filter(|b| b.is_object())
+        {
+            block["text"] = text.into();
+        }
     }
     let encoded = response.to_string().into_bytes();
     if encoded.len() > MAX_OUTPUT {
@@ -141,6 +151,29 @@ pub fn serve(mut protocol: Protocol) -> io::Result<()> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn structured_content_without_a_text_block_encodes_without_panicking() {
+        for content in [None, Some(json!([]))] {
+            let mut response = json!({
+                "jsonrpc": "2.0", "id": "structured-only",
+                "result": {"structuredContent": {"name": "synthetic\u{202e}"}}
+            });
+            if let Some(content) = content {
+                response["result"]["content"] = content;
+            }
+            let encoded: Value = serde_json::from_slice(&encode(&response)).unwrap();
+            assert_eq!(encoded["id"], response["id"]);
+            assert_eq!(
+                encoded["result"]["structuredContent"]["name"],
+                "synthetic\\u202E"
+            );
+            assert_eq!(
+                encoded["result"].get("content"),
+                response["result"].get("content")
+            );
+        }
+    }
 
     #[test]
     fn tool_text_matches_structured_content_escaped_exactly_once() {
