@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { Job } from '../../src/lib/contracts.gen';
+import type { EventEnvelope, Job } from '../../src/lib/contracts.gen';
 import { ReclaimObserve } from '../../src/lib/stores/reclaim-observe.svelte';
 import { session } from '../../src/lib/stores/session.svelte';
 import { Client, LoomwardError } from '../../src/lib/transport/client';
@@ -83,6 +83,33 @@ describe('reclaim observe store', () => {
     expect(store.job).toBeNull();
     expect(store.problem).toContain('administrator token');
     expect(store.pending).toBe(false);
+  });
+});
+
+describe('engine lifetime', () => {
+  it('discards a jobs.get answer in flight across an engine restart, then adopts the new job', async () => {
+    const { client, store } = await mock();
+    const hello = (epoch: string) => ({ event: 'stream.hello', epoch } as EventEnvelope);
+    store.onEvent(hello('one'));
+    store.apply(job({ job_id: 'jb_old', seq: 9, rev: 1 }));
+    const real = client.transport.call.bind(client.transport);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    (client.transport as { call: unknown }).call = async (r: { command: string }, s?: AbortSignal) => {
+      const res = await real(r as never, s);
+      if (r.command !== 'jobs.get') return res;
+      await held;
+      return { ...res, result: { job: job({ job_id: 'jb_old', seq: 9, rev: 2 }) } };
+    };
+    const late = store.refresh();
+    store.onEvent(hello('two')); // the engine restarted while the poll was out
+    expect(store.job).toBeNull();
+    release();
+    await late;
+    expect(store.job).toBeNull(); // the old engine's job is not resurrected
+    expect(store.problem).toBe('');
+    store.apply(job({ job_id: 'jb_new', seq: 1 })); // the new engine numbers from 1
+    expect(store.job?.job_id).toBe('jb_new');
   });
 });
 

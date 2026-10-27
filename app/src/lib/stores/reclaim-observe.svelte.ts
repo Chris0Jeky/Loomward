@@ -12,6 +12,24 @@ export class ReclaimObserve {
   /** The job this page started, if any. The job names no volume, so any other job (adopted after busy or a reload) may cover another one. */
   ownJobId = $state<string | null>(null);
   private epoch: string | null = null;
+  /** Bumped when the engine restarts: an answer requested before that belongs to the previous lifetime and is dropped (as the Duplicates store does). */
+  private generation = 0;
+  private sessionStartedAt: string | null = null;
+
+  /** The HTTP hello can show a restart before the stream's hello arrives. */
+  private alignEpoch(): void {
+    const startedAt = session.info?.session_started_at;
+    if (startedAt && this.sessionStartedAt !== startedAt) {
+      if (this.sessionStartedAt !== null) { this.job = null; this.generation++; this.epoch = null; }
+      this.sessionStartedAt = startedAt;
+    }
+  }
+  /** Captured at dispatch: false once the engine lifetime or the client it asked has gone. */
+  private capture(): () => boolean {
+    this.alignEpoch();
+    const generation = this.generation, client = session.client;
+    return () => { this.alignEpoch(); return generation === this.generation && client === session.client; };
+  }
 
   get active(): boolean { return this.job !== null && isActive(this.job.state); }
 
@@ -22,7 +40,8 @@ export class ReclaimObserve {
     this.job = job;
   }
   onEvent(event: EventEnvelope): void {
-    if (this.epoch !== null && this.epoch !== event.epoch) this.job = null; // engine restarted: the old job is not known to still run
+    this.alignEpoch();
+    if (this.epoch !== null && this.epoch !== event.epoch) { this.job = null; this.generation++; } // engine restarted: the old job is not known to still run
     this.epoch = event.epoch;
     if (event.event === 'job.state') this.apply((event.data as unknown as JobResult).job);
   }
@@ -30,37 +49,40 @@ export class ReclaimObserve {
   async sync(): Promise<void> {
     const c = session.client;
     if (!c) return;
+    const current = this.capture();
     try {
       const { result } = await c.call('jobs.list', { kinds: ['reclaim'], limit: 5 });
-      if (c !== session.client) return;
+      if (!current()) return;
       for (const job of result.jobs) if (isActive(job.state)) this.apply(job); // an old, finished run is not news
       this.problem = ''; // the call worked: an earlier fault is no longer current
-    } catch (e) { this.problem = session.handle(e); }
+    } catch (e) { const message = session.handle(e); if (current()) this.problem = message; }
   }
   async refresh(): Promise<void> {
     const c = session.client, job = this.job;
     if (!c || !job) return;
+    const current = this.capture();
     try {
       const { result } = await c.call('jobs.get', { job_id: job.job_id });
-      if (c === session.client) { this.apply(result.job); this.problem = ''; }
-    } catch (e) { this.problem = session.handle(e); }
+      if (current()) { this.apply(result.job); this.problem = ''; }
+    } catch (e) { const message = session.handle(e); if (current()) this.problem = message; }
   }
   async start(volumeId: string): Promise<void> {
     const c = session.client;
     if (!c || this.pending || this.active) return;
     this.pending = true; this.problem = '';
+    const current = this.capture();
     try {
       const { result } = await c.call('reclaim.observe', { volume_id: volumeId });
-      if (c === session.client) { this.apply(result.job); this.ownJobId = result.job.job_id; }
+      if (current()) { this.apply(result.job); this.ownJobId = result.job.job_id; }
     } catch (e) {
       session.handle(e);
+      if (!current()) return;
       this.problem = observeRefusal(e);
       // Busy names the running job: follow it instead of leaving the owner blind.
       if (e instanceof LoomwardError && e.code === 'busy' && typeof e.detail?.job_id === 'string') {
         try {
           const { result } = await c.call('jobs.get', { job_id: e.detail.job_id });
-          this.apply(result.job);
-          this.problem = ''; // the running job's status now says what the refusal meant
+          if (current()) { this.apply(result.job); this.problem = ''; } // the running job's status now says what the refusal meant
         } catch { /* the refusal text stands */ }
       }
     } finally { this.pending = false; }
@@ -69,10 +91,11 @@ export class ReclaimObserve {
     const c = session.client, job = this.job;
     if (!c || !job || this.pending || !isActive(job.state)) return;
     this.pending = true; this.problem = '';
+    const current = this.capture();
     try {
       const { result } = await c.call('jobs.cancel', { job_id: job.job_id });
-      if (c === session.client) this.apply(result.job);
-    } catch (e) { this.problem = session.handle(e); }
+      if (current()) this.apply(result.job);
+    } catch (e) { const message = session.handle(e); if (current()) this.problem = message; }
     finally { this.pending = false; }
   }
 }
