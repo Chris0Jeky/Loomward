@@ -66,7 +66,16 @@ fn read_frames(mut source: impl BufRead, tx: SyncSender<Frame>) {
 
 fn encode(response: &Value) -> Vec<u8> {
     let mut response = response.clone();
-    crate::text::escape(&mut response);
+    // Request IDs are opaque correlation data, not display text.
+    for key in ["result", "error"] {
+        if let Some(value) = response.get_mut(key) {
+            crate::text::escape(value);
+        }
+    }
+    if let Some(value) = response["result"].get("structuredContent") {
+        // Serialize after escaping once, so JSON syntax and data escapes remain distinct.
+        response["result"]["content"][0]["text"] = value.to_string().into();
+    }
     let encoded = response.to_string().into_bytes();
     if encoded.len() > MAX_OUTPUT {
         error(-32603, "Response size budget exceeded", response.get("id"))
@@ -132,6 +141,24 @@ pub fn serve(mut protocol: Protocol) -> io::Result<()> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn tool_text_matches_structured_content_escaped_exactly_once() {
+        let value = json!({"name":"x\u{202E}y", "literal":r"x\u202Ey", "quoted":"a\"b"});
+        let response = json!({"jsonrpc":"2.0", "id":r"request\1", "result":{
+            "content":[{"type":"text", "text":value.to_string()}],
+            "structuredContent":value, "isError":false
+        }});
+        let encoded: Value = serde_json::from_slice(&encode(&response)).unwrap();
+        assert_eq!(encoded["id"], response["id"]);
+        let result = &encoded["result"];
+        assert_eq!(result["structuredContent"]["name"], r"x\u202Ey");
+        assert_eq!(result["structuredContent"]["literal"], r"x\\u202Ey");
+        assert_eq!(
+            serde_json::from_str::<Value>(result["content"][0]["text"].as_str().unwrap()).unwrap(),
+            result["structuredContent"]
+        );
+    }
 
     #[test]
     fn output_budget_refuses_large_responses_and_preserves_the_id() {

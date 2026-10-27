@@ -16,7 +16,9 @@ pub fn escape_string(text: &str) -> String {
     for c in text.chars() {
         // Format characters, every control, line separators and the default-ignorable fillers and
         // variation selectors that can hide text (review of #897; cf. loomward_ask::turn::clean).
-        if get_general_category(c) == GeneralCategory::Format
+        if c == '\\' {
+            out.push_str("\\\\");
+        } else if get_general_category(c) == GeneralCategory::Format
             || c.is_control()
             || matches!(
                 c,
@@ -61,8 +63,24 @@ mod tests {
         let mut hidden = json!("a\u{1b}b\nc\u{fe0f}d\u{e0100}e\u{3164}f");
         escape(&mut hidden);
         assert_eq!(hidden, "a\\u001Bb\\u000Ac\\uFE0Fd\\uDB40\\uDD00e\\u3164f");
-        let once = value.clone();
-        escape(&mut value);
-        assert_eq!(value, once);
+    }
+
+    #[test]
+    fn escaping_is_injective_for_literal_escapes_and_hidden_characters() {
+        // Escaping is injective, not idempotent: literal escape text must stay distinguishable.
+        let names = [
+            "x\u{202E}y",
+            r"x\u202Ey",
+            r"x\\u202Ey",
+            "x\ny",
+            r"x\u000Ay",
+            "x\u{E0001}y",
+            r"x\uDB40\uDC01y",
+            "ordinary.txt",
+        ];
+        let escaped: std::collections::BTreeSet<_> =
+            names.iter().map(|name| escape_string(name)).collect();
+        assert_eq!(escaped.len(), names.len());
+        assert_eq!(escape_string(r"x\u202Ey"), r"x\\u202Ey");
     }
 }
