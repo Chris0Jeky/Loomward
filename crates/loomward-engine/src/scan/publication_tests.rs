@@ -9,6 +9,7 @@ type FinishHook = Box<dyn Fn() -> EngineResult<()> + Send + Sync>;
 struct PublicationSink {
     memory: super::super::MemorySink,
     finishes: Mutex<Vec<(bool, bool, bool)>>,
+    cancelled_runs: Mutex<Vec<(RootId, u64)>>,
     finish: Option<FinishHook>,
 }
 
@@ -73,6 +74,13 @@ impl ScanSink for PublicationSink {
             finish()?;
         }
         self.memory.finish_run(root, run, scope, complete)
+    }
+
+    fn cancel_queued(&self, root: &RootId, run: u64) {
+        self.cancelled_runs
+            .lock()
+            .unwrap()
+            .push((root.clone(), run));
     }
 
     fn fence_root(&self, root: &RootId) -> EngineResult<()> {
@@ -201,6 +209,15 @@ fn scan_progress_has_observed_counters_before_final_publication() {
 
 #[test]
 fn cancellation_after_the_flag_snapshot_prevents_scan_publication() {
+    cancellation_marks_queued_run("run_scan_finish");
+}
+
+#[test]
+fn user_cancellation_marks_queued_run_once() {
+    cancellation_marks_queued_run("run_scan");
+}
+
+fn cancellation_marks_queued_run(pause: &'static str) {
     use super::super::tests::{root, Tree};
 
     for options in [
@@ -230,7 +247,7 @@ fn cancellation_after_the_flag_snapshot_prevents_scan_publication() {
                 let wait = wait.clone();
                 BEFORE_PUBLISH.with_borrow_mut(|hook| {
                     *hook = Some(Box::new(move |point| {
-                        if point == "run_scan_finish" {
+                        if point == pause {
                             reached.send(()).unwrap();
                             wait.lock()
                                 .unwrap()
@@ -270,7 +287,61 @@ fn cancellation_after_the_flag_snapshot_prevents_scan_publication() {
         assert_eq!(done.coverage, Some(CoverageState::Cancelled));
         assert_eq!(*sink.finishes.lock().unwrap(), vec![(false, false, false)]);
         assert!(!sink.memory.sweep_allowed(&root_id));
+        assert_eq!(*sink.cancelled_runs.lock().unwrap(), vec![(root_id, 1)]);
     }
+}
+
+#[test]
+fn unsettled_uncancelled_run_does_not_cancel_queued() {
+    use super::super::tests::{root, MovingTree};
+
+    let root = root();
+    let sink = Arc::new(PublicationSink::default());
+    let cancel = Arc::new(AtomicBool::new(false));
+    let report = run_scan(
+        &MovingTree {
+            x_listings: Default::default(),
+            unique: true,
+        },
+        &root,
+        7,
+        sink.clone(),
+        Arc::new(ByteBudget::new(crate::budgets::SCAN_BYTES)),
+        cancel.clone(),
+        ScanOptions {
+            workers: 1,
+            ..ScanOptions::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(report.duplicate_identity, 1);
+    assert!(!report.complete);
+    assert!(!cancel.load(Ordering::Acquire));
+    assert_eq!(*sink.finishes.lock().unwrap(), vec![(false, false, false)]);
+    assert_eq!(*sink.cancelled_runs.lock().unwrap(), vec![]);
+}
+
+#[test]
+fn completed_run_does_not_cancel_queued() {
+    use super::super::tests::{root, Tree};
+
+    let root = root();
+    let sink = Arc::new(PublicationSink::default());
+    let report = run_scan(
+        &Tree,
+        &root,
+        8,
+        sink.clone(),
+        Arc::new(ByteBudget::new(crate::budgets::SCAN_BYTES)),
+        Arc::new(AtomicBool::new(false)),
+        ScanOptions::default(),
+    )
+    .unwrap();
+
+    assert!(report.complete);
+    assert_eq!(*sink.finishes.lock().unwrap(), vec![(true, true, false)]);
+    assert_eq!(*sink.cancelled_runs.lock().unwrap(), vec![]);
 }
 
 #[test]
