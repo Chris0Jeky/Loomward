@@ -642,6 +642,27 @@ fn the_tag_block_e0000_to_e007f_is_escaped() {
     assert_escaped(0xE0000..=0xE007F);
 }
 
+/// LW-145: the rest of the format category and the invisible fillers, as the MCP projection has them.
+#[test]
+fn other_format_characters_and_invisible_fillers_are_escaped() {
+    for range in [
+        0x00AD..=0x00AD,
+        0x034F..=0x034F,
+        0x0600..=0x0605,
+        0x115F..=0x1160,
+        0x17B4..=0x17B5,
+        0x180B..=0x180F,
+        0x206A..=0x206F,
+        0x3164..=0x3164,
+        0xFE00..=0xFE0F,
+        0xFFA0..=0xFFA0,
+        0xFFF9..=0xFFFB,
+        0xE0100..=0xE01EF,
+    ] {
+        assert_escaped(range);
+    }
+}
+
 /// A service that returns far more than one page of minimal rows, ignoring `limit`.
 struct FloodView;
 impl ViewService for FloodView {

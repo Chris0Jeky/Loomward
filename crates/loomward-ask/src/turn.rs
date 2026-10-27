@@ -15,6 +15,7 @@ use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
+use unicode_general_category::{get_general_category, GeneralCategory};
 
 /// Per-turn budgets (docs/46 section 8.2).
 pub const MAX_TOOL_CALLS: usize = 8;
@@ -522,7 +523,25 @@ pub fn clean(s: &str) -> String {
     s.chars()
         .take(255)
         .flat_map(|c| {
+            // The Unicode format category (soft hyphen, the deprecated U+206A to U+206F, the
+            // interlinear marks and the rest) and the invisible fillers and variation selectors, as
+            // the MCP projection's `escape_string` has them (LW-145: a Hangul filler reached the
+            // model raw).
             let hostile = c.is_control()
+                || get_general_category(c) == GeneralCategory::Format
+                || matches!(
+                    c,
+                    '\u{034F}'
+                        | '\u{115F}'
+                        | '\u{1160}'
+                        | '\u{17B4}'
+                        | '\u{17B5}'
+                        | '\u{180B}'..='\u{180F}'
+                        | '\u{3164}'
+                        | '\u{FE00}'..='\u{FE0F}'
+                        | '\u{FFA0}'
+                        | '\u{E0100}'..='\u{E01EF}'
+                )
                 || matches!(
                     c,
                     '\u{061C}'
@@ -550,3 +569,7 @@ pub fn clean(s: &str) -> String {
 #[cfg(test)]
 #[path = "turn_tests.rs"]
 mod tests;
+
+#[cfg(all(test, windows))]
+#[path = "hostile_tests.rs"]
+mod hostile_tests;

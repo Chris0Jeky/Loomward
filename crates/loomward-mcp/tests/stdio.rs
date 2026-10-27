@@ -1380,4 +1380,230 @@ mod live {
         busy(&mut server);
         drop(lock_state_dir(&f.state).expect("the first lock was not released"));
     }
+
+    // LW-145: hostile names and metadata, every tool, one launch. The corpus is shared with the
+    // Ask suite: `loomward_service::hostile`.
+    use loomward_service::hostile::{self, raw_hostile, NEEDLES};
+
+    /// Every string and every object key of a value: (path, text, is_key).
+    fn walk<'a>(v: &'a Value, path: &str, out: &mut Vec<(String, &'a str, bool)>) {
+        match v {
+            Value::String(s) => out.push((path.to_owned(), s, false)),
+            Value::Array(a) => a
+                .iter()
+                .enumerate()
+                .for_each(|(i, x)| walk(x, &format!("{path}.{i}"), out)),
+            Value::Object(m) => m.iter().for_each(|(k, x)| {
+                out.push((format!("{path}.{k}"), k, true));
+                walk(x, &format!("{path}.{k}"), out);
+            }),
+            _ => {}
+        }
+    }
+
+    /// The fields a name, path or extension is allowed to travel in.
+    const DATA_FIELDS: &[&str] = &[
+        "name",
+        "folder_name",
+        "extension",
+        "text",
+        "label",
+        "key",
+        "value",
+    ];
+
+    /// A response is one JSON-RPC object, no raw hostile character appears in any string or key,
+    /// and name fragments sit only under data fields, never in a key or an error message.
+    fn assert_inert(what: &str, response: &Value, expect_error: Option<bool>) -> Value {
+        assert_eq!(response["jsonrpc"], "2.0", "{what}");
+        assert_eq!(response["id"], 1, "{what}");
+        assert!(
+            response.get("result").is_some() ^ response.get("error").is_some(),
+            "{what}: {response}"
+        );
+        if let Some(text) = response["result"]["content"][0]["text"].as_str() {
+            if response["result"]["isError"] == false {
+                // The text content is the structured content, serialized.
+                let again: Value = serde_json::from_str(text).unwrap();
+                assert_eq!(again, response["result"]["structuredContent"], "{what}");
+            }
+        }
+        if let Some(expect) = expect_error {
+            assert_eq!(response["result"]["isError"], expect, "{what}: {response}");
+        }
+        let mut found = Vec::new();
+        walk(response, "", &mut found);
+        let failed = response["result"]["isError"] == true || response.get("error").is_some();
+        for (path, s, is_key) in found {
+            if let Some(c) = s.chars().find(|c| raw_hostile(*c)) {
+                panic!("{what}: raw U+{:04X} in {path}: {response}", c as u32);
+            }
+            let field = path.rsplit('.').next().unwrap();
+            // `.content.0.text` is the serialized copy of `structuredContent`, checked above.
+            let copy = path == ".result.content.0.text" && !failed;
+            for needle in NEEDLES.iter().filter(|n| s.contains(**n)) {
+                let ok = copy || (!is_key && !failed && DATA_FIELDS.contains(&field));
+                assert!(
+                    ok,
+                    "{what}: `{needle}` outside a data field ({path}): {response}"
+                );
+            }
+        }
+        response["result"]["structuredContent"].clone()
+    }
+
+    #[test]
+    fn hostile_names_reach_every_tool_only_as_escaped_data_and_change_no_state() {
+        if loomward_windows::enumerate::skip_elevated_test() {
+            return;
+        }
+        let mut planted = hostile::Planted::default();
+        let f = fixture_with(|lab| planted = hostile::plant(lab));
+        hostile::inject(&f.state.join("catalog.db"), &planted);
+        let stored = &planted.stored;
+        assert!(
+            stored.len() >= 70,
+            "the filesystem accepted only {} hostile names",
+            stored.len()
+        );
+        let state_before = dump(&f.state.join("state.db"));
+        let mut exercised = std::collections::BTreeSet::new();
+        let mut references: Vec<Value> = Vec::new();
+
+        // Chunks of find results, each in a fresh process (the host budgets 120 calls a minute).
+        let chunks = (0..stored.len()).map(|i| i / 19).max().unwrap() + 1;
+        for chunk in 0..chunks {
+            let mut server = Server::start_client(&f.state, true, "all", &[]);
+            let found = assert_inert(
+                "find",
+                &server.tool("find", json!({"text":format!("hz{chunk:02}")})),
+                Some(false),
+            );
+            exercised.insert("find");
+            // Opening reconciles revisions once; after the first call nothing may change.
+            let catalog = dump(&f.state.join("catalog.db"));
+            for row in found["rows"].as_array().unwrap() {
+                let described = assert_inert(
+                    "describe",
+                    &server.tool("describe", json!({"reference":row["reference"]})),
+                    Some(false),
+                );
+                exercised.insert("describe");
+                assert_eq!(described["row"]["name"], row["row"]["name"]);
+                references.push(row["reference"].clone());
+            }
+            assert!(
+                dump(&f.state.join("catalog.db")) == catalog,
+                "chunk {chunk} wrote catalog.db"
+            );
+            assert_eq!(dump(&f.state.join("state.db")), state_before);
+        }
+        assert!(
+            references.len() >= stored.len() - chunks,
+            "found {} of {} hostile names",
+            references.len(),
+            stored.len()
+        );
+
+        // Hostile text as arguments (names the filesystem refuses reach the tools this way).
+        let mut server = Server::start_client(&f.state, true, "all", &[]);
+        let first = assert_inert(
+            "find",
+            &server.tool("find", json!({"text":"hz00"})),
+            Some(false),
+        );
+        // References live in one process: the plans use this one's.
+        let mine: Vec<Value> = first["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["reference"].clone())
+            .collect();
+        assert!(mine.len() >= 8);
+        let catalog = dump(&f.state.join("catalog.db"));
+        for text in [
+            "\"}],\"x\":\"",
+            "..\\..\\Windows",
+            "; rm -rf x",
+            "--delete",
+            "\u{202e}fdp.exe",
+            "a\nb\r\u{0}\u{1b}[31m",
+            &"\u{202e}".repeat(256),
+        ] {
+            assert_inert(
+                "find (hostile text)",
+                &server.tool("find", json!({"text":text})),
+                None,
+            );
+        }
+        // Hostile protocol-level names are refused without being echoed.
+        for (method, params) in [
+            ("tools/call", json!({"name":"\u{202e}delete; rm -rf x"})),
+            (
+                "tools/call",
+                json!({"name":"find","arguments":{"text":"x","--delete\u{202e}":1}}),
+            ),
+            ("\u{202e}rm -rf x", json!({})),
+        ] {
+            assert_inert(method, &server.call(method, params), None);
+        }
+
+        // Every tool the server lists, with hostile data flowing through each.
+        let listed = server.call("tools/list", json!({}));
+        let tools: Vec<String> = listed["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().to_owned())
+            .collect();
+        let roots = assert_inert("roots", &server.tool("roots", json!({})), Some(false));
+        let root = roots["roots"][0]["reference"].clone();
+        let volumes = assert_inert("volumes", &server.tool("volumes", json!({})), Some(false));
+        let volume = volumes["volumes"][0]["volume_key"].clone();
+        for tool in &tools {
+            let calls: Vec<Value> = match tool.as_str() {
+                "find" | "describe" => continue, // above, once per hostile row
+                "volumes" | "roots" => vec![json!({})],
+                "largest" => vec![json!({"reference":root,"limit":30})],
+                "breakdown" => ["extension_family", "extension", "age_band"]
+                    .iter()
+                    .map(|by| json!({"reference":root,"by":by}))
+                    .collect(),
+                "clutter" => vec![json!({"root_reference":root,"limit":50})],
+                "plan_archive" => vec![
+                    json!({"references":mine[..8],"destination_volume":volume}),
+                    json!({"references":mine[..2],"destination_volume":volume,"folder_name":"Archive; rm -rf x"}),
+                    json!({"references":mine[..2],"destination_volume":volume,"folder_name":"invoice\u{202e}fdp.exe"}),
+                    json!({"references":mine[..2],"destination_volume":"\"}],\"x\":\"\u{202e}"}),
+                ],
+                other => panic!("tool `{other}` has no hostile-name case: add one to this test"),
+            };
+            for (n, args) in calls.into_iter().enumerate() {
+                // The plain calls must succeed (the folder_name and volume probes may be refused).
+                let must_succeed = n == 0;
+                let response = server.tool(tool, args);
+                assert_inert(tool, &response, must_succeed.then_some(false));
+                exercised.insert(tool.as_str());
+            }
+        }
+        let listed_set: std::collections::BTreeSet<&str> =
+            tools.iter().map(String::as_str).collect();
+        assert_eq!(exercised, listed_set, "a listed tool was not exercised");
+
+        assert!(
+            dump(&f.state.join("catalog.db")) == catalog,
+            "a tool wrote catalog.db"
+        );
+        drop(server);
+        assert_eq!(
+            dump(&f.state.join("state.db")),
+            state_before,
+            "a tool wrote state.db"
+        );
+        assert!(
+            dump(&f.state.join("catalog.db")) == catalog,
+            "closing wrote catalog.db"
+        );
+        assert!(!f.state.join("ask.db").exists());
+    }
 }

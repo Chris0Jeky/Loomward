@@ -625,10 +625,13 @@ version = "0.1.0"
 dependencies = [
  "loomward-protocol",
  "loomward-service",
+ "loomward-windows",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2",
  "tempfile",
+ "unicode-general-category",
 ]
 
 [[package]]

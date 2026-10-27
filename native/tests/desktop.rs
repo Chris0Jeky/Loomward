@@ -256,6 +256,71 @@ fn disclosure_text_renders_every_item_with_hidden_characters_escaped() {
     assert!(text.contains("Cancel (the default) sends nothing"));
 }
 
+/// LW-145: the shared hostile corpus and a spoofed extension through every native confirmation
+/// that names a file or folder (replace, folder grant, unverified volume, disclosure). Nothing
+/// hidden or direction-changing reaches the box, and a name cannot start a line of its own.
+#[test]
+fn every_confirmation_renders_hostile_names_escaped() {
+    use loomward_desktop::dialogs::grant_text;
+    use loomward_service::hostile::{injected_names, names, raw_hostile};
+    let spoof = "invoice\u{202E}fdp.exe";
+    let mut corpus: Vec<String> = names()
+        .iter()
+        .map(|n| n.to_string_lossy().into_owned())
+        .collect();
+    corpus.extend(injected_names());
+    corpus.push(spoof.into());
+    let shown: Shown = Arc::default();
+    let log = shown.clone();
+    let dialogs = DesktopDialogs::with_prompt(DatasetClass::Personal, move |_, text| {
+        log.lock().unwrap().push(text.to_string());
+        false
+    });
+    let texts = |name: &str| -> Vec<String> {
+        shown.lock().unwrap().clear();
+        assert!(!dialogs.confirm_replace(name));
+        let folder = Path::new("C:/synthetic").join(name);
+        assert!(!dialogs.confirm_identity_unverified(&folder, name));
+        let mut all = shown.lock().unwrap().clone();
+        assert_eq!(all.len(), 2, "{name:?}");
+        all.push(grant_text(&folder));
+        let item =
+            json!({"handle":"i00","name":name,"extension":"txt","context":name,"size_bucket":0});
+        // The protocol may refuse a name outright; then no box exists to spoof.
+        let mut s: Value = serde_json::from_str(
+            &std::fs::read_to_string(
+                Path::new(EXAMPLES_DIR)
+                    .join("dtos")
+                    .join("disclosure-summary.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        s["value"]["items"] = json!([item]);
+        if let Ok(s) = serde_json::from_value::<DisclosureSummary>(s["value"].clone()) {
+            all.push(disclosure_text(&s));
+        }
+        all
+    };
+    let plain = texts("x");
+    assert!(plain.len() >= 3, "{plain:?}");
+    for name in &corpus {
+        for (text, plain) in texts(name).iter().zip(&plain) {
+            assert_eq!(
+                text.matches('\n').count(),
+                plain.matches('\n').count(),
+                "{name:?} started a line of its own in: {text}"
+            );
+            if let Some(c) = text.chars().find(|c| *c != '\n' && raw_hostile(*c)) {
+                panic!("raw U+{:04X} for {name:?} in: {text}", c as u32);
+            }
+        }
+    }
+    for text in texts(spoof) {
+        assert!(text.contains("invoice\\u{202E}fdp.exe"), "{text}");
+    }
+}
+
 fn invoke(
     webview: &tauri::WebviewWindow<tauri::test::MockRuntime>,
     cmd: &str,
