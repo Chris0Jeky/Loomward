@@ -908,5 +908,81 @@
       "cold first query on the real 1.1M-entry store"
     ],
     "c8": "closed"
+  },
+  "evening_wave_2026_10_27": {
+    "merged_prs": [
+      965,
+      966,
+      967,
+      968,
+      969,
+      970,
+      971,
+      972,
+      973,
+      975,
+      976,
+      977,
+      978,
+      980,
+      981,
+      982,
+      983,
+      984,
+      985,
+      986,
+      988,
+      989,
+      990,
+      991,
+      992,
+      993,
+      994,
+      995,
+      996,
+      997,
+      998
+    ],
+    "closed_or_advanced": {
+      "fixed": [
+        766,
+        819,
+        821,
+        826,
+        838,
+        841,
+        843,
+        844,
+        871,
+        923,
+        934,
+        937
+      ],
+      "advanced": [
+        876,
+        935,
+        939,
+        954
+      ]
+    },
+    "lw_131_r1g": "reclaim.observe bounded, cancellable link-count job; verified relief no longer always unknown (#970, #984)",
+    "lw_132": "copy status receipt: read_back or no label; published_unverified only for an observed publish; higher labels never emitted (#992)",
+    "grants": "re-grant of a renamed root retires the old grant first and fails closed (#996)",
+    "tracked": [
+      935,
+      954,
+      942,
+      840,
+      762,
+      787,
+      851
+    ],
+    "not_verified": [
+      "native copy end to end with the receipt",
+      "reclaim.observe on a real volume",
+      "Reclaim and copy views in the native Tauri window",
+      "directory-symlink case of #997 on this host"
+    ],
+    "c8": "closed"
   }
 }

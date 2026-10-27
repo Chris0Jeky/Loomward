@@ -433,6 +433,21 @@ Commands, named skips, regression controls and suite results are in
 manual accessibility/field acceptance in #24/#101 remains separate. No new owner action was
 added to `HUMAN_TODO.md`.
 
+## Evening wave — 27 October 2026
+
+The same driver (Opus 5.5) worked the open issues with two Sol peers (LW-132, #954 code items), a Haiku worker (#821) and Sonnet helpers (reviews, a stale-issue scan). Every merged PR had green hosted CI (Ubuntu and Windows) at its exact head, after at least three minutes of aging, and a review: Codex alone for very-low-risk docs and tests, and one fresh-context reviewer for the rest, with a second round where a fix changed logic (#996).
+
+- **LW-131 R1g** (#965, #970, #984; #939 stays open): verified relief stops being always unknown. `reclaim.observe` is a cancellable, bounded job that checks every directory's identity and link counts, and the Reclaim view shows a run it did not start honestly.
+- **LW-132** (#992): copy status gains a `receipt` naming only earned evidence: `read_back` or no label, and `published_unverified` only when the publish is observed. `crash_qualified`, `power_loss_qualified` and `archive_verified` are vocabulary only; G5 is not earned. `StoragePath::requalify_receipt` downgrades an imported qualification unless `proves_same_path`.
+- **LW-136 slice** (#983): storage-path identity, with `proves_same_path` requiring every fact known and equal.
+- **Grants** (#996, #843): re-granting a renamed root retires the old grant before minting the new one and answers failure if it cannot. A post-mutation `roots.changed` listing bounds unique totals to 2 s and always completes. #997 pins that a refused old-path probe over a folder or junction never retires a grant (#838).
+- **Scanner** (#991, #998, #934): one process-wide I/O watchdog instead of a thread per cancellation, with deregistration serialised against its interrupt. A run-level cancel after a timeout reports aborted.
+- **Catalogue and service** (#972, #975, #976, #981, #985, #994): filter-only search plans, the freshness `since` restore, a learning-store scrub, bulk swap filling the search index directly (swap 3.57 s release), the cold first query's root-state index hint, and five #954 sink/freshness/search-trigger fixes.
+- **Fixes and tests:** #967, #968, #969, #971, #973, #977, #978, #980, #982, #986, #988, #989, #993, #995. Docs: the #922 rollback hazard in RELEASING.md (#990).
+- **Closed as already fixed:** #844 (six items), #826, #819, #841, #766.
+
+Measured on Windows 11 build 26300, non-elevated: each PR's crate suites, fmt and workspace clippy, plus app check and unit tests where the app changed. New tests guarding a branch were shown failing with that branch removed. Known red on this host with unchanged code: the `copy_tests::lab_copy` set (including `fencing_an_unrelated_grant_does_not_read_historical_plans`), one duplicates test, and the copy lab tests that need an NTFS temp volume with room. Hosted runners are elevated, so native lab tests skip there (#823). Not verified: a native copy end to end with the receipt, the observe job on a real volume, the Reclaim and copy views in the native window, and the symlink case of #997 on this host. Follow-ups: #935 (items 1, 3, 4), #954 (remaining), #942, #840, #762, #787. #851 waits for the copy lane. C8 remains closed.
+
 ## Day wave — 27 October 2026
 
 One driver (Opus 5.5) with Sol peers, Muse lenses and workers, Haiku and Sonnet helpers, working the open issues. Thirteen PRs merged, each with green hosted CI (Ubuntu and Windows) at its exact head and a review: Codex alone for the very low-risk ones, and one fresh-context reviewer for the rest. The writer change also had an Opus second lens.
