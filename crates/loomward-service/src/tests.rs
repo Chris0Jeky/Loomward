@@ -8198,6 +8198,162 @@ fn personal_session_scans_a_granted_folder_metadata_only() {
     );
 }
 
+const QUEUED: usize = 40;
+
+/// #934: holds the writer on a run's first chunk, queues `queued` more steps behind it, then
+/// ends the run unsettled (`finish_run(false)`), cancelled first when `cancel`. Returns the
+/// commands the writer executed from then on and the catalogue after that end; the root's next
+/// run must publish as usual.
+fn held_unsettled_end(queued: usize, cancel: bool) -> (u64, Vec<String>) {
+    use loomward_engine::scan::source::{IdBasis, ListOutcome, OpenedIdentity};
+    let identity = OpenedIdentity {
+        id: None,
+        basis: IdBasis::None,
+        volume_guid: None,
+        volume_serial: None,
+        attributes: 0x10,
+        reparse_tag: None,
+    };
+    let fingerprint = |svc: &Service| -> Vec<String> {
+        let conn = svc.inner.db();
+        [
+            "SELECT json_array(id,parent_id,name,listing_state,listing_outcome,born_run,seen_run,listing_rev,subtree_rev,dirty_rev,dirty_run,agg_valid_rev,own_files,own_logical,sub_files,sub_dirs,sub_logical,sub_complete) FROM main.dir ORDER BY id",
+            "SELECT json_array(id,dir_id,name,logical,seen_run) FROM main.file ORDER BY id",
+            "SELECT json_array(id,state,counters_json,error_json) FROM main.scan_run ORDER BY id",
+            "SELECT json_array(id,generation,active_run,state) FROM main.root ORDER BY id",
+            "SELECT json_array((SELECT count(*) FROM main.stage_entry),(SELECT count(*) FROM main.bulk_dir),(SELECT count(*) FROM main.bulk_file))",
+        ]
+        .iter()
+        .flat_map(|sql| {
+            let mut s = conn.prepare(sql).unwrap();
+            let rows = s.query_map([], |r| r.get::<_, String>(0)).unwrap();
+            rows.map(Result::unwrap).collect::<Vec<_>>()
+        })
+        .collect()
+    };
+    {
+        let tmp = temp_root();
+        let svc = open(tmp.path(), DatasetClass::Synthetic);
+        let (root, grant) = register(&svc, 7);
+        let dir = crate::db::active_root_dir(&svc.inner.db(), root)
+            .unwrap()
+            .unwrap();
+        let id = RootId::new(svc.inner.root_id(root)).unwrap();
+        let sink = &svc.inner.scan;
+        sink.bind(&id, grant, dir);
+        sink.begin_run(&id, 41, &RunScope::FullRoot).unwrap();
+        let ticket = sink.prepare_listing(&id, 41, None, &[], identity).unwrap();
+        let chunk = |n: usize| ScanMessage::DirListing {
+            run: 41,
+            ticket,
+            entries: vec![entry(&format!("{n}.bin"), 1, false)],
+        };
+        let writer = svc.inner.catalog.writer();
+        writer.publication_window().arm();
+        sink.consume(&id, chunk(0)).unwrap();
+        writer.publication_window().wait_paused();
+        let before = writer.timings().commands;
+        for n in 1..=queued {
+            sink.consume(&id, chunk(n)).unwrap();
+        }
+        if queued > 0 {
+            sink.consume(
+                &id,
+                ScanMessage::ListingDone {
+                    run: 41,
+                    ticket,
+                    outcome: ListOutcome::Complete,
+                },
+            )
+            .unwrap();
+        }
+        if cancel {
+            // What the engine does for a cancelled run before finishing it.
+            sink.cancel_queued(&id, 41);
+        }
+        std::thread::scope(|s| {
+            let finish = s.spawn(|| sink.finish_run(&id, 41, &RunScope::FullRoot, false));
+            // The writer resumes only once the sink is waiting on the queued receipts.
+            let deadline = Instant::now() + Duration::from_secs(60);
+            while sink.unsettled(&id) > 0 {
+                assert!(Instant::now() < deadline, "the cancel never settled");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            writer.publication_window().release();
+            finish.join().unwrap().unwrap();
+        });
+        let executed = writer.timings().commands - before;
+        // Captured before the next run queues anything (Codex on #961).
+        let cancelled = fingerprint(&svc);
+        // The next run of the root publishes as usual.
+        sink.begin_run(&id, 42, &RunScope::FullRoot).unwrap();
+        let next = sink.prepare_listing(&id, 42, None, &[], identity).unwrap();
+        sink.consume(
+            &id,
+            ScanMessage::DirListing {
+                run: 42,
+                ticket: next,
+                entries: vec![entry("next.bin", 3, false)],
+            },
+        )
+        .unwrap();
+        sink.consume(
+            &id,
+            ScanMessage::ListingDone {
+                run: 42,
+                ticket: next,
+                outcome: ListOutcome::Complete,
+            },
+        )
+        .unwrap();
+        sink.finish_run(&id, 42, &RunScope::FullRoot, true).unwrap();
+        let names: Vec<String> = svc
+            .inner
+            .db()
+            .prepare("SELECT name FROM main.file")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(names, vec!["next.bin".to_string()]);
+        (executed, cancelled)
+    }
+}
+
+/// #934: a cancelled run ends without executing the listing steps still queued behind a busy
+/// writer, so its end does not scale with the queue. The catalogue then equals that of a run
+/// cancelled right after the step the writer already held: nothing queued publishes, no
+/// aggregate claims completeness, and the next run of the root is unaffected.
+#[test]
+fn a_cancelled_run_drops_its_queued_listing_steps() {
+    let (baseline_executed, baseline) = held_unsettled_end(0, true);
+    let (executed, catalogue) = held_unsettled_end(QUEUED, true);
+    assert_eq!(
+        executed, baseline_executed,
+        "no queued step of a cancelled run reaches the database"
+    );
+    assert_eq!(catalogue, baseline);
+}
+
+/// #934 review: an unsettled run that was NOT cancelled (duplicate identities, unreconciled
+/// relists, a targeted run with a denied child) still commits every step it sent before its end.
+#[test]
+fn an_unsettled_uncancelled_run_commits_its_queued_listing_steps() {
+    let (baseline_executed, _) = held_unsettled_end(0, false);
+    let (executed, catalogue) = held_unsettled_end(QUEUED, false);
+    assert_eq!(
+        executed,
+        baseline_executed + QUEUED as u64 + 1,
+        "every queued chunk and the publication execute"
+    );
+    let published = catalogue
+        .iter()
+        .filter(|row| row.contains(".bin\""))
+        .count();
+    assert_eq!(published, QUEUED + 1, "{catalogue:?}");
+}
+
 fn entry(name: &str, bytes: u64, dir: bool) -> loomward_engine::scan::Entry {
     loomward_engine::scan::Entry {
         name: name.encode_utf16().collect(),

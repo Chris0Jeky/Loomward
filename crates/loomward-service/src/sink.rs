@@ -313,6 +313,13 @@ impl CatalogScanSink {
         }
     }
 
+    /// Listing steps sent for `root` whose receipts are not yet taken.
+    #[cfg(test)]
+    pub(crate) fn unsettled(&self, root: &RootId) -> usize {
+        let s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        s.roots.get(root).map_or(0, |r| r.sent.len())
+    }
+
     /// Binds a wire root to its active grant before a scan; a new grant lifts an old fence.
     pub(crate) fn bind(&self, root: &RootId, grant: i64, root_dir: i64) {
         let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -412,6 +419,9 @@ impl CatalogScanSink {
                         }
                     }
                 }
+                // Dropped unexecuted for a run marked by `cancel_queued` (#934): the writer
+                // answers `Cancelled` to nothing else (a writer send is never cancellable here).
+                Err(CatalogError::Cancelled) => {}
                 Err(e) => match listing_error(e) {
                     EngineError::StaleGeneration { .. } => stale.push(step.ticket.dir),
                     e => {
@@ -984,6 +994,23 @@ impl ScanSink for CatalogScanSink {
             }
         }
         Ok(())
+    }
+
+    /// #934: the engine cancelled the run, so the writer drops its queued steps unexecuted
+    /// instead of committing them before EndRun("cancelled"); the steps that did commit are a
+    /// prefix of those sent, as if the run had been cancelled there. Any other unsettled finish
+    /// never reaches here and still commits everything it sent.
+    fn cancel_queued(&self, root: &RootId, run: u64) {
+        let catalog_run = {
+            let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            Self::active(&mut s, root, run)
+                .ok()
+                .and_then(|r| r.run)
+                .map(|(_, catalog)| catalog)
+        };
+        if let (Some(catalog_run), Some(inner)) = (catalog_run, self.inner.upgrade()) {
+            inner.catalog.writer().cancel_run(catalog_run);
+        }
     }
 
     fn settle(&self, root: &RootId) -> EngineResult<Vec<u64>> {

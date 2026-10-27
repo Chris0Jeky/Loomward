@@ -233,6 +233,9 @@ pub trait ScanSink: Send + Sync {
     ) -> EngineResult<()> {
         self.finish_run(root, run, scope, complete)
     }
+    /// The run was cancelled and will finish next (#934): steps it sent that are not yet durable
+    /// may be dropped unexecuted. The steps that do commit must be a prefix of those sent.
+    fn cancel_queued(&self, _root: &RootId, _run: u64) {}
     /// After durable revocation commits, reject all subsequently arriving writer messages.
     fn fence_root(&self, root: &RootId) -> EngineResult<()>;
     /// Wait until every message consumed so far is durable. Returns the directories whose

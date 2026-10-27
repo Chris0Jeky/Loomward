@@ -87,9 +87,12 @@ pub struct Writer {
     join: Option<JoinHandle<()>>,
     timings: Arc<Mutex<WriterTimings>>,
     bulk: Arc<AtomicBool>,
+    cancelled: Cancelled,
     #[cfg(any(test, feature = "test-hooks"))]
     window: Arc<PublicationWindow>,
 }
+/// Runs whose queued listing steps are answered without being executed (#934).
+type Cancelled = Arc<Mutex<HashSet<i64>>>;
 pub struct Receipt {
     rx: Receiver<Result<WriteReply>>,
 }
@@ -111,6 +114,8 @@ impl Writer {
         let measured = timings.clone();
         let bulk = Arc::new(AtomicBool::new(false));
         let enabled = bulk.clone();
+        let cancelled = Cancelled::default();
+        let skipped = cancelled.clone();
         #[cfg(any(test, feature = "test-hooks"))]
         let window = Arc::new(PublicationWindow::default());
         #[cfg(any(test, feature = "test-hooks"))]
@@ -125,6 +130,7 @@ impl Writer {
                     measured,
                     alive,
                     enabled,
+                    skipped,
                     #[cfg(test)]
                     None,
                     #[cfg(any(test, feature = "test-hooks"))]
@@ -138,9 +144,21 @@ impl Writer {
             join: Some(join),
             timings,
             bulk,
+            cancelled,
             #[cfg(any(test, feature = "test-hooks"))]
             window,
         })
+    }
+    /// #934: the run will end cancelled, so its listing steps still queued are answered
+    /// `Cancelled` without touching the database, in queue order, until its `EndRun` is dequeued.
+    /// The writer executes commands in order and a mark never lifts before that `EndRun`, so the
+    /// steps that did execute are a prefix of the run's sent steps: the catalogue is that of a run
+    /// cancelled right after the last of them.
+    pub fn cancel_run(&self, run_id: i64) {
+        self.cancelled
+            .lock()
+            .expect("cancelled runs lock")
+            .insert(run_id);
     }
     /// A full scan of a root with no earlier run then builds into unindexed bulk tables that
     /// readers never see, and its `EndRun` publishes the whole root atomically (#148). Decided per
@@ -601,14 +619,38 @@ fn work(
     alive: Sender<()>,
     crash: Option<PublicationCrash>,
 ) {
-    serve(conn, rx, timings, alive, Arc::default(), crash, None)
+    serve(
+        conn,
+        rx,
+        timings,
+        alive,
+        Arc::default(),
+        Cancelled::default(),
+        crash,
+        None,
+    )
 }
+/// A listing step of a run marked by `Writer::cancel_run` is answered here and dropped (its
+/// payload bytes released); the run's `EndRun` lifts the mark.
+fn unless_cancelled(p: Pending, cancelled: &Mutex<HashSet<i64>>) -> Option<Pending> {
+    let mut runs = cancelled.lock().expect("cancelled runs lock");
+    if let WriteCommand::EndRun { run_id, .. } = &p.command {
+        runs.remove(run_id);
+    } else if listing_run(&p.command).is_some_and(|run| runs.contains(&run)) {
+        drop(runs);
+        let _ = p.reply.send(Err(Error::Cancelled));
+        return None;
+    }
+    Some(p)
+}
+#[allow(clippy::too_many_arguments)]
 fn serve(
     mut conn: Connection,
     rx: Receiver<Pending>,
     timings: Arc<Mutex<WriterTimings>>,
     alive: Sender<()>,
     bulk_enabled: Arc<AtomicBool>,
+    cancelled: Cancelled,
     #[cfg(test)] crash: Option<PublicationCrash>,
     #[cfg(any(test, feature = "test-hooks"))] window: Option<Arc<PublicationWindow>>,
 ) {
@@ -677,6 +719,9 @@ fn serve(
         };
         let Some(first) = first else {
             break;
+        };
+        let Some(first) = unless_cancelled(first, &cancelled) else {
+            continue;
         };
         let checkpoint = matches!(first.command, WriteCommand::EndRun { .. });
         let compact_bulk = matches!(&first.command, WriteCommand::EndRun { run_id, .. } if context.bulk.contains_key(run_id));
@@ -869,7 +914,15 @@ fn serve(
                         }
                         let wait_start = Instant::now();
                         // A synchronous caller cannot enqueue again until this transaction commits.
-                        let next = rx.try_recv();
+                        let next = loop {
+                            match rx.try_recv() {
+                                Ok(p) => match unless_cancelled(p, &cancelled) {
+                                    Some(p) => break Ok(p),
+                                    None => continue,
+                                },
+                                Err(e) => break Err(e),
+                            }
+                        };
                         {
                             let mut timing = context.timings.lock().expect("timing lock");
                             timing.batch_wait_calls += 1;
