@@ -72,10 +72,10 @@ class FakePowerShell:
                                       "repair_events": []},
                        "write_cache": {"enabled": True}},
             "recover": {"result": {"ok": True, "recovered": "open", "abandoned": "done",
-                                   "journal_records": 4, "last_record": "item_verified",
+                                   "journal_records": 4, "last_record": "verified",
                                    "copy_ran": True, "failure": None,
                                    "terminal_before_recover": False},
-                        "last_trace_label": "item_written", "free_bytes": 4 * 1024**3,
+                        "last_trace_label": "after verified", "free_bytes": 4 * 1024**3,
                         "runner_output": "recovered", "exit_code": 0},
         }
         response = self.responses.get(operation, defaults.get(operation, {}))
@@ -169,8 +169,8 @@ class CampaignTests(unittest.TestCase):
         self.assertEqual(record["kind"], "floor")
         self.assertEqual(record["anchor"], "progress")
         self.assertEqual(record["floor_credit"], "write")
-        self.assertEqual(record["last_record"], "item_verified")
-        self.assertEqual(record["last_trace_label"], "item_written")
+        self.assertEqual(record["last_record"], "verified")
+        self.assertEqual(record["last_trace_label"], "after verified")
         self.assertEqual(record["dirty_pages"], 128)
         self.assertTrue(record["chkdsk"]["clean"])
         self.assertIn("total_s", record["timings"])
@@ -676,11 +676,36 @@ foreach ($script in $scripts) {
 
     def test_label_mapping(self):
         table = {
-            "create": "create_batch", "identities": "write", "identities_recorded": "write",
-            "create_batch": "create_batch", "planned": "write", "item_written": "write", "verified": "write",
-            "chunk_flushed": "write", "publish_intent": "publish", "renamed": "publish",
-            "committed": "publish", "item_removed": "cleanup", "staging_removed": "cleanup",
-            "cancelling": "cleanup", "preparing": "other", "": "other", None: "other",
+            "started": "other",
+            "staging_intent": "other",
+            "staging_created": "other",
+            "create_batch": "create_batch",
+            "identities": "write",
+            "planned": "write",
+            "verified": "write",
+            "item_failed": "other",
+            "item_removed": "cleanup",
+            "transition:refused": "other",
+            "transition:copying": "other",
+            "transition:staged": "other",
+            "transition:blocked": "other",
+            "transition:needs_attention": "other",
+            "transition:cancelling": "cleanup",
+            "transition:cancelled": "other",
+            "transition:committed": "publish",
+            "publish_intent": "publish",
+            "publish_withdrawn": "publish",
+            "committed": "publish",
+            "staging_removed": "cleanup",
+            "staging_left": "other",
+            "fenced": "other",
+            "revoked_after_publish": "other",
+            "unknown": "other",
+            "not_create_batch": "other",
+            "publish_intent_extra": "other",
+            "IDENTITIES": "other",
+            "": "other",
+            None: "other",
         }
         for label, window in table.items():
             with self.subTest(label=label):

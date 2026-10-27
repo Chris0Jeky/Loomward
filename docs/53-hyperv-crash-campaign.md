@@ -97,7 +97,7 @@ journal and staging consistency under guest-RAM loss, and docs/47's G5 text is r
 | Tier | Runs | Purpose |
 |---|---|---|
 | G5 floor (docs/47 section 10) | at least 20 in-flight cuts at random times, credited to at least the create-batch, write, publish and cleanup windows | the gate |
-| Boundary sweep (coverage) | every CP-01 to CP-22 boundary of the Run, Abandon and Confirm scenarios under both Q1 policies | coverage |
+| Boundary sweep (coverage) | every CP-01 to CP-22 boundary of the Run, Abandon and Confirm scenarios under both Q1 policies (planned: `scripts/hyperv_campaign.py` runs only `run`, `abandon` and `mixed` today; Confirm is not built) | coverage |
 | Target | about 2,000 cycles, mostly in-flight | the "crash-qualified" label (docs/51 section 4.1) |
 
 A cycle is about 1-2 minutes. The floor takes about an hour; the target three to four days unattended.

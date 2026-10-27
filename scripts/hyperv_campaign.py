@@ -90,18 +90,31 @@ def encoded(value: str) -> str:
 
 
 def window_for_label(label: str | None) -> str:
-    label = (label or "").lower()
-    for parts, window in (
-        (("item_removed", "staging_removed", "cancelling"), "cleanup"),
-        (("create",), "create_batch"),
-        # A batch logs create_batch, creates its items, logs identities, writes the data, logs planned, then sets
-        # metadata and verifies (effects/exec.rs batch): identities and planned are both write-phase records.
-        (("identities", "planned", "written", "verif", "chunk"), "write"),
-        (("publish", "rename", "committed"), "publish"),
-    ):
-        if any(part in label for part in parts):
-            return window
-    return "other"
+    # A batch logs create_batch, creates items, logs identities, writes data, logs planned, then verifies.
+    # ponytail: labels carry no item types or byte counts; write credit includes directory-only/empty batches.
+    return {
+        "started": "other",
+        "staging_intent": "other",
+        "staging_created": "other",  # Only staging exists; no create_batch intent yet.
+        "create_batch": "create_batch",
+        "identities": "write",
+        "planned": "write",
+        "verified": "write",
+        "item_failed": "other",  # Refusals can interrupt creation or writing.
+        "item_removed": "cleanup",
+        "transition:copying": "other",  # Resume precedes the next batch's intent.
+        "transition:staged": "other",  # Verification finished; publish intent is not logged yet.
+        "transition:cancelling": "cleanup",
+        "transition:cancelled": "other",  # Terminal state follows cleanup; no removal remains in flight.
+        "transition:committed": "publish",
+        "publish_intent": "publish",
+        "publish_withdrawn": "publish",
+        "committed": "publish",
+        "staging_removed": "cleanup",
+        "staging_left": "other",  # Cleanup retains staging without removing anything.
+        "fenced": "other",  # A fence can interrupt any nonterminal phase.
+        "revoked_after_publish": "other",  # Metadata-only annotation after commit; no publish work remains.
+    }.get(label, "other")
 
 
 def inside_lab(path: str) -> bool:
@@ -475,9 +488,9 @@ try {{
 """
         default = {"exit_code": 0, "runner_output": ""}
         if step == "recover":
-            default.update({"result": {"ok": True, "copy_ran": True, "terminal_before_recover": False, "last_record": "item_written",
+            default.update({"result": {"ok": True, "copy_ran": True, "terminal_before_recover": False, "last_record": "identities",
                 "recovered": "dry run", "abandoned": None, "failure": None},
-                "last_trace_label": "item_written", "free_bytes": 4 * GIB})
+                "last_trace_label": "after identities", "free_bytes": 4 * GIB})
         return self._call(step, body, default, timeout=600, guard=True)
 
     def _act(self, values):
