@@ -116,12 +116,23 @@ pub fn save_prefs(dir: &Path, prefs: &Prefs) -> Result<(), String> {
         .map_err(|e| format!("could not save the update settings: {e}"))
 }
 
-/// Release notes are network text, escaped like other native confirmations so hidden characters
-/// cannot reshape the box, then cut to [`NOTES_IN_BOX`] displayed characters.
+/// Release notes are network text: line breaks become spaces, the text is cut to
+/// [`NOTES_IN_BOX`] characters before escaping (so no escape is split), and hidden characters are
+/// escaped as in the grant confirmation while letters stay readable (review of #978).
 pub fn release_notes_text(notes: &str) -> String {
-    let cleaned = crate::dialogs::visible(notes);
-    let mut shown: String = cleaned.chars().take(NOTES_IN_BOX).collect();
-    if cleaned.chars().count() > NOTES_IN_BOX {
+    let flat: String = notes
+        .chars()
+        .map(|c| {
+            if matches!(c, '\n' | '\r' | '\t') {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect();
+    let cut: String = flat.chars().take(NOTES_IN_BOX).collect();
+    let mut shown = crate::dialogs::readable(&cut);
+    if flat.chars().count() > NOTES_IN_BOX {
         shown.push_str(" [...]");
     }
     shown
@@ -717,8 +728,8 @@ mod tests {
         assert!(text.contains("Cancel (the default) changes nothing"));
     }
 
-    /// The notes come from the network: a bidi override, a control byte or a line break in them
-    /// cannot reshape the box, a line break cannot start a fake line of the confirmation, and the
+    /// The notes come from the network: a bidi override or a control byte in them cannot reshape the
+    /// box, a line break reads as a space so it cannot start a fake line of the confirmation, and the
     /// block says it is the release's own text.
     #[test]
     fn release_notes_are_inert_labelled_text_in_the_confirmation() {
@@ -735,7 +746,7 @@ mod tests {
         assert!(
             text.contains(
                 "Release notes (text from the release, not checked by Loomward):\n\
-                 Fixed \\u{202E}evil\\u{202C}\\u{3164}\\u{000D}\\u{000A}OK installs. Cancel\\u{0007}\\u{0000}\\u{2066}x\\u{2069}\\u{0009}done\n\nLoomward closes"
+                 Fixed \\u{202E}evil\\u{202C}\\u{3164}  OK installs. Cancel\\u{0007}\\u{0000}\\u{2066}x\\u{2069} done\n\nLoomward closes"
             ),
             "{text}"
         );
@@ -746,20 +757,24 @@ mod tests {
         assert!(confirm_text(&empty, "0.2.0").contains("Release notes: none published."));
     }
 
-    /// The cap counts displayed escape characters, not the raw input.
+    /// The cap applies to the raw notes before escaping, so an escape is never cut in half.
     #[test]
-    fn release_notes_cap_applies_after_cleaning() {
+    fn release_notes_cap_never_splits_an_escape() {
         let noisy = format!("\u{202E}{}", "n\u{7}".repeat(NOTES_IN_BOX + 5));
         let shown = release_notes_text(&noisy);
-        let escaped = format!("\\u{{202E}}{}", "n\\u{0007}".repeat(NOTES_IN_BOX + 5));
-        assert_eq!(
-            shown,
-            format!(
-                "{} [...]",
-                escaped.chars().take(NOTES_IN_BOX).collect::<String>()
-            )
-        );
+        let cut: String = noisy.chars().take(NOTES_IN_BOX).collect();
+        assert_eq!(shown, format!("{} [...]", crate::dialogs::readable(&cut)));
         assert!(shown.chars().all(|c| matches!(c, ' '..='~')));
+        assert!(!shown.trim_end_matches(" [...]").ends_with(r"\u{"));
+    }
+
+    /// Line breaks read as spaces and letters of any script stay readable (review of #978).
+    #[test]
+    fn release_notes_stay_readable() {
+        assert_eq!(
+            release_notes_text("Fixes:\n- café scan\r\n- naïve\tbug"),
+            "Fixes: - café scan  - naïve bug"
+        );
     }
 
     #[test]
