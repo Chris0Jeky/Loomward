@@ -108,7 +108,12 @@ fn learning_scrub_retries_after_a_blocked_wal_cut() {
         0,
         "blocked WAL cut was marked complete"
     );
-    assert_eq!(marker("scrub_pending"), 1, "rewrite debt was not durable");
+    // The learning scrub never schedules the shared catalogue rewrite; the next open retries it.
+    assert_eq!(
+        marker("scrub_pending"),
+        0,
+        "learning scrub must not rewrite the catalogue"
+    );
     drop(catalog);
     reader.execute_batch("ROLLBACK").unwrap();
     drop((reader, db));

@@ -519,14 +519,21 @@ pub(crate) fn open_pair_validated(
             [],
             |r| r.get(0),
         )?;
-        conn.execute(
-            if history {
-                "INSERT INTO st.meta(key,value) VALUES('scrub_pending','1') ON CONFLICT(key) DO NOTHING"
-            } else {
-                "INSERT INTO st.meta(key,value) VALUES('learning_scrub_v1','1') ON CONFLICT(key) DO NOTHING"
-            },
-            [],
-        )?;
+        // The payloads live in state.db only: rewrite that store, never the catalogue (review of
+        // #976). The marker follows a full rewrite and log cut; a failure retries at the next open.
+        let scrubbed = !history
+            || (crate::writer::rewrite(&conn, &["st"]).is_ok()
+                && conn
+                    .query_row("PRAGMA st.wal_checkpoint(TRUNCATE)", [], |r| {
+                        r.get::<_, i64>(0)
+                    })
+                    .is_ok_and(|busy| busy == 0));
+        if scrubbed {
+            conn.execute(
+                "INSERT INTO st.meta(key,value) VALUES('learning_scrub_v1','1') ON CONFLICT(key) DO NOTHING",
+                [],
+            )?;
+        }
     }
     // Also when the catalogue half finished before the crash and only the rewrite is owed.
     if !forgotten.is_empty() || crate::writer::scrub_pending(&conn)? {

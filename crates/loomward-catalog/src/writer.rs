@@ -1061,6 +1061,25 @@ pub(crate) fn scrub_pending(conn: &Connection) -> Result<bool> {
 /// rewritten: while `vacuum` is set, `VACUUM st` and `VACUUM main` run first (#391). Waits at most `wait` for a lock, so a
 /// slow reader or writer never holds the committed receipt; the caller retries until the rewrite is
 /// done and both logs are cut. Whether all of it was done.
+/// Rewrite the named stores with `VACUUM`, in order, so freed pages keep no old bytes.
+pub(crate) fn rewrite(conn: &Connection, stores: &[&str]) -> Result<()> {
+    let temp: i64 = conn.query_row("PRAGMA temp_store", [], |r| r.get(0))?;
+    conn.pragma_update(None, "temp_store", "FILE")?;
+    let result = stores.iter().try_for_each(|db| {
+        crate::crashpoint::hit(&format!("VACUUM {db}"));
+        conn.execute_batch(&format!("VACUUM {db}"))
+    });
+    // Only a changed temp_store drops temporary objects; listing tables are recreated lazily.
+    let restore = conn.pragma_update(None, "temp_store", temp);
+    let views = if temp == 1 {
+        Ok(())
+    } else {
+        crate::db::grant_view(conn)
+    };
+    result?;
+    restore?;
+    views
+}
 pub(crate) fn wal_cut(conn: &Connection, wait: Duration, vacuum: &mut bool) -> bool {
     // A state half can commit before its catalogue purge fails. A different forget's rewrite
     // must not clear that durable health marker while the forgotten rows still exist.
@@ -1076,26 +1095,7 @@ pub(crate) fn wal_cut(conn: &Connection, wait: Duration, vacuum: &mut bool) -> b
     };
     let _ = conn.busy_timeout(wait);
     if *vacuum {
-        let rewrite = || -> Result<()> {
-            let temp: i64 = conn.query_row("PRAGMA temp_store", [], |r| r.get(0))?;
-            conn.pragma_update(None, "temp_store", "FILE")?;
-            crate::crashpoint::hit("VACUUM st");
-            let result = conn.execute_batch("VACUUM st").and_then(|()| {
-                crate::crashpoint::hit("VACUUM main");
-                conn.execute_batch("VACUUM main")
-            });
-            // Only a changed temp_store drops temporary objects; listing tables are recreated lazily.
-            let restore = conn.pragma_update(None, "temp_store", temp);
-            let views = if temp == 1 {
-                Ok(())
-            } else {
-                crate::db::grant_view(conn)
-            };
-            result?;
-            restore?;
-            views
-        };
-        *vacuum = rewrite().is_err();
+        *vacuum = rewrite(conn, &["st", "main"]).is_err();
         if *vacuum {
             let _ = conn.busy_timeout(Duration::from_millis(u64::from(timeout)));
             return false;
