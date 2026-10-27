@@ -3,6 +3,9 @@
 use super::*;
 use loomward_catalog::{DirListing, Observation, WriteCommand, WriteReply};
 
+#[path = "reclaim_tests.rs"]
+mod reclaim_tests;
+
 struct Node {
     name: &'static str,
     files: Vec<(&'static str, u64, Option<u64>)>,

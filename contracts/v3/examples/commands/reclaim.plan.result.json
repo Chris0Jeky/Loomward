@@ -1,0 +1,62 @@
+{
+  "volume": {
+    "volume_key": "synthetic_volume",
+    "label": null,
+    "bus_type": null,
+    "capacity_bytes": "100000",
+    "free_bytes": "20000",
+    "reserve_bytes": null
+  },
+  "covered_roots": [
+    {
+      "root_id": "rt_synthetic",
+      "coverage": "complete",
+      "allocated_bytes": "10010"
+    }
+  ],
+  "groups": [
+    {
+      "kind": "tool_owned_cleanup",
+      "candidates": [
+        {
+          "node_id": "nd_synthetic",
+          "name": "target",
+          "class": "project_clutter",
+          "provider": "cargo",
+          "kind": "build_output",
+          "logical_bytes": "8000",
+          "allocated_bytes": "8000",
+          "reclaimable_bytes": null,
+          "reclaimable_reason": "hard links outside the candidate, or not observed",
+          "coverage": "complete",
+          "owner_step": "Use cargo clean in the owning project after review; preview it with cargo clean --dry-run.",
+          "relocation": {
+            "variable_or_setting": "CARGO_TARGET_DIR",
+            "suggested_target_volume": null
+          },
+          "evidence": [
+            "Cargo conventional target directory beside a recorded Cargo.toml."
+          ],
+          "uncertainty": "Names only; contents, regeneration cost and outside hard links are unverified. Advice, never a disposability claim."
+        }
+      ]
+    },
+    {
+      "kind": "relocate",
+      "candidates": []
+    },
+    {
+      "kind": "archive_candidates",
+      "candidates": []
+    },
+    {
+      "kind": "informational",
+      "candidates": []
+    }
+  ],
+  "unaccounted_bytes": "69990",
+  "rules_version": 2,
+  "partial": false,
+  "truncated": false,
+  "budget_hit": false
+}
