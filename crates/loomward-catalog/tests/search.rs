@@ -1029,6 +1029,128 @@ fn out_of_grant_matches_never_spend_a_clients_budget() {
     assert_eq!(search(&with, &owner).hits.len(), 3);
 }
 
+#[test]
+fn filter_only_out_of_grant_rows_never_spend_a_clients_budget() {
+    let (lab, a, b) = grant_oracle_lab(true, 6000);
+    let c = register(&lab, "vol-c", "Gamma", 3);
+    for extension in [None, Some("dat".to_string())] {
+        let mut r = req("");
+        r.kind = "file".into();
+        r.extension = extension;
+        r.limit = 20;
+        r.work_budget = 20_000;
+        r.scope = Some(vec![a.root]);
+        let page = search(&lab, &r);
+        assert_eq!(
+            names(&page),
+            pairs(&[
+                ("filter", "common-alpha-0.dat"),
+                ("filter", "common-alpha-1.dat"),
+                ("filter", "common-alpha-2.dat"),
+            ]),
+            "extension={:?}, budget_hit={}",
+            r.extension,
+            page.budget_hit
+        );
+        assert!(!page.budget_hit && page.next_cursor.is_none());
+        r.scope = Some(vec![a.root, c.root]);
+        let multiple = search(&lab, &r);
+        assert_eq!(names(&multiple), names(&page));
+        assert!(!multiple.budget_hit && multiple.next_cursor.is_none());
+        r.limit = 1;
+        let mut paged = Vec::new();
+        for _ in 0..3 {
+            let page = search(&lab, &r);
+            assert!(!page.budget_hit);
+            paged.extend(names(&page));
+            r.cursor = page.next_cursor;
+            if r.cursor.is_none() {
+                break;
+            }
+        }
+        assert!(r.cursor.is_none());
+        assert_eq!(paged, names(&page));
+        // The owner keeps the original key/size ordering, also when both roots are granted.
+        r.cursor = None;
+        r.limit = 10;
+        r.scope = None;
+        let owner = search(&lab, &r);
+        assert_eq!(
+            names(&owner),
+            (0..10)
+                .map(|i| ("filter".into(), format!("common-beta-{i}.dat")))
+                .collect::<Vec<_>>()
+        );
+        r.scope = Some(vec![b.root, a.root]);
+        r.work_budget = 2_000_000;
+        assert_eq!(names(&search(&lab, &r)), names(&owner));
+        r.scope = Some(vec![]);
+        r.work_budget = 20_000;
+        let empty = search(&lab, &r);
+        assert!(empty.hits.is_empty() && !empty.budget_hit && empty.next_cursor.is_none());
+    }
+}
+
+// #937: the other side of the scoped plan. A client granted one big root (past the sort cap) must
+// still page in key order and stop at its limit; sorting the whole grant per page would spend the
+// budget before the first row and the listing could never advance.
+#[test]
+fn a_large_grant_streams_filter_only_pages_inside_the_budget() {
+    let mut lab = lab();
+    let a = register(&lab, "vol-a", "Alpha", 1);
+    let b = register(&lab, "vol-b", "Beta", 2);
+    let run = begin(&lab, &a, "full");
+    let parts = (0..6)
+        .map(|i| obs(&mut lab, &format!("part-{i}"), 0))
+        .collect();
+    list(&lab, run, a.dir, vec![], parts);
+    for part in 0..6 {
+        let files = (0..5_000)
+            .map(|i| obs(&mut lab, &format!("big-alpha-{}.dat", part * 5_000 + i), 1))
+            .collect();
+        let dir = child(&lab, a.dir, &format!("part-{part}"));
+        list(&lab, run, dir, files, vec![]);
+    }
+    end(&lab, run);
+    let run = begin(&lab, &b, "full");
+    let files = (0..3)
+        .map(|i| obs(&mut lab, &format!("big-beta-{i}.dat"), 1))
+        .collect();
+    list(&lab, run, b.dir, files, vec![]);
+    end(&lab, run);
+    for extension in [None, Some("dat".to_string())] {
+        let mut r = req("");
+        r.kind = "file".into();
+        r.extension = extension;
+        r.limit = 20;
+        // Streaming takes a few thousand steps a page; sorting the grant takes about 4 million.
+        r.work_budget = 1_000_000;
+        r.scope = Some(vec![a.root]);
+        let mut seen = Vec::new();
+        for page in 0..2 {
+            let p = search(&lab, &r);
+            assert!(!p.budget_hit, "page {page}, extension={:?}", r.extension);
+            assert_eq!(p.hits.len(), 20);
+            seen.extend(names(&p));
+            r.cursor = p.next_cursor;
+            assert!(r.cursor.is_some());
+        }
+        assert_eq!(
+            seen,
+            (0..40)
+                .map(|i| ("filter".into(), format!(r"part-0\big-alpha-{i}.dat")))
+                .collect::<Vec<_>>()
+        );
+        // The owner's pages are the same listing.
+        r.cursor = None;
+        r.scope = None;
+        r.root_id = Some(a.root);
+        r.limit = 40;
+        r.work_budget = 50_000_000;
+        assert_eq!(names(&search(&lab, &r)), seen);
+    }
+}
+
 // #887: a store from before the `root` column is rebuilt at open; owner results are unchanged,
 // clients are scoped, and raw renames, moves and cascading deletes keep the index exact.
 #[test]
