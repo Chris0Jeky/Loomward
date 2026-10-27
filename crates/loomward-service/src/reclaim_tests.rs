@@ -1,4 +1,5 @@
-//! Synthetic catalogue fixtures only; no live cleanup or link-count observations.
+//! Synthetic catalogue fixtures and, for `reclaim.observe` (#939), synthetic lab trees whose
+//! names the metadata-only link-count pass opens. No cleanup anywhere.
 use super::*;
 
 fn fixture(svc: &Service) -> String {
@@ -401,4 +402,292 @@ fn reclaim_limit_applies_per_group_after_grouping() {
         .collect();
     assert!(filled.contains(&"relocate".to_owned()), "{plan}");
     assert!(filled.contains(&"informational".to_owned()), "{plan}");
+}
+
+fn observe_job(svc: &Service) -> String {
+    let (job, _) = ok(
+        "reclaim.observe",
+        call(svc, "reclaim.observe", json!({"volume_id": volume_id(svc)})),
+    );
+    assert_eq!(job["job"]["kind"], "reclaim");
+    assert!(job["job"]["root_id"].is_null());
+    job["job"]["job_id"].as_str().unwrap().to_owned()
+}
+
+fn relief_rows(svc: &Service) -> i64 {
+    svc.inner
+        .db()
+        .query_row("SELECT count(*) FROM st.reclaim_relief", [], |r| r.get(0))
+        .unwrap()
+}
+
+/// Every `state.db` table except the observation's own, so a job proves it wrote nothing else.
+#[cfg(windows)]
+fn state_checksums(db: &rusqlite::Connection) -> Vec<(String, u64)> {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let tables: Vec<String> = db
+        .prepare("SELECT name FROM st.sqlite_master WHERE type='table' AND name<>'reclaim_relief' ORDER BY name")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    tables
+        .into_iter()
+        .map(|table| {
+            let mut checksum = DefaultHasher::new();
+            let mut stmt = db
+                .prepare(&format!("SELECT * FROM st.\"{table}\""))
+                .unwrap();
+            let columns = stmt.column_count();
+            let mut rows = stmt.query([]).unwrap();
+            let mut all = Vec::new();
+            while let Some(row) = rows.next().unwrap() {
+                all.push(
+                    (0..columns)
+                        .map(|c| format!("{:?}", row.get_ref(c).unwrap()))
+                        .collect::<Vec<_>>(),
+                );
+            }
+            all.sort();
+            all.hash(&mut checksum);
+            (table, checksum.finish())
+        })
+        .collect()
+}
+
+/// A Cargo project in the lab: `target` is the candidate. Sizes are whole clusters, so the
+/// listed and the handle allocation agree.
+#[cfg(windows)]
+fn cargo_lab(extra: impl FnOnce(&std::path::Path)) -> Option<Lab> {
+    let lab = lab()?;
+    std::fs::write(lab.path.join("Cargo.toml"), b"synthetic manifest").unwrap();
+    let target = lab.path.join("target");
+    std::fs::create_dir_all(target.join("debug")).unwrap();
+    std::fs::write(target.join("one.bin"), vec![1u8; 8192]).unwrap();
+    std::fs::write(target.join("two.bin"), vec![2u8; 12288]).unwrap();
+    extra(&target);
+    settle(&lab.svc, &start(&lab.svc, &lab.root, "full"));
+    f3_wait_live(&lab.svc);
+    // Later changes reach the catalogue only through an explicit rescan, and never mark it stale.
+    lab.svc.inner.freshness.stop();
+    Some(lab)
+}
+
+#[cfg(windows)]
+fn target_candidate(svc: &Service) -> Value {
+    reclaim(svc)["groups"][0]["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "target")
+        .unwrap()
+        .clone()
+}
+
+#[cfg(windows)]
+#[test]
+fn reclaim_observe_counts_hard_links_inside_a_candidate_once() {
+    let Some(lab) = cargo_lab(|target| {
+        std::fs::hard_link(
+            target.join("one.bin"),
+            target.join("debug").join("one-link.bin"),
+        )
+        .unwrap();
+    }) else {
+        return;
+    };
+    let before = target_candidate(&lab.svc);
+    assert!(before["reclaimable_bytes"].is_null());
+    assert_eq!(
+        before["reclaimable_reason"],
+        loomward_engine::reclaim::RELIEF_UNOBSERVED
+    );
+    let catalogue = row_checksums(&lab.svc.inner.db());
+    let state = state_checksums(&lab.svc.inner.db());
+    let job = settle(&lab.svc, &observe_job(&lab.svc));
+    assert_eq!(job["state"], "completed", "{job:?}");
+    assert_eq!(job["coverage"], "complete");
+    assert_eq!(
+        job["reclaim"]["candidates_done"],
+        job["reclaim"]["candidates_total"]
+    );
+    assert_eq!(job["reclaim"]["names_checked"], 3);
+    let after = target_candidate(&lab.svc);
+    // Unique allocation: the linked object once, not once per name.
+    assert_eq!(after["reclaimable_bytes"], "20480", "{after}");
+    assert!(after["reclaimable_reason"].is_null());
+    assert_eq!(row_checksums(&lab.svc.inner.db()), catalogue);
+    assert_eq!(state_checksums(&lab.svc.inner.db()), state);
+    // Revocation deletes the root's verdicts.
+    ok(
+        "roots.revoke",
+        call(
+            &lab.svc,
+            "roots.revoke",
+            json!({"root_id": lab.root, "purge_catalog": false}),
+        ),
+    );
+    assert_eq!(relief_rows(&lab.svc), 0);
+}
+
+#[cfg(windows)]
+#[test]
+fn reclaim_observe_link_across_the_candidate_boundary_stays_unknown() {
+    let Some(lab) = cargo_lab(|target| {
+        std::fs::hard_link(
+            target.join("one.bin"),
+            target.parent().unwrap().join("outside.bin"),
+        )
+        .unwrap();
+    }) else {
+        return;
+    };
+    let job = settle(&lab.svc, &observe_job(&lab.svc));
+    assert_eq!(job["state"], "completed", "{job:?}");
+    let after = target_candidate(&lab.svc);
+    assert!(after["reclaimable_bytes"].is_null(), "{after}");
+    assert_eq!(
+        after["reclaimable_reason"],
+        loomward_engine::reclaim::RELIEF_UNOBSERVED
+    );
+    let stored: (Option<i64>, Option<String>) = lab
+        .svc
+        .inner
+        .db()
+        .query_row(
+            "SELECT unique_allocated_bytes,reason FROM st.reclaim_relief WHERE node_kind='dir'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        stored,
+        (
+            None,
+            Some(loomward_engine::reclaim::RELIEF_UNOBSERVED.into())
+        )
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn reclaim_observe_name_replaced_after_the_scan_stays_unknown() {
+    let Some(lab) = cargo_lab(|_| {}) else { return };
+    let two = lab.path.join("target").join("two.bin");
+    std::fs::remove_file(&two).unwrap();
+    // Same name and size, another object: its link count must not stand in for the listed one.
+    std::fs::write(&two, vec![3u8; 12288]).unwrap();
+    let job = settle(&lab.svc, &observe_job(&lab.svc));
+    assert_eq!(job["state"], "completed", "{job:?}");
+    let after = target_candidate(&lab.svc);
+    assert!(after["reclaimable_bytes"].is_null(), "{after}");
+    assert_eq!(relief_rows(&lab.svc), 1);
+}
+
+#[cfg(windows)]
+#[test]
+fn reclaim_observe_cancel_and_budget_stops_leave_relief_unknown() {
+    let Some(lab) = cargo_lab(|_| {}) else { return };
+    let hooks = lab.svc.inner.hooks.clone();
+    let gate = (Command::ReclaimObserve, "candidate");
+    hooks.closed.lock().unwrap().push(gate);
+    let id = observe_job(&lab.svc);
+    hooks.until("observation reached its first candidate", |h| {
+        h.arrived.lock().unwrap().contains(&gate)
+    });
+    ok(
+        "jobs.cancel",
+        call(&lab.svc, "jobs.cancel", json!({"job_id": id})),
+    );
+    hooks.open(gate.0, gate.1);
+    let job = settle(&lab.svc, &id);
+    assert_eq!(job["state"], "cancelled", "{job:?}");
+    assert_eq!(relief_rows(&lab.svc), 0);
+    assert!(target_candidate(&lab.svc)["reclaimable_bytes"].is_null());
+
+    *hooks.reclaim_budget.lock().unwrap() = Some(Duration::ZERO);
+    let job = settle(&lab.svc, &observe_job(&lab.svc));
+    assert_eq!(job["state"], "completed", "{job:?}");
+    assert_eq!(job["coverage"], "partial");
+    assert_eq!(job["reclaim"]["candidates_done"], 0);
+    assert_eq!(relief_rows(&lab.svc), 0);
+    assert!(target_candidate(&lab.svc)["reclaimable_bytes"].is_null());
+}
+
+#[cfg(windows)]
+#[test]
+fn reclaim_observe_rows_lapse_when_a_rescan_moves_the_generation() {
+    let Some(lab) = cargo_lab(|_| {}) else { return };
+    settle(&lab.svc, &observe_job(&lab.svc));
+    assert_eq!(target_candidate(&lab.svc)["reclaimable_bytes"], "20480");
+    settle(&lab.svc, &start(&lab.svc, &lab.root, "full"));
+    let after = target_candidate(&lab.svc);
+    assert!(after["allocated_bytes"].is_string(), "{after}");
+    assert!(after["reclaimable_bytes"].is_null(), "{after}");
+    assert_eq!(
+        after["reclaimable_reason"],
+        loomward_engine::reclaim::RELIEF_UNOBSERVED
+    );
+}
+
+#[test]
+fn reclaim_observe_is_owner_only_and_refuses_what_the_plan_refuses() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let root = fixture(&svc);
+    let refused = err(call(
+        &svc,
+        "reclaim.observe",
+        json!({"volume_id": "vo_unknown"}),
+    ));
+    assert_eq!(refused.code, ErrorCode::NotFound);
+    svc.grant_client(
+        "mcp:reader",
+        &[RootId::new(root.clone()).unwrap()],
+        &["size", "volumes"],
+        None,
+    )
+    .unwrap();
+    for client in ["ask:local", "mcp:reader"] {
+        assert_eq!(
+            err(svc.call(
+                request("reclaim.observe", json!({"volume_id": volume_id(&svc)})),
+                &CallContext::client(client)
+            ))
+            .code,
+            ErrorCode::PermissionDenied
+        );
+    }
+    svc.inner
+        .hooks
+        .reclaim_elevated
+        .store(true, std::sync::atomic::Ordering::Release);
+    let elevated = err(call(
+        &svc,
+        "reclaim.observe",
+        json!({"volume_id": volume_id(&svc)}),
+    ));
+    assert_eq!(elevated.code, ErrorCode::PermissionDenied);
+    assert_eq!(reason(&elevated), Some("elevated_token"));
+    svc.inner
+        .hooks
+        .reclaim_elevated
+        .store(false, std::sync::atomic::Ordering::Release);
+    ok(
+        "roots.revoke",
+        call(
+            &svc,
+            "roots.revoke",
+            json!({"root_id": root, "purge_catalog": false}),
+        ),
+    );
+    let refused = err(call(
+        &svc,
+        "reclaim.observe",
+        json!({"volume_id": volume_id(&svc)}),
+    ));
+    assert_eq!(refused.code, ErrorCode::InvalidRequest);
+    assert_eq!(refused.message.as_str(), "no_active_grant");
+    assert_eq!(relief_rows(&svc), 0);
 }

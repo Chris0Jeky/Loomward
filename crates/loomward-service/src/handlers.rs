@@ -511,6 +511,7 @@ impl Inner {
             StatsBreakdown => self.breakdown(req, work),
             ClutterDeveloper => self.clutter_developer(req, work),
             ReclaimPlan => self.reclaim_plan(req, work),
+            ReclaimObserve => self.reclaim_observe(req),
             TiersModel | PlacementCandidates | PlacementSimulate | ProposalsList | ProposalsGet => {
                 self.placement_command(req, command, work)
             }
@@ -1046,6 +1047,7 @@ impl Inner {
             .map_err(catalog_error)?;
         // Copies using the grant are fenced next (docs/47 section 5): no effect step starts after.
         let copy_fence = self.copies_fence(grant);
+        let relief = self.drop_reclaim_relief(grant);
         let root = db::root_for_grant(&self.db(), grant).map_err(sql_error)?;
         if let Some(root) = root {
             self.freshness.remove(root);
@@ -1069,6 +1071,7 @@ impl Inner {
         }
         copy_fence?;
         redaction?;
+        relief?;
         Ok((ts_ns(at), revs))
     }
 
@@ -1160,6 +1163,7 @@ impl Inner {
         self.db()
             .execute("DELETE FROM st.root_freshness WHERE grant_id=?1", [grant])
             .map_err(sql_error)?;
+        self.drop_reclaim_relief(grant)?;
         self.forget_root_presence(grant);
         let backups = self.scrub_backups(Some(&path));
         let revs = self.revisions()?;
@@ -1212,6 +1216,7 @@ impl Inner {
         }
         self.forget_root_presence(grant);
         let _ = self.copies_fence(grant);
+        let _ = self.drop_reclaim_relief(grant);
         let row = db::root_for_grant(&self.db(), grant);
         if let Ok(Some(row)) = row {
             self.freshness.remove(row);

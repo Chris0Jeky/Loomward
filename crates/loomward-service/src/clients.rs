@@ -195,8 +195,8 @@ impl Inner {
     }
 }
 
-/// The only commands a client principal reaches. `reclaim.plan` is deliberately absent:
-/// LW-131 R1d is owner-only; client/MCP disclosure belongs to R1f.
+/// The only commands a client principal reaches. `reclaim.plan` and `reclaim.observe` are
+/// deliberately absent: LW-131 R1d/R1g are owner-only; client/MCP disclosure belongs to R1f.
 pub(crate) fn open_to_clients(command: Command) -> bool {
     matches!(
         command,
