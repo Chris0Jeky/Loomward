@@ -586,8 +586,17 @@ pub(crate) fn verbatim(path: &Path) -> PathBuf {
 /// no open below a directory swapped for a junction or symlink after the scan reaches elsewhere.
 /// ponytail: path-based, so a swap between this check and the opens is not excluded; opening
 /// relative to pinned directory handles closes that window but `linkcount` takes paths today.
-fn dirs_unchanged(volume_key: &str, dirs: &[ListedDir]) -> bool {
-    dirs.iter().all(|(path, id, created)| {
+fn dirs_unchanged(
+    volume_key: &str,
+    dirs: &[ListedDir],
+    deadline: Instant,
+    ctx: &JobContext,
+) -> bool {
+    dirs.iter().enumerate().all(|(i, (path, id, created))| {
+        // Cancel and the budget stop the check too, not only the name pass (review of #970).
+        if i % 1_000 == 0 && (ctx.is_cancelled() || Instant::now() >= deadline) {
+            return false;
+        }
         let expected = crate::placement::catalogue_object(volume_key, id.clone(), *created, None);
         loomward_windows::identity::observe(path).is_ok_and(|o| {
             o.attributes & 0x10 != 0
@@ -637,8 +646,10 @@ fn observe_one(
             return Ok(None);
         }
     };
-    let stop = (names.len() > MAX_FILES_PER_GROUP).then_some(Stop::FileBudget);
-    let dirs_ok = stop.is_some() || dirs_unchanged(&volume_key, &dirs);
+    // Directories past the cap would go unchecked, so they leave the candidate unknown too.
+    let stop = (names.len() > MAX_FILES_PER_GROUP || dirs.len() > MAX_FILES_PER_GROUP)
+        .then_some(Stop::FileBudget);
+    let dirs_ok = stop.is_some() || dirs_unchanged(&volume_key, &dirs, deadline, ctx);
     let mut outcomes = Vec::new();
     if stop.is_none() && dirs_ok {
         let entries: Vec<_> = names
@@ -859,7 +870,8 @@ fn list(conn: &Connection, root: &ObservedRoot, task: &Task) -> EngineResult<Opt
                      WHERE v.depth>0 ORDER BY v.depth,v.id LIMIT ?3"
                 ))?
                 .query_map(
-                    params![id, loomward_catalog::EXCLUDED_FLAGS, MAX_FILES_PER_GROUP as i64],
+                    // One past the cap, so an overflow is seen and leaves the candidate unknown.
+                    params![id, loomward_catalog::EXCLUDED_FLAGS, MAX_FILES_PER_GROUP as i64 + 1],
                     |r| Ok((r.get::<_, String>(0)?, r.get(1)?, r.get(2)?)),
                 )?
                 .collect::<rusqlite::Result<Vec<(String, _, _)>>>()?;
