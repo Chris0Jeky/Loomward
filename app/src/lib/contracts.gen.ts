@@ -430,7 +430,7 @@ export interface DuplicateReport {
 }
 
 /** placement.simulate is synchronous and bounded, never a job (semantics.md section 2). */
-export type JobKind = "scan" | "refit" | "teacher" | "duplicates";
+export type JobKind = "scan" | "refit" | "teacher" | "duplicates" | "reclaim";
 
 export type JobState = "queued" | "running" | "cancel_requested" | "cancelled" | "failed" | "completed";
 
@@ -479,6 +479,7 @@ export interface Job {
   coverage: CoverageState | null;
   error: ErrorBody | null;
   duplicates?: DuplicateReport;
+  reclaim?: ReclaimObserveProgress;
 }
 
 export interface JobRefRequest {
@@ -2320,6 +2321,17 @@ export interface ReclaimPlan {
   budget_hit: boolean;
 }
 
+export interface ReclaimObserveRequest {
+  volume_id: VolumeId;
+}
+
+/** LW-131 R1g counts only. Per-candidate verdicts live in state.db and reach the owner through reclaim.plan; a candidate the job did not finish stays unknown, never zero. */
+export interface ReclaimObserveProgress {
+  candidates_total: Count;
+  candidates_done: Count;
+  names_checked: Count;
+}
+
 export interface DeveloperClutterRequest {
   root_id: RootId;
   limit: number;
@@ -2406,6 +2418,7 @@ export interface CommandMap {
   "search.query": { request: SearchRequest; result: SearchPage };
   "stats.breakdown": { request: BreakdownRequest; result: Breakdown };
   "reclaim.plan": { request: ReclaimPlanRequest; result: ReclaimPlan };
+  "reclaim.observe": { request: ReclaimObserveRequest; result: JobResult };
   "clutter.developer": { request: DeveloperClutterRequest; result: DeveloperClutterReport };
   "taxonomy.get": { request: EmptyRequest; result: Taxonomy };
   "feedback.record": { request: FeedbackRequest; result: FeedbackResult };
@@ -2498,6 +2511,7 @@ export const COMMANDS = {
   "search.query": { adapters: ["tauri", "http"], wave: 2, events: [] },
   "stats.breakdown": { adapters: ["tauri", "http"], wave: 2, events: [] },
   "reclaim.plan": { adapters: ["tauri", "http"], wave: 2, events: [] },
+  "reclaim.observe": { adapters: ["tauri", "http"], wave: 2, events: ["job.state"] },
   "clutter.developer": { adapters: ["tauri", "http"], wave: 2, events: [] },
   "taxonomy.get": { adapters: ["tauri", "http"], wave: 3, events: [] },
   "feedback.record": { adapters: ["tauri", "http"], wave: 3, events: ["learning.updated"] },

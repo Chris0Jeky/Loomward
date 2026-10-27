@@ -32,10 +32,30 @@ pub fn open(dir: &Path) -> Sql<Connection> {
         CHECK((journal_id IS NULL)=(next_usn IS NULL))
     )",
     )?;
+    // #939 (docs/52 section 6.1): one relief verdict per reclaim candidate, valid only while the
+    // root's generation, the node's incarnation (born_run), its directory's subtree_rev and the
+    // catalogue instance still match.
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS st.reclaim_relief (
+        grant_id INTEGER NOT NULL REFERENCES root_grant(id),
+        node_kind TEXT NOT NULL CHECK(node_kind IN ('dir','file')),
+        node_id INTEGER NOT NULL,
+        volume_id INTEGER NOT NULL,
+        generation INTEGER NOT NULL,
+        incarnation INTEGER NOT NULL,
+        subtree_rev INTEGER NOT NULL,
+        catalog_instance TEXT NOT NULL,
+        observed_at_ns INTEGER NOT NULL,
+        unique_allocated_bytes INTEGER CHECK(unique_allocated_bytes IS NULL OR unique_allocated_bytes>=0),
+        reason TEXT,
+        CHECK((unique_allocated_bytes IS NULL)<>(reason IS NULL)),
+        PRIMARY KEY(grant_id,node_kind,node_id)
+    )",
+    )?;
     // Repeat an interrupted forget's derived-state cleanup before serving this session.
-    conn.execute(
-        "DELETE FROM st.root_freshness WHERE grant_id IN (SELECT grant_id FROM st.root_forgotten)",
-        [],
+    conn.execute_batch(
+        "DELETE FROM st.root_freshness WHERE grant_id IN (SELECT grant_id FROM st.root_forgotten);
+         DELETE FROM st.reclaim_relief WHERE grant_id IN (SELECT grant_id FROM st.root_forgotten)",
     )?;
     Ok(conn)
 }

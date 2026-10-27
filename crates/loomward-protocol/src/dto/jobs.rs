@@ -10,6 +10,8 @@ pub enum JobKind {
     Refit,
     Teacher,
     Duplicates,
+    /// `reclaim.observe` (#939): the bounded link-count pass whose results `reclaim.plan` reads.
+    Reclaim,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -149,6 +151,13 @@ pub struct Job {
         skip_serializing_if = "Option::is_none"
     )]
     pub duplicates: Option<DuplicateReport>,
+    /// Present only on `reclaim` jobs once the first candidate list is known.
+    #[serde(
+        default,
+        deserialize_with = "crate::types::optional_present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub reclaim: Option<ReclaimObserveProgress>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -171,7 +180,7 @@ pub struct JobListRequest {
         deserialize_with = "crate::types::optional_present",
         skip_serializing_if = "Option::is_none"
     )]
-    pub kinds: Option<UniqueVec<JobKind, 0, 4>>,
+    pub kinds: Option<UniqueVec<JobKind, 0, 5>>,
     pub limit: Int<1, 50>,
 }
 
