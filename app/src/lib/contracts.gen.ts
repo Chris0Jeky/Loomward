@@ -2088,13 +2088,18 @@ export interface CopyOperationRequest {
   operation_id: CopyOperationId;
 }
 
+/** LW-146: the refusal or fence active when the run was cancelled: a refusal code (grant_revoked for a revoked-grant fence), emergency_stop, or cancelled when none was active. */
+export type CopyStopCause = CopyRefusalCode | "emergency_stop" | "cancelled";
+
 /** LW-146: immutable pre-removal journal counts and deterministic explanation. Native identities remain in state.db. Absent until the disposition is durable; not a receipt of removal. */
 export interface CopyDisposition {
   explanation: string;
   items_total: Count;
   items_verified: Count;
   items_unverified: Count;
+  /** Every distinct refusal journaled during the run, including ones it resumed past; not the stopping cause. */
   refusal_codes: CopyRefusalCode[];
+  stop_cause?: CopyStopCause;
   resumable_before_cancel: boolean;
   resume_possible: boolean;
 }

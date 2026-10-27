@@ -223,6 +223,7 @@ mod pending_fence_tests {
             value["disposition"]["refusal_codes"],
             json!(["source_in_use"])
         );
+        assert_eq!(value["disposition"]["stop_cause"], "cancelled");
         assert!(value["disposition"].get("staging").is_none());
     }
 
@@ -1767,6 +1768,7 @@ impl Inner {
                     "items_verified": facts.items_verified,
                     "items_unverified": facts.items_unverified,
                     "refusal_codes": facts.refusal_codes,
+                    "stop_cause": facts.stop_cause,
                     "resumable_before_cancel": facts.resumable_before_cancel,
                     "resume_possible": facts.resume_possible,
                 });

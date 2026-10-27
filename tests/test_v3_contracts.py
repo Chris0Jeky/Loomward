@@ -61,7 +61,8 @@ class V3ContractTests(unittest.TestCase):
         status['disposition'] = {
             'explanation': 'Cancelled after source_in_use. Journal evidence remains.',
             'items_total': 3, 'items_verified': 2, 'items_unverified': 1,
-            'refusal_codes': ['source_in_use'], 'resumable_before_cancel': True,
+            'refusal_codes': ['source_in_use'], 'stop_cause': 'source_in_use',
+            'resumable_before_cancel': True,
             'resume_possible': False,
         }
         validator = jsonschema.Draft202012Validator({
@@ -71,6 +72,10 @@ class V3ContractTests(unittest.TestCase):
                              ('refusal_codes', ['source_in_use'] * 33)]:
             changed = dict(status, disposition=dict(status['disposition'], **{field: value}))
             self.assertFalse(validator.is_valid(changed))
+        for cause in ('emergency_stop', 'cancelled', 'grant_revoked'):
+            validator.validate(dict(status, disposition=dict(status['disposition'], stop_cause=cause)))
+        self.assertFalse(validator.is_valid(
+            dict(status, disposition=dict(status['disposition'], stop_cause='journaled'))))
 
     def test_cold_learning_queue_has_required_null_model_ids(self):
         try:

@@ -121,6 +121,16 @@ fn uncertain_membership_or_staging_identity_preserves_every_item() {
         }
         let out = cancel(&lab.store, op, &lab.plan(op), &Control::new(true)).unwrap();
         assert_eq!(out.state, OpState::NeedsAttention);
+        assert!(
+            lab.store
+                .lock()
+                .unwrap()
+                .rows(op)
+                .unwrap()
+                .iter()
+                .all(|r| !r.body.contains("staging_disposition")),
+            "a refused removal journals no disposition"
+        );
         assert_eq!(
             fs::read(staging.join("f")).unwrap(),
             if replace {

@@ -1,13 +1,14 @@
 {
   "def": "CopyDisposition",
   "value": {
-    "explanation": "Cancelled or abandoned; journaled cause: source_in_use. 2 of 3 items verified; 1 unverified. The journal marked the refusal resumable before cancellation. No resume command is available; this cancelled operation cannot resume. Journal evidence remains in state.db after successful identity-bound staging removal. Cleanup does not modify the source.",
+    "explanation": "Cancelled or abandoned; stopping cause: source_in_use. Refusals journaled during the run: source_in_use. 2 of 3 items verified; 1 unverified. The journal marked the stopped run resumable before cancel or abandon. No resume command is available; this cancelled operation cannot resume. Only journaled unpublished staging is eligible for identity-bound removal. The journal, manifest digest, identities, refusal codes and this disposition remain in state.db; staged bytes do not remain after successful removal. Cleanup does not modify the source.",
     "items_total": 3,
     "items_verified": 2,
     "items_unverified": 1,
     "refusal_codes": [
       "source_in_use"
     ],
+    "stop_cause": "source_in_use",
     "resumable_before_cancel": true,
     "resume_possible": false
   }

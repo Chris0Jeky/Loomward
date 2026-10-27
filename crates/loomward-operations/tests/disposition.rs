@@ -10,7 +10,47 @@ fn id(n: u8) -> ObjectId {
 }
 
 fn push(r: &mut Replay, record: Record) {
-    r.apply(&r.row_for(&Entry { epoch: 0, record })).unwrap();
+    let epoch = r.epoch;
+    r.apply(&r.row_for(&Entry { epoch, record })).unwrap();
+}
+
+fn at(r: &mut Replay, epoch: u64, record: Record) {
+    r.apply(&r.row_for(&Entry { epoch, record })).unwrap();
+}
+
+fn cancel(r: &mut Replay) -> StagingDisposition {
+    push(
+        r,
+        Record::Transition {
+            to: OpState::Cancelling,
+            code: None,
+        },
+    );
+    r.staging_disposition().unwrap()
+}
+
+fn copying() -> Replay {
+    let mut r = Replay::new(1);
+    for record in [
+        Record::Started {
+            digest: [0; 32],
+            items: 2,
+        },
+        Record::StagingIntent {
+            token: "lab-staging".into(),
+        },
+        Record::StagingCreated { id: id(1) },
+        Record::CreateBatch {
+            items: vec![(0, "a".into()), (1, "b".into())],
+        },
+        Record::Identities {
+            items: vec![(0, id(2)), (1, id(3))],
+        },
+        Record::Verified { items: vec![0] },
+    ] {
+        push(&mut r, record);
+    }
+    r
 }
 
 fn stopped(code: Refusal) -> Replay {
@@ -45,7 +85,7 @@ fn stopped(code: Refusal) -> Replay {
 fn record(code: Refusal) -> serde_json::Value {
     json!({"kind": "staging_disposition", "facts": {
         "staging": id(1), "items_total": 2, "items_verified": 1, "items_unverified": 1,
-        "refusal_codes": [code], "resumable_before_cancel": code.resumable(),
+        "refusal_codes": [code], "stop_cause": code, "resumable_before_cancel": code.resumable(),
         "resume_possible": false
     }})
 }
@@ -74,6 +114,8 @@ fn disposition_refuses_invented_counts_identity_codes_or_resume_authority() {
         ("items_total", json!(3)),
         ("staging", json!(id(9))),
         ("refusal_codes", json!(["source_changed"])),
+        ("stop_cause", json!("source_changed")),
+        ("stop_cause", json!("emergency_stop")),
         ("refusal_codes", json!(vec!["source_in_use"; 200])),
         ("resume_possible", json!(true)),
         ("resumable_before_cancel", json!(false)),
@@ -165,5 +207,149 @@ fn disposition_requires_cancellation_and_an_unpublished_journaled_identity() {
                 }))
                 .is_err());
         }
+    }
+}
+
+#[test]
+fn a_fence_is_explained_by_its_own_cause_not_by_a_revoked_grant() {
+    for (cause, stop, named, other) in [
+        (
+            FenceCause::EmergencyStop,
+            StopCause::Other(StopKind::EmergencyStop),
+            "emergency_stop",
+            "grant_revoked",
+        ),
+        (
+            FenceCause::GrantRevoked,
+            StopCause::Refusal(Refusal::GrantRevoked),
+            "grant_revoked",
+            "emergency_stop",
+        ),
+    ] {
+        let mut r = copying();
+        at(&mut r, 1, Record::Fenced { cause });
+        let facts = cancel(&mut r);
+        assert_eq!(facts.stop_cause, stop);
+        assert!(
+            facts.refusal_codes.is_empty(),
+            "a fence is not an item refusal"
+        );
+        let text = facts.explanation();
+        assert!(text.contains(&format!("stopping cause: {named}")), "{text}");
+        assert!(!text.contains(other), "{text}");
+        assert!(
+            text.contains("Refusals journaled during the run: none."),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn the_stopping_cause_is_the_active_stop_not_every_refusal_the_run_resumed_past() {
+    let fail = |code| Record::ItemFailed { item: 1, code };
+    let resume = || Record::Transition {
+        to: OpState::Copying,
+        code: None,
+    };
+    // Resumed past source_in_use, then stopped by source_changed.
+    let mut r = copying();
+    push(&mut r, fail(Refusal::SourceInUse));
+    push(&mut r, resume());
+    push(&mut r, fail(Refusal::SourceChanged));
+    let facts = cancel(&mut r);
+    assert_eq!(facts.stop_cause, StopCause::Refusal(Refusal::SourceChanged));
+    assert_eq!(
+        facts.refusal_codes,
+        [Refusal::SourceInUse, Refusal::SourceChanged]
+    );
+    let text = facts.explanation();
+    assert!(text.contains("stopping cause: source_changed."), "{text}");
+    assert!(
+        text.contains("Refusals journaled during the run: source_in_use, source_changed."),
+        "{text}"
+    );
+    // Resumed past source_in_use, then cancelled by the owner: no refusal stopped the run.
+    let mut r = copying();
+    push(&mut r, fail(Refusal::SourceInUse));
+    push(&mut r, resume());
+    let facts = cancel(&mut r);
+    assert_eq!(facts.stop_cause, StopCause::Other(StopKind::Cancelled));
+    assert!(!facts.resumable_before_cancel);
+    let text = facts.explanation();
+    assert!(text.contains("stopping cause: cancelled"), "{text}");
+    assert!(
+        text.contains("Refusals journaled during the run: source_in_use."),
+        "{text}"
+    );
+    // Still blocked on it at cancel: it is the stopping cause.
+    let mut r = copying();
+    push(&mut r, fail(Refusal::SourceInUse));
+    let facts = cancel(&mut r);
+    assert_eq!(facts.stop_cause, StopCause::Refusal(Refusal::SourceInUse));
+}
+
+#[test]
+fn the_explanation_stays_bounded_with_every_refusal_code_present() {
+    use Refusal::*;
+    let all = vec![
+        SourceInUse,
+        AccessDenied,
+        InsufficientSpace,
+        StagingInUse,
+        PublishInUse,
+        SpecialFile,
+        SourceChanged,
+        CloudPlaceholder,
+        ReparsePoint,
+        UnsupportedAttribute,
+        ExtendedAttributes,
+        AlternateStreamsUnsupported,
+        TooManyStreams,
+        StagingNameTaken,
+        VerificationMismatch,
+        ChangedAfterVerification,
+        GrantRevoked,
+        DestinationChanged,
+    ];
+    let facts = StagingDisposition {
+        staging: id(1),
+        items_total: u32::MAX,
+        items_verified: u32::MAX,
+        items_unverified: u32::MAX,
+        refusal_codes: all.clone(),
+        stop_cause: StopCause::Refusal(AlternateStreamsUnsupported),
+        resumable_before_cancel: true,
+        resume_possible: false,
+    };
+    let text = facts.explanation();
+    assert!(text.len() <= 2048, "{}", text.len());
+    assert!(all.len() <= 32, "wire bound on refusal_codes");
+    for code in all {
+        let name = serde_json::to_value(code).unwrap();
+        assert!(text.contains(name.as_str().unwrap()), "{name}");
+    }
+}
+
+/// The contract examples are real `explanation()` output: drift in the text fails here.
+#[test]
+fn contract_example_explanations_are_rendered_by_explanation() {
+    let dto: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../contracts/v3/examples/dtos/copy-disposition.json"
+    ))
+    .unwrap();
+    let abandon: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../contracts/v3/examples/commands/copy.abandon.result.json"
+    ))
+    .unwrap();
+    for wire in [&dto["value"], &abandon["disposition"]] {
+        let mut facts = wire.clone();
+        let shown = facts
+            .as_object_mut()
+            .unwrap()
+            .remove("explanation")
+            .unwrap();
+        facts["staging"] = json!(id(1));
+        let facts: StagingDisposition = serde_json::from_value(facts).unwrap();
+        assert_eq!(shown, facts.explanation());
     }
 }

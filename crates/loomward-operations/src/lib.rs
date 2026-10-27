@@ -22,7 +22,7 @@ pub mod tree;
 
 pub use journal::{
     Entry, FenceCause, Invalid, ObjectId, Record, Refusal, Replay, Row, StagedItem,
-    StagingDisposition, MAX_BATCH, MAX_ITEMS,
+    StagingDisposition, StopCause, StopKind, MAX_BATCH, MAX_ITEMS,
 };
 pub use manifest::{
     approve, preview, Admitted, Approval, Code, Context, Destination, DestinationFacts, Identity,

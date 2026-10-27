@@ -85,6 +85,24 @@ impl Refusal {
     }
 }
 
+/// What ended a stopped run when it is not a refusal code. A grant-revoked fence is the refusal code
+/// `grant_revoked`; an emergency stop is its own cause, never reported as a revoked grant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StopKind {
+    EmergencyStop,
+    /// No refusal or fence was active: the owner cancelled or abandoned the run.
+    Cancelled,
+}
+
+/// The active stop at cancellation, as one wire string: a refusal code or a `StopKind`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum StopCause {
+    Refusal(Refusal),
+    Other(StopKind),
+}
+
 /// LW-146: one bounded snapshot before cancelling cleanup changes any item evidence.
 /// No paths, names, model output or per-item list; refusal codes are distinct journal facts.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -94,7 +112,10 @@ pub struct StagingDisposition {
     pub items_total: u32,
     pub items_verified: u32,
     pub items_unverified: u32,
+    /// Every distinct refusal journaled during the run, including ones it resumed past.
     pub refusal_codes: Vec<Refusal>,
+    /// The refusal or fence active when the run was cancelled, else the cancel itself.
+    pub stop_cause: StopCause,
     /// The journal was blocked on a retryable refusal, without a fence, before cancellation.
     pub resumable_before_cancel: bool,
     pub resume_possible: bool,
@@ -102,18 +123,20 @@ pub struct StagingDisposition {
 
 impl StagingDisposition {
     pub fn explanation(&self) -> String {
-        let cause = if self.refusal_codes.is_empty() {
-            "no refusal was journaled".into()
+        let name = |v: serde_json::Value| v.as_str().expect("wire string").to_owned();
+        let stop = name(serde_json::to_value(self.stop_cause).expect("cause serialises"));
+        let stop = match self.stop_cause {
+            StopCause::Other(StopKind::Cancelled) => {
+                format!("{stop} (no refusal or fence was active)")
+            }
+            _ => stop,
+        };
+        let seen = if self.refusal_codes.is_empty() {
+            "none".into()
         } else {
             self.refusal_codes
                 .iter()
-                .map(|code| {
-                    serde_json::to_value(code)
-                        .expect("refusal serialises")
-                        .as_str()
-                        .unwrap()
-                        .to_owned()
-                })
+                .map(|code| name(serde_json::to_value(code).expect("refusal serialises")))
                 .collect::<Vec<_>>()
                 .join(", ")
         };
@@ -122,7 +145,7 @@ impl StagingDisposition {
         } else {
             "No resumable refusal was active at cancellation."
         };
-        format!("Cancelled or abandoned; journaled cause: {cause}. {} of {} items verified; {} unverified. {resume} No resume command is available; this cancelled operation cannot resume. Only journaled unpublished staging is eligible for identity-bound removal. The journal, manifest digest, identities, refusal codes and this disposition remain in state.db; staged bytes do not remain after successful removal. Cleanup does not modify the source.", self.items_verified, self.items_total, self.items_unverified)
+        format!("Cancelled or abandoned; stopping cause: {stop}. Refusals journaled during the run: {seen}. {} of {} items verified; {} unverified. {resume} No resume command is available; this cancelled operation cannot resume. Only journaled unpublished staging is eligible for identity-bound removal. The journal, manifest digest, identities, refusal codes and this disposition remain in state.db; staged bytes do not remain after successful removal. Cleanup does not modify the source.", self.items_verified, self.items_total, self.items_unverified)
     }
 }
 
@@ -297,6 +320,8 @@ pub struct Replay {
     seen: HashSet<ObjectId>,
     fence_causes: Vec<FenceCause>,
     refusal_codes: Vec<Refusal>,
+    /// The refusal or fence that currently stops the run; cleared by a resume.
+    stop: Option<StopCause>,
     resumable_before_cancel: bool,
 }
 
@@ -349,6 +374,7 @@ impl Replay {
             seen: HashSet::new(),
             fence_causes: Vec::new(),
             refusal_codes: Vec::new(),
+            stop: None,
             resumable_before_cancel: false,
         }
     }
@@ -446,8 +472,13 @@ impl Replay {
                     return Err("fence does not raise the epoch");
                 }
                 self.epoch = epoch;
+                if !self.fenced {
+                    self.stop = Some(match cause {
+                        FenceCause::GrantRevoked => StopCause::Refusal(Refusal::GrantRevoked),
+                        FenceCause::EmergencyStop => StopCause::Other(StopKind::EmergencyStop),
+                    });
+                }
                 self.fenced = true;
-                self.remember_refusal(Refusal::GrantRevoked);
                 if !self.fence_causes.contains(cause) {
                     self.fence_causes.push(*cause);
                 }
@@ -588,6 +619,7 @@ impl Replay {
                     return Err("item failure outside copying");
                 }
                 self.remember_refusal(code);
+                self.stop = Some(StopCause::Refusal(code));
                 // A create that failed inside the open batch leaves the batch; the rest still commit.
                 self.open_batch.retain(|&x| x != i);
                 let item = self.item(i)?;
@@ -697,6 +729,12 @@ impl Replay {
                 self.go(to)?;
                 if let Some(code) = code {
                     self.remember_refusal(code);
+                    if !self.fenced {
+                        self.stop = Some(StopCause::Refusal(code));
+                    }
+                }
+                if to == Copying && !self.fenced {
+                    self.stop = None;
                 }
             }
             Record::PublishIntent { final_name } => {
@@ -755,6 +793,7 @@ impl Replay {
             items_verified,
             items_unverified: self.items.len() as u32 - items_verified,
             refusal_codes: self.refusal_codes.clone(),
+            stop_cause: self.stop.unwrap_or(StopCause::Other(StopKind::Cancelled)),
             resumable_before_cancel: self.resumable_before_cancel,
             resume_possible: false,
         })
