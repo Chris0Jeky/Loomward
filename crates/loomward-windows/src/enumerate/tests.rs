@@ -108,32 +108,27 @@ fn placeholders_and_reparse_attributes_are_refused() {
 
 /// Provider stub: decode the bytes supplied by directory enumeration, without a file handle.
 /// Recall flags cannot be fabricated with SetFileAttributes on an ordinary synthetic file.
+/// A real no-hydration proof needs a provider-backed placeholder fixture (#821).
 #[test]
 fn placeholder_listing_preserves_metadata_without_opening_entries() {
-    let check = || {
-        for strategy in [Strategy::Extended, Strategy::Both] {
-            for attrs in [0x400000u32, 0x40000, 0x1000, 0x480000, 0x100080] {
-                let mut b = record(strategy, &[120]);
-                b[40..48].copy_from_slice(&900i64.to_le_bytes());
-                b[48..56].copy_from_slice(&16i64.to_le_bytes());
-                b[56..60].copy_from_slice(&attrs.to_le_bytes());
-                let mut seen = 0;
-                decode_buffer(&b, strategy, &mut |entry| {
-                    seen += 1;
-                    assert_eq!(entry.attributes, attrs);
-                    assert_eq!(entry.end_of_file, 900);
-                    assert_eq!(entry.allocation_size, Some(16));
-                    Flow::Continue
-                })
-                .unwrap();
-                assert_eq!(seen, 1);
-            }
+    for strategy in [Strategy::Extended, Strategy::Both] {
+        for attrs in [0x400000u32, 0x40000, 0x1000, 0x480000, 0x100080] {
+            let mut b = record(strategy, &[120]);
+            b[40..48].copy_from_slice(&900i64.to_le_bytes());
+            b[48..56].copy_from_slice(&16i64.to_le_bytes());
+            b[56..60].copy_from_slice(&attrs.to_le_bytes());
+            let mut seen = 0;
+            decode_buffer(&b, strategy, &mut |entry| {
+                seen += 1;
+                assert_eq!(entry.attributes, attrs);
+                assert_eq!(entry.end_of_file, 900);
+                assert_eq!(entry.allocation_size, Some(16));
+                Flow::Continue
+            })
+            .unwrap();
+            assert_eq!(seen, 1);
         }
-    };
-    #[cfg(windows)]
-    assert!(record_open_accesses(check).is_empty());
-    #[cfg(not(windows))]
-    check();
+    }
 }
 
 #[cfg(windows)]

@@ -208,6 +208,94 @@ mod tests {
         }
     }
 
+    /// Synthetic root with `files` placeholder rows beneath it; no real path is ever touched.
+    fn synthetic_root(files: u32) -> (tempfile::TempDir, crate::Catalog, i64) {
+        use crate::{Catalog, RootObservation, WriteCommand, WriteReply};
+        let tmp = tempfile::tempdir().unwrap();
+        let catalog = Catalog::open(tmp.path(), "synthetic").unwrap();
+        let WriteReply::Root { dir_id, .. } = catalog
+            .writer()
+            .call(WriteCommand::RegisterRoot(RootObservation {
+                volume_guid: None,
+                volume_key: "fixture".into(),
+                display_name: "Synthetic".into(),
+                display_path: "Synthetic root".into(),
+                root_file_id: Some(vec![0; 16]),
+                filesystem: Some("NTFS".into()),
+                origin: "fixture".into(),
+                granted_via: "fixture".into(),
+                observed_at_ns: 0,
+            }))
+            .unwrap()
+        else {
+            panic!()
+        };
+        let db = rusqlite::Connection::open(tmp.path().join("catalog.db")).unwrap();
+        db.execute(
+            "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<?2)
+             INSERT INTO file(dir_id,name,logical,allocated,attrs,flags,born_run,seen_run)
+             SELECT ?1,'synthetic-'||x,1,0,4194304,8,0,0 FROM n",
+            rusqlite::params![dir_id, files],
+        )
+        .unwrap();
+        (tmp, catalog, dir_id)
+    }
+
+    /// Deadlines in these tests are 10 ms out; the trace sleeps 60 ms so they pass after entry.
+    const DEADLINE_AHEAD: std::time::Duration = std::time::Duration::from_millis(10);
+    const PAST_DEADLINE: std::time::Duration = std::time::Duration::from_millis(60);
+    thread_local! {
+        static FIRST_STATEMENT_SEEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// Lets the deadline pass just before the residency walk's first progress tick.
+    fn sleep_before_walk(event: rusqlite::trace::TraceEvent<'_>) {
+        if let rusqlite::trace::TraceEvent::Stmt(_, sql) = event {
+            if sql.starts_with("WITH RECURSIVE walk(") {
+                std::thread::sleep(PAST_DEADLINE);
+            }
+        }
+    }
+
+    /// Lets the deadline pass before the first statement that runs under the work guard.
+    fn sleep_before_first_statement(event: rusqlite::trace::TraceEvent<'_>) {
+        if let rusqlite::trace::TraceEvent::Stmt(..) = event {
+            FIRST_STATEMENT_SEEN.with(|seen| {
+                if !seen.replace(true) {
+                    std::thread::sleep(PAST_DEADLINE);
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn cloud_summary_deadline_passing_mid_walk_is_cancelled() {
+        let (_tmp, catalog, dir) = synthetic_root(5_000);
+        let mut reader = catalog.reader().unwrap();
+        reader.set_deadline(std::time::Instant::now() + DEADLINE_AHEAD);
+        let trace = rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT;
+        reader.conn.trace_v2(trace, Some(sleep_before_walk));
+        let result = reader.cloud_summary(dir, Reader::DEFAULT_CLOUD_SUMMARY_STEPS);
+        reader.conn.trace_v2(trace, None);
+        assert!(matches!(result, Err(Error::Cancelled)), "{result:?}");
+    }
+
+    #[test]
+    fn cloud_summary_deadline_and_exhausted_budget_in_one_tick_report_cancelled() {
+        let (_tmp, catalog, dir) = synthetic_root(5_000);
+        let mut reader = catalog.reader().unwrap();
+        reader.set_deadline(std::time::Instant::now() + DEADLINE_AHEAD);
+        FIRST_STATEMENT_SEEN.with(|seen| seen.set(false));
+        let trace = rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT;
+        reader
+            .conn
+            .trace_v2(trace, Some(sleep_before_first_statement));
+        // Budget 0 is exhausted on the first tick; the already-passed deadline is checked first.
+        let result = reader.cloud_summary(dir, 0);
+        reader.conn.trace_v2(trace, None);
+        assert!(matches!(result, Err(Error::Cancelled)), "{result:?}");
+    }
+
     #[cfg(windows)]
     #[test]
     fn listed_attribute_residency_patterns() {
