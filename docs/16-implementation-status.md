@@ -435,7 +435,7 @@ added to `HUMAN_TODO.md`.
 
 ## External disk lane, overnight and next day — 26 to 27 October 2026
 
-The owner granted overnight autonomy and answered the open questions in chat (HUMAN_TODO q-49, q-50). The agent ran the read-only space survey itself, using every top-level folder of `C:`, `E:`, `G:` and `H:` as a non-picker grant in local state on `E:`, because volume roots stay picker-only in code. It read the space through `loomward-mcp`. Nothing was moved or deleted. The report stays local and is never committed. The survey found four product defects; three are fixed below and #924 has a first slice.
+Per the owner's chat, the lane ran overnight with autonomy, and the owner answered the open questions there (HUMAN_TODO q-49, q-50). The agent ran the read-only space survey itself, using every top-level folder of `C:`, `E:`, `G:` and `H:` as a non-picker grant in local state on `E:`, because volume roots stay picker-only in code. It read the space through `loomward-mcp`. Every folder was measured as metadata only (names, sizes, times), the user profile and credential or browser stores included, under the owner's q-50 authority. No file content was read, and nothing was moved or deleted. The report stays local and is never committed. Survey-driven fixes below cover #908, #916, #887, #912 and #913; #924 has a first slice.
 
 Merged, each with one fresh-context review and an Opus 5.5 high second lens on data-loss, identity, trust-boundary and store paths:
 - #902, #906 (#862, #903): verify-tree reads are non-cached and report root identities. A missing sector geometry gets its own reason. The verification open is pinned free of background work.
