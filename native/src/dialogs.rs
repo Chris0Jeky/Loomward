@@ -148,7 +148,7 @@ pub fn start_directory() -> Option<PathBuf> {
 
 /// The one-line confirmation after a pick. Letters of any script stay readable (bar the invisible
 /// Hangul fillers); everything else outside printable ASCII (controls, bidi overrides, zero-width
-/// marks) is written as `\u{..}`.
+/// marks) is written as `\u{..}`, and literal backslashes are doubled.
 pub fn grant_text(folder: &Path) -> String {
     let shown: String = folder
         .to_string_lossy()
@@ -156,7 +156,9 @@ pub fn grant_text(folder: &Path) -> String {
         .map(|c| {
             // The Hangul fillers are letters that draw nothing: they stay hidden (LW-145).
             let filler = matches!(c, '\u{115F}' | '\u{1160}' | '\u{3164}' | '\u{FFA0}');
-            if (c.is_alphanumeric() && !filler) || matches!(c, ' '..='~') {
+            if c == '\\' {
+                "\\\\".to_string()
+            } else if (c.is_alphanumeric() && !filler) || matches!(c, ' '..='~') {
                 c.to_string()
             } else {
                 format!("\\u{{{:04X}}}", c as u32)

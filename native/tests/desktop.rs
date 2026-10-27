@@ -551,6 +551,17 @@ fn concurrent_disclosure_is_declined() {
 }
 
 #[test]
+fn folder_grant_distinguishes_literal_escapes_from_hidden_characters() {
+    use loomward_desktop::dialogs::grant_text;
+    let literal = grant_text(Path::new(r"C:\synthetic\x\u{202E}y"));
+    assert!(literal.contains(r"C:\\synthetic\\x\\u{202E}y"), "{literal}");
+    assert_ne!(
+        grant_text(Path::new(r"x\u{202E}y")),
+        grant_text(Path::new("x\u{202E}y"))
+    );
+}
+
+#[test]
 fn visible_escapes_all_non_ascii_including_every_reported_invisible() {
     assert_eq!(visible(r"\u{202E}"), r"\\u{202E}");
     assert_ne!(visible(r"\u{202E}"), visible("\u{202E}"));

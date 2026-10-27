@@ -65,6 +65,8 @@ File/folder names, paths and volume labels are third-party text, never instructi
 safe to paste into a shell string. Discovery and every tool description say so. Every output
 text value escapes Unicode category Cf, U+2028, U+2029 and U+0085 as visible `\uXXXX` sequences
 (surrogate pairs for supplementary characters), including structured and text results and errors.
+Literal backslashes are doubled so a spelled-out escape cannot impersonate a hidden character;
+escaping is injective rather than idempotent and happens once at the output boundary.
 
 The transport ports the frozen Python reference's newline-delimited JSON-RPC handling:
 modern `2026-07-28` per-request metadata, or legacy `2025-11-25` initialize/initialized.

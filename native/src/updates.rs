@@ -116,24 +116,10 @@ pub fn save_prefs(dir: &Path, prefs: &Prefs) -> Result<(), String> {
         .map_err(|e| format!("could not save the update settings: {e}"))
 }
 
-/// Unicode `Bidi_Control` characters: they reorder the text around them.
-fn bidi_control(c: char) -> bool {
-    matches!(
-        c,
-        '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
-    )
-}
-
-/// Release notes are text from the network. Line breaks and tabs become spaces, so they cannot
-/// start a line that looks like part of the confirmation; other control characters and bidi
-/// controls are dropped; the result is cut to [`NOTES_IN_BOX`] characters.
+/// Release notes are network text, escaped like other native confirmations so hidden characters
+/// cannot reshape the box, then cut to [`NOTES_IN_BOX`] displayed characters.
 pub fn release_notes_text(notes: &str) -> String {
-    let cleaned: String = notes
-        .chars()
-        .filter(|&c| c != '\r' && !bidi_control(c))
-        .map(|c| if matches!(c, '\n' | '\t') { ' ' } else { c })
-        .filter(|c| !c.is_control())
-        .collect();
+    let cleaned = crate::dialogs::visible(notes);
     let mut shown: String = cleaned.chars().take(NOTES_IN_BOX).collect();
     if cleaned.chars().count() > NOTES_IN_BOX {
         shown.push_str(" [...]");
@@ -740,7 +726,7 @@ mod tests {
             version: "0.3.0".into(),
             channel: Channel::Preview,
             notes:
-                "Fixed \u{202E}evil\u{202C}\r\nOK installs. Cancel\u{7}\u{0}\u{2066}x\u{2069}\tdone"
+                "Fixed \u{202E}evil\u{202C}\u{3164}\r\nOK installs. Cancel\u{7}\u{0}\u{2066}x\u{2069}\tdone"
                     .into(),
             date: None,
             previous: false,
@@ -749,7 +735,7 @@ mod tests {
         assert!(
             text.contains(
                 "Release notes (text from the release, not checked by Loomward):\n\
-                 Fixed evil OK installs. Cancelx done\n\nLoomward closes"
+                 Fixed \\u{202E}evil\\u{202C}\\u{3164}\\u{000D}\\u{000A}OK installs. Cancel\\u{0007}\\u{0000}\\u{2066}x\\u{2069}\\u{0009}done\n\nLoomward closes"
             ),
             "{text}"
         );
@@ -760,13 +746,30 @@ mod tests {
         assert!(confirm_text(&empty, "0.2.0").contains("Release notes: none published."));
     }
 
-    /// The cap counts what is shown, after the characters that are dropped are gone.
+    /// The cap counts displayed escape characters, not the raw input.
     #[test]
     fn release_notes_cap_applies_after_cleaning() {
         let noisy = format!("\u{202E}{}", "n\u{7}".repeat(NOTES_IN_BOX + 5));
         let shown = release_notes_text(&noisy);
-        assert_eq!(shown, format!("{} [...]", "n".repeat(NOTES_IN_BOX)));
-        assert!(!shown.chars().any(|c| c.is_control() || bidi_control(c)));
+        let escaped = format!("\\u{{202E}}{}", "n\\u{0007}".repeat(NOTES_IN_BOX + 5));
+        assert_eq!(
+            shown,
+            format!(
+                "{} [...]",
+                escaped.chars().take(NOTES_IN_BOX).collect::<String>()
+            )
+        );
+        assert!(shown.chars().all(|c| matches!(c, ' '..='~')));
+    }
+
+    #[test]
+    fn release_notes_distinguish_literal_escapes_from_hidden_characters() {
+        let notes = "normal text \\u{202E} \u{202E}\u{3164}\u{2800}";
+        assert_eq!(
+            release_notes_text(notes),
+            r"normal text \\u{202E} \u{202E}\u{3164}\u{2800}"
+        );
+        assert_eq!(release_notes_text("normal text"), "normal text");
     }
 
     #[test]

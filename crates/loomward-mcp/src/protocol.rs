@@ -224,8 +224,7 @@ impl Protocol {
                     self.host.run(name, args)
                 };
                 match value {
-                    Ok(mut value) => {
-                        crate::text::escape(&mut value);
+                    Ok(value) => {
                         json!({"content":[{"type":"text","text":value.to_string()}],"structuredContent":value,"isError":false})
                     }
                     Err(message) => {
