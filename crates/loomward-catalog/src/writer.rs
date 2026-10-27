@@ -668,7 +668,7 @@ fn serve(
         active: HashMap::new(),
         sequences_shared: false,
     };
-    // The state rewrite and WAL cut after a forget, when a lock outlasted the first try: retried between commands.
+    // The store rewrite and WAL cut after a forget or learning migration: retried between commands.
     // A forget that committed its state half but whose rewrite and log cut never finished (a crash,
     // a lock that outlasted open) leaves the marker in state.db: finish it here.
     let mut cut_pending = scrub_pending(&conn).unwrap_or(true);
@@ -1046,14 +1046,33 @@ fn serve(
     crate::crashpoint::hit("shutdown checkpoint");
     let _ = conn.execute_batch("PRAGMA main.wal_checkpoint(TRUNCATE)");
 }
-/// Whether a forget's rewrite of the stores is still owed (the `scrub_pending` marker, written in
-/// the forget's own state.db transaction and cleared only after both rewrites and both log cuts).
+/// Whether a forget or legacy learning rewrite is still owed (the durable `scrub_pending` marker,
+/// cleared only after both rewrites and both log cuts).
 pub(crate) fn scrub_pending(conn: &Connection) -> Result<bool> {
     Ok(conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM st.meta WHERE key='scrub_pending')",
         [],
         |r| r.get(0),
     )?)
+}
+/// Rewrite the named stores with `VACUUM`, in order, so freed pages keep no old bytes.
+pub(crate) fn rewrite(conn: &Connection, stores: &[&str]) -> Result<()> {
+    let temp: i64 = conn.query_row("PRAGMA temp_store", [], |r| r.get(0))?;
+    conn.pragma_update(None, "temp_store", "FILE")?;
+    let result = stores.iter().try_for_each(|db| {
+        crate::crashpoint::hit(&format!("VACUUM {db}"));
+        conn.execute_batch(&format!("VACUUM {db}"))
+    });
+    // Only a changed temp_store drops temporary objects; listing tables are recreated lazily.
+    let restore = conn.pragma_update(None, "temp_store", temp);
+    let views = if temp == 1 {
+        Ok(())
+    } else {
+        crate::db::grant_view(conn)
+    };
+    result?;
+    restore?;
+    views
 }
 /// Page images from before a purge sit in the WALs until they are folded in and cut, and stale
 /// cells freed without secure_delete (a staged listing deleted when it was published, a cell an
@@ -1076,26 +1095,7 @@ pub(crate) fn wal_cut(conn: &Connection, wait: Duration, vacuum: &mut bool) -> b
     };
     let _ = conn.busy_timeout(wait);
     if *vacuum {
-        let rewrite = || -> Result<()> {
-            let temp: i64 = conn.query_row("PRAGMA temp_store", [], |r| r.get(0))?;
-            conn.pragma_update(None, "temp_store", "FILE")?;
-            crate::crashpoint::hit("VACUUM st");
-            let result = conn.execute_batch("VACUUM st").and_then(|()| {
-                crate::crashpoint::hit("VACUUM main");
-                conn.execute_batch("VACUUM main")
-            });
-            // Only a changed temp_store drops temporary objects; listing tables are recreated lazily.
-            let restore = conn.pragma_update(None, "temp_store", temp);
-            let views = if temp == 1 {
-                Ok(())
-            } else {
-                crate::db::grant_view(conn)
-            };
-            result?;
-            restore?;
-            views
-        };
-        *vacuum = rewrite().is_err();
+        *vacuum = rewrite(conn, &["st", "main"]).is_err();
         if *vacuum {
             let _ = conn.busy_timeout(Duration::from_millis(u64::from(timeout)));
             return false;
@@ -1113,9 +1113,15 @@ pub(crate) fn wal_cut(conn: &Connection, wait: Duration, vacuum: &mut bool) -> b
     let done = state && catalog;
     if done && !*vacuum {
         crate::crashpoint::hit("clear scrub marker");
-        return conn
-            .execute("DELETE FROM st.meta WHERE key='scrub_pending'", [])
-            .is_ok();
+        let complete = || -> Result<()> {
+            let tx = conn.unchecked_transaction()?;
+            // This full rewrite also discharges the legacy learning scrub, including on retry.
+            tx.execute("INSERT INTO st.meta(key,value) VALUES('learning_scrub_v1','1') ON CONFLICT(key) DO NOTHING", [])?;
+            tx.execute("DELETE FROM st.meta WHERE key='scrub_pending'", [])?;
+            tx.commit()?;
+            Ok(())
+        };
+        return complete().is_ok();
     }
     done
 }

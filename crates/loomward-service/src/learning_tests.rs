@@ -1,5 +1,143 @@
 use crate::tests::*;
 
+const LEGACY_LEARNING_PAYLOAD: &str = "synthetic-legacy-learning-payload-694";
+
+fn legacy_learning_state() -> tempfile::TempDir {
+    let dir = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    let node = learning_node(&svc);
+    ok(
+        "feedback.record",
+        call(
+            &svc,
+            "feedback.record",
+            feedback(&node, "ce_legacy_scrub", Some("Documents"), false),
+        ),
+    );
+    drop(svc);
+    let db = rusqlite::Connection::open(dir.path().join("state.db")).unwrap();
+    db.execute_batch("PRAGMA secure_delete=OFF; DELETE FROM meta WHERE key='learning_scrub_v1'")
+        .unwrap();
+    db.execute(
+        "UPDATE human_feedback SET features_json=?1",
+        [json!({"name":LEGACY_LEARNING_PAYLOAD.repeat(1000)}).to_string()],
+    )
+    .unwrap();
+    db.execute_batch(
+        "INSERT INTO learning_redacted SELECT event_id FROM human_feedback;
+         UPDATE human_feedback SET features_json='{\"name\":\"\",\"extension\":\"\",\"context\":\"\",\"size_bytes\":0}';
+         PRAGMA wal_checkpoint(TRUNCATE)",
+    )
+    .unwrap();
+    drop(db);
+    assert!(std::fs::read(dir.path().join("state.db"))
+        .unwrap()
+        .windows(LEGACY_LEARNING_PAYLOAD.len())
+        .any(|w| w == LEGACY_LEARNING_PAYLOAD.as_bytes()));
+    dir
+}
+
+#[test]
+fn learning_legacy_redaction_scrubs_once() {
+    let dir = legacy_learning_state();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    assert!(
+        !std::fs::read(dir.path().join("state.db"))
+            .unwrap()
+            .windows(LEGACY_LEARNING_PAYLOAD.len())
+            .any(|w| w == LEGACY_LEARNING_PAYLOAD.as_bytes()),
+        "legacy redacted payload survived in the state file"
+    );
+    assert_eq!(
+        count(
+            &svc,
+            "SELECT count(*) FROM st.meta WHERE key='learning_scrub_v1' AND value='1'"
+        ),
+        1
+    );
+    let version = count(&svc, "PRAGMA st.schema_version");
+    drop(svc);
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    assert_eq!(
+        count(&svc, "PRAGMA st.schema_version"),
+        version,
+        "second open rewrote the state database"
+    );
+}
+
+#[test]
+fn learning_scrub_skips_databases_without_learning_history() {
+    let dir = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    svc.inner
+        .db()
+        .execute("DELETE FROM st.meta WHERE key='learning_scrub_v1'", [])
+        .unwrap();
+    let version = count(&svc, "PRAGMA st.schema_version");
+    drop(svc);
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    assert_eq!(
+        count(
+            &svc,
+            "SELECT count(*) FROM st.meta WHERE key='learning_scrub_v1' AND value='1'"
+        ),
+        1
+    );
+    assert_eq!(
+        count(&svc, "PRAGMA st.schema_version"),
+        version,
+        "empty learning history caused a rewrite"
+    );
+}
+
+#[test]
+fn learning_scrub_retries_after_a_blocked_wal_cut() {
+    let dir = legacy_learning_state();
+    let reader = rusqlite::Connection::open(dir.path().join("state.db")).unwrap();
+    reader.execute_batch("BEGIN; SELECT * FROM meta").unwrap();
+    let catalog = loomward_catalog::Catalog::open(dir.path(), "synthetic").unwrap();
+    let db = rusqlite::Connection::open(dir.path().join("state.db")).unwrap();
+    let marker = |key: &str| {
+        db.query_row("SELECT count(*) FROM meta WHERE key=?1", [key], |r| {
+            r.get::<_, i64>(0)
+        })
+        .unwrap()
+    };
+    assert_eq!(
+        marker("learning_scrub_v1"),
+        0,
+        "blocked WAL cut was marked complete"
+    );
+    // The learning scrub never schedules the shared catalogue rewrite; the next open retries it.
+    assert_eq!(
+        marker("scrub_pending"),
+        0,
+        "learning scrub must not rewrite the catalogue"
+    );
+    drop(catalog);
+    reader.execute_batch("ROLLBACK").unwrap();
+    drop((reader, db));
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    assert_eq!(
+        count(
+            &svc,
+            "SELECT count(*) FROM st.meta WHERE key='learning_scrub_v1'"
+        ),
+        1
+    );
+    assert_eq!(
+        count(
+            &svc,
+            "SELECT count(*) FROM st.meta WHERE key='scrub_pending'"
+        ),
+        0
+    );
+    assert!(!std::fs::read(dir.path().join("state.db"))
+        .unwrap()
+        .windows(LEGACY_LEARNING_PAYLOAD.len())
+        .any(|w| w == LEGACY_LEARNING_PAYLOAD.as_bytes()));
+}
+
 #[path = "learning_replay_tests.rs"]
 mod replay;
 
