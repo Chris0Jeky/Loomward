@@ -8283,6 +8283,8 @@ fn held_unsettled_end(queued: usize, cancel: bool) -> (u64, Vec<String>) {
             finish.join().unwrap().unwrap();
         });
         let executed = writer.timings().commands - before;
+        // Captured before the next run queues anything (Codex on #961).
+        let cancelled = fingerprint(&svc);
         // The next run of the root publishes as usual.
         sink.begin_run(&id, 42, &RunScope::FullRoot).unwrap();
         let next = sink.prepare_listing(&id, 42, None, &[], identity).unwrap();
@@ -8304,7 +8306,6 @@ fn held_unsettled_end(queued: usize, cancel: bool) -> (u64, Vec<String>) {
             },
         )
         .unwrap();
-        let cancelled = fingerprint(&svc);
         sink.finish_run(&id, 42, &RunScope::FullRoot, true).unwrap();
         let names: Vec<String> = svc
             .inner
