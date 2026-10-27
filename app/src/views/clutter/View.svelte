@@ -55,9 +55,9 @@
 </script>
 
 <h1>Developer clutter</h1>
-<p class="lede">Build outputs, installed dependencies and caches that sit beside a project file, in recorded size order. <strong>You could remove these; Loomward will not.</strong></p>
+<p class="lede">Build outputs, installed dependencies and caches that sit beside a project file. <strong>You could remove these; Loomward will not.</strong></p>
 <p class="note">Advice from folder names Loomward already recorded. It does not open the project, check that anything is unused or promise a safe removal: a folder with a familiar name can still hold work that exists nowhere else. Sizes are what was recorded, not space you will get back.</p>
-<p class="muted small">Known recorded sizes rank largest first, followed by unknown sizes. When watcher data is stale, sizes are unknown and the recorded order is retained.</p>
+<p class="muted small">Known recorded sizes rank largest first, followed by unknown sizes. While a scan is running, sizes are unknown and folders have no size ranking. When watcher data is stale, sizes are unknown and the recorded order is retained.</p>
 
 <section class="panel" aria-labelledby="clutter-root-h">
   <h2 id="clutter-root-h">Root</h2>
@@ -91,7 +91,7 @@
     {:else if shape === 'list'}
       <div class="tbl-wrap">
         <table class="tbl">
-          <caption class="sr-only">Candidate folders in recorded size order; current sizes may be unknown. Advice only: nothing here can remove them.</caption>
+          <caption class="sr-only">Candidate folders; current sizes may be unknown. Advice only: nothing here can remove them.</caption>
           <thead><tr><th scope="col">Folder</th><th scope="col">Kind</th><th scope="col" class="r">Size</th><th scope="col">Coverage</th><th scope="col">If you removed it</th></tr></thead>
           <tbody>
             {#each report.candidates as c (c.node_id)}
@@ -106,7 +106,7 @@
           </tbody>
         </table>
       </div>
-      {#if report.truncated}<p class="muted small">More folders exist than are shown. The first {report.candidates.length} in recorded size order are listed.</p>{/if}
+      {#if report.truncated}<p class="muted small">More folders exist than are shown. The first {report.candidates.length} candidates are listed.</p>{/if}
     {/if}
   {/if}
 </section>

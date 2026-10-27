@@ -142,9 +142,11 @@ describe('developer clutter view', () => {
     expect(source).toContain('Not assessed yet');
   });
 
-  it('describes retained recorded ordering when watcher staleness hides every size', () => {
-    expect(source).toContain('Candidate folders in recorded size order; current sizes may be unknown.');
+  it('distinguishes mid-scan ordering from retained ordering when watcher data is stale', () => {
+    expect(source).toContain('Candidate folders; current sizes may be unknown.');
+    expect(source).toContain('While a scan is running, sizes are unknown and folders have no size ranking.');
     expect(source).toContain('When watcher data is stale, sizes are unknown and the recorded order is retained.');
+    expect(source).not.toContain('in recorded size order');
     expect(source).not.toContain('Only the largest');
   });
 
