@@ -1,6 +1,6 @@
 {
   "volume": {
-    "volume_key": "synthetic_volume",
+    "volume_id": "vo_lab1",
     "label": null,
     "bus_type": null,
     "capacity_bytes": "100000",

@@ -28,10 +28,11 @@ impl Inner {
         let r: ReclaimPlanRequest = req.decode_payload()?;
         let deadline = work.map_or_else(|| Instant::now() + Duration::from_secs(2), |w| w.deadline);
         let input = Input::open(self, deadline, work)?;
+        let volume_row = self.volume_row(&r.volume_id)?;
         let volume = db::volumes(&input.conn, None)
             .map_err(sql_error)?
             .into_iter()
-            .find(|v| v.key == r.volume_key.as_str())
+            .find(|v| v.id == volume_row)
             .ok_or_else(|| fail(ErrorCode::NotFound, "unknown volume"))?;
         let observed = input
             .volumes(deadline, true)?
@@ -177,7 +178,7 @@ impl Inner {
         let bytes = |b: Option<u64>| b.map(Bytes);
         let wire = json!({
             "volume": {
-                "volume_key": plan.volume.volume_key, "label": plan.volume.label,
+                "volume_id": format!("vo_{volume_row}"), "label": plan.volume.label,
                 "bus_type": plan.volume.bus_type, "capacity_bytes": bytes(plan.volume.capacity_bytes),
                 "free_bytes": bytes(plan.volume.free_bytes), "reserve_bytes": bytes(plan.volume.reserve_bytes),
             },

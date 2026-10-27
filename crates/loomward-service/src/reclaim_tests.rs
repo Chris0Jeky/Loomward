@@ -24,6 +24,11 @@ fn fixture(svc: &Service) -> String {
     )
 }
 
+fn volume_id(svc: &Service) -> Value {
+    let listed = json!(ok("volumes.list", call(svc, "volumes.list", json!({}))).0);
+    listed["volumes"][0]["volume_id"].clone()
+}
+
 fn reclaim(svc: &Service) -> Value {
     json!(
         ok(
@@ -31,7 +36,7 @@ fn reclaim(svc: &Service) -> Value {
             call(
                 svc,
                 "reclaim.plan",
-                json!({"volume_key": "fixture", "limit": 50})
+                json!({"volume_id": volume_id(svc), "limit": 50})
             )
         )
         .0
@@ -44,7 +49,7 @@ fn reclaim_composes_four_groups_with_unknown_relief_and_sealed_references() {
     let svc = open(tmp.path(), DatasetClass::Synthetic);
     let root = fixture(&svc);
     let plan = reclaim(&svc);
-    assert_eq!(plan["volume"]["volume_key"], "fixture");
+    assert_eq!(plan["volume"]["volume_id"], volume_id(&svc));
     assert!(plan["volume"]["reserve_bytes"].is_null());
     assert_eq!(plan["covered_roots"][0]["root_id"], root);
     assert_eq!(plan["covered_roots"][0]["allocated_bytes"], "10010");
@@ -175,14 +180,7 @@ fn reclaim_watcher_staleness_hides_all_candidate_sizes() {
     settle(&lab.svc, &start(&lab.svc, &lab.root, "full"));
     f3_wait_live(&lab.svc);
     lab.svc.inner.freshness.pause_pump();
-    let volume = lab
-        .svc
-        .inner
-        .db()
-        .query_row("SELECT volume_key FROM main.volume LIMIT 1", [], |r| {
-            r.get::<_, String>(0)
-        })
-        .unwrap();
+    let volume = volume_id(&lab.svc);
     let read = || {
         json!(
             ok(
@@ -190,7 +188,7 @@ fn reclaim_watcher_staleness_hides_all_candidate_sizes() {
                 call(
                     &lab.svc,
                     "reclaim.plan",
-                    json!({"volume_key":volume,"limit":50})
+                    json!({"volume_id":volume,"limit":50})
                 )
             )
             .0
@@ -219,21 +217,36 @@ fn reclaim_rejects_unknown_volumes_bad_limits_and_clients_even_with_a_grant() {
     let tmp = temp_root();
     let svc = open(tmp.path(), DatasetClass::Synthetic);
     let root = fixture(&svc);
+    let unknown = err(call(
+        &svc,
+        "reclaim.plan",
+        json!({"volume_id": "vo_unknown", "limit": 5}),
+    ));
+    assert_eq!(unknown.code, ErrorCode::NotFound);
+    assert_eq!(unknown.message.as_str(), "unknown volume");
+    let foreign_tmp = temp_root();
+    let foreign = open(foreign_tmp.path(), DatasetClass::Synthetic);
+    fixture(&foreign);
+    let foreign_id = volume_id(&foreign);
+    let refused = err(call(
+        &svc,
+        "reclaim.plan",
+        json!({"volume_id": foreign_id, "limit": 5}),
+    ));
+    assert_eq!(refused.code, ErrorCode::NotFound);
+    assert_eq!(reason(&refused), Some("catalog_instance_changed"));
     assert_eq!(
-        err(call(
-            &svc,
-            "reclaim.plan",
-            json!({"volume_key": "unknown", "limit": 5})
-        ))
-        .code,
-        ErrorCode::NotFound
+        refused,
+        svc.inner
+            .volume_row(foreign_id.as_str().unwrap())
+            .unwrap_err()
     );
     for limit in [0, 201] {
         assert_eq!(
             err(call(
                 &svc,
                 "reclaim.plan",
-                json!({"volume_key": "fixture", "limit": limit})
+                json!({"volume_id": volume_id(&svc), "limit": limit})
             ))
             .code,
             ErrorCode::InvalidRequest
@@ -249,7 +262,10 @@ fn reclaim_rejects_unknown_volumes_bad_limits_and_clients_even_with_a_grant() {
     for client in ["ask:local", "mcp:reader"] {
         assert_eq!(
             err(svc.call(
-                request("reclaim.plan", json!({"volume_key": "fixture", "limit": 5})),
+                request(
+                    "reclaim.plan",
+                    json!({"volume_id": volume_id(&svc), "limit": 5})
+                ),
                 &CallContext::client(client)
             ))
             .code,
@@ -336,7 +352,7 @@ fn reclaim_refuses_a_volume_with_no_active_grant_instead_of_an_empty_plan() {
     let refused = err(call(
         &svc,
         "reclaim.plan",
-        json!({"volume_key": "fixture", "limit": 5}),
+        json!({"volume_id": volume_id(&svc), "limit": 5}),
     ));
     assert_eq!(refused.code, ErrorCode::InvalidRequest);
     assert_eq!(refused.message.as_str(), "no_active_grant");
@@ -371,7 +387,7 @@ fn reclaim_limit_applies_per_group_after_grouping() {
             call(
                 &svc,
                 "reclaim.plan",
-                json!({"volume_key": "fixture", "limit": 1})
+                json!({"volume_id": volume_id(&svc), "limit": 1})
             )
         )
         .0

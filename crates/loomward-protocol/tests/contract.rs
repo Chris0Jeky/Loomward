@@ -74,10 +74,31 @@ fn reclaim_sizes_are_required_nullable_and_requests_are_bounded() {
         assert!(roundtrip(def, &extra).unwrap().is_err());
     }
     for limit in [0, 201] {
-        let value = json!({"volume_key":"synthetic_volume", "limit":limit});
+        let value = json!({"volume_id":"vo_lab1", "limit":limit});
         assert!(!schema.errors("ReclaimPlanRequest", &value).is_empty());
         assert!(roundtrip("ReclaimPlanRequest", &value).unwrap().is_err());
     }
+    let request = json!({"volume_id": "vo_lab1", "limit": 50});
+    assert!(schema.errors("ReclaimPlanRequest", &request).is_empty());
+    assert_eq!(
+        roundtrip("ReclaimPlanRequest", &request).unwrap().unwrap(),
+        request
+    );
+    for volume_id in ["", "synthetic_volume", "rt_lab1"] {
+        let invalid = json!({"volume_id": volume_id, "limit": 50});
+        assert!(!schema.errors("ReclaimPlanRequest", &invalid).is_empty());
+        assert!(roundtrip("ReclaimPlanRequest", &invalid).unwrap().is_err());
+        let mut invalid_volume = plan["volume"].clone();
+        invalid_volume["volume_id"] = json!(volume_id);
+        assert!(!schema.errors("ReclaimVolume", &invalid_volume).is_empty());
+        assert!(roundtrip("ReclaimVolume", &invalid_volume)
+            .unwrap()
+            .is_err());
+    }
+    let legacy = json!({"volume_key": "synthetic_volume", "limit": 50});
+    assert!(!schema.errors("ReclaimPlanRequest", &legacy).is_empty());
+    assert!(roundtrip("ReclaimPlanRequest", &legacy).unwrap().is_err());
+    assert_eq!(plan["volume"]["volume_id"], "vo_lab1");
     assert_eq!(Command::ReclaimPlan.client_result_def(), None);
 }
 

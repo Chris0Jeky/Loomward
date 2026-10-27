@@ -4,14 +4,14 @@ use super::*;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReclaimPlanRequest {
-    pub volume_key: Text<128>,
+    pub volume_id: VolumeId,
     pub limit: Int<1, 200>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReclaimVolume {
-    pub volume_key: Text<128>,
+    pub volume_id: VolumeId,
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub label: Option<Text<64>>,
     #[serde(deserialize_with = "crate::types::required_nullable")]

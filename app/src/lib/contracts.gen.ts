@@ -2259,12 +2259,12 @@ export interface AskTurnRecord {
 }
 
 export interface ReclaimPlanRequest {
-  volume_key: string;
+  volume_id: VolumeId;
   limit: number;
 }
 
 export interface ReclaimVolume {
-  volume_key: string;
+  volume_id: VolumeId;
   label: string | null;
   bus_type: string | null;
   capacity_bytes: NullableBytes;

@@ -982,10 +982,11 @@ that anything is safe to remove.
 
 ## Reclaim plan (LW-131 R1d)
 
-`reclaim.plan { volume_key, limit }` reads advice for an existing catalogue volume key, with
+`reclaim.plan { volume_id, limit }` reads advice for a sealed volume ID from `volumes.list`, with
 `limit` from 1 to 200 per group. It is owner-only on Tauri and HTTP in personal and synthetic
 sessions; client principals (including MCP and Ask) are refused even with disclosure grants.
-Unknown volumes are `not_found`; malformed requests are `invalid_request`.
+Unknown or foreign volume IDs are `not_found`; malformed requests are `invalid_request`.
+The response's `volume.volume_id` is the same sealed ID returned by `volumes.list`.
 
 The plan composes developer clutter and machine stores over the volume's active grants, retaining
 only outermost roots so covered allocation is not counted twice. It uses the same volume physics

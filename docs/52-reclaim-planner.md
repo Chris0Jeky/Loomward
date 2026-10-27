@@ -91,7 +91,7 @@ been approved." The plan's footer always says how much of the volume the plan **
 
 ### Proposed contract (view service, read-only)
 
-`reclaim.plan { volume_key, limit (1..200) } -> ReclaimPlan` with: `volume` (label, bus type, capacity, free,
+`reclaim.plan { volume_id, limit (1..200) } -> ReclaimPlan` with: `volume` (label, bus type, capacity, free,
 reserve), `covered_roots` (granted roots on that volume with coverage), `groups[]` (the four above) of
 `ReclaimCandidate { node_id, class, provider, kind, logical_bytes?, allocated_bytes?, reclaimable_bytes?,
 reclaimable_reason?, coverage, owner_step: Text, relocation?: { variable_or_setting, suggested_target_volume },
