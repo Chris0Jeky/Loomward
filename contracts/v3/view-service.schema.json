@@ -629,7 +629,7 @@
       }
     },
 
-    "JobKind": { "enum": ["scan", "refit", "teacher", "duplicates"], "$comment": "placement.simulate is synchronous and bounded, never a job (semantics.md section 2)." },
+    "JobKind": { "enum": ["scan", "refit", "teacher", "duplicates", "reclaim"], "$comment": "placement.simulate is synchronous and bounded, never a job (semantics.md section 2)." },
     "JobState": { "enum": ["queued", "running", "cancel_requested", "cancelled", "failed", "completed"] },
     "ScanBudget": {
       "type": "object",
@@ -689,7 +689,8 @@
         "progress": { "anyOf": [{ "$ref": "#/$defs/ScanProgress" }, { "type": "null" }] },
         "coverage": { "anyOf": [{ "$ref": "#/$defs/CoverageState" }, { "type": "null" }] },
         "error": { "anyOf": [{ "$ref": "#/$defs/ErrorBody" }, { "type": "null" }] },
-        "duplicates": { "$ref": "#/$defs/DuplicateReport" }
+        "duplicates": { "$ref": "#/$defs/DuplicateReport" },
+        "reclaim": { "$ref": "#/$defs/ReclaimObserveProgress" }
       }
     },
     "JobRefRequest": {
@@ -709,7 +710,7 @@
       "additionalProperties": false,
       "required": ["limit"],
       "properties": {
-        "kinds": { "type": "array", "maxItems": 4, "uniqueItems": true, "items": { "$ref": "#/$defs/JobKind" } },
+        "kinds": { "type": "array", "maxItems": 5, "uniqueItems": true, "items": { "$ref": "#/$defs/JobKind" } },
         "limit": { "type": "integer", "minimum": 1, "maximum": 50 }
       }
     },
@@ -3229,6 +3230,8 @@
     "ReclaimCandidate": {"type": "object", "additionalProperties": false, "required": ["node_id", "name", "class", "provider", "kind", "logical_bytes", "allocated_bytes", "reclaimable_bytes", "reclaimable_reason", "coverage", "owner_step", "relocation", "evidence", "uncertainty"], "properties": {"node_id": {"anyOf": [{"$ref": "#/$defs/NodeId"}, {"type": "null"}]}, "name": {"anyOf": [{"type": "string", "maxLength": 260}, {"type": "null"}]}, "class": {"type": "string", "maxLength": 64}, "provider": {"type": "string", "maxLength": 64}, "kind": {"anyOf": [{"type": "string", "maxLength": 64}, {"type": "null"}]}, "logical_bytes": {"$ref": "#/$defs/NullableBytes"}, "allocated_bytes": {"$ref": "#/$defs/NullableBytes"}, "reclaimable_bytes": {"$ref": "#/$defs/NullableBytes"}, "reclaimable_reason": {"anyOf": [{"type": "string", "maxLength": 256}, {"type": "null"}]}, "coverage": {"$ref": "#/$defs/CoverageState"}, "owner_step": {"type": "string", "maxLength": 1024}, "relocation": {"anyOf": [{"$ref": "#/$defs/Relocation"}, {"type": "null"}]}, "evidence": {"type": "array", "minItems": 0, "maxItems": 16, "items": {"type": "string", "maxLength": 1024}}, "uncertainty": {"type": "string", "maxLength": 1024}}, "$comment": "Read-only facts, never a disposability claim. owner_step is display text only; unknown reclaimable bytes carry a reason, never zero."},
     "ReclaimGroup": {"type": "object", "additionalProperties": false, "required": ["kind", "candidates"], "properties": {"kind": {"$ref": "#/$defs/GroupKind"}, "candidates": {"type": "array", "minItems": 0, "maxItems": 200, "items": {"$ref": "#/$defs/ReclaimCandidate"}}}},
     "ReclaimPlan": {"type": "object", "additionalProperties": false, "required": ["volume", "covered_roots", "groups", "unaccounted_bytes", "rules_version", "partial", "truncated", "budget_hit"], "properties": {"volume": {"$ref": "#/$defs/ReclaimVolume"}, "covered_roots": {"type": "array", "minItems": 0, "maxItems": 64, "items": {"$ref": "#/$defs/CoveredRoot"}}, "groups": {"type": "array", "minItems": 4, "maxItems": 4, "items": {"$ref": "#/$defs/ReclaimGroup"}}, "unaccounted_bytes": {"$ref": "#/$defs/NullableBytes"}, "rules_version": {"type": "integer", "minimum": 1, "maximum": 1000}, "partial": {"type": "boolean"}, "truncated": {"type": "boolean"}, "budget_hit": {"type": "boolean"}}, "$comment": "LW-131 R1d. Four groups in GroupKind order. Outermost active grants only; unknown sizes remain null. No effects."},
+    "ReclaimObserveRequest": {"type": "object", "additionalProperties": false, "required": ["volume_id"], "properties": {"volume_id": {"$ref": "#/$defs/VolumeId"}}},
+    "ReclaimObserveProgress": {"type": "object", "additionalProperties": false, "required": ["candidates_total", "candidates_done", "names_checked"], "properties": {"candidates_total": {"$ref": "#/$defs/Count"}, "candidates_done": {"$ref": "#/$defs/Count"}, "names_checked": {"$ref": "#/$defs/Count"}}, "$comment": "LW-131 R1g counts only. Per-candidate verdicts live in state.db and reach the owner through reclaim.plan; a candidate the job did not finish stays unknown, never zero."},
     "DeveloperClutterRequest": {"type": "object", "additionalProperties": false, "required": ["root_id", "limit"], "properties": {"root_id": {"$ref": "#/$defs/RootId"}, "limit": {"type": "integer", "minimum": 1, "maximum": 200}}},
     "DeveloperClutterProvider": {"enum": ["cargo", "npm", "python", "dotnet", "gradle"]},
     "DeveloperClutterKind": {"enum": ["build_output", "dependency_install", "environment", "bytecode_cache", "build_cache"], "$comment": "A reading of the conventional directory name, never of its contents."},

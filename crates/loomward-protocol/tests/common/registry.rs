@@ -178,6 +178,8 @@ pub fn roundtrip(def: &str, v: &Value) -> Option<Result<Value, String>> {
         "ReclaimCandidate" => rt::<ReclaimCandidate>(v),
         "ReclaimGroup" => rt::<ReclaimGroup>(v),
         "ReclaimPlan" => rt::<ReclaimPlan>(v),
+        "ReclaimObserveRequest" => rt::<ReclaimObserveRequest>(v),
+        "ReclaimObserveProgress" => rt::<ReclaimObserveProgress>(v),
         "DeveloperClutterRequest" => rt::<DeveloperClutterRequest>(v),
         "DeveloperClutterProvider" => rt::<DeveloperClutterProvider>(v),
         "DeveloperClutterKind" => rt::<DeveloperClutterKind>(v),

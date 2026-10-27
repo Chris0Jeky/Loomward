@@ -97,3 +97,19 @@ pub struct ReclaimPlan {
     pub truncated: bool,
     pub budget_hit: bool,
 }
+
+/// `reclaim.observe` (#939): the volume whose plan candidates the job observes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReclaimObserveRequest {
+    pub volume_id: VolumeId,
+}
+
+/// Counts only: per-candidate results live in `state.db` and reach the owner through `reclaim.plan`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReclaimObserveProgress {
+    pub candidates_total: Count,
+    pub candidates_done: Count,
+    pub names_checked: Count,
+}
