@@ -668,7 +668,7 @@ fn serve(
         active: HashMap::new(),
         sequences_shared: false,
     };
-    // The state rewrite and WAL cut after a forget, when a lock outlasted the first try: retried between commands.
+    // The store rewrite and WAL cut after a forget or learning migration: retried between commands.
     // A forget that committed its state half but whose rewrite and log cut never finished (a crash,
     // a lock that outlasted open) leaves the marker in state.db: finish it here.
     let mut cut_pending = scrub_pending(&conn).unwrap_or(true);
@@ -1046,8 +1046,8 @@ fn serve(
     crate::crashpoint::hit("shutdown checkpoint");
     let _ = conn.execute_batch("PRAGMA main.wal_checkpoint(TRUNCATE)");
 }
-/// Whether a forget's rewrite of the stores is still owed (the `scrub_pending` marker, written in
-/// the forget's own state.db transaction and cleared only after both rewrites and both log cuts).
+/// Whether a forget or legacy learning rewrite is still owed (the durable `scrub_pending` marker,
+/// cleared only after both rewrites and both log cuts).
 pub(crate) fn scrub_pending(conn: &Connection) -> Result<bool> {
     Ok(conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM st.meta WHERE key='scrub_pending')",
@@ -1113,9 +1113,15 @@ pub(crate) fn wal_cut(conn: &Connection, wait: Duration, vacuum: &mut bool) -> b
     let done = state && catalog;
     if done && !*vacuum {
         crate::crashpoint::hit("clear scrub marker");
-        return conn
-            .execute("DELETE FROM st.meta WHERE key='scrub_pending'", [])
-            .is_ok();
+        let complete = || -> Result<()> {
+            let tx = conn.unchecked_transaction()?;
+            // This full rewrite also discharges the legacy learning scrub, including on retry.
+            tx.execute("INSERT INTO st.meta(key,value) VALUES('learning_scrub_v1','1') ON CONFLICT(key) DO NOTHING", [])?;
+            tx.execute("DELETE FROM st.meta WHERE key='scrub_pending'", [])?;
+            tx.commit()?;
+            Ok(())
+        };
+        return complete().is_ok();
     }
     done
 }

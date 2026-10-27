@@ -506,6 +506,28 @@ pub(crate) fn open_pair_validated(
         crate::writer::purge_root(&tx, root)?;
     }
     tx.commit()?;
+    // secure_delete cannot erase learning payloads that an older build already freed (#694).
+    if !conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM st.meta WHERE key='learning_scrub_v1')",
+        [],
+        |r| r.get::<_, bool>(0),
+    )? {
+        // The sequence survives deleted feedback; a never-used learning store needs no rewrite.
+        let history: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM st.sqlite_sequence WHERE name='human_feedback' AND seq>0)
+             OR EXISTS(SELECT 1 FROM st.student_model)",
+            [],
+            |r| r.get(0),
+        )?;
+        conn.execute(
+            if history {
+                "INSERT INTO st.meta(key,value) VALUES('scrub_pending','1') ON CONFLICT(key) DO NOTHING"
+            } else {
+                "INSERT INTO st.meta(key,value) VALUES('learning_scrub_v1','1') ON CONFLICT(key) DO NOTHING"
+            },
+            [],
+        )?;
+    }
     // Also when the catalogue half finished before the crash and only the rewrite is owed.
     if !forgotten.is_empty() || crate::writer::scrub_pending(&conn)? {
         crate::writer::wal_cut(&conn, Duration::from_millis(750), &mut true);
