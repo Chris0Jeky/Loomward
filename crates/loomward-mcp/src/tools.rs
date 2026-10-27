@@ -359,11 +359,15 @@ impl Host {
             .ok_or("unknown tool")?;
         validate(name, args)?;
         // Guessed references never take the state lock.
-        for key in ["reference", "root_reference"] {
-            if let Some(r) = args.get(key).and_then(Value::as_str) {
-                if !self.references.iter().any(|(known, _)| known == r) {
-                    return Err(UNKNOWN.into());
-                }
+        let plural = args.get("references").and_then(Value::as_array);
+        for r in ["reference", "root_reference"]
+            .iter()
+            .filter_map(|key| args.get(*key))
+            .chain(plural.into_iter().flatten())
+            .filter_map(Value::as_str)
+        {
+            if !self.references.iter().any(|(known, _)| known == r) {
+                return Err(UNKNOWN.into());
             }
         }
         self.open()?;

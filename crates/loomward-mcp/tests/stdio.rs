@@ -585,6 +585,33 @@ mod live {
     }
 
     #[test]
+    fn guessed_references_are_refused_without_taking_the_state_lock() {
+        if loomward_windows::enumerate::skip_elevated_test() {
+            return;
+        }
+        let f = fixture();
+        let _lock = lock_state_dir(&f.state).unwrap();
+        let mut server = Server::start(&f.state, true, &[]);
+        let guess = "r000000000000_ffff";
+        for (name, args) in [
+            ("describe", json!({"reference":guess})),
+            ("clutter", json!({"root_reference":guess})),
+            (
+                "plan_archive",
+                json!({"references":[guess],"destination_volume":"any"}),
+            ),
+        ] {
+            // Busy would mean the guess reached the lock; unknown means it was refused first.
+            let out = server.tool(name, args);
+            assert_eq!(out["result"]["isError"], true, "{name}: {out}");
+            assert_eq!(
+                out["result"]["content"][0]["text"], "unknown reference; call find again",
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
     fn space_tools_are_scoped_field_gated_and_archive_is_read_only() {
         if loomward_windows::enumerate::skip_elevated_test() {
             return;
