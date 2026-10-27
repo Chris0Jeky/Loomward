@@ -9,6 +9,7 @@ import json
 import re
 import shutil
 import subprocess
+import tempfile
 import sys
 from pathlib import Path
 import unittest
@@ -769,6 +770,25 @@ $answers = @(foreach ($case in (ConvertFrom-Json PAYLOAD)) {
 """.replace("PAYLOAD", "(" + encoded(json.dumps(cases)) + ")").replace("CHECK", check)
         answers = json.loads(PowerShell().run(harness, 30))["answers"]
         self.assertEqual(answers, [{key: case[key] for key in ("dirty", "scan", "repairs")} for case in cases])
+
+    @unittest.skipUnless(sys.platform == "win32" and shutil.which("powershell"), "Windows PowerShell required")
+    def test_reset_replace_loop_runs_on_real_files(self):
+        # PowerShell passes $null to a .NET string parameter as "", which File.Replace rejects
+        # ("The path is not of a legal form"): measured on the first live low-space reset, 2026-10-27.
+        c = self.make()
+        c._reset()
+        script = next(s for op, s, _ in self.ps.calls if op == "reset")
+        replace = script.index("[IO.File]::Replace")
+        start = script.rindex("foreach ($pair in $pairs) {", 0, replace)
+        loop = script[start:script.index("}", replace) + 1]
+        with tempfile.TemporaryDirectory() as tmp:
+            target, temporary = Path(tmp, "lab.vhdx"), Path(tmp, "lab.vhdx.tmp")
+            target.write_text("live")
+            temporary.write_text("pristine")
+            pairs = "$pairs = @(@{ temporary = %s; target = %s })\n" % (quote(str(temporary)), quote(str(target)))
+            PowerShell().run("$ErrorActionPreference = 'Stop'\n" + pairs + loop + "\n'{}'\n\n", 30)
+            self.assertEqual(target.read_text(), "pristine")
+            self.assertFalse(temporary.exists())
 
     def test_connection_retries_cover_both_guest_accounts(self):
         c = self.make()
