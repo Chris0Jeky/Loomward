@@ -12,8 +12,8 @@ def run(ctx) -> dict:
 
     def read_only():
         main = page.locator('main')
-        expect(main.get_by_role('button')).to_have_count(1)
-        expect(main.get_by_role('button')).to_have_text('Look again')
+        # The only controls: read again, and the read-only observe job (cancel appears only while it runs).
+        expect(main.get_by_role('button')).to_have_text(['Look again', 'Observe hard links'])
         expect(main.get_by_role('combobox')).to_have_count(1)
         expect(main.locator('a, form, input, [role="button"]')).to_have_count(0)
 
@@ -34,6 +34,18 @@ def run(ctx) -> dict:
     expect(cleanup.get_by_role('list', name='Evidence')).to_contain_text('Cargo.toml')
     expect(cleanup).to_contain_text('Uncertainty: Names only')
     expect(page.get_by_label('Unaccounted space')).to_contain_text('Unaccounted: 68.3 KiB')
+    read_only()
+    # R1g: the observe job is metadata-only and changes nothing; it turns one unknown relief into a number.
+    expect(page.get_by_text('changes nothing.', exact=False)).to_be_visible()
+    page.get_by_role('button', name='Observe hard links', exact=True).click()
+    status = page.get_by_label('Observation status')
+    expect(status).to_contain_text('Observing hard links')
+    expect(page.get_by_role('button', name='Cancel observation', exact=True)).to_be_visible()
+    expect(status).to_contain_text('candidates observed')
+    expect(cleanup).to_contain_text('Estimated reclaimable: 6.00 KiB', timeout=10000)
+    expect(status).to_contain_text('Observation finished')
+    expect(cleanup).not_to_contain_text('hard links outside the candidate, or not observed')
+    expect(page.get_by_role('button', name='Cancel observation')).to_have_count(0)
     read_only()
     page.get_by_label('Volume to review').select_option(index=1)
     expect(page.get_by_role('button', name='Look again', exact=True)).to_be_enabled()

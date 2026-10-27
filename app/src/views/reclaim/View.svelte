@@ -6,10 +6,11 @@
   import type { ReclaimPlan, Volume } from '../../lib/contracts.gen';
   import { formatBytes } from '../../lib/format/bytes';
   import { escapedName } from '../../lib/format/names';
+  import { ReclaimObserve } from '../../lib/stores/reclaim-observe.svelte';
   import { session } from '../../lib/stores/session.svelte';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
   import { COVERAGE_WORDS } from '../clutter/model';
-  import { defaultVolume, GROUP_HEADINGS, unaccountedText } from './model';
+  import { defaultVolume, GROUP_HEADINGS, OBSERVE_EXPLAINER, observeLines, unaccountedText } from './model';
 
   let volumes = $state<Volume[]>([]);
   let selected = $state('');
@@ -17,6 +18,8 @@
   let loading = $state(true);
   let error = $state('');
   let generation = 0;
+  const observe = new ReclaimObserve();
+  const lines = $derived(observeLines(observe));
 
   async function read(id: string): Promise<void> {
     const c = session.client;
@@ -47,6 +50,21 @@
     })();
     return () => { current = false; generation++; };
   });
+
+  // Observation (R1g): a read job. Events and a slow poll keep it current; when it ends the plan is read again.
+  $effect(() => session.listen((event) => observe.onEvent(event)));
+  $effect(() => { void session.epoch; if (session.client) void observe.sync(); });
+  $effect(() => {
+    if (!observe.active) return;
+    const timer = setInterval(() => void observe.refresh(), 1000);
+    return () => clearInterval(timer);
+  });
+  let wasObserving = false;
+  $effect(() => {
+    const finished = wasObserving && !observe.active;
+    wasObserving = observe.active;
+    if (finished) untrack(() => void read(selected));
+  });
 </script>
 
 <h1>Reclaim</h1>
@@ -59,12 +77,17 @@
   <div class="controls">
     <div class="lw-field">
       <label class="lbl" for="reclaim-volume">Volume to review</label>
-      <select id="reclaim-volume" bind:value={selected} disabled={loading || !volumes.length} onchange={(e) => { selected = e.currentTarget.value; void read(selected); }}>
+      <select id="reclaim-volume" bind:value={selected} disabled={loading || !volumes.length || observe.active} onchange={(e) => { selected = e.currentTarget.value; void read(selected); }}>
         {#each volumes as v (v.volume_id)}<option value={v.volume_id}>{escapedName(v.display_name)}</option>{/each}
       </select>
     </div>
     <button class="btn" disabled={loading || !selected} onclick={() => void read(selected)}>Look again</button>
+    <button class="btn" disabled={loading || !selected || observe.pending || observe.active} onclick={() => void observe.start(selected)}>Observe hard links</button>
+    {#if observe.active}<button class="btn" disabled={observe.pending || observe.job?.state === 'cancel_requested'} onclick={() => void observe.cancel()}>Cancel observation</button>{/if}
   </div>
+  <p class="muted small">{OBSERVE_EXPLAINER}</p>
+  <p class="live muted" class:has={!!lines.status} role="status" aria-label="Observation status">{lines.status}</p>
+  <p class="live bad" class:has={!!lines.problem} role="status" aria-label="Observation problem">{lines.problem}</p>
   {#if !loading && !volumes.length && !error}<p class="empty">No recorded volume is available.</p>{/if}
   <p class="live bad" class:has={!!error} role="alert">{error}</p>
 </section>
