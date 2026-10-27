@@ -7,8 +7,8 @@ by the owner as G5's (q-47 Q2); refs LW-133, #900, #901, #930.
 > Hyper-V hard-off: guest RAM lost; host-backed storage keeps acknowledged writes; not a device flush-ordering or USB
 > power-loss qualification.
 
-**Verdict: G5 is not earned.** Floor credits: 4 of the 20 required, in 2 of the 4 required windows (create-batch, write;
-none yet in publish or cleanup). Zero oracle failures, zero dirty `chkdsk`. The data-flush negative control has
+**Verdict: G5 is not earned.** Floor credits: 4 of the 20 required, all in the write window (1 of the 4 required
+windows; none yet in create-batch, publish or cleanup). Zero oracle failures, zero dirty `chkdsk`. The data-flush negative control has
 **not been caught** in 10 cycles that cut a running copy, so under docs/53 section 4 this evidence covers journal and
 staging consistency under guest-RAM loss only, not flush omission, and docs/47's G5 text goes back to the owner before
 C8. C8 stays shut.
@@ -34,21 +34,27 @@ Full SHA-256 values: genuine `decf41606c8a29a05f0feae86db1679d6ffbac441e5839ee3e
 
 | Cycle | Scenario | Last durable record | Window credited | Delay (ms) | Cut latency (ms) | Dirty pages | `chkdsk /scan` | Oracle |
 |---|---|---|---|---|---|---|---|---|
-| 17 | Run | identities | create-batch | 1,559 | 10,239 | 90 | clean | pass |
-| 18 | Run | identities | create-batch | 152 | 8,161 | 185 | clean | pass |
-| 19 | Run | planned | write | 3,931 | 5,708 | 94 | clean | pass |
-| 21 | Run | identities | create-batch | 2,122 | 6,763 | 222 | clean | pass |
+| 17 | Run | identities | write (data) | 1,559 | 10,239 | 90 | clean | pass |
+| 18 | Run | identities | write (data) | 152 | 8,161 | 185 | clean | pass |
+| 19 | Run | planned | write (metadata, verify) | 3,931 | 5,708 | 94 | clean | pass |
+| 21 | Run | identities | write (data) | 2,122 | 6,763 | 222 | clean | pass |
 
-All four recovered from `copying` and ended `cancelled` after Abandon. Five other genuine cycles (13-16, 22) were cut
+**Window mapping** (from the executor's batch order in `effects/exec.rs`: `create_batch`, item creation, `identities`,
+data writes, `planned`, metadata and verification, `verified`): a last durable record of `create_batch` is a cut during
+item creation, `identities` a cut during data writes, `planned` a cut during metadata and verification. The
+orchestrator's `window_for_label` credits `identities` to create-batch, which is wrong; its summaries are corrected here
+and the mapping is fixed in its own PR.
+
+All four recovered from `copying` and ended `cancelled` after Abandon. Two other genuine cycles (16, 22) were cut
 after the copy committed; they pass and are excluded from the floor, as section 3 requires. **Cut latency** is from the
 last progress poll to `Stop-VM` returning: 5.7-10.2 s on this host under load, against the design's 0-2 s random delay,
-so the delay does little to spread cuts; the windows reached are the slow early ones.
+so the delay does little to spread cuts; every credited cut landed in the first batch's write phase.
 
 ## Negative control (data-flush mutant)
 
 | Run | Anchor | Tree, window | Cycles that cut a running copy | Caught | Other outcomes |
 |---|---|---|---|---|---|
-| neg 1-2 | progress poll | small, 0-2.5 s | 1 (cycle 12, `planned`) | 0 | 9 cut after commit (13-15, 25-32): excluded |
+| neg 1-2 | progress poll | small (recorded delays 0.2-8.9 s) | 1 (cycle 12, `planned`) | 0 | 11 cut after commit (13-15, 25-32): excluded |
 | neg 5 | launch | small, 0-1.5 s | 6 (36-39, 41, 43: `staging_intent`, `planned`, `create_batch`) | 0 | 6 `pre_copy` (40, 42, 44-47): cut before the first durable record, no evidence either way |
 | neg 6 | launch | large, 0-4 s | 3 (48-50: `planned`, `planned`, `identities`) | 0 | stopped at cycle 51 by the lab-disk reset bug (below) |
 
@@ -60,25 +66,27 @@ Why the launch-anchored cuts still miss: the mutant can only be observed after a
 while its bytes are not. In all 10 cuts the last durable record was `planned` or earlier, so no item had a durable
 `verified` record and losing its bytes was legal; the oracle was right to pass them. The large tree made planning
 longer, not the write window easier to hit. A second, unmeasured effect would remain even then: `Stop-VM -TurnOff`
-took 0.5-3.7 s from call to return in negative 5 and the guest's lazy writer flushes about once a second, so an
+took 0.5-3.7 s from call to return in most of negative 5 (9.9 s in cycle 40) and the guest's lazy writer flushes about once a second, so an
 unflushed small item is likely on the virtual disk before the VM dies.
 
-## Infrastructure failures (no cut; not counted either way)
+## Failed or rejected cycles (not counted either way)
 
 Seventeen cycle rows (1-11, the first 21, 23, 24, 33-35): PowerShell Direct unavailable or timing out at boot (1, 2, 23, 24), a guest that failed to
-boot (3), a cache read-back timeout (4), `CldFlt` not attached (7, fixed by attaching it every boot), a stale
+boot (3), a cache read-back timeout (4), `CldFlt` not attached (7, fixed by attaching it every boot), a missing
 `prepare.json` (8) and an existing cycle directory (the first cycle 21 row: a second, concurrent orchestrator refused
 to reuse it), the guest's free-space query (5, 9-11, fixed in #901), an elevated token (6, a failure by design), and
-the host lacking 4 GB for the VM (33, 34, while the owner's foreground work held the RAM). Cycle 35 cut before the
+the host lacking 4 GB for the VM (33, 34, while the owner's foreground work held the RAM). Cycles 5, 6, 9-11 and
+23 did cut (genuine 10 and 11 among them) but were rejected by the post-boot checks, so they count for nothing. Cycle 35 cut before the
 first durable record and stopped the campaign (`copy_did_not_run`); #930 now records that as `pre_copy`. After cycle
 50 the large tree left `L:` under 2 GB and the first live lab-disk reset failed before replacing either disk (PowerShell
 passed `$null` to `File.Replace` as an empty path; fixed in #945).
 
 ## What this does and does not show
 
-- Shown: four genuine cuts with dirty guest pages, during create-batch and write, all recovering through a real reboot
+- Shown: four genuine cuts with dirty guest pages, during the first batch's data writes (3) and its metadata and
+  verification (1), all recovering through a real reboot
   to a legal state with the oracle passing and a clean `chkdsk /scan`; no receipt claimed more than what verified.
-- Not shown: the publish and cleanup windows; the floor of 20; the second mutant (verified record before the bytes);
+- Not shown: the create-batch, publish and cleanup windows; the floor of 20; the second mutant (verified record before the bytes);
   any flush-omission detection. The 5-10 s cut latency and a write window shorter than it are the obstacles.
 - Next: cut closer to the act (a guest-side trigger on the signal disk, or `Stop-VM` issued from a pre-opened
   session) and a tree whose write phase outlasts that latency at the 400-IOPS cap (many medium files), so cuts land
