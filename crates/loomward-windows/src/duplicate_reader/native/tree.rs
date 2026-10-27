@@ -1137,6 +1137,85 @@ mod tests {
     }
 
     #[test]
+    fn native_short_name_fallback_continues_beyond_one_response_buffer() {
+        if crate::enumerate::skip_elevated_test() {
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let names: Vec<_> = (0..300)
+            .map(|i| format!("synthetic-{i:03}-{}.txt", "long-name-".repeat(18)))
+            .collect();
+        assert!(names.iter().map(|n| 104 + n.len() * 2).sum::<usize>() > 16 * 1024);
+        for name in &names {
+            std::fs::write(temp.path().join(name), b"synthetic").unwrap();
+        }
+        let (parent, _) = NativeSource::default().open_root(temp.path()).unwrap();
+        let meter = Meter::new(Budget {
+            bytes: 1024,
+            time: Duration::from_secs(30),
+        });
+        let mut cache = None;
+        for name in &names {
+            let wide: Vec<_> = name.encode_utf16().collect();
+            let file = enumerate::open_relative_mode(
+                parent.file(),
+                &wide,
+                FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                SHARE,
+                false,
+            )
+            .unwrap();
+            assert!(
+                listed_short_name(&parent, &file, &wide, &mut cache, &meter, names.len()).is_ok(),
+                "{name}"
+            );
+        }
+        let listed = cache.unwrap().unwrap();
+        assert_eq!(listed.len(), names.len());
+        for name in names {
+            assert!(listed.contains_key(&name.encode_utf16().collect::<Vec<_>>()));
+        }
+    }
+
+    #[test]
+    fn native_short_name_fallback_keeps_hard_link_names_separate() {
+        if crate::enumerate::skip_elevated_test() {
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("first"), b"synthetic").unwrap();
+        std::fs::hard_link(temp.path().join("first"), temp.path().join("second")).unwrap();
+        let (parent, _) = NativeSource::default().open_root(temp.path()).unwrap();
+        let meter = Meter::new(Budget {
+            bytes: 1024,
+            time: Duration::from_secs(30),
+        });
+        let mut names = directory_short_names(parent.file(), &meter, 2).unwrap();
+        let first: Vec<_> = "first".encode_utf16().collect();
+        let second: Vec<_> = "second".encode_utf16().collect();
+        assert_ne!(names[&first].0, 0);
+        assert_eq!(names[&first].0, names[&second].0);
+        // Distinct synthetic aliases also exercise per-name lookup when 8.3 creation is disabled.
+        names.get_mut(&first).unwrap().1 = vec![1, 0];
+        names.get_mut(&second).unwrap().1 = vec![2, 0];
+        let mut cache = Some(Ok(names));
+        for (name, alias) in [(first, vec![1, 0]), (second, vec![2, 0])] {
+            let file = enumerate::open_relative_mode(
+                parent.file(),
+                &name,
+                FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                SHARE,
+                false,
+            )
+            .unwrap();
+            assert_eq!(
+                listed_short_name(&parent, &file, &name, &mut cache, &meter, 2),
+                Ok(alias)
+            );
+        }
+    }
+
+    #[test]
     fn native_short_name_fallback_respects_the_requested_entry_budget() {
         if crate::enumerate::skip_elevated_test() {
             return;
