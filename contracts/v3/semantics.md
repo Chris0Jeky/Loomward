@@ -1024,9 +1024,15 @@ The job has a ten-minute wall-clock budget. A budget stop completes the job with
 a cancel ends it `cancelled`. Candidates it did not finish store nothing, so their relief stays
 unknown. `job.reclaim` carries counts only (`candidates_total`, `candidates_done`, `names_checked`).
 
-`reclaim.plan` shows a stored verdict only while the root's generation, the node's incarnation and
-the catalogue instance match and the root is not stale; a rescan therefore returns the candidate to
-"not observed". Revoking, forgetting or losing a root's identity deletes its verdicts.
+`reclaim.plan` shows a stored verdict only while the root's generation, the node's incarnation, the
+candidate directory's subtree revision and the catalogue instance match, the root is complete with no
+scan in flight, and it is not stale; any rescan or catalogue write under the candidate therefore
+returns it to "not observed". Revoking, forgetting or losing a root's identity deletes its verdicts.
+
+The pass opens names through verbatim (`\\?\`) paths and first checks every directory from below the
+root through the candidate is still the catalogued, non-reparse directory; otherwise the candidate is
+unknown and nothing beneath it is opened. It re-checks the grant and cancellation every 1,000 names.
+A root that fails admission is skipped (job `partial`), and the job never changes a grant's state.
 
 ## Owner MCP client grants (docs/48 E6)
 
