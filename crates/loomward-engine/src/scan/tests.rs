@@ -3641,3 +3641,72 @@ fn tree_geometry_refusal_names_the_volume_and_the_reason() {
     let other = tree_refusal(Reason::Io, "source", std::path::Path::new(r"H:\x"));
     assert_eq!(other, "io");
 }
+
+/// #924: a subtree whose open never returns costs that directory, not the root: the scan ends
+/// promptly with honest partial coverage, and a cancel (flag plus native interrupt, as the scan
+/// job wires it) stops it within seconds.
+#[cfg(windows)]
+#[test]
+fn a_stuck_subtree_is_partial_and_cancellable_instead_of_hanging_the_root() {
+    use loomward_windows::enumerate::{DirSource, IoCancellation, NativeSource};
+    use std::time::{Duration, Instant};
+    if skip_elevated() {
+        return;
+    }
+    let temp = canonical_tempdir();
+    std::fs::create_dir_all(temp.path().join("fine").join("inner")).unwrap();
+    std::fs::create_dir(temp.path().join("stuck")).unwrap();
+    std::fs::write(
+        temp.path().join("fine").join("inner").join("file"),
+        b"synthetic",
+    )
+    .unwrap();
+    let grant = GrantedRoot::new(
+        RootId::new("rt_stuck_subtree").unwrap(),
+        temp.path().into(),
+        DatasetClass::Synthetic,
+        NativeSource::default().open_root(temp.path()).unwrap().1,
+    );
+    let scan = |source: &NativeSource, run, cancel| {
+        run_scan(
+            source,
+            &grant,
+            run,
+            Arc::new(MemorySink::default()),
+            Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES)),
+            cancel,
+            ScanOptions::default(),
+        )
+    };
+    let source = NativeSource::new(IoCancellation::with_budget(Duration::from_millis(200)))
+        .with_blocked_child("stuck");
+    let started = Instant::now();
+    let report = scan(&source, 1, Arc::new(AtomicBool::new(false))).unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(!report.complete);
+    assert_eq!(report.failed, 1);
+    assert_eq!(report.totals.files, 1);
+
+    let io = IoCancellation::default();
+    let source = NativeSource::new(io.clone()).with_blocked_child("stuck");
+    let cancel = Arc::new(AtomicBool::new(false));
+    let flag = cancel.clone();
+    let canceller = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(200));
+        flag.store(true, Ordering::Release);
+        io.cancel();
+    });
+    let started = Instant::now();
+    let result = scan(&source, 2, cancel);
+    canceller.join().unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(result.map_or(true, |r| !r.complete));
+}

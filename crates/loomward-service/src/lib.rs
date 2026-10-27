@@ -652,8 +652,25 @@ pub(crate) fn catalog_error(e: loomward_catalog::Error) -> ErrorBody {
     }
 }
 
-pub(crate) fn sql_error(_: rusqlite::Error) -> ErrorBody {
-    fail(ErrorCode::InternalError, "state store error")
+/// #924: the SQLite result codes ride in `detail` (never SQL text, a path or a row), and the full
+/// error goes to stderr, so a bare "state store error" is diagnosable after the fact.
+pub(crate) fn sql_error(e: rusqlite::Error) -> ErrorBody {
+    eprintln!("loomward-service: state store error: {e}");
+    let mut body = fail(ErrorCode::InternalError, "state store error");
+    if let Some(sqlite) = e.sqlite_error() {
+        body.detail = Detail::new(BTreeMap::from([
+            (
+                "sqlite_code".to_string(),
+                json!(format!("{:?}", sqlite.code)),
+            ),
+            (
+                "sqlite_extended_code".to_string(),
+                json!(sqlite.extended_code),
+            ),
+        ]))
+        .ok();
+    }
+    body
 }
 
 /// What a handler produced: the result object and the revisions it was read or committed at.

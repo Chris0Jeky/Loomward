@@ -9784,3 +9784,15 @@ fn an_unsettled_deferred_refusal_cannot_finish_a_limited_sample() {
         .unwrap();
     assert_eq!((state.as_str(), complete), ("cancelled", None));
 }
+
+/// #924: a state store failure names its SQLite codes instead of a bare message.
+#[test]
+fn state_store_error_carries_its_sqlite_codes() {
+    let busy = rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(517), None);
+    let body = serde_json::to_value(crate::sql_error(busy)).unwrap();
+    assert_eq!(body["message"], "state store error");
+    assert_eq!(body["detail"]["sqlite_code"], "DatabaseBusy");
+    assert_eq!(body["detail"]["sqlite_extended_code"], 517);
+    let other = serde_json::to_value(crate::sql_error(rusqlite::Error::InvalidQuery)).unwrap();
+    assert!(other["detail"].is_null());
+}
