@@ -2859,6 +2859,14 @@ fn a_stream_planted_on_a_staged_folder_is_never_committed() {
             outcome.refusal,
             Some((Refusal::ChangedAfterVerification, None))
         );
+        // LW-132: a copy refused before its rename never claims publication.
+        let expected = if after_rename {
+            loomward_operations::ReceiptState::PublishedUnverified
+        } else {
+            loomward_operations::ReceiptState::Unverified
+        };
+        assert_eq!(outcome.receipt.state, expected, "{after_rename}");
+        assert_eq!(outcome.receipt.highest_label, None);
     }
 }
 
