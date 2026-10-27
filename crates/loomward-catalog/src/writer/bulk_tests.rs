@@ -1335,3 +1335,47 @@ fn partial_end_run_records_a_finished_run_without_reconciling_absence() {
         (0, 0, "completed".into(), true, "complete".into(), full)
     );
 }
+
+#[test]
+fn bulk_swap_restores_the_named_search_insert_trigger_even_if_missing() {
+    let _hang = watchdog();
+    for missing in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let catalog = open(temp.path(), true);
+        let w = catalog.writer();
+        let (grant, root_dir) = register(w, 1);
+        let run = begin(w, grant);
+        w.call(WriteCommand::DirListing(DirListing {
+            run_id: run,
+            dir_id: root_dir,
+            files: vec![obs("synthetic-before.txt", 7, Some(1))],
+            dirs: vec![],
+            state: "complete".into(),
+            skipped: 0,
+            errors: 0,
+        }))
+        .unwrap();
+        let conn = Connection::open(temp.path().join("catalog.db")).unwrap();
+        if missing {
+            conn.execute_batch("DROP TRIGGER search_file_insert")
+                .unwrap();
+        }
+        end(w, run, "completed").expect("a missing derived trigger must not block publication");
+        let present: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='trigger' AND name='search_file_insert')",
+            [], |r| r.get(0)
+        ).unwrap();
+        assert!(present, "bulk swap must restore search_file_insert by name");
+        conn.execute("INSERT INTO file(dir_id,name,logical,attrs,flags,born_run,seen_run) VALUES(?1,'synthetic-after.txt',1,32,0,?2,?2)", params![root_dir, run]).unwrap();
+        let hits: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM search_name WHERE search_name MATCH 'after'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(hits, 1, "later incremental inserts must still be indexed");
+        conn.execute_batch("INSERT INTO search_name(search_name,rank) VALUES('integrity-check',1)")
+            .unwrap();
+    }
+}

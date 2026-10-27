@@ -148,7 +148,19 @@ impl Inner {
             let mut coverage = "unscanned".to_owned();
             let mut allocated = None;
             if let Some(dir) = root.dir {
-                match reader.inspect(NodeKey::Dir(dir)) {
+                #[cfg(test)]
+                let inspect = if self
+                    .hooks
+                    .reclaim_inspect_budget
+                    .swap(false, std::sync::atomic::Ordering::SeqCst)
+                {
+                    Err(loomward_catalog::Error::ResourceBudget)
+                } else {
+                    reader.inspect(NodeKey::Dir(dir))
+                };
+                #[cfg(not(test))]
+                let inspect = reader.inspect(NodeKey::Dir(dir));
+                match inspect {
                     Ok(detail) => {
                         coverage = detail.row.coverage;
                         if coverage == "complete" && root.subtree_complete {

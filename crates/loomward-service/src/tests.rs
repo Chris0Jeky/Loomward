@@ -89,6 +89,8 @@ pub(crate) struct Hooks {
     pub before_freshness_finish: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     /// #939: `reclaim.observe` answers as if the process held an elevated token.
     pub reclaim_elevated: std::sync::atomic::AtomicBool,
+    /// #954: refuse the next reclaim root inspection without consuming detector budgets.
+    pub reclaim_inspect_budget: std::sync::atomic::AtomicBool,
     /// #939: the observation's wall-clock budget instead of ten minutes.
     pub reclaim_budget: Mutex<Option<Duration>>,
     /// #970: names the observation has handed to the link-count pass.
