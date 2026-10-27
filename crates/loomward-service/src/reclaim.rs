@@ -50,6 +50,12 @@ impl Inner {
                     && (path.starts_with(&format!("{outer}\\")) || (path == *outer && *id < r.root))
             })
         });
+        // Like placement: with no active grant there is nothing to read, and an empty plan would read as nothing found.
+        if roots.is_empty() {
+            return Err(fail(ErrorCode::InvalidRequest, "no_active_grant"));
+        }
+        // Offline also covers a foreign disk on the root's letter (#910): its bin is not this volume's.
+        let online = observed.volume.online;
         let mut planner = ReclaimInput {
             volume: reclaim::ReclaimVolume {
                 volume_key: volume.key,
@@ -80,6 +86,7 @@ impl Inner {
         };
         let mut reader = self.read_reader(work)?.without_repairs();
         let mut budget_hit = false;
+        let mut bin_unknown = false;
         for root in roots {
             let mut coverage = "unscanned".to_owned();
             let mut allocated = None;
@@ -153,12 +160,16 @@ impl Inner {
             let path = Path::new(&root.display_path);
             // shortcut: mounted-folder roots stay unknown until volume mount points are recorded.
             if path.is_absolute() && path.parent().is_none() {
-                planner.recycle_bin = loomward_windows::recycle_bin::query(path);
+                planner.recycle_bin = online
+                    .then(|| loomward_windows::recycle_bin::query(path))
+                    .flatten();
+                // An unread bin is unknown, not empty.
+                bin_unknown = planner.recycle_bin.is_none();
             }
         }
         let mut plan = reclaim::plan(planner)?;
         plan.budget_hit |= budget_hit;
-        plan.partial |= budget_hit;
+        plan.partial |= budget_hit || bin_unknown;
         let bytes = |b: Option<u64>| b.map(Bytes);
         let wire = json!({
             "volume": {

@@ -316,3 +316,28 @@ fn reclaim_dirty_root_is_partial_without_repairing_catalogue_or_state() {
     assert_eq!(row_checksums(&svc.inner.db()), before);
     assert_eq!(std::fs::read(tmp.path().join("state.db")).unwrap(), state);
 }
+
+#[test]
+fn reclaim_refuses_a_volume_with_no_active_grant_instead_of_an_empty_plan() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let root = fixture(&svc);
+    assert!(reclaim(&svc)["covered_roots"]
+        .as_array()
+        .is_some_and(|r| !r.is_empty()));
+    ok(
+        "roots.revoke",
+        call(
+            &svc,
+            "roots.revoke",
+            json!({"root_id": root, "purge_catalog": false}),
+        ),
+    );
+    let refused = err(call(
+        &svc,
+        "reclaim.plan",
+        json!({"volume_key": "fixture", "limit": 5}),
+    ));
+    assert_eq!(refused.code, ErrorCode::InvalidRequest);
+    assert_eq!(refused.message.as_str(), "no_active_grant");
+}
