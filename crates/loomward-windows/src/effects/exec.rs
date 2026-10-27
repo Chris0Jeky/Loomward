@@ -284,7 +284,7 @@ fn prepare_with_limit(
     };
     drop(dest);
     let ctx = loomward_operations::Context {
-        elevated: enumerate::skip_elevated_test(),
+        elevated: enumerate::running_elevated(),
         grants_active: request.grants_active,
         // H1 measured PASS on NTFS (evidence/v3/copy-primitives.md).
         named_streams: true,
