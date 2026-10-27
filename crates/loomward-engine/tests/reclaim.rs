@@ -775,11 +775,19 @@ fn reclaim_wrong_rules_version_is_refused() {
 #[test]
 fn reclaim_oversize_deletion_set_is_unobserved() {
     let lab = Lab::new();
-    let target = NodeKey::Dir(lab.project("Cargo.toml", "target", 100));
+    // Totals match the candidate and every name has its own single-link identity, so the cap is
+    // the only reason relief is unknown (removing it would verify 200,001 bytes).
+    let total = MAX_FILES_PER_GROUP as i64 + 1;
+    let target = NodeKey::Dir(lab.project("Cargo.toml", "target", total));
     assert_eq!(MAX_FILES_PER_GROUP, 200_000);
     let mut files = Vec::with_capacity(MAX_FILES_PER_GROUP + 1);
     for i in 0..=MAX_FILES_PER_GROUP {
-        files.push(name(&format!("bulk{i:06}"), 1, 1, 1, 0));
+        let mut f = name(&format!("bulk{i:06}"), 1, 1, 1, 0);
+        let mut id = [0xAB; 16];
+        id[..8].copy_from_slice(&(i as u64).to_le_bytes());
+        f.object.as_mut().unwrap().file_id = id;
+        f.link_observation.as_mut().unwrap().object.file_id = id;
+        files.push(f);
     }
     assert_eq!(files.len(), MAX_FILES_PER_GROUP + 1);
     let mut input = lab.input();
@@ -790,21 +798,21 @@ fn reclaim_oversize_deletion_set_is_unobserved() {
         (c.reclaimable_bytes, c.reclaimable_reason),
         (None, Some(RELIEF_UNOBSERVED))
     );
-    assert_eq!(c.allocated_bytes, Some(100), "sizes stay observed");
+    assert_eq!(c.allocated_bytes, Some(total as u64), "sizes stay observed");
     let json = serde_json::to_value(c).unwrap();
     assert!(
         json["reclaimable_bytes"].is_null(),
         "unknown relief is null, never zero"
     );
-    // Positive control: the same candidate with one verifiable name verifies exactly.
+    // Positive control: one verifiable name carrying the whole candidate verifies exactly.
     let mut input = lab.input();
     input
         .files
-        .insert(target, observed(vec![name("solo", 1, 100, 1, 0)]));
+        .insert(target, observed(vec![name("solo", 1, total as u64, 1, 0)]));
     let plan = reclaim::plan(input).unwrap();
     let (_, c) = find(&plan, target);
     assert_eq!(
         (c.reclaimable_bytes, c.reclaimable_reason),
-        (Some(100), None)
+        (Some(total as u64), None)
     );
 }
