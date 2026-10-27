@@ -65,13 +65,23 @@ describe('reclaim view', () => {
     };
   }
 
-  it('only offers volume selection and a read-again button, with owner steps as text', () => {
-    expect(source.match(/<button\b/g)).toHaveLength(1);
+  it('only offers volume selection, read again and the read-only observe/cancel pair, with owner steps as text', () => {
+    expect(source.match(/<button\b/g)).toHaveLength(3);
     expect(source.match(/<select\b/g)).toHaveLength(1);
     expect(source).toContain('>Look again</button>');
+    expect(source).toContain('>Observe hard links</button>');
+    expect(source).toContain('>Cancel observation</button>');
     expect(source).toContain('Owner step: {candidate.owner_step}</p>');
     expect(source).not.toMatch(/<a\b|<form\b|<input\b|{@html|clipboard|exec\(|invoke\(/);
     expect([...source.matchAll(/c.call\('([^']+)'/g)].map((m) => m[1])).toEqual(['reclaim.plan', 'volumes.list']);
+  });
+
+  it('the observe store calls only the read-only job commands and the plan', () => {
+    const store = readFileSync(new URL('../../src/lib/stores/reclaim-observe.svelte.ts', import.meta.url), 'utf8');
+    const allowed = ['jobs.list', 'jobs.get', 'reclaim.observe', 'jobs.cancel', 'reclaim.plan', 'volumes.list'];
+    const used = [...store.matchAll(/\.call\('([^']+)'/g)].map((m) => m[1]);
+    expect(used.length).toBeGreaterThan(0);
+    expect(used.filter((c) => !allowed.includes(c!))).toEqual([]);
   });
 
   it('clears old evidence during a new read, and drops superseded replies', async () => {
