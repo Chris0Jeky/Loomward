@@ -7,7 +7,9 @@ use std::{io, path::Path};
 /// Device serials in temporary IOCTL response buffers are never extracted, retained or hashed.
 /// The volume GUID identifies the volume; observed enclosure/firmware/policy changes invalidate
 /// qualification. No serial is needed for this volume-level identity.
-/// Unknown fields mean the tuple cannot prove an unchanged physical path.
+/// Unknown fields mean the tuple cannot prove an unchanged physical path. `==` compares two
+/// observations as recorded (equal unknowns compare equal); qualification must use
+/// [`StoragePath::proves_same_path`], never `==` (review of #983).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct StoragePath {
     pub volume_guid: String,
@@ -23,6 +25,29 @@ pub struct StoragePath {
     pub removal_policy: Fact<RemovalPolicy>,
     pub write_cache_enabled: Fact<bool>,
     pub windows_build: Fact<u32>,
+}
+
+impl StoragePath {
+    /// Whether `other` is provably the same physical path: same volume and every field known and
+    /// equal in both. Any unknown field proves nothing, so a changed enclosure cannot hide.
+    pub fn proves_same_path(&self, other: &Self) -> bool {
+        fn same<T: PartialEq>(a: &Fact<T>, b: &Fact<T>) -> bool {
+            matches!((a, b), (Fact::Known { value: x }, Fact::Known { value: y }) if x == y)
+        }
+        self.volume_guid == other.volume_guid
+            && same(&self.disk_model, &other.disk_model)
+            && same(&self.firmware, &other.firmware)
+            && same(&self.bus_type, &other.bus_type)
+            && same(&self.usb_vid, &other.usb_vid)
+            && same(&self.usb_pid, &other.usb_pid)
+            && same(&self.bridge, &other.bridge)
+            && same(&self.usb_transport, &other.usb_transport)
+            && same(&self.logical_sector_bytes, &other.logical_sector_bytes)
+            && same(&self.physical_sector_bytes, &other.physical_sector_bytes)
+            && same(&self.removal_policy, &other.removal_policy)
+            && same(&self.write_cache_enabled, &other.write_cache_enabled)
+            && same(&self.windows_build, &other.windows_build)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -218,6 +243,21 @@ mod tests {
         });
         assert!(matches!(observe(&provider).health,
             HealthObservation::UnsupportedOrHidden { reason } if reason.contains("bridge hides")));
+    }
+
+    #[test]
+    fn unknown_fields_never_prove_the_same_path() {
+        let full = observe(&fixture(unknown())).storage_path;
+        assert!(full.proves_same_path(&full.clone()));
+        let mut swapped = full.clone();
+        swapped.bridge = known("Synthetic enclosure B".into());
+        assert!(!full.proves_same_path(&swapped));
+        // Unknown bridge and firmware: equal as recorded, but they prove nothing about the enclosure.
+        let mut partial = full.clone();
+        partial.bridge = unknown();
+        partial.firmware = unknown();
+        assert_eq!(partial, partial.clone());
+        assert!(!partial.proves_same_path(&partial.clone()));
     }
 
     #[test]
