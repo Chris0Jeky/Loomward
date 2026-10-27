@@ -313,6 +313,13 @@ impl CatalogScanSink {
         }
     }
 
+    /// Listing steps sent for `root` whose receipts are not yet taken.
+    #[cfg(test)]
+    pub(crate) fn unsettled(&self, root: &RootId) -> usize {
+        let s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        s.roots.get(root).map_or(0, |r| r.sent.len())
+    }
+
     /// Binds a wire root to its active grant before a scan; a new grant lifts an old fence.
     pub(crate) fn bind(&self, root: &RootId, grant: i64, root_dir: i64) {
         let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -412,6 +419,8 @@ impl CatalogScanSink {
                         }
                     }
                 }
+                // Dropped unexecuted for a run `finish_traversal` is ending cancelled (#934).
+                Err(CatalogError::Cancelled) => {}
                 Err(e) => match listing_error(e) {
                     EngineError::StaleGeneration { .. } => stale.push(step.ticket.dir),
                     e => {
@@ -910,6 +919,21 @@ impl ScanSink for CatalogScanSink {
         settled: bool,
         limited: bool,
     ) -> EngineResult<()> {
+        // #934: a run that ends cancelled whatever its receipts say needs none of its queued
+        // steps, so the writer drops them unexecuted instead of committing them first; the steps
+        // that did commit are a prefix of those sent, as if the run had been cancelled there.
+        if !complete && !settled && !limited {
+            let catalog_run = {
+                let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                Self::active(&mut s, root, run)
+                    .ok()
+                    .and_then(|r| r.run)
+                    .map(|(_, catalog)| catalog)
+            };
+            if let (Some(catalog_run), Some(inner)) = (catalog_run, self.inner.upgrade()) {
+                inner.catalog.writer().cancel_run(catalog_run);
+            }
+        }
         // EndRun queues behind every step sent. An unsettled or obsolete step means the engine
         // never relisted it, so neither completeness nor a settled traversal can be claimed.
         let receipts = self.settle(root);
