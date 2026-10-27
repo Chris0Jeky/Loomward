@@ -43,7 +43,7 @@ Full SHA-256 values: genuine `decf41606c8a29a05f0feae86db1679d6ffbac441e5839ee3e
 data writes, `planned`, metadata and verification, `verified`): a last durable record of `create_batch` is a cut during
 item creation, `identities` a cut during data writes, `planned` a cut during metadata and verification. The
 orchestrator's `window_for_label` credits `identities` to create-batch, which is wrong; its summaries are corrected here
-and the mapping is fixed in its own PR.
+and the mapping is fixed in #947.
 
 All four recovered from `copying` and ended `cancelled` after Abandon. Two other genuine cycles (16, 22) were cut
 after the copy committed; they pass and are excluded from the floor, as section 3 requires. **Cut latency** is from the
@@ -76,7 +76,7 @@ boot (3), a cache read-back timeout (4), `CldFlt` not attached (7, fixed by atta
 `prepare.json` (8) and an existing cycle directory (the first cycle 21 row: a second, concurrent orchestrator refused
 to reuse it), the guest's free-space query (5, 9-11, fixed in #901), an elevated token (6, a failure by design), and
 the host lacking 4 GB for the VM (33, 34, while the owner's foreground work held the RAM). Cycles 5, 6, 9-11 and
-23 did cut (genuine 10 and 11 among them) but were rejected by the post-boot checks, so they count for nothing. Cycle 35 cut before the
+23 did cut (genuine 5, 10 and 11 among them) but were rejected by the post-boot checks, so they count for nothing. Cycle 35 cut before the
 first durable record and stopped the campaign (`copy_did_not_run`); #930 now records that as `pre_copy`. After cycle
 50 the large tree left `L:` under 2 GB and the first live lab-disk reset failed before replacing either disk (PowerShell
 passed `$null` to `File.Replace` as an empty path; fixed in #945).
