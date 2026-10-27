@@ -58,6 +58,8 @@ export function observeStatus(job: Job | null, owned = true): string {
   if (!owned && ['queued', 'running', 'cancel_requested'].includes(job.state)) {
     return `An observation this page did not start is running, and the service does not say which volume it covers · ${p}. This volume's plan is read again when it ends.`;
   }
+  // Finished but not ours: its counts may describe another volume, so state only that it ended.
+  if (!owned) return 'An observation this page did not start has ended; it may have covered another volume. The plan below is this volume's.';
   switch (job.state) {
     case 'queued': return 'Observation queued.';
     case 'running': return `Observing hard links · ${p}`;

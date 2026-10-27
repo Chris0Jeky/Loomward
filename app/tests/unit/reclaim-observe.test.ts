@@ -135,6 +135,10 @@ describe('observe wording', () => {
 
   it('says what each job end means, never presenting unfinished candidates as zero', () => {
     expect(observeStatus(null)).toBe('');
+    // A finished job this page did not start never presents its counts as this volume's.
+    const foreign = observeStatus(job({ state: 'completed', coverage: 'complete', reclaim: { candidates_total: 2, candidates_done: 2, names_checked: 10 } }), false);
+    expect(foreign).toContain('may have covered another volume');
+    expect(foreign).not.toContain('2 of 2');
     expect(observeStatus(job({ state: 'completed', coverage: 'complete', reclaim: { candidates_total: 2, candidates_done: 2, names_checked: 10 } }))).toBe('Observation finished · 2 of 2 candidates observed · 10 names checked.');
     expect(observeStatus(job({ state: 'completed', coverage: 'partial' }))).toMatch(/^Observation stopped early · .*stay unknown/);
     expect(observeStatus(job({ state: 'failed', error: { code: 'internal_error', message: 'disk gone', retryable: false, detail: null } }))).toBe('Observation failed: disk gone. Candidates it did not finish stay unknown.');
