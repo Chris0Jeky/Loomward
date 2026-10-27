@@ -6,7 +6,8 @@
 //! a separator), substring; then, for several words, all words at word starts, all words anywhere.
 //! Inside a pass, folders come before files and both run in key order, which makes the cursor a
 //! plain keyset position. An empty text lists by filters only (files of one extension largest
-//! first). Visibility is checked per hit: active grant, requested root, no hidden ancestor.
+//! first). Visibility is checked per hit: active grant, requested root, no hidden ancestor. A
+//! client's MATCH also carries its roots (#887), so out-of-grant rows are never visited at all.
 use crate::query::{
     instance, is_budget_interrupt, raw, revisions, Raw, WorkGuard, DIR_COLUMNS, FILE_COLUMNS,
 };
@@ -296,6 +297,26 @@ fn statement(filter: bool, files: bool, by_size: bool, scope: Option<&[i64]>) ->
 }
 }
 
+/// A root's `root` column code in `search.sql`: three C1 control characters, five bits each.
+fn root_code(id: i64) -> String {
+    [10, 5, 0]
+        .iter()
+        .map(|s| char::from_u32(0x80 + ((id >> s) & 31) as u32).unwrap_or('\u{80}'))
+        .collect()
+}
+/// A client's pass expression ANDed with its roots (#887), so FTS5 never visits an out-of-grant
+/// row; `None` when the client may see no root at all.
+fn scoped(expr: &str, scope: &[i64], root: Option<i64>) -> Option<String> {
+    let mut codes: Vec<String> = scope
+        .iter()
+        .filter(|id| root.is_none_or(|r| r == **id))
+        .map(|id| phrase(&root_code(*id)))
+        .collect();
+    codes.sort_unstable();
+    codes.dedup();
+    (!codes.is_empty()).then(|| format!("({expr}) AND root : {}", any(codes)))
+}
+
 /// A keyset position: pass, last key, and the last size of a by-size listing.
 type Position = (u8, i64, Option<i64>);
 
@@ -318,10 +339,17 @@ impl Walk<'_> {
     fn scan(&mut self, conn: &Connection, expr: &str, files: bool) -> Result<()> {
         let r = self.req;
         let by_size = files && self.pass == FILTER_PASS && r.extension.is_some();
+        let expr = match (&r.scope, self.pass == FILTER_PASS) {
+            (Some(scope), false) => match scoped(expr, scope, r.root_id) {
+                Some(expr) => expr,
+                None => return Ok(()),
+            },
+            _ => expr.to_string(),
+        };
         let sql = statement(self.pass == FILTER_PASS, files, by_size, r.scope.as_deref());
         let mut stmt = conn.prepare_cached(&sql)?;
         let values = [
-            Value::Text(expr.into()),
+            Value::Text(expr),
             Value::Integer(self.key),
             r.root_id.map_or(Value::Null, Value::Integer),
             r.extension.clone().map_or(Value::Null, Value::Text),

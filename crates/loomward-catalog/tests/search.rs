@@ -849,9 +849,10 @@ fn trigram_storage_omits_unused_document_sizes() {
         .collect::<rusqlite::Result<Vec<_>>>()
         .unwrap()
         .join(" ");
-    // The MATCH is consumed by the FTS5 index (plan text "VIRTUAL TABLE INDEX <n>:M1"), not a scan.
+    // The MATCH is consumed by the FTS5 index (plan text "VIRTUAL TABLE INDEX <n>:M2", M then the
+    // table-named column's index after `name` and `root`), not a scan.
     assert!(
-        plan.contains("VIRTUAL TABLE INDEX") && plan.contains(":M1"),
+        plan.contains("VIRTUAL TABLE INDEX") && plan.contains(":M2"),
         "{plan}"
     );
     assert!(!plan.contains("TEMP B-TREE"), "{plan}");
@@ -959,4 +960,149 @@ fn older_trigram_store_compacts_without_losing_rows_or_search_tiers() {
         names(&search(&lab, &req("ledger"))),
         pairs(&[("token", "renamed-ledger.txt")])
     );
+}
+
+/// Root A holds three `common` files; root B holds `n` files that match `common` only when
+/// `b_matches`. IDs are the same either way, so two labs differ only in out-of-grant matches.
+fn grant_oracle_lab(b_matches: bool, n: usize) -> (Lab, Root, Root) {
+    let mut lab = lab();
+    let a = register(&lab, "vol-a", "Alpha", 1);
+    let b = register(&lab, "vol-b", "Beta", 2);
+    // B first: its keys precede A's, so a per-hit filter would walk all of them before A's.
+    let run = begin(&lab, &b, "full");
+    let word = if b_matches { "common" } else { "differ" };
+    let files = (0..n)
+        .map(|i| obs(&mut lab, &format!("{word}-beta-{i}.dat"), 1))
+        .collect();
+    list(&lab, run, b.dir, files, vec![]);
+    end(&lab, run);
+    let run = begin(&lab, &a, "full");
+    let files = (0..3)
+        .map(|i| obs(&mut lab, &format!("common-alpha-{i}.dat"), 1))
+        .collect();
+    list(&lab, run, a.dir, files, vec![]);
+    end(&lab, run);
+    (lab, a, b)
+}
+
+// #887: a client's MATCH carries its roots, so out-of-grant matches never reach the VM and
+// neither the budget, the page nor (beyond noise) the time tells a client they exist. The VM step
+// budget is the deterministic performance guard: far below one step per out-of-grant match.
+#[test]
+fn out_of_grant_matches_never_spend_a_clients_budget() {
+    const OUT: usize = 6000;
+    let (with, a, b) = grant_oracle_lab(true, OUT);
+    let (without, a2, _) = grant_oracle_lab(false, OUT);
+    assert_eq!(a.root, a2.root);
+    let client = |lab: &Lab| {
+        let mut r = req("common");
+        r.limit = 20;
+        r.work_budget = 20_000;
+        r.scope = Some(vec![a.root]);
+        let mut ms = Vec::new();
+        let mut page = None;
+        for _ in 0..3 {
+            let started = std::time::Instant::now();
+            page = Some(search(lab, &r));
+            ms.push(started.elapsed());
+        }
+        ms.sort();
+        (page.unwrap(), ms[1])
+    };
+    // The step budget above is the deterministic guard; wall-clock bounds flake on loaded CI.
+    let (p_with, _) = client(&with);
+    let (p_without, _) = client(&without);
+    assert_eq!(names(&p_with), names(&p_without));
+    assert_eq!(p_with.hits.len(), 3);
+    assert!(!p_with.budget_hit && !p_without.budget_hit);
+    assert!(p_with.next_cursor.is_none() && p_without.next_cursor.is_none());
+    // The owner, and a client granted both roots, still see every match in the same order.
+    let mut owner = req("common");
+    owner.limit = 10;
+    let all = search(&with, &owner);
+    assert_eq!(all.hits.len(), 10);
+    assert!(all.hits.iter().all(|h| h.root_id == b.root));
+    owner.scope = Some(vec![b.root, a.root]);
+    assert_eq!(names(&search(&with, &owner)), names(&all));
+    // A requested root narrows the scoped MATCH too.
+    owner.root_id = Some(a.root);
+    assert_eq!(search(&with, &owner).hits.len(), 3);
+}
+
+// #887: a store from before the `root` column is rebuilt at open; owner results are unchanged,
+// clients are scoped, and raw renames, moves and cascading deletes keep the index exact.
+#[test]
+fn a_store_without_the_root_column_migrates_and_scopes_client_search() {
+    let (mut with, a, b) = grant_oracle_lab(true, 50);
+    let owner = req("common");
+    let before = names(&search(&with, &owner));
+    let dir = with.temp.path().to_path_buf();
+    drop(with.c);
+    let db = Connection::open(dir.join("catalog.db")).unwrap();
+    db.execute_batch("DROP TRIGGER search_file_insert; DROP TRIGGER search_file_delete; DROP TRIGGER search_file_rename; DROP TRIGGER search_dir_files_delete; DROP TRIGGER search_dir_insert; DROP TRIGGER search_dir_delete; DROP TRIGGER search_dir_rename; DROP TABLE search_name; DROP VIEW search_name_content;").unwrap();
+    db.execute_batch(include_str!("fixtures/search-name-v2.sql"))
+        .unwrap();
+    db.execute_batch(
+        "INSERT INTO search_name(rowid,name) SELECT rowid,name FROM search_name_content",
+    )
+    .unwrap();
+    drop(db);
+    with.c = Catalog::open(&dir, "synthetic").unwrap();
+    let db = Connection::open(dir.join("catalog.db")).unwrap();
+    assert!(db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('search_name') WHERE name='root')",
+            [],
+            |r| r.get::<_, bool>(0)
+        )
+        .unwrap());
+    assert_index_parity(&with);
+    assert_eq!(names(&search(&with, &owner)), before);
+    let mut client = req("common");
+    client.scope = Some(vec![a.root]);
+    let page = search(&with, &client);
+    assert_eq!(page.hits.len(), 3);
+    assert!(page.hits.iter().all(|h| h.root_id == a.root));
+    // Raw writers: a rename, a move into another root's folder, and a folder delete whose files
+    // go by cascade (the folder row is gone before its files' triggers run).
+    let folder: i64 = db
+        .query_row(
+            "INSERT INTO dir(root_id,parent_id,name,id_quality,id_basis,depth,attrs,listing_state,born_run,seen_run) VALUES(?1,?2,'common-folder','path_observation','none',1,0,'complete',0,0) RETURNING id",
+            [a.root, a.dir],
+            |r| r.get(0),
+        )
+        .unwrap();
+    db.execute_batch(&format!(
+        "PRAGMA foreign_keys=ON;
+         INSERT INTO file(dir_id,name,logical,attrs,born_run,seen_run) VALUES({folder},'common-inside.dat',1,0,0,0);
+         UPDATE file SET name='renamed-common.dat' WHERE name='common-beta-1.dat';
+         UPDATE file SET dir_id={} WHERE name='common-beta-2.dat';",
+        a.dir
+    ))
+    .unwrap();
+    assert_index_parity(&with);
+    let in_a = |lab: &Lab| {
+        let mut r = req("common");
+        r.scope = Some(vec![a.root]);
+        search(lab, &r)
+            .hits
+            .into_iter()
+            .map(|h| h.row.name)
+            .collect::<Vec<_>>()
+    };
+    let moved = in_a(&with);
+    assert!(
+        moved.contains(&"common-beta-2.dat".to_string()),
+        "{moved:?}"
+    );
+    assert!(
+        moved.contains(&"common-inside.dat".to_string()),
+        "{moved:?}"
+    );
+    db.execute("DELETE FROM dir WHERE id=?1", [folder]).unwrap();
+    assert_index_parity(&with);
+    assert!(!in_a(&with).contains(&"common-inside.dat".to_string()));
+    let mut only_b = req("renamed-common");
+    only_b.scope = Some(vec![b.root]);
+    assert_eq!(search(&with, &only_b).hits.len(), 1);
 }
