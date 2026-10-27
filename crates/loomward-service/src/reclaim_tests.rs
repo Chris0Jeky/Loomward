@@ -635,6 +635,7 @@ fn reclaim_observe_rows_lapse_when_a_rescan_moves_the_generation() {
 #[test]
 fn reclaim_observe_is_owner_only_and_refuses_what_the_plan_refuses() {
     // Hosted Windows runners are elevated (#823); the job refuses an elevated token first.
+    #[cfg(windows)]
     if loomward_windows::enumerate::skip_elevated_test() {
         return;
     }
@@ -875,6 +876,7 @@ fn reclaim_observe_one_candidate_failure_does_not_fail_the_job() {
 #[test]
 fn reclaim_observe_skips_a_root_that_fails_admission() {
     // Hosted Windows runners are elevated (#823); the job refuses an elevated token first.
+    #[cfg(windows)]
     if loomward_windows::enumerate::skip_elevated_test() {
         return;
     }
