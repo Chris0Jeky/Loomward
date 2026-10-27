@@ -1700,9 +1700,11 @@ fn run_scan_inner<S: DirSource>(
     });
     #[cfg(test)]
     before_publish("run_scan");
+    // One read: a flag flipping later must not mark a run that this snapshot let settle (#961 review).
+    let cancelled = cancel.load(Ordering::Acquire);
     let drained = reconciled
         && shared.duplicate_identity.load(Ordering::Relaxed) == 0
-        && !cancel.load(Ordering::Acquire)
+        && !cancelled
         && worker_result.is_ok()
         && writer_result.is_ok();
     let limit_hit = shared.limit_hit.load(Ordering::Acquire);
@@ -1729,7 +1731,7 @@ fn run_scan_inner<S: DirSource>(
     };
     // #934: only a cancelled run (stopped early, or refused admission by scan.cancel) may drop
     // its queued writes; any other unsettled finish still commits everything it sent.
-    if cancel.load(Ordering::Acquire) || ((settled || limited) && !admitted) {
+    if cancelled || ((settled || limited) && !admitted) {
         sink.cancel_queued(root.root_id(), run);
     }
     let complete = complete && admitted;
