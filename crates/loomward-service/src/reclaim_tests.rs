@@ -404,6 +404,7 @@ fn reclaim_limit_applies_per_group_after_grouping() {
     assert!(filled.contains(&"informational".to_owned()), "{plan}");
 }
 
+#[cfg(windows)]
 fn observe_job(svc: &Service) -> String {
     let (job, _) = ok(
         "reclaim.observe",
@@ -633,6 +634,10 @@ fn reclaim_observe_rows_lapse_when_a_rescan_moves_the_generation() {
 
 #[test]
 fn reclaim_observe_is_owner_only_and_refuses_what_the_plan_refuses() {
+    // Hosted Windows runners are elevated (#823); the job refuses an elevated token first.
+    if loomward_windows::enumerate::skip_elevated_test() {
+        return;
+    }
     let tmp = temp_root();
     let svc = open(tmp.path(), DatasetClass::Synthetic);
     let root = fixture(&svc);
@@ -869,6 +874,10 @@ fn reclaim_observe_one_candidate_failure_does_not_fail_the_job() {
 #[cfg(windows)]
 #[test]
 fn reclaim_observe_skips_a_root_that_fails_admission() {
+    // Hosted Windows runners are elevated (#823); the job refuses an elevated token first.
+    if loomward_windows::enumerate::skip_elevated_test() {
+        return;
+    }
     let tmp = temp_root();
     let svc = open(tmp.path(), DatasetClass::Synthetic);
     let root = fixture(&svc);
