@@ -433,6 +433,24 @@ Commands, named skips, regression controls and suite results are in
 manual accessibility/field acceptance in #24/#101 remains separate. No new owner action was
 added to `HUMAN_TODO.md`.
 
+## External disk lane, overnight and next day — 26 to 27 October 2026
+
+The owner granted overnight autonomy and answered the open questions in chat (HUMAN_TODO q-49, q-50). The agent ran the read-only space survey itself, using every top-level folder of `C:`, `E:`, `G:` and `H:` as a non-picker grant in local state on `E:`, because volume roots stay picker-only in code. It read the space through `loomward-mcp`. Nothing was moved or deleted. The report stays local and is never committed. The survey found four product defects; three are fixed below and #924 has a first slice.
+
+Merged, each with one fresh-context review and an Opus 5.5 high second lens on data-loss, identity, trust-boundary and store paths:
+- #902, #906 (#862, #903): verify-tree reads are non-cached and report root identities. A missing sector geometry gets its own reason. The verification open is pinned free of background work.
+- #926 (#907): `loomward-native` exits 2 when its JSON report cannot be written.
+- #904 (#895): the installer smoke test hash-checks the bundled `loomward-mcp` (escalated review, protected CI path).
+- #909 (#865): client reads never repair the catalogue. This also fixed agent search on real data (#916): on a 1.1M-entry store, `find` went from a deadline at 3 s to 20 rows in 0.15-0.2 s.
+- #938 (#887): client search is scoped inside the FTS MATCH through a root-code column. Out-of-grant matches never spend a client's budget, and no client query got slower. An open-time migration rebuilds `search_name`.
+- #922 (#908): native scans classify extensions into the 15 families, and an open-time fix-up re-derives stored `other` rows.
+- #910, #933 (#888, #912, #913): detached and foreign volumes read offline everywhere and never retire a grant. Presence probes run off the mutation lock. Directory watches release on query-remove so Safely Remove works. A different disk on a root's letter is named plainly.
+- #932 (#924, first slice): each native call is bounded at 30 s (best effort). A timed-out operation never returns an open without identity (a HIGH from review, fixed). `state store error` carries its SQLite codes. Measurement put the multi-hour scans on the catalogue writer under parallel load, not on a hung call.
+- #936 (#886, #898): `loomward-mcp` yields the state lock to the desktop through a `lock.wanted` marker. `plan_archive` gained live tests, which found and fixed a folder-date bug.
+- #905, #925: checkpoint and HUMAN_TODO.
+
+Measured on Windows 11 build 26300, non-elevated, at the owner's request for light local testing: fmt, clippy and the touched tests locally, with full suites on hosted Windows and Ubuntu CI, all green before each merge. Under tonight's load (four disk scans, parallel builds, a Hyper-V VM), timing-sensitive freshness, ask, alerts and backups tests failed locally on branches that do not touch them; hosted CI passed them. Not verified: a real Safely Remove on `H:` (#888 item 4 is simulated), an interruptible real #924 hang, and the installer. Follow-ups: #924 (writer under load, in #934), #937, #935, and #898's small items.
+
 ## External archive disk and agent storage — 25 to 26 October 2026
 
 The owner attached a WD Elements USB disk (`H:`) for backup and archive. Design: [docs/48](48-external-disk-and-agent-storage.md); owner answers in HUMAN_TODO q-47 and q-48. Merged, each with one fresh-context review (two lenses on effect, fence and disclosure paths) and an ai-security-red-teamer pass on the agent surface:

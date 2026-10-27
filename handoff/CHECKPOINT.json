@@ -1,7 +1,7 @@
 {
   "project": "Loomward",
   "schema_version": 2,
-  "as_of": "2026-10-26",
+  "as_of": "2026-10-27",
   "version": "0.3.0-dev",
   "base_commit": "132e10e8c43a963658d03cbeaec34d8f20a6c0a8",
   "branch": "main",
@@ -815,5 +815,48 @@
       898,
       903
     ]
+  },
+  "external_disk_2026_10_27": {
+    "merged_prs": [
+      902,
+      904,
+      905,
+      906,
+      909,
+      910,
+      922,
+      925,
+      926,
+      932,
+      933,
+      936,
+      938
+    ],
+    "survey": "owner-authorised agent-run read-only survey of C:, E:, G:, H: via loomward-mcp; report local only",
+    "fixed_from_survey": [
+      908,
+      916,
+      887,
+      912,
+      913
+    ],
+    "open": [
+      924,
+      934,
+      935,
+      937
+    ],
+    "owner_decisions": [
+      "loomward-archive-second-copy: c (single copy for now; second disk later)",
+      "loomward-power-loss-hardware: a (Hyper-V only)",
+      "loomward-categoriser-model-downloads: Other (download what space allows, efficient models)",
+      "loomward-space-survey-setup: Other (agent does it end to end)"
+    ],
+    "not_verified": [
+      "real Safely Remove on H:",
+      "real #924 hang interruptible",
+      "installer"
+    ],
+    "c8": "closed"
   }
 }
