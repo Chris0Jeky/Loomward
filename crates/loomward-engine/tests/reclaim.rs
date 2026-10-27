@@ -404,11 +404,24 @@ fn reclaim_recycle_bin_size_is_one_informational_candidate() {
     assert_eq!(informational.len(), 1);
     let c = &informational[0];
     assert_eq!((c.node_id.as_ref(), c.class), (None, "recycle_bin"));
+    assert_eq!(
+        (c.name.as_ref(), c.provider, c.kind),
+        (None, "windows", None)
+    );
     assert_eq!((c.logical_bytes, c.reclaimable_bytes), (Some(4096), None));
-    assert!(c.evidence[0].contains("4096 bytes in 3 recycled items"));
-    assert!(c
-        .uncertainty
-        .contains("frees nothing here until the bin is emptied"));
+    assert_eq!(c.allocated_bytes, None);
+    assert_eq!(c.reclaimable_reason, Some(RELIEF_UNOBSERVED));
+    assert_eq!(c.coverage, "unknown");
+    assert_eq!(
+        c.owner_step,
+        "Emptying the Recycle Bin in Explorer is the owner's step after reviewing its contents."
+    );
+    assert!(c.relocation.is_none());
+    assert_eq!(
+        c.evidence,
+        ["Windows reports 4096 bytes in 3 recycled items on this volume."]
+    );
+    assert_eq!(c.uncertainty, "Recycling on this volume frees nothing here until the bin is emptied, and its contents and recoverability are unverified. This is advice, never a disposability claim.");
 
     // A recorded bin under the volume-root grant carries the Windows totals as evidence.
     let recorded = NodeKey::Dir(lab.directory(lab.dir, "$Recycle.Bin", 100));
@@ -418,6 +431,46 @@ fn reclaim_recycle_bin_size_is_one_informational_candidate() {
     assert_eq!(plan.groups[3].candidates.len(), 1);
     let (_, c) = find(&plan, recorded);
     assert!(c.evidence.iter().any(|e| e.contains("4096 bytes")));
+}
+
+#[test]
+fn reclaim_budget_hit_is_the_or_of_machine_reports_and_keeps_information() {
+    let lab = Lab::new();
+    let system = NodeKey::File(lab.file(lab.dir, "pagefile.sys", 100));
+    for flags in [
+        vec![],
+        vec![false, false],
+        vec![true, false],
+        vec![false, true],
+        vec![true, true],
+    ] {
+        let mut input = lab.input();
+        let report = input.machine[0].clone();
+        input.machine = flags
+            .iter()
+            .map(|&budget_hit| MachineStores {
+                budget_hit,
+                ..report.clone()
+            })
+            .collect();
+        input.recycle_bin = Some(RecycleBinSize {
+            bytes: 4096,
+            items: 3,
+        });
+        let plan = reclaim::plan(input).unwrap();
+        assert_eq!(plan.budget_hit, flags.iter().any(|&hit| hit), "{flags:?}");
+        let informational = &plan.groups[3].candidates;
+        assert_eq!(
+            informational
+                .iter()
+                .filter(|c| c.class == "recycle_bin")
+                .count(),
+            1
+        );
+        if !flags.is_empty() {
+            assert_eq!(find(&plan, system).0, GroupKind::Informational);
+        }
+    }
 }
 
 #[test]
