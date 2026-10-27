@@ -28,6 +28,7 @@ export const LAB_ROOT_IDS = LABS.map((l) => l.id);
 const RUN_MS = 4000;
 const CANCEL_MS = 600;
 const QUEUE_MS = 150;
+const OBSERVE_MS = 1200;
 
 export interface ScanMockOptions {
   now: () => Date;
@@ -42,6 +43,8 @@ export interface ScanMock {
   handlers: Record<string, (payload: Record<string, unknown>) => unknown>;
   roots(): Root[];
   revoke(rootId: string): void;
+  /** A short fake `reclaim` job (R1g): progress, then completion, which calls `onComplete`. One at a time, as the engine. */
+  observe(onComplete: () => void): JobResult;
 }
 
 export function createScanMock(o: ScanMockOptions): ScanMock {
@@ -149,6 +152,25 @@ export function createScanMock(o: ScanMockOptions): ScanMock {
     return { job: { ...job } };
   }
 
+  function observe(onComplete: () => void): JobResult {
+    const running = jobs.find((j) => j.kind === 'reclaim' && active(j));
+    if (running) o.fail('busy', 'a reclaim observation is already running', { job_id: running.job_id });
+    const job: Job = { job_id: `jb_mock_${++n}`, seq: n, rev: 0, kind: 'reclaim', state: 'queued', root_id: null, created_at: iso(), started_at: null, finished_at: null, progress: null, coverage: null, error: null, reclaim: { candidates_total: 1, candidates_done: 0, names_checked: 0 } };
+    jobs.unshift(job);
+    o.emit('job.state', { job: { ...job } });
+    later(QUEUE_MS, () => {
+      if (job.state !== 'queued') return;
+      set(job, { state: 'running', started_at: iso() });
+      later(OBSERVE_MS / 2, () => { if (job.state === 'running') set(job, { reclaim: { candidates_total: 1, candidates_done: 0, names_checked: 4200 } }); });
+      later(OBSERVE_MS, () => {
+        if (job.state !== 'running') return; // cancelled meanwhile: nothing stored, relief stays unknown
+        onComplete();
+        set(job, { state: 'completed', finished_at: iso(), coverage: 'complete', reclaim: { candidates_total: 1, candidates_done: 1, names_checked: 8400 } });
+      });
+    });
+    return { job: { ...job } };
+  }
+
   const scanState = (s: LabSeed): { scan: RootScanState; totals: SubtreeTotals | null } => {
     const last = done.get(s.id);
     const running = jobs.some((j) => j.kind === 'scan' && j.root_id === s.id && active(j));
@@ -173,6 +195,7 @@ export function createScanMock(o: ScanMockOptions): ScanMock {
       'duplicates.cancel': (p) => { if (find(p.job_id).kind !== 'duplicates') o.fail('invalid_request', 'not a duplicates job'); return { job: { ...cancel(p).job, duplicates: undefined } }; },
       'scan.start': start,
       'scan.cancel': cancel,
+      'jobs.cancel': cancel,
       'jobs.get': (p) => ({ job: { ...find(p.job_id) } }),
       'jobs.list': (p): JobList => {
         const kinds = Array.isArray(p.kinds) ? p.kinds : null;
@@ -180,6 +203,7 @@ export function createScanMock(o: ScanMockOptions): ScanMock {
         return { jobs: jobs.filter((j) => !kinds || kinds.includes(j.kind)).slice(0, limit).map((j) => ({ ...j })) };
       },
     },
+    observe,
     revoke: (rootId) => {
       for (const job of jobs.filter((j) => j.root_id === rootId && j.kind === 'duplicates')) {
         if (job.duplicates) set(job, { duplicates: undefined });

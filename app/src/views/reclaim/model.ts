@@ -1,5 +1,6 @@
-import type { GroupKind, ReclaimPlan, Volume } from '../../lib/contracts.gen';
+import type { GroupKind, Job, ReclaimObserveProgress, ReclaimPlan, Volume } from '../../lib/contracts.gen';
 import { formatBytes, parseBytes } from '../../lib/format/bytes';
+import { LoomwardError } from '../../lib/transport/client';
 
 export const GROUP_HEADINGS: Record<GroupKind, string> = {
   tool_owned_cleanup: 'Tool-owned cleanup',
@@ -23,4 +24,45 @@ export function unaccountedText(report: ReclaimPlan): string {
   return report.unaccounted_bytes === null
     ? 'Unaccounted: unknown — coverage or volume measurements are partial or unknown.'
     : `Unaccounted: ${formatBytes(report.unaccounted_bytes)} of volume used is outside the covered roots.`;
+}
+
+export const OBSERVE_EXPLAINER =
+  'Observing reads only metadata (link counts) of the folders you granted, to measure what removing each candidate would really free. It can take minutes and changes nothing.';
+
+/** Plain words for a refused or failed observe request. The service's own text is the fallback. */
+export function observeRefusal(e: unknown): string {
+  if (!(e instanceof LoomwardError)) return e instanceof Error ? e.message : 'unexpected failure';
+  if (e.code === 'busy') return 'Another observation is already running. Wait for it to end, or cancel it.';
+  if (e.code === 'permission_denied' && e.detail?.reason === 'elevated_token') {
+    return 'Loomward is running with an administrator token, so it will not open files. Restart it normally and try again. Nothing was read.';
+  }
+  if (e.code === 'invalid_request' && e.message === 'no_active_grant') {
+    return 'No folder on this volume has an active grant, so there is nothing to observe. Grant a folder first. Nothing was read.';
+  }
+  if (e.code === 'not_found') return 'This volume is no longer listed. Use Look again.';
+  if (e.code === 'capability_unavailable') return 'Observing is not available in this session.';
+  return e.message;
+}
+
+export function observeProgressText(p: ReclaimObserveProgress | undefined): string {
+  if (!p) return 'Starting';
+  const names = `${p.names_checked.toLocaleString('en')} names checked`;
+  return p.candidates_total === 0 ? `No candidates to observe · ${names}` : `${p.candidates_done.toLocaleString('en')} of ${p.candidates_total.toLocaleString('en')} candidates observed · ${names}`;
+}
+
+/** What the owner is told while a job runs and after it ends. An unfinished candidate stays unknown, never zero. */
+export function observeStatus(job: Job | null): string {
+  if (!job) return '';
+  const p = observeProgressText(job.reclaim);
+  switch (job.state) {
+    case 'queued': return 'Observation queued.';
+    case 'running': return `Observing hard links · ${p}`;
+    case 'cancel_requested': return `Cancelling · ${p}`;
+    case 'cancelled': return `Observation cancelled · ${p}. Candidates it did not finish stay unknown.`;
+    case 'failed': return `Observation failed${job.error ? `: ${job.error.message}` : ''}. Candidates it did not finish stay unknown.`;
+    case 'completed':
+      return job.coverage === 'partial'
+        ? `Observation stopped early (time budget or a folder it could not open) · ${p}. Candidates it did not finish stay unknown.`
+        : `Observation finished · ${p}.`;
+  }
 }
