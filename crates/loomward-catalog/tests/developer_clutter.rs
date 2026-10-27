@@ -684,3 +684,62 @@ fn query_plan_reads_the_tree_only_through_indexed_lookups() {
         );
     }
 }
+
+fn row_checksums(db: &Connection) -> Vec<(usize, u64)> {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    ["dir", "file"]
+        .into_iter()
+        .map(|table| {
+            let mut checksum = DefaultHasher::new();
+            let mut stmt = db
+                .prepare(&format!("SELECT * FROM {table} ORDER BY id"))
+                .unwrap();
+            let columns = stmt.column_count();
+            let mut rows = stmt.query([]).unwrap();
+            let mut count = 0;
+            while let Some(row) = rows.next().unwrap() {
+                count += 1;
+                for col in 0..columns {
+                    format!("{:?}", row.get_ref(col).unwrap()).hash(&mut checksum);
+                }
+            }
+            (count, checksum.finish())
+        })
+        .collect()
+}
+
+#[test]
+fn unrepaired_read_never_changes_rows_even_when_the_root_needs_repair() {
+    let lab = Lab::new();
+    let project = lab.directory(lab.dir, "project", 42);
+    lab.manifest(project, "Cargo.toml");
+    lab.directory(project, "target", 42);
+    for dirty in [false, true] {
+        if dirty {
+            lab.db
+                .execute(
+                    "UPDATE dir SET dirty_rev=agg_valid_rev+1 WHERE id=?1",
+                    [lab.dir],
+                )
+                .unwrap();
+        }
+        let before = row_checksums(&lab.db);
+        let report = lab
+            .catalog
+            .reader()
+            .unwrap()
+            .developer_clutter_unrepaired(lab.root, 200)
+            .unwrap();
+        assert_eq!(report.candidates.len(), 1);
+        assert!(!dirty || report.partial, "a dirty root reads partial");
+        assert_eq!(
+            row_checksums(&lab.db),
+            before,
+            "the reclaim read must not repair or change any observation"
+        );
+    }
+    // Control: the repairing read does change the dirty root, so the assertion above can fail.
+    let before = row_checksums(&lab.db);
+    lab.report(200);
+    assert_ne!(row_checksums(&lab.db), before);
+}
