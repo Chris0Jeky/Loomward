@@ -728,7 +728,8 @@ fn unrepaired_read_never_changes_rows_even_when_the_root_needs_repair() {
             .catalog
             .reader()
             .unwrap()
-            .developer_clutter_unrepaired(lab.root, 200)
+            .without_repairs()
+            .developer_clutter(lab.root, 200)
             .unwrap();
         assert_eq!(report.candidates.len(), 1);
         assert!(!dirty || report.partial, "a dirty root reads partial");

@@ -35,23 +35,6 @@ impl Reader {
     /// then unknown sizes, with at most 200 candidates. No manifest contents or live paths
     /// are read. Node keys are catalogue references, never effect operands.
     pub fn developer_clutter(&mut self, root: i64, cap: usize) -> Result<DeveloperClutter> {
-        self.developer_clutter_with(root, cap, true)
-    }
-    /// The same advice without asking the writer to repair a dirty root, for the reclaim planner,
-    /// whose read requests no write (docs/52 section 7). A dirty root reads partial, sizes unknown.
-    pub fn developer_clutter_unrepaired(
-        &mut self,
-        root: i64,
-        cap: usize,
-    ) -> Result<DeveloperClutter> {
-        self.developer_clutter_with(root, cap, false)
-    }
-    fn developer_clutter_with(
-        &mut self,
-        root: i64,
-        cap: usize,
-        repair: bool,
-    ) -> Result<DeveloperClutter> {
         if !(1..=200).contains(&cap) {
             return Err(Error::Invalid("developer clutter cap"));
         }
@@ -59,13 +42,12 @@ impl Reader {
         if deadline.is_some_and(|at| std::time::Instant::now() >= at) {
             return Err(Error::Cancelled);
         }
-        let read = |conn: &rusqlite::Connection| {
+        let result = self.read(|conn| {
             let _guard = query::WorkGuard::new(conn, 2_000_000, deadline)?;
             query::revisions(conn, Some(root))?;
             let root_dir = conn.query_row(
                 "SELECT id FROM dir WHERE root_id=?1 AND parent_id IS NULL",
-                [root],
-                |r| r.get(0),
+                [root], |r| r.get(0),
             )?;
             let observed = query::get(conn, NodeKey::Dir(root_dir))?;
             let scanning = query::live(conn, root)?;
@@ -77,24 +59,12 @@ impl Reader {
             // Exact, case-sensitive names are conservative even on case-sensitive Windows roots.
             // Shields stop traversal; covered prevents double counting dependencies inside outputs.
             let mut stmt = conn.prepare(include_str!("developer-clutter.sql"))?;
-            let rows = stmt
-                .query_map(
-                    params![
-                        root_dir,
-                        EXCLUDED_FLAGS | 1 | (1 << 1) | (1 << 6) | (1 << 7) | (1 << 9),
-                        cap as i64 + 1,
-                        scanning
-                    ],
-                    |r| {
-                        Ok((
-                            r.get::<_, i64>(0)?,
-                            r.get::<_, i64>(1)?,
-                            r.get::<_, String>(2)?,
-                            r.get::<_, String>(3)?,
-                        ))
-                    },
-                )?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let rows = stmt.query_map(params![root_dir,
+                EXCLUDED_FLAGS | 1 | (1 << 1) | (1 << 6) | (1 << 7) | (1 << 9),
+                cap as i64 + 1, scanning], |r| Ok((
+                    r.get::<_, i64>(0)?, r.get::<_, i64>(1)?,
+                    r.get::<_, String>(2)?, r.get::<_, String>(3)?,
+                )))?.collect::<rusqlite::Result<Vec<_>>>()?;
             report.truncated = rows.len() > cap;
             for (id, anchor, anchor_name, provider) in rows.into_iter().take(cap) {
                 let row = query::get(conn, NodeKey::Dir(id))?;
@@ -140,12 +110,7 @@ impl Reader {
                 });
             }
             Ok(report)
-        };
-        let result = if repair {
-            self.read(read)
-        } else {
-            self.read_unrepaired(read)
-        };
+        });
         match result {
             Err(e) if query::is_budget_interrupt(&e) => Err(
                 if deadline.is_some_and(|at| std::time::Instant::now() >= at) {

@@ -475,13 +475,6 @@ impl Reader {
 
     pub(crate) fn read<T>(&mut self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
         self.repair_committed()?;
-        self.read_unrepaired(f)
-    }
-    /// `read` without asking the writer to repair dirty roots: for reads that must request no write.
-    pub(crate) fn read_unrepaired<T>(
-        &mut self,
-        f: impl FnOnce(&Connection) -> Result<T>,
-    ) -> Result<T> {
         let tx = self.conn.transaction()?;
         check_generation(&tx, self.expected_generation)?;
         let result = f(&tx)?;

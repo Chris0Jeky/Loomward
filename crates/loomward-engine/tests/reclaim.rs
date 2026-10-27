@@ -79,7 +79,7 @@ impl Lab {
         self.directory(project, output, bytes)
     }
     fn input(&self) -> ReclaimInput {
-        let mut reader = self.catalog.reader().unwrap();
+        let mut reader = self.catalog.reader().unwrap().without_repairs();
         ReclaimInput {
             volume: ReclaimVolume {
                 volume_key: "synthetic-reclaim".into(),
@@ -94,7 +94,7 @@ impl Lab {
                 coverage: "complete".into(),
                 allocated_bytes: Some(900_000),
             }],
-            developer: vec![reader.developer_clutter_unrepaired(self.root, 200).unwrap()],
+            developer: vec![reader.developer_clutter(self.root, 200).unwrap()],
             machine: vec![reader.machine_stores(self.root, 200).unwrap()],
             limit: 200,
             ..ReclaimInput::default()
