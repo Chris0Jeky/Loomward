@@ -4545,8 +4545,32 @@ fn child_named(slice: &Payload, name: &str) -> Option<String> {
 fn scan_start_publishes_a_lab_tree_matching_an_independent_walk_with_live_events() {
     let Some(lab) = lab() else { return };
     let svc = &lab.svc;
+    // Automatic refreshes can replace roots.list's last_job_id while we inspect this scan.
+    svc.inner.freshness.pause_pump();
     let mut events = svc.subscribe(None);
-    let job = start(svc, &lab.root, "full");
+    const PUBLISHED: (Command, &str) = (Command::ScanStart, "full_catalogue_published");
+    struct Release<'a>(&'a Hooks);
+    impl Drop for Release<'_> {
+        fn drop(&mut self) {
+            self.0.open(PUBLISHED.0, PUBLISHED.1);
+        }
+    }
+    svc.inner.hooks.closed.lock().unwrap().push(PUBLISHED);
+    let job = {
+        let _release = Release(&svc.inner.hooks);
+        let job = start(svc, &lab.root, "full");
+        svc.inner
+            .hooks
+            .until("catalogue committed before job completion", |h| {
+                h.arrived.lock().unwrap().contains(&PUBLISHED)
+            });
+        let (during, _) = ok("jobs.get", call(svc, "jobs.get", json!({"job_id": job})));
+        assert_eq!(
+            during["job"]["state"], "running",
+            "completion overtook publication"
+        );
+        job
+    };
     let done = settle(svc, &job);
     assert_eq!(done["state"], "completed", "initial scan state: {done:?}");
     assert_eq!(done["coverage"], "complete", "initial scan coverage");
