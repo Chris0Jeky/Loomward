@@ -995,13 +995,14 @@ fn status_observing(store: &Mutex<Store>, op: u64, idle: bool) -> Result<Outcome
     let published = refusal.is_some_and(|(code, _)| code == Refusal::ChangedAfterVerification)
         || state != OpState::Committed
             && r.publish.as_ref().zip(r.staging).is_some_and(|(name, id)| {
-                store
+                // Bind the plan first so the store lock is released before any filesystem read.
+                let plan = store
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .plan(op)
                     .ok()
-                    .flatten()
-                    .and_then(|p| serde_json::from_str::<Plan>(&p).ok())
+                    .flatten();
+                plan.and_then(|p| serde_json::from_str::<Plan>(&p).ok())
                     .is_some_and(|plan| {
                         PathDisk::new(&plan, &r)
                             .in_parent(name)

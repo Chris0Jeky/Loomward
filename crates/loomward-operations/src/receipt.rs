@@ -32,7 +32,7 @@ pub struct CopyReceipt {
 
 impl CopyReceipt {
     pub fn from_copy(state: OpState, total: u32, checked: u32, published: bool) -> Self {
-        let verified = state == OpState::Committed && checked == total;
+        let verified = state == OpState::Committed && total > 0 && checked == total;
         let receipt_state = if verified {
             ReceiptState::ReadBack
         } else if published {
