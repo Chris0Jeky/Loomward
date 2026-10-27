@@ -115,6 +115,41 @@ well-known store locations** (for example `%USERPROFILE%\.cargo`, `%LOCALAPPDATA
 a whole user profile, a volume root or a credential or browser store (q-4, q-7). The checklist is text until the
 owner picks; nothing is probed for existence in advance.
 
+### 6.1 Observing relief (lane R1g, #939)
+
+R1d leaves the link-count pass out of `reclaim.plan`: a plan answers under an owner read's deadline of a few seconds,
+while a `target` or `node_modules` candidate holds 10^4 to 10^6 names, and `linkcount::observe` opens each one (metadata
+only, at most 200,000 per candidate). Inline, the pass would almost always stop at the deadline, and every candidate
+would stay "not observed". Relief is therefore observed by a separate, owner-started job, and the plan reads its stored
+result.
+
+- **Command.** `reclaim.observe { volume_id } -> JobResult`. It is owner-only (Tauri, HTTP) with effects `none`, has the job
+  lifecycle of `scan.start` (`jobs.get`, progress events, cancel), and refuses the same volumes `reclaim.plan` refuses. No client
+  or MCP access in this lane.
+- **What it reads.** The job recomputes the plan's candidates from the catalogue exactly as `reclaim.plan` does, with the
+  same `without_repairs()` reads and the same outermost roots. For each candidate it lists the catalogue's names under the
+  candidate (bounded at `MAX_FILES_PER_GROUP`), builds each name's path under the granted root's current path, and runs
+  `linkcount::observe` with the listing's identity as `expected`. A name whose handle identity differs from the listing,
+  a placeholder or a reparse point is `Unknown`, so a path that now resolves somewhere else cannot lend its link count.
+  Opens are metadata only, non-elevated (`observe` refuses an elevated token) and limited to granted roots
+  (invariant 2). No content is read, and nothing is written outside `state.db`.
+- **Budget.** The job has a wall-clock budget (default 10 minutes) and stops cleanly on cancel. A candidate the pass did
+  not finish keeps `stop` set, so its relief stays unknown, never zero. Candidates are observed largest allocation first, so an
+  interrupted job has still covered the ones that matter most.
+- **Storage.** One `state.db` row per candidate:
+  `(volume, root, candidate node, root generation, observed_at, unique_allocated_bytes?, reason?)`. A stored result
+  applies only while the root's generation and the candidate's node incarnation are unchanged, and while the root's
+  freshness is not stale. Otherwise the plan reports "relief not yet observed for this scan". Forgetting or revoking a
+  root deletes its rows.
+- **Plan.** `reclaim.plan` fills `ReclaimInput.files` from the matching rows; unmatched candidates stay
+  `RELIEF_UNOBSERVED`. The plan stays a pure read within its deadline.
+- **Not chosen.** An inline pass for small candidates is cheap, but it helps only small caches and makes plan latency
+  depend on disk state. Placement's `PlacementInput::files` has the same deadline problem; it can read the same rows later.
+- **Acceptance.** Synthetic lab trees only. Hard links inside a candidate count once. Links crossing the candidate
+  boundary give unknown. A renamed or replaced name (identity mismatch) gives unknown. Cancel and budget stops leave the
+  unfinished candidates unknown. A rescan (new generation) invalidates the rows. `state.db` changes only in the new table,
+  and the catalogue stays byte-identical. The job refuses an elevated token.
+
 ## 7. Validation
 
 - **Synthetic fixtures** (`fixtures/reclaim/`, synthetic names only): one tree per class, plus hard-link groups that
@@ -142,6 +177,7 @@ owner picks; nothing is probed for existence in advance.
 | R1d | `reclaim.plan` in the view service and protocol; the app's Reclaim view with the four groups and the unaccounted line | none | contract tests; Playwright; no execute affordance anywhere |
 | R1e | tool-agreement run on the owner's machine | none (agent runs read-only tool commands) | section 7 record |
 | R1f | proposed to the external-disk lane: MCP `reclaim_plan` tool | none | as docs/48 E4 |
+| R1g | `reclaim.observe` job: bounded link-count observation stored per candidate and root generation (section 6.1, #939) | none (metadata opens on granted roots) | section 6.1 acceptance |
 
 ## 9. What this design deliberately does not do
 
