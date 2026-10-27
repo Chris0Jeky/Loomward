@@ -900,7 +900,7 @@ impl Inner {
 
     /// The listing a mutation publishes as `roots.changed`, while it holds the mutation lock: its
     /// unique totals get [`POST_MUTATION_TOTALS`] in all, past which they read unknown (#843).
-    fn root_list_observed(&self, presence: &RootPresences) -> Result<Value, ErrorBody> {
+    pub(crate) fn root_list_observed(&self, presence: &RootPresences) -> Result<Value, ErrorBody> {
         self.root_list_scoped(None, 75, None, Some(presence))
     }
 
@@ -959,7 +959,18 @@ impl Inner {
                 let now = std::time::Instant::now();
                 now + w.deadline.saturating_duration_since(now) * share_percent / 100
             })
-            .or_else(|| presence.map(|_| std::time::Instant::now() + POST_MUTATION_TOTALS));
+            .or_else(|| {
+                #[cfg(test)]
+                let window = self
+                    .hooks
+                    .post_mutation_totals
+                    .lock()
+                    .unwrap()
+                    .unwrap_or(POST_MUTATION_TOTALS);
+                #[cfg(not(test))]
+                let window = POST_MUTATION_TOTALS;
+                presence.map(|_| std::time::Instant::now() + window)
+            });
         let measured = |r: &db::RootRow| {
             r.dir.is_some() && r.grant_state == "active" && r.state != "never_scanned"
         };
