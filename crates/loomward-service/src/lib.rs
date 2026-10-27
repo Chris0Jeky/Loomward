@@ -32,6 +32,8 @@ mod diagnostics;
 mod duplicates;
 mod freshness;
 mod handlers;
+#[cfg(feature = "test-support")]
+pub mod hostile;
 mod idem;
 mod ids;
 mod inventory;

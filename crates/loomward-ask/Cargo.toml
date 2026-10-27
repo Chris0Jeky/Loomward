@@ -11,10 +11,15 @@ loomward-protocol = { path = "../loomward-protocol" }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+# The format-category test of `turn::clean`; data tables only, as the MCP projection uses.
+unicode-general-category = "1.1"
 
 [dev-dependencies]
 loomward-service = { path = "../loomward-service", features = ["test-support"] }
 tempfile.workspace = true
+# LW-145: the hostile-name suite runs a real service over a scanned lab folder and compares tables.
+loomward-windows = { path = "../loomward-windows", features = ["fixtures"] }
+rusqlite = { version = "0.39.0", features = ["bundled"] }
 
 [features]
 # The scripted fake provider and the provider contract suite, for other crates' tests.

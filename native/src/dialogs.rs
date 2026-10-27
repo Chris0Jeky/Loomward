@@ -146,14 +146,17 @@ pub fn start_directory() -> Option<PathBuf> {
         .filter(|p| p.is_absolute() && p.is_dir())
 }
 
-/// The one-line confirmation after a pick. Letters of any script stay readable; everything else
-/// outside printable ASCII (controls, bidi overrides, zero-width marks) is written as `\u{..}`.
+/// The one-line confirmation after a pick. Letters of any script stay readable (bar the invisible
+/// Hangul fillers); everything else outside printable ASCII (controls, bidi overrides, zero-width
+/// marks) is written as `\u{..}`.
 pub fn grant_text(folder: &Path) -> String {
     let shown: String = folder
         .to_string_lossy()
         .chars()
         .map(|c| {
-            if c.is_alphanumeric() || matches!(c, ' '..='~') {
+            // The Hangul fillers are letters that draw nothing: they stay hidden (LW-145).
+            let filler = matches!(c, '\u{115F}' | '\u{1160}' | '\u{3164}' | '\u{FFA0}');
+            if (c.is_alphanumeric() && !filler) || matches!(c, ' '..='~') {
                 c.to_string()
             } else {
                 format!("\\u{{{:04X}}}", c as u32)
