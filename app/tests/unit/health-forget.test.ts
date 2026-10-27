@@ -133,7 +133,7 @@ it.each(['active', 'identity_changed'] as const)('offers revoke then forget for 
   }
 });
 
-it.each(['connection epoch', 'session info', 'client'])('a definite status failure after a new %s retains a usable retry prompt', async change => {
+it.each(['connection epoch', 'session info', 'client'])('a state-read failure after a new %s retains the unknown outcome for another read', async change => {
   const first = client().mockRejectedValueOnce(unknown);
   forget.ask(request);
   await forget.confirm();
@@ -143,17 +143,20 @@ it.each(['connection epoch', 'session info', 'client'])('a definite status failu
   if (change === 'session info') session.info = { session_started_at: '2026-10-19T03:00:00Z' } as SessionInfo;
   const current = change === 'client' ? client() : first;
   current.mockRejectedValueOnce(new LoomwardError({ code: 'internal_error', message: 'status failed', retryable: true, detail: null }))
-    .mockImplementationOnce(async r => reply(r, completed));
+    .mockImplementation(async r => r.command === 'grants.list'
+      ? { ...reply(r, { grants: [{ kind: 'metadata_root', root_id: request.id, revoked_at: completed.forgotten_at, forgotten_at: null }] }), meta: { state_rev: '42' } }
+      : reply(r, completed));
   forget.resume();
   await forget.confirm();
-  expect(current.mock.calls.at(-1)![0].request_id).toBe(originalKey);
-  expect(forget.unknown).toBe(false);
+  expect(current.mock.calls.at(-1)![0].command).toBe('grants.list');
+  expect(forget.unknown).toBe(true);
   expect(forget.pending?.id).toBe(request.id);
-  expect(forget.pending?.requestId).toBeUndefined();
+  expect(forget.pending?.requestId).toBe(originalKey);
   const attempts = current.mock.calls.length;
   await forget.confirm();
-  expect(current).toHaveBeenCalledTimes(attempts + 1);
+  expect(current).toHaveBeenCalledTimes(attempts + 2);
   expect(current.mock.calls.at(-1)![0].request_id).not.toBe(originalKey);
+  expect(current.mock.calls.at(-1)![0].expected_state_rev).toBe('42');
   expect(forget.pending).toBeNull();
   expect(forget.done).toContain('Forgotten at');
 });
@@ -414,7 +417,8 @@ it.each(['client', 'connection epoch', 'engine hello'] as const)('ignores a late
   b.mockImplementationOnce(() => new Promise((_, reject) => { rejectNew = reject; }));
   const newFlight = forget.confirm();
   const newRequest = b.mock.calls.at(-1)![0];
-  expect(newRequest.request_id).toBe(oldRequest.request_id);
+  expect(newRequest.command).toBe('grants.list');
+  expect(newRequest.request_id).not.toBe(oldRequest.request_id);
   releaseOld(reply(oldRequest, completed));
   await oldFlight;
   expect(forget.working).toBe(true);
