@@ -24,7 +24,7 @@ serde_json.workspace = true
 sha2.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Devices_DeviceAndDriverInstallation", "Win32_Foundation", "Win32_Storage_FileSystem", "Win32_Storage_CloudFilters", "Win32_System_IO", "Win32_System_Ioctl", "Win32_System_SystemServices", "Win32_System_WindowsProgramming", "Win32_Security", "Win32_System_Threading", "Wdk_Storage_FileSystem", "Wdk_Foundation", "Win32_System_Pipes"] }
+windows-sys = { version = "0.61", features = ["Win32_Devices_DeviceAndDriverInstallation", "Win32_Foundation", "Win32_Storage_FileSystem", "Win32_Storage_CloudFilters", "Win32_System_IO", "Win32_System_Ioctl", "Win32_System_SystemServices", "Win32_System_WindowsProgramming", "Win32_Security", "Win32_System_Threading", "Wdk_Storage_FileSystem", "Wdk_Foundation", "Win32_System_Pipes", "Win32_UI_Shell"] }
 
 [dev-dependencies]
 loomward-operations = { path = "../loomward-operations", features = ["fault-injection"] }

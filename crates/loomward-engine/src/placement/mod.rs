@@ -759,6 +759,77 @@ fn planner_volumes(
     Ok((volumes, excluded))
 }
 
+/// The LW-108 verified-relief rule for one deletion set (a placement group or a reclaim
+/// candidate). Allocation counts once per identity, and only when every listed name has an
+/// identity-matched, non-placeholder link observation bound to the source volume and each
+/// identity's observed link count equals the names seen inside the set. Callers still check
+/// that the names cover the set's totals.
+#[derive(Debug)]
+pub struct ReliefTally {
+    unique: BTreeMap<(String, [u8; 16]), (u64, u32, u32)>,
+    verified: bool,
+}
+
+impl Default for ReliefTally {
+    fn default() -> Self {
+        Self {
+            unique: BTreeMap::new(),
+            verified: true,
+        }
+    }
+}
+
+impl ReliefTally {
+    /// Add one listed name. `volume_serial` and `ntfs` describe the source volume; an identity
+    /// on another or unknown volume cannot establish relief.
+    pub fn add(&mut self, f: &FileEntry, volume_serial: Option<&str>, ntfs: bool) {
+        let Some(object) = &f.object else {
+            self.verified = false;
+            return;
+        };
+        let observed = f.link_observation.as_ref();
+        let matches = observed.is_some_and(|o| {
+            o.object == *object
+                && o.link_count > 0
+                && f.allocated_bytes.is_some()
+                && o.allocation.parse::<u64>().ok() == f.allocated_bytes
+                && o.size.parse::<u64>().ok() == Some(f.logical_bytes)
+                && !loomward_windows::linkcount::is_placeholder(o.attributes)
+                && o.object.reparse_tag == 0
+        });
+        let identity_usable = object.file_id != [0; 16]
+            && object.reparse_tag == 0
+            && volume_serial == Some(object.volume_serial.as_str())
+            && (object.quality == IdentityQuality::FileId128 || ntfs);
+        if !matches || !identity_usable {
+            self.verified = false;
+            return;
+        }
+        let observation = observed.expect("matched observation");
+        let allocation = f.allocated_bytes.expect("matched allocation");
+        let entry = self
+            .unique
+            .entry((object.volume_serial.clone(), object.file_id))
+            .or_insert((allocation, observation.link_count, 0));
+        if entry.0 != allocation || entry.1 != observation.link_count {
+            self.verified = false;
+        }
+        entry.2 += 1;
+    }
+
+    /// Unique allocation of the set, or `None` when any name or link count was not verified.
+    pub fn relief(&self) -> EngineResult<Option<u64>> {
+        if !self.verified || !self.unique.values().all(|(_, links, names)| links == names) {
+            return Ok(None);
+        }
+        self.unique
+            .values()
+            .try_fold(0u64, |sum, (allocation, _, _)| sum.checked_add(*allocation))
+            .map(Some)
+            .ok_or_else(|| invalid("relief sum overflow"))
+    }
+}
+
 struct Candidates {
     view: PlacementCandidates,
     objects: BTreeMap<(String, [u8; 16]), BTreeSet<String>>,
@@ -823,6 +894,18 @@ fn candidates(
     }
     let mut groups = Vec::new();
     let mut objects: BTreeMap<(String, [u8; 16]), BTreeSet<String>> = BTreeMap::new();
+    // Callers reject duplicate volume IDs first, so the first match is the only one.
+    let source_volume = snapshot
+        .volumes
+        .iter()
+        .find(|v| v.volume.volume_id == *source);
+    let source_serial = source_volume.and_then(|v| v.volume_serial.as_deref());
+    let source_ntfs = source_volume.is_some_and(|v| {
+        v.volume
+            .filesystem
+            .as_ref()
+            .is_some_and(|fs| fs.as_str().eq_ignore_ascii_case("NTFS"))
+    });
     for s in selected {
         check_deadline(deadline)?;
         let files = if s.totals.files.get() <= 200_000 {
@@ -836,7 +919,7 @@ fn candidates(
             });
         }
         let mut entries = BTreeSet::new();
-        let mut unique: BTreeMap<(String, [u8; 16]), (u64, u32, u32)> = BTreeMap::new();
+        let mut tally = ReliefTally::default();
         let mut verified = s.totals.complete
             && s.totals.skipped.get() == 0
             && s.totals.failed.get() == 0
@@ -866,63 +949,18 @@ fn candidates(
             destination = destination
                 .checked_add(rounded)
                 .ok_or_else(|| invalid("destination sum overflow"))?;
-            let Some(object) = &f.object else {
-                verified = false;
-                continue;
-            };
-            let key = (object.volume_serial.clone(), object.file_id);
-            objects
-                .entry(key.clone())
-                .or_default()
-                .insert(s.group_id.as_str().into());
-            let observed = f.link_observation.as_ref();
-            let matches = observed.is_some_and(|o| {
-                o.object == *object
-                    && o.link_count > 0
-                    && f.allocated_bytes.is_some()
-                    && o.allocation.parse::<u64>().ok() == f.allocated_bytes
-                    && o.size.parse::<u64>().ok() == Some(f.logical_bytes)
-                    && !loomward_windows::linkcount::is_placeholder(o.attributes)
-                    && o.object.reparse_tag == 0
-            });
-            let identity_usable = object.file_id != [0; 16]
-                && object.reparse_tag == 0
-                && snapshot.volumes.iter().any(|v| {
-                    v.volume.volume_id == *source
-                        && v.volume_serial.as_ref() == Some(&object.volume_serial)
-                })
-                && (object.quality == IdentityQuality::FileId128
-                    || snapshot.volumes.iter().any(|v| {
-                        v.volume.volume_id == *source
-                            && v.volume
-                                .filesystem
-                                .as_ref()
-                                .is_some_and(|fs| fs.as_str().eq_ignore_ascii_case("NTFS"))
-                    }));
-            if !matches || !identity_usable {
-                verified = false;
-                continue;
+            if let Some(object) = &f.object {
+                objects
+                    .entry((object.volume_serial.clone(), object.file_id))
+                    .or_default()
+                    .insert(s.group_id.as_str().into());
             }
-            let observation = observed.expect("matched observation");
-            let allocation = f.allocated_bytes.expect("matched allocation");
-            let entry = unique
-                .entry(key)
-                .or_insert((allocation, observation.link_count, 0));
-            if entry.0 != allocation || entry.1 != observation.link_count {
-                verified = false;
-            }
-            entry.2 += 1;
+            tally.add(f, source_serial, source_ntfs);
         }
         verified &= logical == s.totals.logical_bytes.get()
-            && s.totals.allocated_bytes == Some(Bytes(allocated))
-            && unique.values().all(|(_, links, names)| links == names);
+            && s.totals.allocated_bytes == Some(Bytes(allocated));
         let relief = if verified {
-            Some(Bytes(
-                unique
-                    .values()
-                    .try_fold(0u64, |sum, (allocation, _, _)| sum.checked_add(*allocation))
-                    .ok_or_else(|| invalid("relief sum overflow"))?,
-            ))
+            tally.relief()?.map(Bytes)
         } else {
             None
         };
