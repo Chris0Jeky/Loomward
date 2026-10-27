@@ -118,7 +118,11 @@ after building `app/dist` (see [native/README.md](native/README.md)).
      the older build would refuse it. A newer build can change `catalog.db` in ways an older build
      does not refuse but cannot handle: the search index (#438, LW-113) adds triggers on `dir` that a
      build from before it copies onto its own first-scan tables, so that build indexes folders twice
-     and then fails on its next open ("already exists"). A schema bump instead gives `NewerDatabase`.
+     and then fails on its next open ("already exists"). The extension-family migration (#922)
+     rewrites stored `ext` rows from `other` to their family; a build from before it writes `other`
+     for every extension and then refuses each listing that contains one ("conflicting extension
+     family"), so scans of folders holding `.jpg` or `.mp4` files fail until `catalog.db` is moved
+     aside or the newer build returns. A schema bump instead gives `NewerDatabase`.
      `catalog.db` is derived data: the older build creates an empty one.
 
   The cost: the new catalogue has a new `instance_id`, so every object reference in `state.db` is
