@@ -421,14 +421,15 @@ impl Host {
             "volumes" => self.volumes_output(&result),
             "roots" => self.roots_output(&result),
             "largest" => {
-                let rows = result["items"]
-                    .as_array()
-                    .ok_or("invalid service items")?
+                let cap = limit(args, 30)? as usize;
+                let items = result["items"].as_array().ok_or("invalid service items")?;
+                let rows = items
                     .iter()
+                    .take(cap)
                     .map(|row| self.row(&json!({"row":row})))
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(
-                    json!({"reference":args["reference"],"rows":rows,"more":!result["next_cursor"].is_null(),"total":result["total"],"budget_hit":result["budget_hit"]}),
+                    json!({"reference":args["reference"],"rows":rows,"more":items.len() > cap || !result["next_cursor"].is_null(),"total":result["total"],"budget_hit":result["budget_hit"]}),
                 )
             }
             "breakdown" => {
@@ -444,7 +445,9 @@ impl Host {
                 }
                 Ok(out.into())
             }
-            "clutter" => self.clutter_output(&result, &args["root_reference"]),
+            "clutter" => {
+                self.clutter_output(&result, &args["root_reference"], limit(args, 50)? as usize)
+            }
             _ => unreachable!(),
         }?;
         self.check_stamp()?;
@@ -524,6 +527,7 @@ impl Host {
             .as_array()
             .ok_or("invalid service roots")?
             .iter()
+            .take(64)
             .map(|root| {
                 let reference = self.remember(root["root_id"].as_str().ok_or("invalid root")?)?;
                 let freshness =
@@ -556,7 +560,12 @@ impl Host {
         Ok(json!({"volumes":volumes}))
     }
 
-    fn clutter_output(&mut self, result: &Value, reference: &Value) -> Result<Value, String> {
+    fn clutter_output(
+        &mut self,
+        result: &Value,
+        reference: &Value,
+        cap: usize,
+    ) -> Result<Value, String> {
         let mut out = result
             .as_object()
             .cloned()
@@ -564,6 +573,16 @@ impl Host {
         out.remove("root_id");
         out.remove("generation");
         out.insert("root_reference".into(), reference.clone());
+        let dropped = out
+            .get("candidates")
+            .and_then(Value::as_array)
+            .is_some_and(|candidates| candidates.len() > cap);
+        if let Some(candidates) = out.get_mut("candidates").and_then(Value::as_array_mut) {
+            candidates.truncate(cap);
+        }
+        if dropped {
+            out.insert("truncated".into(), json!(true));
+        }
         for item in out
             .get_mut("candidates")
             .and_then(Value::as_array_mut)
