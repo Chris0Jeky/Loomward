@@ -10,6 +10,7 @@ import { createViewMock } from './mock-views';
 import { createInventoryMock } from './mock-inventory';
 import { createAlertMock } from './mock-alerts';
 import { createClutterMock } from './mock-clutter';
+import { createReclaimMock } from './mock-reclaim';
 import { createAskMock } from './mock-ask';
 import { createClientMock } from './mock-clients';
 import { createBackupMock } from './mock-backups';
@@ -33,6 +34,7 @@ const GENERATION = '1';
 const EPOCH = 'e_mock_epoch';
 /** Which revision scopes (semantics.md section 5) a command's response is read at: catalogue, state.db, both, or neither. */
 const REVS: Partial<Record<string, 'c' | 's' | 'cs'>> = {
+  'reclaim.plan': 'cs',
   'collections.list': 'cs', 'collections.create': 'cs', 'collections.members': 'cs', 'collections.update_members': 'cs',
   'node.inspect': 'cs', 'threads.meaning': 'cs',
   'health.get': 'c', 'tree.children': 'c', 'search.query': 'c',
@@ -370,6 +372,7 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
     ...createBackupMock(now, fail),
     ...createAlertMock(now, fail),
     ...createClutterMock(fail, () => (handlers['roots.list']!({}) as RootList).roots, HOSTILE_ROOT_ID),
+    ...createReclaimMock(fail, () => (views.handlers['volumes.list']!({}) as import('../contracts.gen').VolumeList).volumes),
     // The contract's synthetic bundle, whose size and digest are those of its canonical text. Like HTTP, the mock
     // has no Rust-owned save dialog, so diagnostics.save answers capability_unavailable.
     'diagnostics.preview': (p) => {
