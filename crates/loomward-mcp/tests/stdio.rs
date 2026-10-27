@@ -667,12 +667,20 @@ mod live {
 
     fn data(server: &mut Server, state: &Path, name: &str, args: Value) -> Value {
         let before = dump(&state.join("state.db"));
+        let catalog = (name == "plan_archive").then(|| dump(&state.join("catalog.db")));
         let value = server.tool(name, args);
         assert_eq!(
             dump(&state.join("state.db")),
             before,
             "{name} changed state.db"
         );
+        if let Some(catalog) = catalog {
+            assert_eq!(
+                dump(&state.join("catalog.db")),
+                catalog,
+                "{name} changed catalog.db"
+            );
+        }
         assert!(!state.join("ask.db").exists());
         assert_eq!(value["result"]["isError"], false, "{value}");
         let out = value["result"]["structuredContent"].clone();
@@ -1142,21 +1150,16 @@ mod live {
             .collect()
     }
 
-    // Root, destination and a plan of the root folder, with catalog.db unchanged across the plan.
+    // Root, destination and a plan of the root folder, with both databases unchanged.
     fn plan_root(server: &mut Server, state: &Path) -> Value {
         let root = data(server, state, "roots", json!({}))["roots"][0]["reference"].clone();
         let destination =
             data(server, state, "volumes", json!({}))["volumes"][0]["volume_key"].clone();
-        let catalog = dump(&state.join("catalog.db"));
         let plan = data(
             server,
             state,
             "plan_archive",
             json!({"references":[root],"destination_volume":destination}),
-        );
-        assert!(
-            dump(&state.join("catalog.db")) == catalog,
-            "plan_archive changed catalog.db"
         );
         assert_eq!(plan["items"][0]["reference"], root);
         assert_eq!(plan["items"][0]["kind"], "dir");
@@ -1187,10 +1190,15 @@ mod live {
             "plan_archive",
             json!({"references":[found["rows"][0]["reference"]],"destination_volume":volumes["volumes"][0]["volume_key"]}),
         );
-        let codes = codes(&plan);
-        for code in ["offline_source", "offline_destination", "same_volume"] {
-            assert!(codes.contains(&code), "{plan}");
-        }
+        let reference = &found["rows"][0]["reference"];
+        assert_eq!(
+            plan["warnings"],
+            json!([
+                {"reference":reference,"code":"offline_source","message":"Source volume is offline; the catalogue is a stored observation."},
+                {"reference":reference,"code":"same_volume","message":"Destination is on the same volume as this source: not a backup."},
+                {"reference":null,"code":"offline_destination","message":"Destination volume is offline; its free space is a stored observation."}
+            ])
+        );
         assert_eq!(plan["space"]["fits"], "unknown");
     }
 
@@ -1200,6 +1208,16 @@ mod live {
             return;
         }
         let f = fixture();
+        // Pin synthetic catalogue times: all files Jan 2, extremes Jan 1 and Jan 3, 2026.
+        // Directory timestamps lie outside that range and must not contribute.
+        let db = rusqlite::Connection::open(f.state.join("catalog.db")).unwrap();
+        db.execute_batch(
+            "UPDATE file SET modified_ft=(11644473600+1767312000)*10000000;
+             UPDATE file SET modified_ft=(11644473600+1767225600)*10000000 WHERE name='report-00.txt';
+             UPDATE file SET modified_ft=(11644473600+1767398400)*10000000 WHERE name='build.bin';
+             UPDATE dir SET modified_ft=(11644473600+1893456000)*10000000;",
+        ).unwrap();
+        drop(db);
         set_space(
             &f.state,
             Some(1_000_000_000_000),
@@ -1214,16 +1232,12 @@ mod live {
         // On a starved host the plan's own five-second detail budget can trip; say so.
         let took = started.elapsed();
         assert_eq!(range["complete"], true, "plan_root took {took:?}: {plan}");
-        let (from, to) = (
-            range["from"].as_str().unwrap(),
-            range["to"].as_str().unwrap(),
-        );
-        assert!(from <= to, "{plan}");
+        assert_eq!(range["from"], "2026-01-01T00:00:00Z");
+        assert_eq!(range["to"], "2026-01-03T00:00:00Z");
         assert_eq!(plan["total"]["modified_range"], *range);
         assert_eq!(item["attribute_assessment_complete"], true);
         assert_eq!(item["files"], 28);
-        let seen = codes(&plan);
-        assert!(!seen.contains(&"cloud_placeholder") && !seen.contains(&"reparse_point"));
+        assert_eq!(codes(&plan), ["same_volume"]);
         drop(server);
         // Fault injection, catalogue only: a placeholder one folder down, under target/, is
         // reachable only through the descendant walk.
@@ -1246,7 +1260,8 @@ mod live {
             .find(|w| w["code"] == "cloud_placeholder")
             .unwrap_or_else(|| panic!("{plan}"));
         assert_eq!(warning["reference"], plan["items"][0]["reference"]);
-        assert!(!codes(&plan).contains(&"reparse_point"), "{plan}");
+        assert_eq!(codes(&plan), ["same_volume", "cloud_placeholder"]);
+        assert_eq!(plan["items"][0]["modified_range"], *range);
     }
 
     #[test]
@@ -1275,8 +1290,7 @@ mod live {
         );
         let mut server = Server::start_client(&f.state, true, "attributes", &[]);
         let plan = plan_root(&mut server, &f.state);
-        assert!(codes(&plan).contains(&"reparse_point"), "{plan}");
-        assert!(!codes(&plan).contains(&"cloud_placeholder"), "{plan}");
+        assert_eq!(codes(&plan), ["same_volume", "reparse_point"]);
     }
 
     #[test]
@@ -1298,6 +1312,7 @@ mod live {
         );
         let mut server = Server::start_client(&f.state, true, "all", &[]);
         let plan = plan_root(&mut server, &f.state);
+        assert_eq!(codes(&plan), ["same_volume"]);
         assert_eq!(
             plan["items"][0]["modified_range"]["complete"], false,
             "{plan}"
@@ -1306,6 +1321,51 @@ mod live {
         assert_eq!(plan["total"]["modified_range"]["complete"], false);
         // The page budget bounds detail only: the folder's own size stays known.
         assert_eq!(plan["total"]["files"], 28);
+    }
+
+    #[test]
+    fn a_folder_walk_sees_a_placeholder_on_the_second_child_page() {
+        if loomward_windows::enumerate::skip_elevated_test() {
+            return;
+        }
+        let f = fixture_with(|lab| {
+            for i in 0..201 {
+                std::fs::write(lab.join(format!("page-{i:03}.txt")), b"synthetic").unwrap();
+            }
+            // Size-descending order puts this file after the first 200 children.
+            std::fs::write(lab.join("last-page.bin"), b"").unwrap();
+        });
+        let db = rusqlite::Connection::open(f.state.join("catalog.db")).unwrap();
+        assert_eq!(
+            db.execute(
+                "UPDATE file SET attrs=attrs|262144 WHERE name='last-page.bin'",
+                []
+            )
+            .unwrap(),
+            1
+        );
+        drop(db);
+        set_space(
+            &f.state,
+            Some(1_000_000_000_000),
+            Some(900_000_000_000),
+            true,
+        );
+        let mut server = Server::start_client(&f.state, true, "all", &[]);
+        let plan = plan_root(&mut server, &f.state);
+        assert_eq!(codes(&plan), ["same_volume", "cloud_placeholder"]);
+        assert_eq!(
+            plan["warnings"][1]["reference"],
+            plan["items"][0]["reference"]
+        );
+        assert_eq!(plan["items"][0]["modified_range"]["complete"], true);
+        assert_eq!(plan["items"][0]["attribute_assessment_complete"], true);
+        assert_eq!(
+            plan["total"]["modified_range"],
+            plan["items"][0]["modified_range"]
+        );
+        assert_eq!(plan["total"]["files"], 230);
+        assert_eq!(plan["total"]["bytes"], "2061");
     }
 
     fn busy(server: &mut Server) {
