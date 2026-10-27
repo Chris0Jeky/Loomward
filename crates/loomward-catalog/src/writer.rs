@@ -2495,6 +2495,13 @@ fn swap_bulk(conn: &Connection, root: i64) -> Result<()> {
     // The build's rows are new token keys (IDs are never reused): index them in one pass below
     // instead of queueing each through the insert triggers and reading it back (#520).
     let token_triggers = crate::search::suspend_insert_triggers(conn)?;
+    let trigram_trigger: String = conn.query_row(
+        "SELECT sql FROM sqlite_schema WHERE type='trigger' AND name='search_file_insert'",
+        [],
+        |r| r.get(0),
+    )?;
+    // Row triggers force SQLite to spool the entire INSERT SELECT input to FILE scratch.
+    conn.execute_batch("DROP TRIGGER search_file_insert")?;
     conn.execute(
         "INSERT INTO dir SELECT * FROM bulk_dir WHERE root_id=?1 ORDER BY id",
         [root],
@@ -2533,6 +2540,15 @@ fn swap_bulk(conn: &Connection, root: i64) -> Result<()> {
         &format!("INSERT INTO file SELECT * FROM {source} ORDER BY id"),
         [root],
     )?;
+    conn.execute(
+        &format!(
+            "INSERT INTO search_name(rowid,name,root) SELECT rowid,name,root FROM search_name_content
+             WHERE rowid IN (SELECT id+{} FROM {source}) ORDER BY rowid",
+            crate::search::FILE_KEY
+        ),
+        [root],
+    )?;
+    conn.execute_batch(&trigram_trigger)?;
     for (_, sql) in deferred {
         conn.execute_batch(&sql)?;
     }
