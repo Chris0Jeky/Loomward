@@ -7,7 +7,8 @@
 //! Inside a pass, folders come before files and both run in key order, which makes the cursor a
 //! plain keyset position. An empty text lists by filters only (files of one extension largest
 //! first). Visibility is checked per hit: active grant, requested root, no hidden ancestor. A
-//! client's MATCH also carries its roots (#887), so out-of-grant rows are never visited at all.
+//! client's MATCH carries its roots (#887); filter-only SQL starts from those roots (#937), so
+//! out-of-grant rows are never visited at all.
 use crate::query::{
     instance, is_budget_interrupt, raw, revisions, Raw, WorkGuard, DIR_COLUMNS, FILE_COLUMNS,
 };
@@ -277,23 +278,40 @@ fn visible(files: bool, scope: Option<&[i64]>) -> String {
     } else {
         "?4 IS NULL AND ((?5 IS NULL AND ?6 IS NULL) OR d.agg_valid_rev>=d.dirty_rev) AND (?5 IS NULL OR d.sub_logical>=?5) AND (?6 IS NULL OR d.sub_logical<=?6) AND (?7 IS NULL OR d.modified_ft>=?7) AND (?8 IS NULL OR d.modified_ft<=?8)"
     };
+    let scope = root_scope(scope);
+    format!("d.root_id IN (SELECT id FROM root_grant WHERE state='active') AND d.listing_state!='absent_pending' AND (?3 IS NULL OR d.root_id=?3){scope} AND {filters}")
+}
+fn root_scope(scope: Option<&[i64]>) -> String {
     // Root ids are integers from the store, so the scope is inlined; `IN ()` matches nothing.
-    let scope = scope.map_or(String::new(), |ids| {
+    scope.map_or(String::new(), |ids| {
         let ids: Vec<String> = ids.iter().map(i64::to_string).collect();
         format!(" AND d.root_id IN ({})", ids.join(","))
-    });
-    format!("d.root_id IN (SELECT id FROM root_grant WHERE state='active') AND d.listing_state!='absent_pending' AND (?3 IS NULL OR d.root_id=?3){scope} AND {filters}")
+    })
 }
 /// The SQL of one streaming pass: a pass's folders or files, or a filter-only listing of either.
 fn statement(filter: bool, files: bool, by_size: bool, scope: Option<&[i64]>) -> String {
     let matched = format!("coalesce({},0)", visible(files, scope));
+    let scope = root_scope(scope);
+    let dir_index = if scope.is_empty() {
+        ""
+    } else {
+        " INDEXED BY dir_by_root"
+    };
+    // Keep the granted dirs outermost: a file/extension-first plan would still walk other roots.
+    let from = if !scope.is_empty() {
+        "dir d INDEXED BY dir_by_root CROSS JOIN file f INDEXED BY file_by_logical ON f.dir_id=d.id"
+    } else if by_size {
+        "file f INDEXED BY file_by_ext JOIN dir d ON d.id=f.dir_id"
+    } else {
+        "file f JOIN dir d ON d.id=f.dir_id"
+    };
     match (filter, files) {
         (false, false) => format!("SELECT {DIR_COLUMNS},{matched},s.rowid FROM search_name s JOIN dir d ON d.id=s.rowid WHERE search_name MATCH ?1 AND s.rowid>?2 AND s.rowid<{FILE_KEY} ORDER BY s.rowid"),
         (false, true) => format!("SELECT {FILE_COLUMNS},{matched},s.rowid FROM search_name s JOIN file f ON f.id=s.rowid-{FILE_KEY} JOIN dir d ON d.id=f.dir_id LEFT JOIN ext e ON e.id=f.ext_id WHERE search_name MATCH ?1 AND s.rowid>?2 ORDER BY s.rowid"),
-        (true, false) => format!("SELECT {DIR_COLUMNS},{matched},d.id FROM dir d WHERE ?1 IS NOT NULL AND d.id>?2 AND d.parent_id IS NOT NULL ORDER BY d.id"),
-        // One extension: its index, largest first, then by id.
-        (true, true) if by_size => format!("SELECT {FILE_COLUMNS},{matched},f.id+{FILE_KEY} FROM file f INDEXED BY file_by_ext JOIN dir d ON d.id=f.dir_id LEFT JOIN ext e ON e.id=f.ext_id WHERE ?1 IS NOT NULL AND f.ext_id=(SELECT id FROM ext WHERE ext=?4) AND (?9 IS NULL OR f.logical<?9 OR (f.logical=?9 AND f.id>?2-{FILE_KEY})) ORDER BY f.logical DESC,f.id"),
-        (true, true) => format!("SELECT {FILE_COLUMNS},{matched},f.id+{FILE_KEY} FROM file f JOIN dir d ON d.id=f.dir_id LEFT JOIN ext e ON e.id=f.ext_id WHERE ?1 IS NOT NULL AND f.id>?2-{FILE_KEY} ORDER BY f.id"),
+        (true, false) => format!("SELECT {DIR_COLUMNS},{matched},d.id FROM dir d{dir_index} WHERE ?1 IS NOT NULL AND d.id>?2 AND d.parent_id IS NOT NULL{scope} ORDER BY d.id"),
+        // One extension: largest first, then by id; the owner uses its extension index.
+        (true, true) if by_size => format!("SELECT {FILE_COLUMNS},{matched},f.id+{FILE_KEY} FROM {from} LEFT JOIN ext e ON e.id=f.ext_id WHERE ?1 IS NOT NULL AND f.ext_id=(SELECT id FROM ext WHERE ext=?4) AND (?9 IS NULL OR f.logical<?9 OR (f.logical=?9 AND f.id>?2-{FILE_KEY})){scope} ORDER BY f.logical DESC,f.id"),
+        (true, true) => format!("SELECT {FILE_COLUMNS},{matched},f.id+{FILE_KEY} FROM {from} LEFT JOIN ext e ON e.id=f.ext_id WHERE ?1 IS NOT NULL AND f.id>?2-{FILE_KEY}{scope} ORDER BY f.id"),
 }
 }
 
@@ -719,6 +737,65 @@ mod tests {
             .prepare_cached(&statement(false, true, false, req.scope.as_deref()))
             .unwrap();
         assert_eq!(stmt.get_status(rusqlite::StatementStatus::Run), 1);
+    }
+    #[test]
+    fn filter_only_scans_visit_only_granted_rows() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("catalog.sql")).unwrap();
+        conn.execute_batch("CREATE TABLE root_grant(id INTEGER PRIMARY KEY,state TEXT);
+            INSERT INTO root_grant VALUES(1,'active'),(2,'active');
+            INSERT INTO root(id,grant_id,state) VALUES(1,1,'complete'),(2,2,'complete');
+            INSERT INTO ext(id,ext,family) VALUES(1,'dat','data');
+            INSERT INTO dir(id,root_id,name,id_quality,id_basis,depth,attrs,listing_state,born_run,seen_run)
+                VALUES(1,1,'Beta','path_observation','none',0,0,'complete',0,0),(2,2,'Alpha','path_observation','none',0,0,'complete',0,0);
+            WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<6003)
+            INSERT INTO dir(id,root_id,parent_id,name,id_quality,id_basis,depth,attrs,listing_state,born_run,seen_run)
+                SELECT i+2,CASE WHEN i<=6000 THEN 1 ELSE 2 END,CASE WHEN i<=6000 THEN 1 ELSE 2 END,'folder-'||i,'path_observation','none',1,0,'complete',0,0 FROM n;
+            WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<6003)
+            INSERT INTO file(id,dir_id,name,ext_id,logical,attrs,born_run,seen_run)
+                SELECT i,CASE WHEN i<=6000 THEN 1 ELSE 2 END,'file-'||i||'.dat',1,i%3,0,0,0 FROM n;").unwrap();
+        let mut work = Vec::new();
+        for (files, by_size) in [(false, false), (true, false), (true, true)] {
+            let req = SearchRequest {
+                kind: if files { "file" } else { "dir" }.into(),
+                extension: by_size.then(|| "dat".into()),
+                scope: Some(vec![2]),
+                limit: 20,
+                ..Default::default()
+            };
+            let mut walk = Walk {
+                req: &req,
+                text: "",
+                pass: FILTER_PASS,
+                key: if files { FILE_KEY - 1 } else { i64::MIN },
+                size: None,
+                hits: Vec::new(),
+                places: HashMap::new(),
+                skipped: false,
+                progress: Arc::new(AtomicBool::new(false)),
+            };
+            walk.scan(&conn, "", files).unwrap();
+            assert_eq!(walk.hits.len(), 3);
+            assert!(walk.hits.iter().all(|(h, _)| h.root_id == 2));
+            let expected = if by_size {
+                vec![FILE_KEY + 6002, FILE_KEY + 6001, FILE_KEY + 6003]
+            } else if files {
+                vec![FILE_KEY + 6001, FILE_KEY + 6002, FILE_KEY + 6003]
+            } else {
+                vec![6003, 6004, 6005]
+            };
+            assert_eq!(
+                walk.hits.iter().map(|(_, at)| at.1).collect::<Vec<_>>(),
+                expected
+            );
+            let stmt = conn
+                .prepare_cached(&statement(true, files, by_size, req.scope.as_deref()))
+                .unwrap();
+            let steps = stmt.get_status(rusqlite::StatementStatus::VmStep);
+            eprintln!("filter-only files={files} by_size={by_size}: {steps} VM steps");
+            work.push(steps);
+        }
+        assert!(work.iter().all(|steps| *steps < 20_000), "{work:?}");
     }
     #[test]
     fn an_over_depth_path_does_not_hide_valid_ancestors() {

@@ -1029,6 +1029,68 @@ fn out_of_grant_matches_never_spend_a_clients_budget() {
     assert_eq!(search(&with, &owner).hits.len(), 3);
 }
 
+#[test]
+fn filter_only_out_of_grant_rows_never_spend_a_clients_budget() {
+    let (lab, a, b) = grant_oracle_lab(true, 6000);
+    let c = register(&lab, "vol-c", "Gamma", 3);
+    for extension in [None, Some("dat".to_string())] {
+        let mut r = req("");
+        r.kind = "file".into();
+        r.extension = extension;
+        r.limit = 20;
+        r.work_budget = 20_000;
+        r.scope = Some(vec![a.root]);
+        let page = search(&lab, &r);
+        assert_eq!(
+            names(&page),
+            pairs(&[
+                ("filter", "common-alpha-0.dat"),
+                ("filter", "common-alpha-1.dat"),
+                ("filter", "common-alpha-2.dat"),
+            ]),
+            "extension={:?}, budget_hit={}",
+            r.extension,
+            page.budget_hit
+        );
+        assert!(!page.budget_hit && page.next_cursor.is_none());
+        r.scope = Some(vec![a.root, c.root]);
+        let multiple = search(&lab, &r);
+        assert_eq!(names(&multiple), names(&page));
+        assert!(!multiple.budget_hit && multiple.next_cursor.is_none());
+        r.limit = 1;
+        let mut paged = Vec::new();
+        for _ in 0..3 {
+            let page = search(&lab, &r);
+            assert!(!page.budget_hit);
+            paged.extend(names(&page));
+            r.cursor = page.next_cursor;
+            if r.cursor.is_none() {
+                break;
+            }
+        }
+        assert!(r.cursor.is_none());
+        assert_eq!(paged, names(&page));
+        // The owner keeps the original key/size ordering, also when both roots are granted.
+        r.cursor = None;
+        r.limit = 10;
+        r.scope = None;
+        let owner = search(&lab, &r);
+        assert_eq!(
+            names(&owner),
+            (0..10)
+                .map(|i| ("filter".into(), format!("common-beta-{i}.dat")))
+                .collect::<Vec<_>>()
+        );
+        r.scope = Some(vec![b.root, a.root]);
+        r.work_budget = 2_000_000;
+        assert_eq!(names(&search(&lab, &r)), names(&owner));
+        r.scope = Some(vec![]);
+        r.work_budget = 20_000;
+        let empty = search(&lab, &r);
+        assert!(empty.hits.is_empty() && !empty.budget_hit && empty.next_cursor.is_none());
+    }
+}
+
 // #887: a store from before the `root` column is rebuilt at open; owner results are unchanged,
 // clients are scoped, and raw renames, moves and cascading deletes keep the index exact.
 #[test]
