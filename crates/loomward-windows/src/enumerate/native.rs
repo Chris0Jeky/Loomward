@@ -73,6 +73,8 @@ struct Registered {
     since: std::sync::atomic::AtomicU64,
     depth: std::sync::atomic::AtomicU32,
     timed_out: AtomicBool,
+    /// How long one call of this registration may run before the watchdog interrupts it.
+    budget: Duration,
 }
 impl std::ops::Deref for Registered {
     type Target = OwnedHandle;
@@ -91,6 +93,39 @@ fn now_nanos() -> u64 {
 thread_local! {
     /// This thread's live registrations, innermost last; a bounded call charges the innermost.
     static CURRENT: std::cell::RefCell<Vec<Arc<Registered>>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+/// Every live registration across all cancellations: one watchdog thread serves them all, so
+/// short-lived sources do not each start a thread (#934).
+static WATCHED: Mutex<Vec<Weak<Registered>>> = Mutex::new(Vec::new());
+fn watch(registered: &Arc<Registered>) {
+    static WATCHDOG: std::sync::Once = std::sync::Once::new();
+    WATCHDOG.call_once(|| {
+        std::thread::spawn(watchdog);
+    });
+    WATCHED.lock().unwrap().push(Arc::downgrade(registered));
+}
+/// Interrupts any call running past its registration's budget, ticking at a quarter of the
+/// smallest live budget (10 ms to 1 s). Lives as long as the process.
+fn watchdog() {
+    let mut tick = Duration::from_secs(1);
+    loop {
+        std::thread::sleep(tick);
+        tick = Duration::from_secs(1);
+        let mut watched = WATCHED.lock().unwrap();
+        watched.retain(|r| r.strong_count() != 0);
+        for r in watched.iter().filter_map(Weak::upgrade) {
+            tick = tick.min((r.budget / 4).max(Duration::from_millis(10)));
+            let since = r.since.load(Ordering::Acquire);
+            // A call that just returned may let this land on the thread's next call of the same
+            // registration: that directory is then reported as timed out too.
+            if since != 0 && now_nanos().saturating_sub(since) > r.budget.as_nanos() as u64 {
+                r.timed_out.store(true, Ordering::Release);
+                unsafe {
+                    CancelSynchronousIo(r.handle.as_raw_handle());
+                }
+            }
+        }
+    }
 }
 /// Marks the innermost registration of this thread busy for the guard's lifetime.
 pub(super) struct Busy(Option<Arc<Registered>>);
@@ -120,7 +155,6 @@ pub struct IoCancellation {
     cancelled: Arc<AtomicBool>,
     threads: Arc<Mutex<Vec<Weak<Registered>>>>,
     budget: Duration,
-    watchdog: Arc<std::sync::Once>,
     #[cfg(test)]
     interrupt_attempts: Arc<std::sync::atomic::AtomicUsize>,
 }
@@ -136,36 +170,9 @@ impl IoCancellation {
             cancelled: Default::default(),
             threads: Default::default(),
             budget,
-            watchdog: Arc::new(std::sync::Once::new()),
             #[cfg(test)]
             interrupt_attempts: Default::default(),
         }
-    }
-    fn start_watchdog(&self) {
-        let threads = Arc::downgrade(&self.threads);
-        let budget = self.budget;
-        let tick = (budget / 4).clamp(Duration::from_millis(10), Duration::from_secs(1));
-        self.watchdog.call_once(|| {
-            // Exits once every clone of this cancellation is gone.
-            std::thread::spawn(move || loop {
-                std::thread::sleep(tick);
-                let Some(threads) = threads.upgrade() else {
-                    return;
-                };
-                let threads = threads.lock().unwrap();
-                for r in threads.iter().filter_map(Weak::upgrade) {
-                    let since = r.since.load(Ordering::Acquire);
-                    // A call that just returned may let this land on the thread's next call of
-                    // the same registration: that directory is then reported as timed out too.
-                    if since != 0 && now_nanos().saturating_sub(since) > budget.as_nanos() as u64 {
-                        r.timed_out.store(true, Ordering::Release);
-                        unsafe {
-                            CancelSynchronousIo(r.handle.as_raw_handle());
-                        }
-                    }
-                }
-            });
-        });
     }
     /// Requests cancellation immediately; retries synchronous interruption after 500 ms until work exits.
     pub fn cancel(&self) {
@@ -230,8 +237,9 @@ impl IoCancellation {
             since: Default::default(),
             depth: Default::default(),
             timed_out: AtomicBool::new(false),
+            budget: self.budget,
         });
-        self.start_watchdog();
+        watch(&handle);
         let mut threads = self.threads.lock().unwrap();
         self.check()?;
         threads.retain(|h| h.strong_count() != 0);
@@ -267,6 +275,12 @@ impl Drop for IoRegistration {
     fn drop(&mut self) {
         CURRENT.with_borrow_mut(|c| c.retain(|r| !Arc::ptr_eq(r, &self.handle)));
         self.threads
+            .lock()
+            .unwrap()
+            .retain(|h| h.as_ptr() != Arc::as_ptr(&self.handle));
+        // Waits out a watchdog pass that may be interrupting this registration, so its interrupt
+        // cannot land on the thread's later work.
+        WATCHED
             .lock()
             .unwrap()
             .retain(|h| h.as_ptr() != Arc::as_ptr(&self.handle));
