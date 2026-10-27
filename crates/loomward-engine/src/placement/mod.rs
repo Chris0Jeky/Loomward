@@ -420,7 +420,7 @@ pub fn build_scenario(
     }
     let mut groups = Vec::new();
     let mut pre_rejected = Vec::new();
-    let mut zero_excluded = 0usize;
+    let mut zero_excluded = Vec::new();
     let shared = shared_groups(&candidates);
     for candidate in candidates.view.groups.iter() {
         check_deadline(deadline)?;
@@ -490,7 +490,7 @@ pub fn build_scenario(
         // pre-rejection reason honestly fits known zero relief, so exclude
         // the group and disclose the count; the rest still plans.
         if relief.get() == 0 {
-            zero_excluded += 1;
+            zero_excluded.push(candidate.node_id.as_str());
             continue;
         }
         let mut group = json!({"id": g.group_id, "volume_id": request.source_volume_id,
@@ -513,18 +513,19 @@ pub fn build_scenario(
         }
         groups.push(group);
     }
-    if zero_excluded > 0 {
+    if !zero_excluded.is_empty() {
         assumptions.push(
             Text::new(format!(
-                "Excluded {zero_excluded} group(s) with zero relief; the remaining groups were still planned."
+                "Excluded {} group(s) with zero relief; the remaining groups were still planned.",
+                zero_excluded.len()
             ))
             .expect("bounded note"),
         );
     }
     // #159-3: the greedy antichain hides children of a selected parent. When
-    // that parent is later pre-rejected, its descendants are in neither
-    // `groups` nor `pre_rejected`, so disclose the count. They are not re-planned.
-    let pre_rejected_nodes: BTreeSet<&str> = pre_rejected
+    // that parent is later pre-rejected or excluded for zero relief (#954), its descendants are
+    // in neither `groups` nor `pre_rejected`, so disclose the count. They are not re-planned.
+    let mut pre_rejected_nodes: BTreeSet<&str> = pre_rejected
         .iter()
         .filter_map(|pr| {
             candidates
@@ -535,6 +536,7 @@ pub fn build_scenario(
                 .map(|g| g.node_id.as_str())
         })
         .collect();
+    pre_rejected_nodes.extend(zero_excluded);
     if !pre_rejected_nodes.is_empty() {
         let selected_ids: BTreeSet<&str> = candidates
             .view
@@ -563,7 +565,7 @@ pub fn build_scenario(
         if hidden_descendants > 0 {
             assumptions.push(
                 Text::new(format!(
-                    "{hidden_descendants} descendant group(s) not considered because their ancestor was pre-rejected."
+                    "{hidden_descendants} descendant group(s) not considered because their ancestor was pre-rejected or excluded for zero relief."
                 ))
                 .expect("bounded note"),
             );
