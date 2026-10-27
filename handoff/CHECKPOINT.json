@@ -859,5 +859,54 @@
       "installer"
     ],
     "c8": "closed"
+  },
+  "day_wave_2026_10_27": {
+    "merged_prs": [
+      949,
+      950,
+      951,
+      952,
+      953,
+      955,
+      956,
+      957,
+      958,
+      959,
+      960,
+      961,
+      962
+    ],
+    "closed_or_advanced": {
+      "fixed": [
+        855,
+        921,
+        940,
+        948
+      ],
+      "advanced": [
+        844,
+        870,
+        928,
+        931,
+        934,
+        937,
+        942
+      ]
+    },
+    "lw_131_r1d": "reclaim.plan (owner-only, read-only, volume_id from volumes.list) and the app Reclaim view; reclaimable bytes stay unknown until the link-count pass (#939)",
+    "scan_cancel": "a cancelled scan drops its queued listing steps (#961); unsettled but uncancelled runs still commit everything",
+    "negative_evidence": "#960: FTS segment count costs milliseconds, not the 211-750 ms cold first query (#937 item 1 open)",
+    "tracked": [
+      939,
+      954,
+      963
+    ],
+    "not_verified": [
+      "live volume-root Recycle Bin read",
+      "reclaim view in the native Tauri window",
+      "real cancel time on a loaded survey",
+      "cold first query on the real 1.1M-entry store"
+    ],
+    "c8": "closed"
   }
 }

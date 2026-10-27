@@ -433,6 +433,18 @@ Commands, named skips, regression controls and suite results are in
 manual accessibility/field acceptance in #24/#101 remains separate. No new owner action was
 added to `HUMAN_TODO.md`.
 
+## Day wave — 27 October 2026
+
+One driver (Opus 5.5) with Sol peers, Muse lenses and workers, Haiku and Sonnet helpers, working the open issues. Thirteen PRs merged, each with green hosted CI (Ubuntu and Windows) at its exact head and a review: Codex alone for the very low-risk ones, and one fresh-context reviewer for the rest. The writer change also had an Opus second lens.
+
+- **LW-131 R1d** (#959, #962): `reclaim.plan` is an owner-only, read-only view-service command. It reads catalogue advice `without_repairs()`, covers the outermost active grants on one volume (named by its `volumes.list` id), reads the Recycle Bin only for an online volume-root grant, and refuses a volume with no active grant. The app's Reclaim view shows the four groups as facts with explicit unknowns and the unaccounted line, and offers no execute affordance. Reclaimable bytes stay unknown until the link-count pass is wired (#939).
+- **Scan cancel** (#961, #934 item 1): a cancelled scan no longer waits for every queued catalogue write. The writer answers the run's queued listing steps as cancelled, so what runs is always a prefix of what was sent. Unsettled but uncancelled runs still commit everything.
+- **Fixes:** the reclaim read is pinned write-free on a dirty root (#951, #940). Copy prepare reads elevation from `running_elevated` (#949, #855). The MCP guard refuses guessed `plan_archive` references before the state lock (#952). Three app LOWs from #844 are fixed (#953). The Hyper-V campaign maps windows from real journal kinds (#950, #948). The categoriser bench faithfulness checker gets its follow-ups (#958, #921).
+- **Tests:** reclaim-level unknown-relief cases, rules-version refusal and the 200k cap (#955). Selective risk is pinned (#956). Each labelling near miss is paired with a voting positive (#957).
+- **Negative evidence** (#960): FTS segment count costs milliseconds on a synthetic store, not the 211-750 ms cold first query. #937 item 1 stays open.
+
+Measured on Windows 11 build 26300, non-elevated: each PR's crate suites, fmt, workspace clippy, and app check, unit and Playwright where the app changed. Known red on this host with unchanged code: the eight `copy_tests::lab_copy` tests and one duplicates test. `pathological::real_acl_denied_directory_stays_visible_and_partial` failed under four parallel suites and passed alone. Not verified: a live volume-root Recycle Bin read, the Reclaim view in the native window, the real cancel time on a loaded survey, and the cold first query on the real store. Follow-ups: #939, #954, #963. C8 remains closed.
+
 ## External disk lane, overnight and next day — 26 to 27 October 2026
 
 Per the owner's chat, the lane ran overnight with autonomy, and the owner answered the open questions there (HUMAN_TODO q-49, q-50). The agent ran the read-only space survey itself, using every top-level folder of `C:`, `E:`, `G:` and `H:` as a non-picker grant in local state on `E:`, because volume roots stay picker-only in code. It read the space through `loomward-mcp`. Every folder was measured as metadata only (names, sizes, times), the user profile and credential or browser stores included, under the owner's q-50 authority. No file content was read, and nothing was moved or deleted. The report stays local and is never committed. Survey-driven fixes below cover #908, #916, #887, #912 and #913; #924 has a first slice.
