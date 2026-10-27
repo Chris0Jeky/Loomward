@@ -442,8 +442,15 @@ pub fn reclaimable(
         if !names.insert(f.node_id.as_str()) {
             return unknown(RELIEF_UNOBSERVED);
         }
-        logical_seen = logical_seen.saturating_add(f.logical_bytes);
-        allocated_seen = allocated_seen.saturating_add(f.allocated_bytes.unwrap_or(0));
+        // An overflowing sum cannot match a real total: unknown for this candidate, never a
+        // saturated match that fails the whole plan later (#954).
+        let (Some(l), Some(a)) = (
+            logical_seen.checked_add(f.logical_bytes),
+            allocated_seen.checked_add(f.allocated_bytes.unwrap_or(0)),
+        ) else {
+            return unknown(RELIEF_UNOBSERVED);
+        };
+        (logical_seen, allocated_seen) = (l, a);
         tally.add(f, volume.volume_serial.as_deref(), volume.ntfs);
     }
     // The names must cover the candidate's own totals, or some were not seen.
