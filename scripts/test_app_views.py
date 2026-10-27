@@ -1465,20 +1465,29 @@ def check_health_forget_identity(browser) -> None:
                 self.release = threading.Event()
                 self.first_returned = threading.Event()
                 self.forgets: list[dict] = []
+                self.fail_status_read = False
                 root = self.fake_root('Synthetic forgotten folder')
                 root['grant_state'] = 'revoked'
                 self.roots = [root]
 
             def result(self, req):
+                if req['command'] == 'grants.list' and self.forgets:
+                    self.served['grants.list'] = self.served.get('grants.list', 0) + 1
+                    if self.fail_status_read:
+                        self.fail_status_read = False
+                        return ('internal_error', 'synthetic status failure')
+                    return {'grants': [{'kind': 'metadata_root', 'grant_id': 'gr_forget',
+                                        'root_id': self.forgets[0]['payload']['root_id'],
+                                        'granted_at': '2026-10-18T00:00:00Z', 'granted_via': 'desktop_picker',
+                                        'revoked_at': '2026-10-18T00:00:00Z',
+                                        'forgotten_at': '2026-10-19T00:00:00Z'}]}
                 if req['command'] != 'roots.forget':
                     return super().result(req)
                 self.forgets.append(req)
+                self.roots = []  # Commit before holding the reply, so the state read can recover it.
                 if len(self.forgets) == 1:
                     self.release.wait(timeout=20)
                     self.first_returned.set()
-                if len(self.forgets) == 2 and status_error:
-                    return ('internal_error', 'synthetic status failure')
-                self.roots = []
                 return {'root_id': req['payload']['root_id'], 'forgotten_at': '2026-10-19T00:00:00Z'}
 
         engine = ForgetEngine()
@@ -1508,31 +1517,33 @@ def check_health_forget_identity(browser) -> None:
             data = {'epoch': epoch, 'session_started_at': '2026-10-01T00:00:00Z', 'last_seq': engine.seq,
                     'oldest_replayable_seq': 1, 'dataset_class': 'synthetic'} if signal == 'stream.hello' else {
                         'reason': 'epoch_changed', 'dropped': None, 'resync': ['roots']}
+            reads = engine.served.get('grants.list', 0)
             engine.publish({'protocol': 'loomward/3', 'epoch': epoch, 'seq': engine.seq, 'event': signal,
                             'at': '2026-10-19T00:00:00Z', 'catalog_rev': None, 'state_rev': None, 'data': data})
             expect(dialog.get_by_role('button', name='Check status', exact=True)).to_be_enabled(timeout=3000)
             expect(dialog.get_by_role('button', name='Stop waiting', exact=True)).to_be_enabled()
             expect(page.get_by_role('status').filter(has_text='Forget outcome pending')).to_be_visible()
             expect(heading).to_have_attribute('data-identity-fixture', 'mounted')
+            wait_until(page, lambda: engine.served.get('grants.list', 0) > reads)
             ok(not engine.first_returned.is_set(), f'{signal} exposes the uncertain outcome while the old reply is still held')
+            reads = engine.served.get('grants.list', 0)
+            engine.fail_status_read = status_error
             dialog.get_by_role('button', name='Check status', exact=True).click()
             if status_error:
-                expect(page.get_by_role('alert').filter(has_text='synthetic status failure')).to_be_visible()
-                expect(dialog.get_by_role('button', name='Forget', exact=True)).to_be_enabled()
-            else:
-                expect(page.get_by_role('status').filter(has_text='Forgotten at')).to_be_visible()
-            ok(len(engine.forgets) == 2 and engine.forgets[1]['request_id'] == engine.forgets[0]['request_id'],
-               f'{signal} checks the original forget action key')
-            if status_error:
-                dialog.get_by_role('button', name='Forget', exact=True).click()
-                expect(page.get_by_role('status').filter(has_text='Forgotten at')).to_be_visible()
-                ok(len(engine.forgets) == 3 and engine.forgets[2]['request_id'] != engine.forgets[0]['request_id'],
-                   f'{signal} retries a definite status failure with a fresh action key')
+                wait_until(page, lambda: not engine.fail_status_read)
+                expect(dialog.get_by_role('button', name='Check status', exact=True)).to_be_enabled()
+                expect(page.get_by_role('status').filter(has_text='Forget outcome pending')).to_be_visible()
+                ok(engine.served.get('grants.list', 0) > reads, f'{signal} reads state before retrying')
+                dialog.get_by_role('button', name='Check status', exact=True).click()
+            expect(page.get_by_role('status').filter(has_text='Forgotten at')).to_be_visible()
+            expect(page.get_by_role('status').filter(has_text='Backup cleanup is unverified')).to_be_visible()
+            ok(engine.served.get('grants.list', 0) > reads and len(engine.forgets) == 1,
+               f'{signal} recovers from current state without repeating the mutation')
         finally:
             engine.release.set()
             page.close()
             engine.stop()
-    print('PASS Grants & health: mounted generation changes expose unknown forgets immediately and retain the action key')
+    print('PASS Grants & health: mounted generation changes expose unknown forgets and recover through a prior state read')
 
 
 def check_health(page: Page, base: str, shoot) -> None:
