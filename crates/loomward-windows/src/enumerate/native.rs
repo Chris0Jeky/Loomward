@@ -278,6 +278,12 @@ impl Drop for IoRegistration {
             .lock()
             .unwrap()
             .retain(|h| h.as_ptr() != Arc::as_ptr(&self.handle));
+        // Waits out a watchdog pass that may be interrupting this registration, so its interrupt
+        // cannot land on the thread's later work.
+        WATCHED
+            .lock()
+            .unwrap()
+            .retain(|h| h.as_ptr() != Arc::as_ptr(&self.handle));
     }
 }
 
