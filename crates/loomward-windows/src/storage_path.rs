@@ -331,6 +331,10 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn real_provider_reads_selected_temporary_volume_without_inventing_missing_data() {
+        // The provider refuses an elevated token; hosted Windows runners are elevated (#823).
+        if crate::enumerate::skip_elevated_test() {
+            return;
+        }
         let root = tempfile::tempdir().unwrap();
         let observation = WindowsStorageQueryProvider.query(root.path()).unwrap();
         assert!(observation
