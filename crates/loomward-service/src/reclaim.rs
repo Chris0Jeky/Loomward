@@ -9,6 +9,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// Detectors cap all classes together, so they read their maximum; the planner applies the
+/// request's limit per group after grouping (Codex on #959).
+const DETECTOR_CAP: usize = 200;
+
 fn root_path(path: &str) -> String {
     path.replace('/', "\\")
         .trim_end_matches('\\')
@@ -114,7 +118,7 @@ impl Inner {
                 coverage = "stale".into();
                 allocated = None;
             }
-            let mut developer = match reader.developer_clutter(root.root, planner.limit) {
+            let mut developer = match reader.developer_clutter(root.root, DETECTOR_CAP) {
                 Ok(found) => found,
                 Err(loomward_catalog::Error::ResourceBudget) => {
                     budget_hit = true;
@@ -126,7 +130,7 @@ impl Inner {
                 }
                 Err(e) => return Err(catalog_error(e)),
             };
-            let mut machine = match reader.machine_stores(root.root, planner.limit) {
+            let mut machine = match reader.machine_stores(root.root, DETECTOR_CAP) {
                 Ok(found) => found,
                 Err(loomward_catalog::Error::ResourceBudget) => MachineStores {
                     rules_version: reclaim::RULES_VERSION,

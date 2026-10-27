@@ -341,3 +341,48 @@ fn reclaim_refuses_a_volume_with_no_active_grant_instead_of_an_empty_plan() {
     assert_eq!(refused.code, ErrorCode::InvalidRequest);
     assert_eq!(refused.message.as_str(), "no_active_grant");
 }
+
+#[test]
+fn reclaim_limit_applies_per_group_after_grouping() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    // A virtual disk (informational) larger than a package cache (relocate): one machine-store
+    // detector capped at the request's limit would keep only the disk.
+    scanned(
+        &svc,
+        1,
+        &dir(
+            "",
+            &[("ext4.vhdx", 9000)],
+            vec![dir(
+                ".cargo",
+                &[],
+                vec![dir(
+                    "registry",
+                    &[],
+                    vec![dir("cache", &[("cache.bin", 2000)], vec![])],
+                )],
+            )],
+        ),
+    );
+    let plan = json!(
+        ok(
+            "reclaim.plan",
+            call(
+                &svc,
+                "reclaim.plan",
+                json!({"volume_key": "fixture", "limit": 1})
+            )
+        )
+        .0
+    );
+    let filled: Vec<_> = plan["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|g| !g["candidates"].as_array().unwrap().is_empty())
+        .map(|g| g["kind"].as_str().unwrap().to_owned())
+        .collect();
+    assert!(filled.contains(&"relocate".to_owned()), "{plan}");
+    assert!(filled.contains(&"informational".to_owned()), "{plan}");
+}
