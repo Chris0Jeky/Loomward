@@ -301,7 +301,7 @@ fn teacher(item: &Item) -> Option<&str> {
         .or_else(|| (item.source == Source::Teacher).then_some(item.label.as_str()))
 }
 
-fn selective(rows: &[&Row<'_>], threshold: f64) -> Value {
+fn risk_at_coverage(rows: &[&Row<'_>], threshold: f64) -> Value {
     let accepted: Vec<_> = rows
         .iter()
         .filter(|r| {
@@ -519,7 +519,7 @@ pub fn evaluate(
         "human_holdout_utility": {"scope": SCOPE, "truth": "human evaluation only", "metrics": classification_metrics(&corpus.labels, &utility)?,
             "operating_point": {"accepted": accepted.len(), "coverage": ratio(accepted.len(), human.len()),
                 "error": ratio(accepted.iter().filter(|r| top(r) != r.item.label).count(), accepted.len())},
-            "selective": ([0.5, 0.8, 0.9, 0.98].map(|t| selective(&human, t))),
+            "selective": ([0.5, 0.8, 0.9, 0.98].map(|t| risk_at_coverage(&human, t))),
             "correction_rate": {"value": null, "status": "unobserved; needs human correction interactions"},
             "interruption_cost": {"value": null, "status": "unobserved; needs human interaction timing"}},
         "calibration": {"evaluation_raw_score_diagnostics": calibration_report(&human, replicates, seed),
@@ -611,13 +611,13 @@ mod tests {
         }
     }
 
-    fn selective_points(rows: &[Scored]) -> Value {
+    fn risk_at_coverage_points(rows: &[Scored]) -> Value {
         let labels = vec!["yes".to_owned(), "no".to_owned()];
         model_report("test", "test-model", &labels, rows).unwrap()["selective_risk"].clone()
     }
 
     #[test]
-    fn selective_risk_matches_hand_computed_top_slice_values() {
+    fn risk_at_coverage_matches_hand_computed_top_slice_values() {
         // Caller expectation (issue #931 item 2): ten predictions ranked by top
         // score descending; coverage c keeps the top ceil(c*n); risk = errors/kept.
         // Exact slice rule as implemented: accepted = (per_mille * n).div_ceil(1000)
@@ -630,7 +630,7 @@ mod tests {
             .enumerate()
             .map(|(i, score)| scored(&format!("r{i:02}"), *score, score - 0.1, i < 5))
             .collect();
-        let points = selective_points(&rows);
+        let points = risk_at_coverage_points(&rows);
         let points = points.as_array().unwrap();
         assert_eq!(points.len(), 4);
         let expected = [
@@ -657,15 +657,15 @@ mod tests {
     }
 
     #[test]
-    fn selective_risk_breaks_score_ties_by_record_id() {
+    fn risk_at_coverage_breaks_score_ties_by_record_id() {
         // Current behaviour: the ranking key is (top score desc, margin desc,
         // record id asc). Equal scores and equal margins fall through to the
         // record id, not the input order.
         let rows: Vec<Scored> = (0..10)
             .rev()
-            .map(|i| scored(&format!("r{i:02}"), 0.60, 0.50, i < 5))
+            .map(|i| scored(&format!("r{i:02}"), 1.0, 0.0, i < 5))
             .collect();
-        let points = selective_points(&rows);
+        let points = risk_at_coverage_points(&rows);
         let points = points.as_array().unwrap();
         assert_eq!(points[0]["accepted"].as_u64().unwrap(), 5);
         assert!((points[0]["risk"].as_f64().unwrap() - 0.0).abs() < 1e-12);
@@ -673,7 +673,26 @@ mod tests {
     }
 
     #[test]
-    fn selective_risk_prefers_larger_margin_before_record_id() {
+    fn report_counts_duplicate_top_scores_including_saturation() {
+        let labels = vec!["yes".to_owned(), "no".to_owned()];
+        let rows = vec![
+            scored("a", 1.0, 0.0, true),
+            scored("b", 1.0, 0.0, false),
+            scored("c", 1.0, 0.0, true),
+            scored("d", 0.8, 0.2, false),
+            scored("e", 0.8, 0.1, true),
+            scored("f", 0.7, 0.3, false),
+        ];
+        let report = |rows: &[Scored]| model_report("test", "test-model", &labels, rows).unwrap();
+        // Two additional saturated rows and one additional row scoring 0.8.
+        assert_eq!(report(&rows)["top_score_tie_count"], 3);
+        assert_eq!(report(&[])["top_score_tie_count"], 0);
+        assert_eq!(report(&rows[..1])["top_score_tie_count"], 0);
+        assert_eq!(report(&rows[4..])["top_score_tie_count"], 0);
+    }
+
+    #[test]
+    fn risk_at_coverage_prefers_larger_margin_before_record_id() {
         // Current-behaviour characterisation: with equal top scores the larger
         // margin ranks first, ahead of the record-id tie-break. r04 has the
         // smaller id but the smaller margin and is wrong; r05 is correct with
@@ -690,23 +709,23 @@ mod tests {
             scored("r08", 0.55, 0.45, false),
             scored("r09", 0.50, 0.40, false),
         ];
-        let points = selective_points(&rows);
+        let points = risk_at_coverage_points(&rows);
         let points = points.as_array().unwrap();
         assert_eq!(points[0]["accepted"].as_u64().unwrap(), 5);
         assert!((points[0]["risk"].as_f64().unwrap() - 0.0).abs() < 1e-12);
     }
 
     #[test]
-    fn selective_risk_empty_and_unknown_label_edges() {
+    fn risk_at_coverage_empty_and_unknown_label_edges() {
         // Empty boundary: nothing is kept, so coverage and risk stay null.
-        let points = selective_points(&[]);
+        let points = risk_at_coverage_points(&[]);
         for point in points.as_array().unwrap() {
             assert_eq!(point["accepted"].as_u64().unwrap(), 0);
             assert!(point["coverage"].is_null());
             assert!(point["risk"].is_null());
         }
         // A single correct row: ceil keeps it at every target, including 50%.
-        let points = selective_points(&[scored("r00", 0.9, 0.8, true)]);
+        let points = risk_at_coverage_points(&[scored("r00", 0.9, 0.8, true)]);
         for point in points.as_array().unwrap() {
             assert_eq!(point["accepted"].as_u64().unwrap(), 1);
             assert!((point["coverage"].as_f64().unwrap() - 1.0).abs() < 1e-12);

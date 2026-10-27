@@ -8,7 +8,8 @@
 //! Model: multinomial logistic regression (softmax) trained by plain SGD with a fixed seed, epoch count
 //! and learning rate. It was chosen over an averaged perceptron because softmax yields relative scores on
 //! the same [0, 1] simplex as the naive Bayes student, so both share the abstention thresholds and the
-//! selective-risk ranking, and the convex loss makes the result insensitive to the visiting order.
+//! risk-at-coverage ranking. Fixed-step SGD remains sensitive to training order; the seeded shuffle
+//! makes training reproducible for the same ordered examples, not invariant to reordered input.
 //!
 //! Training takes `(features, label)` pairs with no provenance field: callers pass human labels only, and
 //! a teacher label has no way in (invariant 3). Scores are relative and uncalibrated, never probabilities
@@ -148,6 +149,7 @@ impl LinearStudent {
         }
         let document = json!({
             "algorithm": ALGORITHM, "labels": labels,
+            "buckets": BUCKETS, "epochs": EPOCHS, "learning_rate": LEARNING_RATE, "seed": SEED,
             "examples": examples.iter().map(|(features, label)| json!([features.to_value(), label])).collect::<Vec<_>>(),
         });
         let digest = Sha256::digest(canonical_json(&document).as_bytes());

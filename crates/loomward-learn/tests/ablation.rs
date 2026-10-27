@@ -1,7 +1,8 @@
 use loomward_learn::ablation::{ablation, packet_features, COVERAGE_PER_MILLE};
 use loomward_learn::features::Features;
 use loomward_learn::linear::{feature_strings, fnv1a, hashed, LinearStudent, BUCKETS};
-use loomward_learn::packet::validate_corpus;
+use loomward_learn::packet::{validate_corpus, MEANINGS};
+use loomward_learn::student::Student;
 use serde_json::{json, Value};
 
 const BASE_TIME: u64 = 1_800_000_000;
@@ -84,6 +85,78 @@ fn features(name: &str, context: &str) -> Features {
 }
 
 #[test]
+fn unfamiliar_name_abstains_under_both_students() {
+    let corpus = synthetic(7);
+    let labels: Vec<_> = MEANINGS.iter().map(|label| (*label).to_owned()).collect();
+    let examples: Vec<_> = corpus
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|record| record["packet"]["observed_at"].as_u64().unwrap() <= TRAIN_END)
+        .map(|record| {
+            let label = record["human_labels"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|label| label["axis"] == "meaning")
+                .unwrap()["label"]
+                .as_str()
+                .unwrap();
+            (packet_features(&record["packet"]), label.to_owned())
+        })
+        .collect();
+    let linear = LinearStudent::fit(&labels, &examples).unwrap();
+    let events: Vec<_> = examples
+        .iter()
+        .enumerate()
+        .map(|(index, (features, label))| {
+            json!({"event_id": index.to_string(), "item_id": index.to_string(),
+                "revision": 1, "source": "human", "label": label, "features": features.to_value()})
+        })
+        .collect();
+    let mut bayes = Student::new(&json!(labels)).unwrap();
+    bayes.fit(&json!(events)).unwrap();
+    let nonsense = features("zqxwv_kjhpl.qqq", "");
+    for (name, input) in [("nonsense", &nonsense), ("familiar", &examples[0].0)] {
+        let predictions = [
+            linear.predict(input),
+            bayes.predict(&input.to_value()).unwrap(),
+        ];
+        for (model, prediction) in ["linear", "naive_bayes"].iter().zip(&predictions) {
+            println!(
+                "{name} {model}: coverage={}, abstain={}, reasons={:?}",
+                prediction.feature_coverage, prediction.abstain, prediction.reasons
+            );
+            if name == "nonsense" {
+                assert!(prediction.abstain);
+                assert!(prediction.reasons.contains(&"unfamiliar_features"));
+                assert!(prediction.feature_coverage < 0.35);
+            } else {
+                assert!(!prediction.abstain);
+                assert_eq!(prediction.feature_coverage, 1.0);
+            }
+        }
+    }
+}
+
+#[test]
+fn packet_extension_with_most_files_wins_even_when_empty() {
+    let mut packet = json!({"extensions": [
+        {"ext": "", "files": 10}, {"ext": ".rs", "files": 3}
+    ]});
+    assert_eq!(packet_features(&packet).extension, "");
+    packet["extensions"].as_array_mut().unwrap().reverse();
+    assert_eq!(packet_features(&packet).extension, "");
+    packet["extensions"] = json!([
+        {"ext": ".rs", "files": 3}, {"ext": "", "files": 10},
+        {"ext": ".txt", "files": 12}
+    ]);
+    assert_eq!(packet_features(&packet).extension, ".txt");
+    packet["extensions"] = json!([]);
+    assert_eq!(packet_features(&packet).extension, "");
+}
+
+#[test]
 fn feature_hash_is_pinned() {
     // The published FNV-1a 64 test vector for "a", then one pinned feature bucket.
     assert_eq!(fnv1a("a"), 0xaf63_dc4c_8601_ec8c);
@@ -104,6 +177,19 @@ fn feature_hash_is_pinned() {
     assert!(hashed(&features("cargo", ""))
         .iter()
         .any(|(bucket, _)| *bucket == 2599));
+}
+
+#[test]
+fn linear_model_id_includes_training_parameters() {
+    let labels = ["generated_build".to_owned(), "source_project".to_owned()];
+    let model = LinearStudent::fit(
+        &labels,
+        &[(features("cargo", ""), "source_project".to_owned())],
+    )
+    .unwrap();
+    // Canonical JSON SHA-256 (first 16 hex digits), independently computed with Python hashlib.
+    // Includes buckets=4096, epochs=30, learning_rate=0.5 and seed=139.
+    assert_eq!(model.model_id(), "b3b15ad1d8ce8234");
 }
 
 #[test]

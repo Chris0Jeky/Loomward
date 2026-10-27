@@ -51,9 +51,14 @@ pub fn packet_features(packet: &Value) -> Features {
     };
     let mut extension = "";
     let mut most = 0;
-    for entry in packet["extensions"].as_array().into_iter().flatten() {
+    for (index, entry) in packet["extensions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
         let files = entry["files"].as_u64().unwrap_or(0);
-        if extension.is_empty() || files > most {
+        if index == 0 || files > most {
             extension = entry["ext"].as_str().unwrap_or("");
             most = files;
         }
@@ -110,6 +115,11 @@ pub(crate) fn model_report(
             .then(b.1.total_cmp(&a.1))
             .then_with(|| left.record_id.cmp(&right.record_id))
     });
+    // Additional rows beyond the first at each repeated top score, including saturated scores.
+    let top_score_tie_count = ranked
+        .windows(2)
+        .filter(|pair| key(pair[0]).0 == key(pair[1]).0)
+        .count();
     let n = rows.len();
     let selective: Vec<Value> = COVERAGE_PER_MILLE
         .iter()
@@ -129,8 +139,9 @@ pub(crate) fn model_report(
         json!({"model": name, "model_id": model_id, "calibrated": false,
         "macro_f1": metrics["macro_f1"], "accuracy": metrics["accuracy"],
         "abstention_rate": (n > 0).then(|| abstained as f64 / n as f64),
+        "top_score_tie_count": top_score_tie_count,
         "selective_risk": selective,
-        "selective_ranking": "raw top score, then margin; ignores abstention; not a probability"}),
+        "selective_ranking": "raw top score, then margin, then record id; ignores abstention; not a probability"}),
     )
 }
 
@@ -142,7 +153,7 @@ pub fn ablation(
     calibration_end: u64,
 ) -> Result<Value, LearnError> {
     validate_corpus(records)?;
-    // Sorted by record ID so the input order cannot change the models.
+    // Canonical record-ID order keeps the order-sensitive SGD independent of corpus input order.
     let by_id: BTreeMap<&str, &Value> = records
         .as_array()
         .unwrap()
