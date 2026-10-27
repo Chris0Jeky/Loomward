@@ -813,6 +813,36 @@ append, including a lost commit acknowledgement, performs no removal in that cal
 refuse the new record kind. Facts are computed from the records a journal holds, so a journal begun by an older
 build may understate refusals it never recorded. The service removal default remains off and personal copying remains gated.
 
+### Receipt vocabulary (LW-132, ADR-V3-26)
+
+`CopyStatus.receipt` is additive and absent from older services. `items_verified` remains a
+required, deprecated compatibility count; it is NOT a qualification label, and clients MUST NOT
+infer a completed copy from it. The journal state and refusal codes are unchanged.
+`receipt.items_read_back` counts earlier journaled checks (including directory structure and
+metadata); an unverified receipt does not assert those entries still match now.
+
+`receipt.state` is `read_back` only after a committed, fully checked copy. It is
+`published_unverified` when the journaled folder identity is observed at the publish name but
+confirmation has not committed, including `changed_after_verification`. A publish intent alone
+is `unverified`, as are incomplete, cancelled and refused copies. Unverified states have no
+`highest_label` even when all earlier checks passed.
+
+`highest_label` names the highest supported evidence: `read_back` requires the run's passing
+non-cached file-stream checks; `crash_qualified` requires C6 and G5 campaign evidence;
+`power_loss_qualified` requires LW-134 evidence on the same fully known LW-137 storage tuple;
+`archive_verified` requires a later independent scrub matching the manifest, with its date in
+`archive_verified_at`. Unknown or changed storage fields invalidate path qualification;
+comparison MUST use `StoragePath::proves_same_path`, never observation equality. A downgrade
+retains at most the recorded read-back and never invents crash qualification.
+
+Today's engine produces only `read_back` or no label: G5 is not earned (docs/53), and LW-134
+and LW-136 evidence is unavailable. `archive_verified_at` is therefore null. The explanation
+says "not power-loss tested on this disk" (conservatively also when the bus is unknown).
+Receipt text and serialized field names MUST NOT contain the forbidden persistence adjective
+specified by LW-132. App, CLI and agent consumers display the service's `receipt.explanation`;
+`loomward-native receipt` reads a CopyStatus JSON object from stdin, never initiates copying
+and refuses to infer a receipt from older counts. MCP gains no command or effect.
+
 ## Lazy meaning threads
 
 | Command | Revisions | Retry | Effects |

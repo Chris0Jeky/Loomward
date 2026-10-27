@@ -8,5 +8,12 @@
   "leftover_staging_folders": [],
   "unjournaled_items": [],
   "unjournaled_item_count": 0,
-  "refusal": null
+  "refusal": null,
+  "receipt": {
+    "state": "unverified",
+    "highest_label": null,
+    "items_read_back": 0,
+    "archive_verified_at": null,
+    "explanation": "unverified: no completed verified copy. 0 of 3 entries checked in the journal (earlier checks only if unverified). Ladder: read back; crash-qualified (copy engine, requires C6 and G5); power-loss qualified (this storage path, requires LW-134); archive verified at a date (requires a later independent scrub, LW-136). G5 not earned; not power-loss tested on this disk; archive not verified. No space was freed on the source."
+  }
 }

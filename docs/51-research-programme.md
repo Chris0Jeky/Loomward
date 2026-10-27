@@ -51,8 +51,8 @@ checked against `main` at 40bb8d1 on 2026-10-25 (read, not run).
 | Recommendation | Label | Where |
 |---|---|---|
 | `FlushFileBuffers` is not durability; non-cached read-back proves readability, not media persistence | **DONE** (stated) | docs/47 section 4; `effects.rs` `write_and_flush`, `noncached_hash`; comments in `exec.rs` say "not power loss" |
-| Receipt vocabulary: copied, flushed, independently read back, published, power-loss qualified, archive verified at date | **NEW** | today one `items_verified` field (`loomward-service/src/copy.rs`); LW-132; ADR draft R1 |
-| `published_unverified` as a named state after publish | **Partial DONE** | docs/47 section 7 outcome `published_unverified` on `changed_after_verification`; the journal state is `Publishing` (`operations/src/journal.rs`); LW-132 names it in receipts |
+| Receipt vocabulary: copied, flushed, independently read back, published, power-loss qualified, archive verified at date | **DONE (LW-132)** | `CopyStatus.receipt` states the supported label; `items_verified` remains a deprecated compatibility count; [ADR-V3-26](42-v03-adrs.md#adr-v3-26-receipt-labels-name-evidence-and-qualify-a-storage-path-research-r1) |
+| `published_unverified` as a named state after publish | **DONE (LW-132)** | named in receipts after observed publication without completed confirmation, including `changed_after_verification`; the journal state machine is unchanged (docs/47 section 7) |
 | Quick removal vs better performance; safe removal is an ordering barrier, not proof | **PLANNED** | docs/48 section 2 ("detach is a destination power loss"); record the removal policy in LW-137 |
 | Qualify the actual enclosure path (VID/PID, bridge, firmware, disk, Windows build, removal policy, protocol, geometry) | **NEW** | LW-137 records the tuple; LW-134 attaches campaign evidence to it |
 | Keep the 8 TB archive NTFS, not ReFS | **DONE** (agreed) | docs/48 E0 accepts NTFS/ReFS roots; nothing proposes reformatting `H:` |
@@ -184,7 +184,7 @@ checked against `main` at 40bb8d1 on 2026-10-25 (read, not run).
 
 The owner chose Hyper-V for G5 (q-47 Q2). That stands: a Hyper-V `TurnOff` loses the guest's caches and proves the
 journal, staging and publication invariants under sudden guest death. What it cannot prove is that a USB bridge or
-HDD honours a flush when its own power goes. So receipts get a ladder (ADR draft R1):
+HDD honours a flush when its own power goes. So receipts get a ladder ([ADR-V3-26](42-v03-adrs.md#adr-v3-26-receipt-labels-name-evidence-and-qualify-a-storage-path-research-r1)):
 
 | Label on a receipt | Evidence required |
 |---|---|
@@ -391,9 +391,9 @@ Ordered by value per cost. None starts without a go-ahead.
 
 ## 11. ADR drafts
 
-These are drafts for review; each becomes an ADR in docs/42's series when its LW item lands.
+R1 is accepted as ADR-V3-26. The remaining decisions are drafts for review; each becomes an ADR in docs/42's series when its LW item lands.
 
-- **R1 Receipt vocabulary.** A receipt states the highest label its evidence supports (4.1) and never the word
+- **R1 Receipt vocabulary (accepted as ADR-V3-26).** A receipt states the highest label its evidence supports (4.1) and never the word
   "durable". Consequence: the copy view, the CLI and agents show the same ladder; a USB destination without LW-134
   evidence says "not power-loss tested on this disk".
 - **R2 Staged retirement.** Retirement is a separate effect after copy, with remount re-verification, a per-plan

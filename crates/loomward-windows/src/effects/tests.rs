@@ -1055,20 +1055,23 @@ fn named_stream_source_keeps_bytes_and_deny_write_holds() {
     }
     let temp = tempfile::tempdir().unwrap();
     fs::write(temp.path().join("source"), b"data").unwrap();
-    fs::write(temp.path().join("source:synthetic"), b"must survive").unwrap();
+    fs::write(temp.path().join("source:Zone.Identifier"), b"must survive").unwrap();
     let (root, entry) = source_fixture(&temp);
     let mut source = Source::open(temp.path(), &root, entry, budget()).unwrap();
-    assert_eq!(source.streams(), vec![(":synthetic:$DATA".to_string(), 12)]);
+    assert_eq!(
+        source.streams(),
+        vec![(":Zone.Identifier:$DATA".to_string(), 12)]
+    );
     let mut bytes = Vec::new();
     source
-        .stream_reader(":synthetic:$DATA")
+        .stream_reader(":Zone.Identifier:$DATA")
         .unwrap()
         .read_to_end(&mut bytes)
         .unwrap();
     assert_eq!(bytes, b"must survive");
     assert!(fs::OpenOptions::new()
         .write(true)
-        .open(temp.path().join("source:synthetic"))
+        .open(temp.path().join("source:Zone.Identifier"))
         .is_err());
     source.finish().unwrap();
 }
@@ -1158,15 +1161,15 @@ fn named_stream_create_new_write_and_noncached_verify() {
     let stage = destination.stage("staging").unwrap();
     let file = stage.create_file(&[], "payload").unwrap();
     let recorded = file.identity().unwrap();
-    let stream = file.create_stream("synthetic").unwrap();
-    assert!(file.create_stream("synthetic").is_err());
+    let stream = file.create_stream("Zone.Identifier").unwrap();
+    assert!(file.create_stream("Zone.Identifier").is_err());
     let digest = stream
         .write_and_flush(&mut &b"stream bytes"[..], 12)
         .unwrap();
     drop(stream);
     drop(file);
     let held = stage.verify(&[], "payload", &recorded).unwrap();
-    let stream_hold = held.verify_stream("synthetic").unwrap();
+    let stream_hold = held.verify_stream("Zone.Identifier").unwrap();
     assert_eq!(stream_hold.digest, digest);
     assert_eq!(stream_hold.size, 12);
 }

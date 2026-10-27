@@ -377,6 +377,8 @@ fn example_directories_hold_exactly_the_expected_files() {
             "ClientField.json".to_string(),
             "McpClient.json".to_string(),
             "copy-disposition.json".to_string(),
+            "copy-receipt.json".to_string(),
+            "copy-receipt-published-unverified.json".to_string(),
             "disclosure-summary.json".to_string(),
             "duplicates-result.json".to_string(),
             "identity-observation-unverified.json".to_string(),

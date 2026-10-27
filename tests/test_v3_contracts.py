@@ -55,6 +55,15 @@ class V3ContractTests(unittest.TestCase):
                     if isinstance(spec, dict) and isinstance(spec.get(key), str):
                         self.assertIn(spec[key], self.defs, f'{kind} {name}.{key}')
 
+    def test_copy_receipt_vocabulary_is_additive_and_truthful(self):
+        receipt = load('examples/commands/copy.status.result.json')['receipt']
+        self.assertIsNone(receipt['highest_label'])
+        self.assertEqual(receipt['state'], 'unverified')
+        self.assertIn('not power-loss tested on this disk', receipt['explanation'])
+        self.assertNotIn('durable', json.dumps(receipt).lower())
+        self.assertNotIn('receipt', self.defs['CopyStatus']['required'])
+        self.assertTrue(self.defs['CopyStatus']['properties']['items_verified']['deprecated'])
+
     def test_copy_status_accepts_bounded_disposition_without_native_identity(self):
         try:
             import jsonschema

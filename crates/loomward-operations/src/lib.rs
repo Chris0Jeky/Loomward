@@ -15,6 +15,7 @@
 
 pub mod journal;
 pub mod manifest;
+pub mod receipt;
 pub mod recovery;
 pub mod state;
 pub mod store;
@@ -28,6 +29,7 @@ pub use manifest::{
     approve, preview, Admitted, Approval, Code, Context, Destination, DestinationFacts, Identity,
     Manifest, ManifestItem, Preview, Refused, SourceEntry,
 };
+pub use receipt::{CopyReceipt, ReceiptLabel, ReceiptState};
 pub use recovery::{recover, Attention, Cleanup, Decision, Disk, Observed, Recovery, Resume};
 pub use state::{IllegalTransition, ItemState, OpState};
 pub use store::{AppendError, Store, SCHEMA_SQL};

@@ -612,6 +612,7 @@ pub struct Outcome {
     pub staging_left: Option<String>,
     pub items_total: u32,
     pub items_verified: u32,
+    pub receipt: loomward_operations::CopyReceipt,
     pub disposition: Option<loomward_operations::StagingDisposition>,
     /// Staging tokens intended but never identity-committed: a folder under such a name may exist,
     /// empty and unjournaled. Never adopted or removed; reported for the owner.
@@ -989,6 +990,24 @@ fn status_observing(store: &Mutex<Store>, op: u64, idle: bool) -> Result<Outcome
             _ => {}
         }
     }
+    let checked = r.items.iter().filter(|i| i.verified).count() as u32;
+    // A publish intent alone is not publication. Observe the journaled identity without effects.
+    let published = refusal.is_some_and(|(code, _)| code == Refusal::ChangedAfterVerification)
+        || state != OpState::Committed
+            && r.publish.as_ref().zip(r.staging).is_some_and(|(name, id)| {
+                store
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .plan(op)
+                    .ok()
+                    .flatten()
+                    .and_then(|p| serde_json::from_str::<Plan>(&p).ok())
+                    .is_some_and(|plan| {
+                        PathDisk::new(&plan, &r)
+                            .in_parent(name)
+                            .is_some_and(|observed| id.matches(&observed, r.staging_planned))
+                    })
+            });
     Ok(Outcome {
         state,
         refusal,
@@ -997,7 +1016,13 @@ fn status_observing(store: &Mutex<Store>, op: u64, idle: bool) -> Result<Outcome
             .then(|| r.staging_tokens.last().cloned())
             .flatten(),
         items_total: r.items.len() as u32,
-        items_verified: r.items.iter().filter(|i| i.verified).count() as u32,
+        items_verified: checked,
+        receipt: loomward_operations::CopyReceipt::from_copy(
+            state,
+            r.items.len() as u32,
+            checked,
+            published,
+        ),
         disposition: r.disposition.clone(),
         leftover_staging: match r.staging {
             Some(_) => r.staging_tokens[..r.staging_tokens.len() - 1].to_vec(),

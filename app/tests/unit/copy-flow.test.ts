@@ -1,5 +1,8 @@
+import receiptFixture from '../../../contracts/v3/examples/dtos/copy-receipt.json';
+import publishedFixture from '../../../contracts/v3/examples/dtos/copy-receipt-published-unverified.json';
+import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { CopyFlow, refusalReason } from '../../src/lib/stores/copy.svelte';
+import { CopyFlow, refusalReason, receiptText } from '../../src/lib/stores/copy.svelte';
 import { Client, LoomwardError } from '../../src/lib/transport/client';
 import { createMockTransport } from '../../src/lib/transport/mock';
 import type { CopyPreview, CopyStatus } from '../../src/lib/contracts.gen';
@@ -358,4 +361,21 @@ describe('a start whose reply is dropped as stale stays recoverable', () => {
     await f.refresh(client);
     expect(f.uncertain).toBe(false); expect(f.locked).toBe(false); expect(f.status?.state).toBe('committed');
   });
+});
+
+it('renders the same receipt fixture as service, CLI and agent JSON without promoting legacy counts', () => {
+  for (const fixture of [receiptFixture, publishedFixture]) {
+    const observed = { ...status('committed'), receipt: fixture.value as NonNullable<CopyStatus['receipt']> };
+    expect(receiptText(observed)).toBe(fixture.value.explanation);
+    expect(receiptText(observed)).not.toMatch(/durable/i);
+    expect(receiptText(observed)).toContain('not power-loss tested on this disk');
+  }
+  expect(receiptText(status('committed'))).toMatch(/^Unverified:/);
+
+});
+
+it('the copy view displays the receipt rather than promoting the deprecated count', () => {
+  const view = readFileSync(new URL('../../src/views/copy/View.svelte', import.meta.url), 'utf8');
+  expect(view).toContain('{receiptText(copy.status)}');
+  expect(view).not.toContain('copy.status.items_verified');
 });

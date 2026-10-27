@@ -218,6 +218,9 @@ mod pending_fence_tests {
             facts.explanation()
         );
         assert_eq!(value["items_verified"], 0);
+        assert_eq!(value["receipt"]["highest_label"], Value::Null);
+        assert_eq!(value["receipt"]["state"], "unverified");
+        assert!(!value["receipt"].to_string().contains("durable"));
         assert_eq!(value["disposition"]["items_verified"], 1);
         assert_eq!(
             value["disposition"]["refusal_codes"],
@@ -1741,6 +1744,7 @@ impl Inner {
                 "digest": digest_text(digest),
                 "items_total": outcome.items_total,
                 "items_verified": outcome.items_verified,
+                "receipt": outcome.receipt,
                 "staging_folder": outcome.staging_left,
                 "leftover_staging_folders": outcome.leftover_staging.iter().take(64).collect::<Vec<_>>(),
                 "unjournaled_items": outcome.unjournaled_items.iter().take(64).collect::<Vec<_>>(),

@@ -4,7 +4,7 @@
 
 <script lang="ts">
   import { onMount, tick } from 'svelte';
-  import { copy, refusalReason, type CopyItem } from '../../lib/stores/copy.svelte';
+  import { copy, refusalReason, receiptText, type CopyItem } from '../../lib/stores/copy.svelte';
   import { session } from '../../lib/stores/session.svelte';
   import { TransportError } from '../../lib/transport/client';
   import { formatBytes } from '../../lib/format/bytes';
@@ -156,8 +156,8 @@
       <button class="btn primary" type="button" disabled={!copy.canStart || expired} onclick={() => void act('start')}>{resuming ? 'Resume copying' : 'Start copying'}</button>
     {/if}
     {#if copy.status}
-      <h3>{copy.status.state === 'committed' ? 'Receipt: completed and verified' : copy.status.state === 'cancelled' ? 'Receipt: cancelled' : 'Operation status'}</h3>
-      <p role="status">{copy.status.state.replaceAll('_', ' ')} · {formatCount(copy.status.items_verified)} of {formatCount(copy.status.items_total)} items verified</p>
+      <h3>Receipt</h3>
+      <p role="status">{copy.status.state.replaceAll('_', ' ')} · {receiptText(copy.status)}</p>
       {#if copy.status.refusal}<p class="bad"><VisibleName name={nodeName(copy.status.refusal.node_id)} /> · <code>{copy.status.refusal.code}</code>: {refusalReason(copy.status.refusal.code)}</p>{/if}
       {#if copy.status.state === 'committed'}<p>No space was freed on the source. Read-back does not prove persistence beyond the device’s own cache.</p>
       {:else if copy.status.state === 'cancelled'}<p>The source was not changed. No space was freed on the source.</p>

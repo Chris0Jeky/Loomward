@@ -647,7 +647,11 @@ fn tree_fixture(root: &Path) {
         .unwrap();
     }
     fs::write(top.join("streamed.txt"), b"default stream").unwrap();
-    fs::write(top.join("streamed.txt:note"), b"zone mark survives").unwrap();
+    fs::write(
+        top.join("streamed.txt:Zone.Identifier"),
+        b"[ZoneTransfer]\r\nZoneId=3\r\n",
+    )
+    .unwrap();
     fs::write(top.join("readonly.txt"), b"read only").unwrap();
     let mut p = fs::metadata(top.join("readonly.txt"))
         .unwrap()
@@ -722,6 +726,14 @@ fn lab_tree_is_copied_verified_published_and_c1_agrees() {
     assert_eq!(outcome.state, OpState::Committed, "{outcome:?}");
     assert_eq!(outcome.refusal, None);
     assert_eq!(outcome.items_verified, outcome.items_total);
+    assert_eq!(
+        outcome.receipt.highest_label,
+        Some(loomward_operations::ReceiptLabel::ReadBack)
+    );
+    assert_eq!(
+        fs::read(lab.dest().join("top/streamed.txt:Zone.Identifier")).unwrap(),
+        b"[ZoneTransfer]\r\nZoneId=3\r\n"
+    );
     // One new folder under the source folder's name, nothing else in the parent.
     assert_eq!(lab.dest_names(), ["top"]);
     // The receipt agrees with the independent C1 verifier: content and every section 6 class.
@@ -2357,6 +2369,11 @@ fn destination_aces_prevent_commit(recovery: bool) {
                 outcome.refusal,
                 Some((Refusal::ChangedAfterVerification, None))
             );
+            assert_eq!(
+                outcome.receipt.state,
+                loomward_operations::ReceiptState::PublishedUnverified
+            );
+            assert_eq!(outcome.receipt.highest_label, None);
             assert_eq!(fs::read(published.join("sub/f")).unwrap(), b"payload");
             assert_eq!(source_snapshot(&lab.src()), before);
         }
