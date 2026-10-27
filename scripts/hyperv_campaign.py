@@ -760,7 +760,8 @@ foreach ($pair in $pairs) {{
 }}
 # Verify both copies before atomically replacing either live disk.
 foreach ($pair in $pairs) {{
-    [IO.File]::Replace($pair.temporary, $pair.target, $null)
+    # [NullString]::Value, not $null: PowerShell passes $null to a .NET string as "", an illegal backup path.
+    [IO.File]::Replace($pair.temporary, $pair.target, [NullString]::Value)
 }}
 '{{}}'
 """, timeout=900, guard=True)
