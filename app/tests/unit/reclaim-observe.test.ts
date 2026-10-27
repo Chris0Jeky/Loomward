@@ -4,7 +4,7 @@ import { ReclaimObserve } from '../../src/lib/stores/reclaim-observe.svelte';
 import { session } from '../../src/lib/stores/session.svelte';
 import { Client, LoomwardError } from '../../src/lib/transport/client';
 import { createMockTransport } from '../../src/lib/transport/mock';
-import { observeProgressText, observeRefusal, observeStatus } from '../../src/views/reclaim/model';
+import { observeLines, observeProgressText, observeRefusal, observeStatus } from '../../src/views/reclaim/model';
 
 const job = (patch: Partial<Job> = {}): Job => ({ job_id: 'jb_fixture', kind: 'reclaim', root_id: null, seq: 1, rev: 0, state: 'running', created_at: '2026-10-01T00:00:00Z', started_at: null, finished_at: null, coverage: null, error: null, progress: null, reclaim: { candidates_total: 4, candidates_done: 1, names_checked: 1200 }, ...patch });
 const error = (code: LoomwardError['code'], message: string, detail: Record<string, unknown> | null = null) => new LoomwardError({ code, message, retryable: false, detail });
@@ -56,7 +56,7 @@ describe('reclaim observe store', () => {
     await expect(client.call('reclaim.observe', { volume_id })).rejects.toMatchObject({ code: 'busy' });
     store.job = null as Job | null; // a second page that never saw the first job
     await store.start(volume_id);
-    expect(store.problem).toBe(observeRefusal(error('busy', 'x')));
+    expect(store.problem).toBe(''); // the adopted job's status now says what the refusal meant
     expect((store.job as Job | null)?.job_id).toBe(first);
   });
 
@@ -86,11 +86,49 @@ describe('reclaim observe store', () => {
   });
 });
 
+describe('observe lines as the view shows them', () => {
+  it('after a busy refusal the adopted job is shown with progress, not the stale refusal, and is not claimed for this volume', async () => {
+    const { client, store, volume_id } = await mock();
+    await client.call('reclaim.observe', { volume_id }); // started elsewhere
+    await store.start(volume_id);
+    const lines = observeLines(store);
+    expect(lines.problem).toBe('');
+    expect(lines.status).toMatch(/did not start.*does not say which volume.*0 of 1 candidates observed/);
+    await vi.advanceTimersByTimeAsync(800);
+    await store.refresh();
+    expect(observeLines(store).status).toContain('4,200 names checked');
+  });
+
+  it('a job this page started is described as running, not as foreign', async () => {
+    const { store, volume_id } = await mock();
+    await store.start(volume_id);
+    await vi.advanceTimersByTimeAsync(300);
+    expect(observeLines(store).status).toMatch(/^Observing hard links · /);
+  });
+
+  it('a transient poll error shows beside the status and clears on the next successful poll', async () => {
+    const { client, store, volume_id } = await mock();
+    await store.start(volume_id);
+    await vi.advanceTimersByTimeAsync(300);
+    const real = client.transport.call.bind(client.transport);
+    let down = true;
+    (client.transport as { call: unknown }).call = (r: { command: string }, s?: AbortSignal) =>
+      down && r.command === 'jobs.get' ? Promise.reject(new Error('poll failed')) : real(r as never, s);
+    await store.refresh();
+    expect(observeLines(store)).toMatchObject({ problem: 'poll failed' });
+    expect(observeLines(store).status).toMatch(/^Observing hard links/); // the job status is never hidden by the fault
+    down = false;
+    await store.refresh();
+    expect(observeLines(store).problem).toBe('');
+  });
+});
+
 describe('observe wording', () => {
   it('names each refusal the owner can act on, and falls back to the service text', () => {
     expect(observeRefusal(error('busy', 'x'))).toMatch(/already running/);
     expect(observeRefusal(error('permission_denied', 'x', { reason: 'elevated_token' }))).toMatch(/administrator token.*Nothing was read/);
     expect(observeRefusal(error('invalid_request', 'no_active_grant'))).toMatch(/active grant.*Nothing was read/);
+    expect(observeRefusal(error('invalid_request', 'refused', { reason: 'no_active_grant' }))).toMatch(/active grant/);
     expect(observeRefusal(error('internal_error', 'engine fault'))).toBe('engine fault');
     expect(observeRefusal(new Error('boom'))).toBe('boom');
   });
@@ -98,7 +136,7 @@ describe('observe wording', () => {
   it('says what each job end means, never presenting unfinished candidates as zero', () => {
     expect(observeStatus(null)).toBe('');
     expect(observeStatus(job({ state: 'completed', coverage: 'complete', reclaim: { candidates_total: 2, candidates_done: 2, names_checked: 10 } }))).toBe('Observation finished · 2 of 2 candidates observed · 10 names checked.');
-    expect(observeStatus(job({ state: 'completed', coverage: 'partial' }))).toMatch(/stopped early.*stay unknown/);
+    expect(observeStatus(job({ state: 'completed', coverage: 'partial' }))).toMatch(/^Observation stopped early · .*stay unknown/);
     expect(observeStatus(job({ state: 'failed', error: { code: 'internal_error', message: 'disk gone', retryable: false, detail: null } }))).toBe('Observation failed: disk gone. Candidates it did not finish stay unknown.');
     expect(observeStatus(job({ state: 'cancel_requested' }))).toMatch(/^Cancelling/);
     expect(observeProgressText({ candidates_total: 0, candidates_done: 0, names_checked: 0 })).toBe('No candidates to observe · 0 names checked');

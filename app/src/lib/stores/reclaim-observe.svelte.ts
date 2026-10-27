@@ -9,6 +9,8 @@ export class ReclaimObserve {
   job = $state<Job | null>(null);
   pending = $state(false);
   problem = $state('');
+  /** The job this page started, if any. The job names no volume, so any other job (adopted after busy or a reload) may cover another one. */
+  ownJobId = $state<string | null>(null);
   private epoch: string | null = null;
 
   get active(): boolean { return this.job !== null && isActive(this.job.state); }
@@ -32,6 +34,7 @@ export class ReclaimObserve {
       const { result } = await c.call('jobs.list', { kinds: ['reclaim'], limit: 5 });
       if (c !== session.client) return;
       for (const job of result.jobs) if (isActive(job.state)) this.apply(job); // an old, finished run is not news
+      this.problem = ''; // the call worked: an earlier fault is no longer current
     } catch (e) { this.problem = session.handle(e); }
   }
   async refresh(): Promise<void> {
@@ -39,7 +42,7 @@ export class ReclaimObserve {
     if (!c || !job) return;
     try {
       const { result } = await c.call('jobs.get', { job_id: job.job_id });
-      if (c === session.client) this.apply(result.job);
+      if (c === session.client) { this.apply(result.job); this.problem = ''; }
     } catch (e) { this.problem = session.handle(e); }
   }
   async start(volumeId: string): Promise<void> {
@@ -48,13 +51,17 @@ export class ReclaimObserve {
     this.pending = true; this.problem = '';
     try {
       const { result } = await c.call('reclaim.observe', { volume_id: volumeId });
-      if (c === session.client) this.apply(result.job);
+      if (c === session.client) { this.apply(result.job); this.ownJobId = result.job.job_id; }
     } catch (e) {
       session.handle(e);
       this.problem = observeRefusal(e);
       // Busy names the running job: follow it instead of leaving the owner blind.
       if (e instanceof LoomwardError && e.code === 'busy' && typeof e.detail?.job_id === 'string') {
-        try { const { result } = await c.call('jobs.get', { job_id: e.detail.job_id }); this.apply(result.job); } catch { /* the refusal text stands */ }
+        try {
+          const { result } = await c.call('jobs.get', { job_id: e.detail.job_id });
+          this.apply(result.job);
+          this.problem = ''; // the running job's status now says what the refusal meant
+        } catch { /* the refusal text stands */ }
       }
     } finally { this.pending = false; }
   }

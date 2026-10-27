@@ -10,7 +10,7 @@
   import { session } from '../../lib/stores/session.svelte';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
   import { COVERAGE_WORDS } from '../clutter/model';
-  import { defaultVolume, GROUP_HEADINGS, OBSERVE_EXPLAINER, observeStatus, unaccountedText } from './model';
+  import { defaultVolume, GROUP_HEADINGS, OBSERVE_EXPLAINER, observeLines, unaccountedText } from './model';
 
   let volumes = $state<Volume[]>([]);
   let selected = $state('');
@@ -19,7 +19,7 @@
   let error = $state('');
   let generation = 0;
   const observe = new ReclaimObserve();
-  const observeText = $derived(observe.problem || (observe.pending ? 'Sending request…' : observeStatus(observe.job)));
+  const lines = $derived(observeLines(observe));
 
   async function read(id: string): Promise<void> {
     const c = session.client;
@@ -86,7 +86,8 @@
     {#if observe.active}<button class="btn" disabled={observe.pending || observe.job?.state === 'cancel_requested'} onclick={() => void observe.cancel()}>Cancel observation</button>{/if}
   </div>
   <p class="muted small">{OBSERVE_EXPLAINER}</p>
-  <p class="live muted" class:bad={!!observe.problem} class:has={!!observeText} role="status" aria-label="Observation status">{observeText}</p>
+  <p class="live muted" class:has={!!lines.status} role="status" aria-label="Observation status">{lines.status}</p>
+  <p class="live bad" class:has={!!lines.problem} role="status" aria-label="Observation problem">{lines.problem}</p>
   {#if !loading && !volumes.length && !error}<p class="empty">No recorded volume is available.</p>{/if}
   <p class="live bad" class:has={!!error} role="alert">{error}</p>
 </section>

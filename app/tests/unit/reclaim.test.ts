@@ -76,6 +76,14 @@ describe('reclaim view', () => {
     expect([...source.matchAll(/c.call\('([^']+)'/g)].map((m) => m[1])).toEqual(['reclaim.plan', 'volumes.list']);
   });
 
+  it('the observe store calls only the read-only job commands and the plan', () => {
+    const store = readFileSync(new URL('../../src/lib/stores/reclaim-observe.svelte.ts', import.meta.url), 'utf8');
+    const allowed = ['jobs.list', 'jobs.get', 'reclaim.observe', 'jobs.cancel', 'reclaim.plan', 'volumes.list'];
+    const used = [...store.matchAll(/\.call\('([^']+)'/g)].map((m) => m[1]);
+    expect(used.length).toBeGreaterThan(0);
+    expect(used.filter((c) => !allowed.includes(c!))).toEqual([]);
+  });
+
   it('clears old evidence during a new read, and drops superseded replies', async () => {
     let finish!: (value: unknown) => void;
     const pending = new Promise((resolve) => { finish = resolve; });

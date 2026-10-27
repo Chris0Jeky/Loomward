@@ -36,7 +36,7 @@ export function observeRefusal(e: unknown): string {
   if (e.code === 'permission_denied' && e.detail?.reason === 'elevated_token') {
     return 'Loomward is running with an administrator token, so it will not open files. Restart it normally and try again. Nothing was read.';
   }
-  if (e.code === 'invalid_request' && e.message === 'no_active_grant') {
+  if (e.code === 'invalid_request' && (e.message === 'no_active_grant' || e.detail?.reason === 'no_active_grant')) {
     return 'No folder on this volume has an active grant, so there is nothing to observe. Grant a folder first. Nothing was read.';
   }
   if (e.code === 'not_found') return 'This volume is no longer listed. Use Look again.';
@@ -51,9 +51,13 @@ export function observeProgressText(p: ReclaimObserveProgress | undefined): stri
 }
 
 /** What the owner is told while a job runs and after it ends. An unfinished candidate stays unknown, never zero. */
-export function observeStatus(job: Job | null): string {
+export function observeStatus(job: Job | null, owned = true): string {
   if (!job) return '';
   const p = observeProgressText(job.reclaim);
+  // The job names no volume: one this page did not start may be observing another, so never imply it is this one.
+  if (!owned && ['queued', 'running', 'cancel_requested'].includes(job.state)) {
+    return `An observation this page did not start is running, and the service does not say which volume it covers · ${p}. This volume's plan is read again when it ends.`;
+  }
   switch (job.state) {
     case 'queued': return 'Observation queued.';
     case 'running': return `Observing hard links · ${p}`;
@@ -62,7 +66,13 @@ export function observeStatus(job: Job | null): string {
     case 'failed': return `Observation failed${job.error ? `: ${job.error.message}` : ''}. Candidates it did not finish stay unknown.`;
     case 'completed':
       return job.coverage === 'partial'
-        ? `Observation stopped early (time budget or a folder it could not open) · ${p}. Candidates it did not finish stay unknown.`
+        ? `Observation stopped early · ${p}. Candidates it did not finish stay unknown.`
         : `Observation finished · ${p}.`;
   }
+}
+
+/** The two lines the view shows: the job's status whenever there is a job, and a fault or refusal as a separate line. */
+export function observeLines(o: { job: Job | null; problem: string; pending: boolean; ownJobId: string | null }): { status: string; problem: string } {
+  const status = o.job ? observeStatus(o.job, o.job.job_id === o.ownJobId) : o.pending ? 'Sending request…' : '';
+  return { status, problem: o.problem };
 }
