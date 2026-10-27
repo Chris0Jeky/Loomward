@@ -603,7 +603,10 @@ mod native {
         }
         /// Stop and join, delivering completed hints and draining cancelled I/O before releasing pins.
         /// A worker Busy across eight checkpoints and a minute is retired without waiting; it owns
-        /// its I/O buffers and pins until it returns and drains cancellation itself.
+        /// its I/O buffers and pins until it returns and drains cancellation itself. Dropping the
+        /// device registration waits for an in-flight removal callback, which waits up to 10 s for
+        /// the watch thread to close its handles: with a wedged worker, `stop` can block that long
+        /// (#935).
         pub fn stop(&self) {
             self.failed(); // Retain an unexpected exit after taking the join handle.
             self.done.store(true, Ordering::Release);

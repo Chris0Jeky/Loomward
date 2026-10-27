@@ -1654,37 +1654,34 @@ fn root_identity_mismatch_never_enters_writer() {
         told,
         "the writer is told, so it can record the transition (#206)"
     );
+    struct Foreign(Option<u128>);
+    impl DirSource for Foreign {
+        type Dir = u64;
+        fn strategy(&self) -> Strategy {
+            Strategy::Portable
+        }
+        fn open_root(&self, path: &std::path::Path) -> Result<(u64, OpenedIdentity), SourceError> {
+            let (dir, mut identity) = Tree.open_root(path)?;
+            identity.volume_guid = self.0;
+            Ok((dir, identity))
+        }
+        fn open_child(
+            &self,
+            _: &u64,
+            _: &RawEntry<'_>,
+        ) -> Result<(u64, OpenedIdentity), SourceError> {
+            panic!("a foreign volume must not open children")
+        }
+        fn list(&self, _: &u64, _: &mut dyn FnMut(RawEntry<'_>) -> Flow) -> ListOutcome {
+            panic!("a foreign volume must not be listed")
+        }
+    }
     // #912, docs/48 section 2: between admission and the job's root open another volume took
     // the path (a different disk on a USB root's letter). The root is away, not replaced: the
     // scan is refused offline and the sink, which would retire the grant, is never told.
     for observed in [Some(2), None] {
         let mut expected = identity(1);
         expected.volume_guid = Some(1);
-        struct Foreign(Option<u128>);
-        impl DirSource for Foreign {
-            type Dir = u64;
-            fn strategy(&self) -> Strategy {
-                Strategy::Portable
-            }
-            fn open_root(
-                &self,
-                path: &std::path::Path,
-            ) -> Result<(u64, OpenedIdentity), SourceError> {
-                let (dir, mut identity) = Tree.open_root(path)?;
-                identity.volume_guid = self.0;
-                Ok((dir, identity))
-            }
-            fn open_child(
-                &self,
-                _: &u64,
-                _: &RawEntry<'_>,
-            ) -> Result<(u64, OpenedIdentity), SourceError> {
-                panic!("a foreign volume must not open children")
-            }
-            fn list(&self, _: &u64, _: &mut dyn FnMut(RawEntry<'_>) -> Flow) -> ListOutcome {
-                panic!("a foreign volume must not be listed")
-            }
-        }
         let mut root = root();
         root.expected = Some(expected);
         let sink = Arc::new(MemorySink::default());
@@ -1708,6 +1705,26 @@ fn root_identity_mismatch_never_enters_writer() {
             "a foreign volume never retires the grant ({observed:?})"
         );
     }
+    // #935: the grant's own volume (same GUID) with another root file ID is a replaced root:
+    // identity_changed, never offline.
+    let mut expected = identity(999);
+    expected.volume_guid = Some(1);
+    let mut root = root();
+    root.expected = Some(expected);
+    let sink = Arc::new(MemorySink::default());
+    let error = run_scan(
+        &Foreign(Some(1)),
+        &root,
+        1,
+        sink.clone(),
+        Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES)),
+        Arc::new(AtomicBool::new(false)),
+        ScanOptions::default(),
+    )
+    .unwrap_err();
+    assert_eq!(error.to_body().message.as_str(), "root_identity_changed");
+    assert!(sink.identity_changed(root.root_id()));
+    assert!(sink.totals(root.root_id()).is_none());
 }
 
 struct BlockingSource {
