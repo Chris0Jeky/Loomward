@@ -28,6 +28,18 @@ pub struct StoragePath {
 }
 
 impl StoragePath {
+    /// Imported path qualification is evidence only for the same fully observed tuple.
+    /// This never creates qualification; LW-134 has not supplied any production evidence.
+    pub fn requalify_receipt(
+        &self,
+        current: &Self,
+        receipt: &mut loomward_operations::CopyReceipt,
+    ) {
+        if !self.proves_same_path(current) {
+            receipt.downgrade_power_loss();
+        }
+    }
+
     /// Whether `other` is provably the same physical path: same volume and every field known and
     /// equal in both. Any unknown field proves nothing, so a changed enclosure cannot hide.
     pub fn proves_same_path(&self, other: &Self) -> bool {
@@ -243,6 +255,44 @@ mod tests {
         });
         assert!(matches!(observe(&provider).health,
             HealthObservation::UnsupportedOrHidden { reason } if reason.contains("bridge hides")));
+    }
+
+    #[test]
+    fn receipt_qualification_is_bound_to_the_fully_known_storage_path() {
+        use loomward_operations::{CopyReceipt, OpState, ReceiptLabel};
+        let original = observe(&fixture(unknown())).storage_path;
+        let qualified = || {
+            // Synthetic future LW-134 evidence, never produced by today's copy engine.
+            let mut receipt = CopyReceipt::from_copy(OpState::Committed, 1, 1, true);
+            receipt.highest_label = Some(ReceiptLabel::PowerLossQualified);
+            receipt
+        };
+        let mut receipt = qualified();
+        original.requalify_receipt(&original, &mut receipt);
+        assert_eq!(
+            receipt.highest_label,
+            Some(ReceiptLabel::PowerLossQualified)
+        );
+        let mut changed = original.clone();
+        changed.bridge = known("Synthetic enclosure B".into());
+        let mut firmware = original.clone();
+        firmware.firmware = known("fixture-v2".into());
+        let mut partial = original.clone();
+        partial.bridge = unknown();
+        for current in [changed, firmware, partial] {
+            let mut receipt = qualified();
+            original.requalify_receipt(&current, &mut receipt);
+            assert_eq!(receipt.highest_label, Some(ReceiptLabel::ReadBack));
+            assert!(receipt
+                .explanation
+                .contains("not power-loss tested on this disk"));
+            assert!(!serde_json::to_string(&receipt).unwrap().contains("durable"));
+        }
+        let mut partial = original;
+        partial.firmware = unknown();
+        let mut receipt = qualified();
+        partial.requalify_receipt(&partial, &mut receipt);
+        assert_eq!(receipt.highest_label, Some(ReceiptLabel::ReadBack));
     }
 
     #[test]

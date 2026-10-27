@@ -2096,6 +2096,7 @@ export type CopyStopCause = CopyRefusalCode | "emergency_stop" | "cancelled";
 export interface CopyDisposition {
   explanation: string;
   items_total: Count;
+  /** Compatibility count of earlier journal checks, not a qualification. Use receipt for current claims. */
   items_verified: Count;
   items_unverified: Count;
   /** Every distinct refusal journaled during the run, including ones it resumed past; not the stopping cause. */
@@ -2105,12 +2106,26 @@ export interface CopyDisposition {
   resume_possible: boolean;
 }
 
+export type CopyReceiptLabel = "read_back" | "crash_qualified" | "power_loss_qualified" | "archive_verified";
+
+export type CopyReceiptState = "unverified" | "read_back" | "published_unverified";
+
+/** LW-132 / ADR R1: highest evidence-supported label. Current engine emits read_back only for a completed copy; G5 unearned, LW-134/LW-136 unavailable. published_unverified is an observation, never inferred from a publish intent. */
+export interface CopyReceipt {
+  state: CopyReceiptState;
+  highest_label: CopyReceiptLabel | null;
+  items_read_back: Count;
+  archive_verified_at: Timestamp | null;
+  explanation: string;
+}
+
 export interface CopyStatus {
   disposition?: CopyDisposition;
   operation_id: CopyOperationId;
   state: CopyState;
   digest: Digest;
   items_total: Count;
+  /** Compatibility count of earlier journal checks, not a qualification. Use receipt for current claims. */
   items_verified: Count;
   /** docs/47 Q1 default: the name (never a path) of the staging folder Loomward left in the destination parent on cancel or abandon, for the owner to remove; null otherwise. */
   staging_folder: string | null;
@@ -2121,6 +2136,7 @@ export interface CopyStatus {
   unjournaled_items: string[];
   /** Total observed, including names beyond the bounded list. */
   unjournaled_item_count: Count;
+  receipt?: CopyReceipt;
 }
 
 /** An Ask turn (LW-118), held in memory for this session only. */

@@ -157,6 +157,36 @@ pub struct CopyDisposition {
     pub resume_possible: bool,
 }
 
+/// LW-132 / ADR R1. A vocabulary is not evidence that any higher label was earned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CopyReceiptLabel {
+    ReadBack,
+    CrashQualified,
+    PowerLossQualified,
+    ArchiveVerified,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CopyReceiptState {
+    Unverified,
+    ReadBack,
+    PublishedUnverified,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CopyReceipt {
+    pub state: CopyReceiptState,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub highest_label: Option<CopyReceiptLabel>,
+    pub items_read_back: Count,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub archive_verified_at: Option<Timestamp>,
+    pub explanation: BoundedStr<1, 2048>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CopyStatus {
@@ -164,8 +194,12 @@ pub struct CopyStatus {
     pub state: CopyState,
     pub digest: Digest,
     pub items_total: Count,
+    /// Deprecated compatibility count; not a qualification label.
     pub items_verified: Count,
-    /// Pre-removal journal facts and deterministic explanation; absent until disposition is durable.
+    /// Absent from older services; clients must not infer a label from the legacy count.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receipt: Option<CopyReceipt>,
+    /// Pre-removal journal facts and deterministic explanation; absent until disposition is committed.
     /// Native staging identities stay in the journal, never become effect authority in this DTO.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disposition: Option<CopyDisposition>,

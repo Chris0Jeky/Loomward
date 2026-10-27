@@ -6,13 +6,14 @@ use std::process::ExitCode;
 
 mod verify_tree;
 
-const USAGE: &str = "Usage: loomward-native capabilities | scan ROOT [MAX_ENTRIES] | plan SCENARIO.json | verify-tree SOURCE DESTINATION --state-dir DIR [--max-entries N] [--budget-bytes N] [--budget-secs N]";
+const USAGE: &str = "Usage: loomward-native capabilities | scan ROOT [MAX_ENTRIES] | plan SCENARIO.json | receipt (copy.status JSON on stdin) | verify-tree SOURCE DESTINATION --state-dir DIR [--max-entries N] [--budget-bytes N] [--budget-secs N]";
 
 fn execute(args: &[String]) -> Result<serde_json::Value, String> {
     match args.first().map(String::as_str) {
         Some("capabilities") if args.len() == 1 => Ok(
             serde_json::json!({"native_build":"local_build","metadata_scan":true,"tier_simulation":true,"file_mutation":false,"process_mutation":false,"native_content_hash":cfg!(windows)}),
         ),
+        Some("receipt") if args.len() == 1 => receipt(io::stdin().lock()),
         Some("scan") if (2..=3).contains(&args.len()) => {
             let limit = if args.len() == 3 {
                 args[2].parse::<usize>().map_err(|e| e.to_string())?
@@ -36,6 +37,24 @@ fn execute(args: &[String]) -> Result<serde_json::Value, String> {
         _ => Err(USAGE.into()),
     }
 }
+/// Render a stored service receipt; this command never reads or copies owner files.
+fn receipt(input: impl Read) -> Result<serde_json::Value, String> {
+    let mut text = String::new();
+    input
+        .take(64 * 1024 + 1)
+        .read_to_string(&mut text)
+        .map_err(|e| e.to_string())?;
+    if text.len() > 64 * 1024 {
+        return Err("copy status exceeds 64 KiB".into());
+    }
+    let status: loomward_protocol::CopyStatus =
+        serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    let receipt = status
+        .receipt
+        .ok_or("unverified: service supplied no evidence-qualified receipt")?;
+    serde_json::to_value(receipt).map_err(|e| e.to_string())
+}
+
 /// Writes the JSON report plus a newline and flushes it. The computed `status` is returned only
 /// when the whole report reached the writer; any write or flush error (including BrokenPipe)
 /// exits 2, so a consumer that closed stdout early cannot read a bare status as a report.
@@ -73,6 +92,34 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn receipt_renders_the_shared_service_agent_app_fixtures() {
+        let mut status: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../contracts/v3/examples/commands/copy.status.result.json"
+        ))
+        .unwrap();
+        for fixture in [
+            include_str!("../../../contracts/v3/examples/dtos/copy-receipt.json"),
+            include_str!(
+                "../../../contracts/v3/examples/dtos/copy-receipt-published-unverified.json"
+            ),
+        ] {
+            let fixture: serde_json::Value = serde_json::from_str(fixture).unwrap();
+            status["receipt"] = fixture["value"].clone();
+            let rendered = receipt(serde_json::to_vec(&status).unwrap().as_slice()).unwrap();
+            assert_eq!(rendered, fixture["value"]);
+            assert!(!rendered.to_string().contains("durable"));
+        }
+        status.as_object_mut().unwrap().remove("receipt");
+        assert!(receipt(serde_json::to_vec(&status).unwrap().as_slice())
+            .unwrap_err()
+            .contains("unverified"));
+        assert!(receipt(&b"not json"[..]).is_err());
+        assert!(receipt(vec![b' '; 64 * 1024 + 1].as_slice())
+            .unwrap_err()
+            .contains("64 KiB"));
+    }
 
     /// A stdout stand-in whose every write and flush fails with one error kind.
     struct FailingWriter(io::ErrorKind);
