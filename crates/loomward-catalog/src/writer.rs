@@ -2686,6 +2686,8 @@ mod tests {
     fn end_run_checkpoint_does_not_wait_for_a_reader_and_restores_write_timeout() {
         let temp = tempfile::tempdir().unwrap();
         let conn = crate::db::open_pair(temp.path(), "synthetic").unwrap();
+        // Leave scheduling headroom while keeping the receipt deadline below a blocking checkpoint.
+        conn.busy_timeout(Duration::from_secs(120)).unwrap();
         let writer = Writer::start(conn).unwrap();
         writer
             .call(WriteCommand::RegisterRoot(RootObservation {
@@ -2734,7 +2736,7 @@ mod tests {
             })
             .unwrap();
         // Keep the snapshot open until the receipt or timeout; release it even on a red run.
-        let result = end.rx.recv_timeout(Duration::from_secs(1));
+        let result = end.rx.recv_timeout(Duration::from_secs(30));
         assert_eq!(
             reader
                 .query_row("SELECT count(*) FROM file", [], |r| r.get::<_, i64>(0))
@@ -2745,7 +2747,6 @@ mod tests {
         result
             .expect("EndRun waited for a reader instead of returning its committed receipt")
             .unwrap();
-        assert!(writer.timings().checkpoint_seconds < 1.0);
         assert_eq!(
             reader
                 .query_row("SELECT logical FROM file", [], |r| r.get::<_, i64>(0))

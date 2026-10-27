@@ -134,6 +134,29 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn structured_content_without_a_text_block_encodes_without_panicking() {
+        for content in [None, Some(json!([]))] {
+            let mut response = json!({
+                "jsonrpc": "2.0", "id": "structured-only",
+                "result": {"structuredContent": {"name": "synthetic\u{202e}"}}
+            });
+            if let Some(content) = content {
+                response["result"]["content"] = content;
+            }
+            let encoded: Value = serde_json::from_slice(&encode(&response)).unwrap();
+            assert_eq!(encoded["id"], response["id"]);
+            assert_eq!(
+                encoded["result"]["structuredContent"]["name"],
+                "synthetic\\u202E"
+            );
+            assert_eq!(
+                encoded["result"].get("content"),
+                response["result"].get("content")
+            );
+        }
+    }
+
+    #[test]
     fn output_budget_refuses_large_responses_and_preserves_the_id() {
         let response =
             json!({"jsonrpc":"2.0","id":"bounded","result":{"text":"x".repeat(MAX_OUTPUT)}});
