@@ -417,8 +417,9 @@ fn f3_issue789_overflow_during_targeted_run_requires_a_full_fallback() {
         *lab.svc.inner.hooks.before_freshness_finish.lock().unwrap() = Some(Box::new(move || {
             weak.upgrade().unwrap().freshness.record(1, vec![change]);
         }));
-        let (job, mode) = refresh_with(&lab.svc, &["a\\2.bin"], false);
-        assert_eq!(mode, "targeted");
+        // Own the initial scope: real watcher hints may arrive after refresh_with clears them.
+        let job = direct(&lab, vec![dir_id(&lab, "a")]);
+        assert_eq!(examined(&job), 4, "only the selected directory: {job:?}");
         assert_eq!(job["coverage"], "partial");
         assert!(lab.svc.inner.freshness.stale(1));
         let (fallback, mode) = next_automatic(&lab.svc);
