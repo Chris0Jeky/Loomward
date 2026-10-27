@@ -952,3 +952,27 @@ fn reclaim_observe_paths_are_verbatim() {
         );
     }
 }
+
+#[test]
+fn reclaim_inspect_budget_is_explicit_and_partial() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    fixture(&svc);
+    let complete = reclaim(&svc);
+    assert_eq!(complete["budget_hit"], false);
+    assert_eq!(complete["partial"], false);
+    svc.inner
+        .hooks
+        .reclaim_inspect_budget
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let plan = reclaim(&svc);
+    assert_eq!(plan["budget_hit"], true);
+    assert_eq!(plan["partial"], true);
+    assert_eq!(plan["covered_roots"][0]["coverage"], "unknown");
+    assert!(plan["covered_roots"][0]["allocated_bytes"].is_null());
+    assert_eq!(
+        reclaim(&svc),
+        complete,
+        "inspection refusal is one-shot and read-only"
+    );
+}

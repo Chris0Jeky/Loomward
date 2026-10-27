@@ -2501,6 +2501,13 @@ fn swap_bulk(conn: &Connection, root: i64) -> Result<()> {
     // The build's rows are new token keys (IDs are never reused): index them in one pass below
     // instead of queueing each through the insert triggers and reading it back (#520).
     let token_triggers = crate::search::suspend_insert_triggers(conn)?;
+    if !conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='trigger' AND name='search_file_insert')",
+        [],
+        |r| r.get::<_, bool>(0),
+    )? {
+        conn.execute_batch(include_str!("search.sql"))?;
+    }
     let trigram_trigger: String = conn.query_row(
         "SELECT sql FROM sqlite_schema WHERE type='trigger' AND name='search_file_insert'",
         [],

@@ -1250,6 +1250,104 @@ mod tests {
     use super::*;
 
     #[test]
+    fn rejected_begin_preserves_the_live_freshness_slot() {
+        use loomward_catalog::{WriteCommand, WriteReply};
+        use loomward_engine::scan::ScanSink;
+
+        let temp = crate::tests::temp_root();
+        let svc = crate::Service::open(crate::Config {
+            state_dir: temp.path().to_path_buf(),
+            dataset: loomward_protocol::DatasetClass::Synthetic,
+            allow_personal: false,
+            allow_identity_unverified: false,
+            grant_roots: vec![],
+        })
+        .unwrap();
+        svc.inner.freshness.stop();
+        let (row, grant) = crate::tests::fixture(&svc, 0);
+        let dir = db::active_root_dir(&svc.inner.db(), row).unwrap().unwrap();
+        let root = RootId::new(svc.inner.root_id(row)).unwrap();
+        svc.inner.scan.bind(&root, grant, dir);
+        let WriteReply::Run(run) = svc
+            .inner
+            .catalog
+            .writer()
+            .call(WriteCommand::BeginRun {
+                grant_id: grant,
+                mode: "full".into(),
+                strategy: "fixture".into(),
+                started_at_ns: 1,
+            })
+            .unwrap()
+        else {
+            panic!("run receipt")
+        };
+        let started = Some((6, None, false, 1));
+        svc.inner.freshness.roots.lock().unwrap().insert(
+            row,
+            Tracked {
+                restart: Restart::default(),
+                opening: false,
+                watch: None,
+                checkpoint: Arc::default(),
+                epoch: 7,
+                stale_since: Some(1),
+                at: 1,
+                since: 2,
+                caught_up: false,
+                full: true,
+                paths: BTreeSet::new(),
+                targets: BTreeSet::new(),
+                auto: false,
+                attempts: 0,
+                retry_after: None,
+                changed: Instant::now(),
+                job: None,
+                started,
+                completed: None,
+            },
+        );
+        assert!(matches!(
+            svc.inner.scan.begin_run(&root, 42, &RunScope::FullRoot),
+            Err(loomward_engine::EngineError::Busy { .. })
+        ));
+        let (actual_started, since) = {
+            let roots = svc.inner.freshness.roots.lock().unwrap();
+            (roots[&row].started, roots[&row].since)
+        };
+        assert_eq!(
+            actual_started, started,
+            "rejected begin took a live run's slot"
+        );
+        assert_eq!(since, 2);
+        svc.inner.freshness_finish(grant, &RunScope::FullRoot, true);
+        let completed = svc.inner.freshness.roots.lock().unwrap()[&row].completed;
+        assert_eq!(completed, Some((6, None, false)));
+        svc.inner
+            .catalog
+            .writer()
+            .call(WriteCommand::EndRun {
+                run_id: run,
+                state: "failed".into(),
+                finished_at_ns: 2,
+            })
+            .unwrap();
+        // A successfully admitted run still records and finishes its own freshness slot.
+        svc.inner
+            .scan
+            .begin_run(&root, 43, &RunScope::FullRoot)
+            .unwrap();
+        let admitted = svc.inner.freshness.roots.lock().unwrap()[&row].started;
+        assert_eq!(admitted.unwrap().0, 7);
+        svc.inner
+            .scan
+            .finish_run(&root, 43, &RunScope::FullRoot, false)
+            .unwrap();
+        let finished = svc.inner.freshness.roots.lock().unwrap()[&row].started;
+        assert!(finished.is_none());
+    }
+
+    #[test]
     fn refresh_path_components_reuse_the_prepared_lookup_and_stay_contained() {
         let temp = crate::tests::temp_root();
         let svc = crate::Service::open(crate::Config {
