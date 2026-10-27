@@ -1901,6 +1901,7 @@ fn publish_with_window_bind(
             Arc::new(Mutex::new(WriterTimings::default())),
             alive,
             Arc::default(),
+            Arc::default(),
             crash,
             Some(paused),
         );
@@ -2066,6 +2067,7 @@ fn a_reference_bound_before_a_stage_chunk_led_batch_is_restaged_before_the_joine
             rx,
             measured,
             alive,
+            Arc::default(),
             Arc::default(),
             None,
             Some(paused),
@@ -2504,6 +2506,7 @@ fn first_scan_statements(children: i64) -> HashMap<String, u64> {
         timings.clone(),
         alive,
         Arc::new(AtomicBool::new(true)),
+        Arc::default(),
         None,
         None,
     );
