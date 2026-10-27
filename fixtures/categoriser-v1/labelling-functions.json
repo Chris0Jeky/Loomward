@@ -1803,7 +1803,7 @@
       ]
     },
     {
-      "name": "unique_rules_agree",
+      "name": "unique_rules_with_photo_abstaining",
       "patch": {
         "markers": [
           "lightroom_catalog",
@@ -1823,7 +1823,7 @@
       ]
     },
     {
-      "name": "mixed_rules_agree",
+      "name": "mixed_rules_meaning_conflict",
       "patch": {
         "markers": [
           "cargo_toml",
