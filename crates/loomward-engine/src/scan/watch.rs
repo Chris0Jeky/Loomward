@@ -352,6 +352,9 @@ impl ScanSink for RepairSink {
     ) -> EngineResult<()> {
         self.inner.finish_run(root, run, scope, false)
     }
+    fn cancel_queued(&self, root: &RootId, run: u64) {
+        self.inner.cancel_queued(root, run)
+    }
     fn fence_root(&self, root: &RootId) -> EngineResult<()> {
         self.inner.fence_root(root)
     }

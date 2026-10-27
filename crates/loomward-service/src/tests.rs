@@ -8198,14 +8198,14 @@ fn personal_session_scans_a_granted_folder_metadata_only() {
     );
 }
 
-/// #934: a cancelled run ends without executing the listing steps still queued behind a busy
-/// writer, so its end does not scale with the queue. The catalogue then equals that of a run
-/// cancelled right after the step the writer already held: nothing queued publishes, no
-/// aggregate claims completeness, and the next run of the root is unaffected.
-#[test]
-fn a_cancelled_run_drops_its_queued_listing_steps() {
+const QUEUED: usize = 40;
+
+/// #934: holds the writer on a run's first chunk, queues `queued` more steps behind it, then
+/// ends the run unsettled (`finish_run(false)`), cancelled first when `cancel`. Returns the
+/// commands the writer executed from then on and the catalogue after that end; the root's next
+/// run must publish as usual.
+fn held_unsettled_end(queued: usize, cancel: bool) -> (u64, Vec<String>) {
     use loomward_engine::scan::source::{IdBasis, ListOutcome, OpenedIdentity};
-    const QUEUED: usize = 40;
     let identity = OpenedIdentity {
         id: None,
         basis: IdBasis::None,
@@ -8231,9 +8231,7 @@ fn a_cancelled_run_drops_its_queued_listing_steps() {
         })
         .collect()
     };
-    // Holds the writer on the run's first chunk, queues `queued` more steps behind it, then
-    // cancels: returns the commands the writer executed from then on, and the catalogue.
-    let scan = |queued: usize| {
+    {
         let tmp = temp_root();
         let svc = open(tmp.path(), DatasetClass::Synthetic);
         let (root, grant) = register(&svc, 7);
@@ -8269,9 +8267,13 @@ fn a_cancelled_run_drops_its_queued_listing_steps() {
             )
             .unwrap();
         }
+        if cancel {
+            // What the engine does for a cancelled run before finishing it.
+            sink.cancel_queued(&id, 41);
+        }
         std::thread::scope(|s| {
             let finish = s.spawn(|| sink.finish_run(&id, 41, &RunScope::FullRoot, false));
-            // The sink takes the queued receipts only once it has marked the run cancelled.
+            // The writer resumes only once the sink is waiting on the queued receipts.
             let deadline = Instant::now() + Duration::from_secs(60);
             while sink.unsettled(&id) > 0 {
                 assert!(Instant::now() < deadline, "the cancel never settled");
@@ -8315,14 +8317,40 @@ fn a_cancelled_run_drops_its_queued_listing_steps() {
             .collect();
         assert_eq!(names, vec!["next.bin".to_string()]);
         (executed, cancelled)
-    };
-    let (baseline_executed, baseline) = scan(0);
-    let (executed, catalogue) = scan(QUEUED);
+    }
+}
+
+/// #934: a cancelled run ends without executing the listing steps still queued behind a busy
+/// writer, so its end does not scale with the queue. The catalogue then equals that of a run
+/// cancelled right after the step the writer already held: nothing queued publishes, no
+/// aggregate claims completeness, and the next run of the root is unaffected.
+#[test]
+fn a_cancelled_run_drops_its_queued_listing_steps() {
+    let (baseline_executed, baseline) = held_unsettled_end(0, true);
+    let (executed, catalogue) = held_unsettled_end(QUEUED, true);
     assert_eq!(
         executed, baseline_executed,
         "no queued step of a cancelled run reaches the database"
     );
     assert_eq!(catalogue, baseline);
+}
+
+/// #934 review: an unsettled run that was NOT cancelled (duplicate identities, unreconciled
+/// relists, a targeted run with a denied child) still commits every step it sent before its end.
+#[test]
+fn an_unsettled_uncancelled_run_commits_its_queued_listing_steps() {
+    let (baseline_executed, _) = held_unsettled_end(0, false);
+    let (executed, catalogue) = held_unsettled_end(QUEUED, false);
+    assert_eq!(
+        executed,
+        baseline_executed + QUEUED as u64 + 1,
+        "every queued chunk and the publication execute"
+    );
+    let published = catalogue
+        .iter()
+        .filter(|row| row.contains(".bin\""))
+        .count();
+    assert_eq!(published, QUEUED + 1, "{catalogue:?}");
 }
 
 fn entry(name: &str, bytes: u64, dir: bool) -> loomward_engine::scan::Entry {
@@ -9409,8 +9437,6 @@ fn an_unverified_run_flags_every_published_row() {
             },
         )
         .unwrap();
-        // A cancelled run drops steps still queued at its end (#934): commit them first.
-        sink.settle(&id).unwrap();
         sink.finish_run(&id, run, &RunScope::FullRoot, false)
             .unwrap();
         let (flags, file_id): (u32, Option<Vec<u8>>) = svc

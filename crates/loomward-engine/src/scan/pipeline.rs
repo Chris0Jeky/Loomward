@@ -1727,6 +1727,11 @@ fn run_scan_inner<S: DirSource>(
     } else {
         false
     };
+    // #934: only a cancelled run (stopped early, or refused admission by scan.cancel) may drop
+    // its queued writes; any other unsettled finish still commits everything it sent.
+    if cancel.load(Ordering::Acquire) || ((settled || limited) && !admitted) {
+        sink.cancel_queued(root.root_id(), run);
+    }
     let complete = complete && admitted;
     let settled = settled && admitted;
     let limited = limited && admitted;
