@@ -21,6 +21,8 @@ use std::sync::{
 };
 
 mod analyze;
+#[cfg(all(test, windows))]
+mod cold_probe;
 mod rank;
 mod tokens;
 pub use rank::{RankOptions, ALL_TIERS, TIER_CONTEXT, TIER_TOKEN, TIER_TRIGRAM};
@@ -247,8 +249,11 @@ fn place<'a>(
         .ok_or(Error::Invalid("directory identity cycle"))
 }
 
+// Start from the few parentless directories; dir_by_root visits every descendant on a fresh reader.
+const ROOT_STATES_SQL: &str = "SELECT r.id,CASE WHEN r.state='complete' AND d.agg_valid_rev<d.dirty_rev THEN 'stale' ELSE r.state END,coalesce(d.sub_complete,0),EXISTS(SELECT 1 FROM scan_run s WHERE s.root_id=r.id AND s.state='completed') FROM root r JOIN root_grant g ON g.id=r.id LEFT JOIN dir d INDEXED BY dir_by_logical ON d.root_id=r.id AND d.parent_id IS NULL WHERE g.state='active' AND (?1 IS NULL OR r.id=?1) ORDER BY r.id LIMIT 64";
+
 fn root_states(conn: &Connection, root: Option<i64>) -> Result<Vec<SearchRootState>> {
-    let mut s = conn.prepare_cached("SELECT r.id,CASE WHEN r.state='complete' AND d.agg_valid_rev<d.dirty_rev THEN 'stale' ELSE r.state END,coalesce(d.sub_complete,0),EXISTS(SELECT 1 FROM scan_run s WHERE s.root_id=r.id AND s.state='completed') FROM root r JOIN root_grant g ON g.id=r.id LEFT JOIN dir d ON d.root_id=r.id AND d.parent_id IS NULL WHERE g.state='active' AND (?1 IS NULL OR r.id=?1) ORDER BY r.id LIMIT 64")?;
+    let mut s = conn.prepare_cached(ROOT_STATES_SQL)?;
     let rows = s.query_map([root], |r| {
         let state: String = r.get(1)?;
         let complete: bool = r.get(2)?;
@@ -737,6 +742,41 @@ impl Reader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn root_status_work_does_not_grow_with_descendants() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("catalog.sql")).unwrap();
+        conn.execute_batch("CREATE TABLE root_grant(id INTEGER PRIMARY KEY,state TEXT);
+            WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<9)
+            INSERT INTO root_grant SELECT i,CASE WHEN i=9 THEN 'revoked' ELSE 'active' END FROM n;
+            INSERT INTO root(id,grant_id,state) SELECT id,id,'complete' FROM root_grant;
+            INSERT INTO dir(id,root_id,name,id_quality,id_basis,depth,attrs,listing_state,born_run,seen_run,sub_complete)
+            SELECT id*10000,id,'fixture-root','path_observation','none',0,0,'complete',0,0,1 FROM root;
+            WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<5000)
+            INSERT INTO dir(id,root_id,parent_id,name,id_quality,id_basis,depth,attrs,listing_state,born_run,seen_run)
+            SELECT r.id*10000+n.i,r.id,r.id*10000,'fixture-child','path_observation','none',1,0,'complete',0,0 FROM root r CROSS JOIN n;
+            UPDATE dir SET dirty_rev=1 WHERE id=10000;
+            INSERT INTO scan_run(root_id,mode,strategy,state,started_at_ns,counters_json,budget_json)
+            VALUES(2,'full','fixture','completed',0,'{}','{}');").unwrap();
+        let rows = root_states(&conn, None).unwrap();
+        assert_eq!(rows.len(), 8, "revoked roots stay hidden");
+        assert_eq!(rows[0].scan_state, "stale");
+        assert_eq!(rows[1].coverage, "complete");
+        assert!(rows[1].has_completed_scan);
+        assert!(!rows[0].has_completed_scan);
+        let steps = conn
+            .prepare_cached(ROOT_STATES_SQL)
+            .unwrap()
+            .get_status(rusqlite::StatementStatus::VmStep);
+        assert!(
+            steps < 20_000,
+            "root metadata visited descendants: {steps} VM steps"
+        );
+        let scoped = root_states(&conn, Some(2)).unwrap();
+        assert_eq!(scoped.len(), 1);
+        assert_eq!(scoped[0].root_id, 2);
+    }
+
     #[test]
     fn an_uncached_search_parent_uses_one_ancestor_query_and_keeps_visibility() {
         let conn = Connection::open_in_memory().unwrap();
