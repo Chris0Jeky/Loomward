@@ -5,11 +5,12 @@ use loomward_catalog::*;
 use loomward_engine::{
     placement::FileEntry,
     reclaim::{self, *},
+    EngineError,
 };
 use loomward_protocol::NodeId;
 use loomward_windows::{
     identity::{IdentityQuality, ObjectKey, ObservedIdentity},
-    linkcount::Stop,
+    linkcount::{Stop, MAX_FILES_PER_GROUP},
     recycle_bin::RecycleBinSize,
 };
 use rusqlite::{params, Connection};
@@ -538,4 +539,280 @@ fn reclaim_read_leaves_the_catalogue_unchanged_and_has_no_effect_path() {
             assert!(!source.contains(word), "effect path {word}");
         }
     }
+}
+
+/// Caller expectation (1): a nonzero reparse tag on any name's listing object or link
+/// observation leaves that candidate's relief unknown (None, never zero). Each mutation is
+/// paired with its positive control: the same candidate with the tag restored is Some(100).
+#[test]
+fn reclaim_reparse_tag_leaves_relief_unknown_never_zero() {
+    let lab = Lab::new();
+    let target = NodeKey::Dir(lab.project("Cargo.toml", "target", 100));
+    let unknown = (None, Some(RELIEF_UNOBSERVED));
+    let with_files = |files: Vec<FileEntry>| {
+        let mut input = lab.input();
+        input.files.insert(target, observed(files));
+        reclaim::plan(input).unwrap()
+    };
+    // Tag on the listing's object only.
+    let mut tagged = name("r", 1, 100, 1, 0);
+    tagged.object.as_mut().unwrap().reparse_tag = 0xA000_000C;
+    let plan = with_files(vec![tagged]);
+    let (_, c) = find(&plan, target);
+    assert_eq!((c.reclaimable_bytes, c.reclaimable_reason), unknown);
+    assert_eq!(c.allocated_bytes, Some(100), "sizes stay observed");
+    // Tag on the link observation only: the observation no longer matches the listing.
+    let mut mismatched = name("r", 1, 100, 1, 0);
+    mismatched
+        .link_observation
+        .as_mut()
+        .unwrap()
+        .object
+        .reparse_tag = 0xA000_000C;
+    let plan = with_files(vec![mismatched]);
+    let (_, c) = find(&plan, target);
+    assert_eq!((c.reclaimable_bytes, c.reclaimable_reason), unknown);
+    // Boundary: the maximum tag on both sides still matches, yet still blocks relief.
+    let mut maxed = name("r", 1, 100, 1, 0);
+    maxed.object.as_mut().unwrap().reparse_tag = u32::MAX;
+    maxed.link_observation.as_mut().unwrap().object.reparse_tag = u32::MAX;
+    let plan = with_files(vec![maxed]);
+    let (_, c) = find(&plan, target);
+    assert_eq!((c.reclaimable_bytes, c.reclaimable_reason), unknown);
+    // Positive control: the same candidate with the tag restored verifies exactly.
+    let plan = with_files(vec![name("r", 1, 100, 1, 0)]);
+    let (_, c) = find(&plan, target);
+    assert_eq!(
+        (c.reclaimable_bytes, c.reclaimable_reason),
+        (Some(100), None)
+    );
+    let json = serde_json::to_value(c).unwrap();
+    assert!(
+        json["reclaimable_bytes"].is_number(),
+        "known relief serialises as a number"
+    );
+}
+
+/// Caller expectation (2): a legacy 64-bit identity is unusable on a non-NTFS volume or
+/// with a missing volume serial, so relief is unknown (None, never zero). Positive control:
+/// the same legacy identity on NTFS with the serial present verifies exactly.
+#[test]
+fn reclaim_legacy64_identity_needs_ntfs_and_serial() {
+    let legacy = || IdentityQuality::Legacy64 {
+        reason: "synthetic-legacy".into(),
+    };
+    let legacy_name = || {
+        let mut f = name("g", 1, 100, 1, 0);
+        f.object.as_mut().unwrap().quality = legacy();
+        f.link_observation.as_mut().unwrap().object.quality = legacy();
+        f
+    };
+    let lab = Lab::new();
+    let target = NodeKey::Dir(lab.project("Cargo.toml", "target", 100));
+    let unknown = (None, Some(RELIEF_UNOBSERVED));
+    // Legacy identity on a non-NTFS volume.
+    let mut input = lab.input();
+    input.volume.ntfs = false;
+    input.files.insert(target, observed(vec![legacy_name()]));
+    let plan = reclaim::plan(input).unwrap();
+    let (_, c) = find(&plan, target);
+    assert_eq!((c.reclaimable_bytes, c.reclaimable_reason), unknown);
+    assert_eq!(c.allocated_bytes, Some(100), "sizes stay observed");
+    // Legacy identity with a missing volume serial.
+    let mut input = lab.input();
+    input.volume.volume_serial = None;
+    input.files.insert(target, observed(vec![legacy_name()]));
+    let plan = reclaim::plan(input).unwrap();
+    let (_, c) = find(&plan, target);
+    assert_eq!((c.reclaimable_bytes, c.reclaimable_reason), unknown);
+    // Boundary: only the observation carries the legacy quality, so the pair mismatches.
+    let mut input = lab.input();
+    let mut half = name("g", 1, 100, 1, 0);
+    half.link_observation.as_mut().unwrap().object.quality = legacy();
+    input.files.insert(target, observed(vec![half]));
+    let plan = reclaim::plan(input).unwrap();
+    let (_, c) = find(&plan, target);
+    assert_eq!((c.reclaimable_bytes, c.reclaimable_reason), unknown);
+    // Positive control: the same legacy identity verifies on NTFS with the serial bound.
+    let mut input = lab.input();
+    input.files.insert(target, observed(vec![legacy_name()]));
+    let plan = reclaim::plan(input).unwrap();
+    let (_, c) = find(&plan, target);
+    assert_eq!(
+        (c.reclaimable_bytes, c.reclaimable_reason),
+        (Some(100), None)
+    );
+    // The NTFS/serial rule gates legacy identities only: a 128-bit identity on a
+    // non-NTFS volume still verifies.
+    let mut input = lab.input();
+    input.volume.ntfs = false;
+    input
+        .files
+        .insert(target, observed(vec![name("g", 1, 100, 1, 0)]));
+    let plan = reclaim::plan(input).unwrap();
+    let (_, c) = find(&plan, target);
+    assert_eq!(
+        (c.reclaimable_bytes, c.reclaimable_reason),
+        (Some(100), None)
+    );
+}
+
+/// Caller expectation (3): a link observation whose size differs from the listing's
+/// logical bytes leaves relief unknown (None, never zero). Positive control: the same
+/// candidate with the size restored verifies exactly.
+#[test]
+fn reclaim_size_mismatch_leaves_relief_unknown_never_zero() {
+    let lab = Lab::new();
+    let target = NodeKey::Dir(lab.project("Cargo.toml", "target", 100));
+    let unknown = (None, Some(RELIEF_UNOBSERVED));
+    let with_files = |files: Vec<FileEntry>| {
+        let mut input = lab.input();
+        input.files.insert(target, observed(files));
+        reclaim::plan(input).unwrap()
+    };
+    // Observed 99 bytes against a 100-byte listing.
+    let mut short = name("s", 1, 100, 1, 0);
+    short.link_observation.as_mut().unwrap().size = "99".into();
+    let plan = with_files(vec![short]);
+    let (_, c) = find(&plan, target);
+    assert_eq!((c.reclaimable_bytes, c.reclaimable_reason), unknown);
+    assert_eq!(c.allocated_bytes, Some(100), "sizes stay observed");
+    // Boundary: an empty size string is not a match either.
+    let mut empty = name("s", 1, 100, 1, 0);
+    empty.link_observation.as_mut().unwrap().size = String::new();
+    let plan = with_files(vec![empty]);
+    let (_, c) = find(&plan, target);
+    assert_eq!((c.reclaimable_bytes, c.reclaimable_reason), unknown);
+    // Positive control: the same candidate with the size restored verifies exactly.
+    let plan = with_files(vec![name("s", 1, 100, 1, 0)]);
+    let (_, c) = find(&plan, target);
+    assert_eq!(
+        (c.reclaimable_bytes, c.reclaimable_reason),
+        (Some(100), None)
+    );
+}
+
+/// Caller expectation (4): unknown allocation on the listing leaves relief unknown
+/// (None, never zero). Positive control: the same candidate with allocation restored
+/// verifies exactly.
+#[test]
+fn reclaim_unknown_allocation_leaves_relief_unknown_never_zero() {
+    let lab = Lab::new();
+    let target = NodeKey::Dir(lab.project("Cargo.toml", "target", 100));
+    let unknown = (None, Some(RELIEF_UNOBSERVED));
+    // The listed name carries no allocation (unsupported listing).
+    let mut unallocated = name("u", 1, 100, 1, 0);
+    unallocated.allocated_bytes = None;
+    let mut input = lab.input();
+    input.files.insert(target, observed(vec![unallocated]));
+    let plan = reclaim::plan(input).unwrap();
+    let (_, c) = find(&plan, target);
+    assert_eq!((c.reclaimable_bytes, c.reclaimable_reason), unknown);
+    assert_eq!(
+        c.allocated_bytes,
+        Some(100),
+        "candidate sizes stay observed"
+    );
+    // Boundary: an observation allocation that disagrees with the listing is also unknown.
+    let mut disagreed = name("u", 1, 100, 1, 0);
+    disagreed.link_observation.as_mut().unwrap().allocation = "99".into();
+    let mut input = lab.input();
+    input.files.insert(target, observed(vec![disagreed]));
+    let plan = reclaim::plan(input).unwrap();
+    let (_, c) = find(&plan, target);
+    assert_eq!((c.reclaimable_bytes, c.reclaimable_reason), unknown);
+    // Positive control: the same candidate with allocation restored verifies exactly.
+    let mut input = lab.input();
+    input
+        .files
+        .insert(target, observed(vec![name("u", 1, 100, 1, 0)]));
+    let plan = reclaim::plan(input).unwrap();
+    let (_, c) = find(&plan, target);
+    assert_eq!(
+        (c.reclaimable_bytes, c.reclaimable_reason),
+        (Some(100), None)
+    );
+}
+
+/// Caller expectation (5): a recogniser report from the wrong rules version is refused
+/// with a "reclaim rules version" error. Positive control: the shipped versions plan Ok.
+#[test]
+fn reclaim_wrong_rules_version_is_refused() {
+    let lab = Lab::new();
+    let refused = |input: &ReclaimInput| {
+        let err = reclaim::plan(input.clone()).unwrap_err();
+        assert!(
+            matches!(&err, EngineError::InvalidRequest { .. }),
+            "wrong rules version must be InvalidRequest, got {err:?}"
+        );
+        assert!(
+            err.to_string().contains("reclaim rules version"),
+            "error must name the reclaim rules version, got {err}"
+        );
+    };
+    // Developer clutter must be rules v1.
+    for version in [0, 2, u32::MAX] {
+        let mut input = lab.input();
+        input.developer[0].rules_version = version;
+        refused(&input);
+    }
+    // Machine stores must be rules v2 (the plan's RULES_VERSION).
+    for version in [0, 1, 3, u32::MAX] {
+        let mut input = lab.input();
+        input.machine[0].rules_version = version;
+        refused(&input);
+    }
+    // Positive control: the shipped versions plan Ok and stamp the plan version.
+    let plan = reclaim::plan(lab.input()).unwrap();
+    assert_eq!(plan.rules_version, RULES_VERSION);
+    assert_eq!(plan.rules_version, 2);
+}
+
+/// Caller expectation (6): a deletion set larger than linkcount::MAX_FILES_PER_GROUP gets
+/// reclaimable None with the RELIEF_UNOBSERVED reason even when every name would verify.
+/// Names are built in memory (no catalogue rows); the positive control with one verifiable
+/// name on the same candidate is Some(100).
+#[test]
+fn reclaim_oversize_deletion_set_is_unobserved() {
+    let lab = Lab::new();
+    // Totals match the candidate and every name has its own single-link identity, so the cap is
+    // the only reason relief is unknown (removing it would verify 200,001 bytes).
+    let total = MAX_FILES_PER_GROUP as i64 + 1;
+    let target = NodeKey::Dir(lab.project("Cargo.toml", "target", total));
+    assert_eq!(MAX_FILES_PER_GROUP, 200_000);
+    let mut files = Vec::with_capacity(MAX_FILES_PER_GROUP + 1);
+    for i in 0..=MAX_FILES_PER_GROUP {
+        let mut f = name(&format!("bulk{i:06}"), 1, 1, 1, 0);
+        let mut id = [0xAB; 16];
+        id[..8].copy_from_slice(&(i as u64).to_le_bytes());
+        f.object.as_mut().unwrap().file_id = id;
+        f.link_observation.as_mut().unwrap().object.file_id = id;
+        files.push(f);
+    }
+    assert_eq!(files.len(), MAX_FILES_PER_GROUP + 1);
+    let mut input = lab.input();
+    input.files.insert(target, observed(files));
+    let plan = reclaim::plan(input).unwrap();
+    let (_, c) = find(&plan, target);
+    assert_eq!(
+        (c.reclaimable_bytes, c.reclaimable_reason),
+        (None, Some(RELIEF_UNOBSERVED))
+    );
+    assert_eq!(c.allocated_bytes, Some(total as u64), "sizes stay observed");
+    let json = serde_json::to_value(c).unwrap();
+    assert!(
+        json["reclaimable_bytes"].is_null(),
+        "unknown relief is null, never zero"
+    );
+    // Positive control: one verifiable name carrying the whole candidate verifies exactly.
+    let mut input = lab.input();
+    input
+        .files
+        .insert(target, observed(vec![name("solo", 1, total as u64, 1, 0)]));
+    let plan = reclaim::plan(input).unwrap();
+    let (_, c) = find(&plan, target);
+    assert_eq!(
+        (c.reclaimable_bytes, c.reclaimable_reason),
+        (Some(total as u64), None)
+    );
 }
