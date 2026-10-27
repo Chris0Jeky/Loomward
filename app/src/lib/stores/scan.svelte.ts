@@ -150,6 +150,10 @@ class Scans {
         try {
           await this.adopt(busyJob);
         } catch (adoptError) {
+          if (adoptError instanceof LoomwardError && adoptError.code === 'not_found') {
+            if (current()) delete this.busyJobs[rootId];
+            return;
+          }
           this.reportUnexpected(rootId, adoptError, "Could not confirm this scan's state", current);
           return;
         }
@@ -198,6 +202,7 @@ class Scans {
     } catch (e) {
       if (!(e instanceof LoomwardError)) throw e;
       if (!current()) return;
+      if (e.code === 'not_found') throw e;
     }
   }
 

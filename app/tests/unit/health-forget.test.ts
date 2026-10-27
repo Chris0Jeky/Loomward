@@ -512,6 +512,21 @@ function fake(call: ReturnType<typeof vi.fn>) {
 const result = { result: completed };
 const forgotten = (id: string, at: string) => ({ kind: 'metadata_root', root_id: id, forgotten_at: at });
 
+it('hands an unknown forget transport outcome to the session without losing its action key (#736)', async () => {
+  const call = vi.fn().mockRejectedValueOnce(unknown).mockResolvedValue(result);
+  const { c, handle } = fake(call);
+  forget.ask(request);
+  await forget.confirm();
+  expect(forget.pending?.requestId).toBe('r_forget');
+  expect(forget.unknown).toBe(true);
+  expect(forget.working).toBe(false);
+  expect(forget.problem).toBe('');
+  expect(handle).toHaveBeenCalledExactlyOnceWith(unknown);
+  await forget.confirm();
+  expect(call.mock.calls[1]).toEqual(call.mock.calls[0]);
+  expect(c.nextRequestId).toHaveBeenCalledTimes(1);
+});
+
 it.each([deadline, unknown])('keeps an unknown outcome pending and checks the same request id (#716)', async fault => {
   const call = vi.fn().mockRejectedValueOnce(fault).mockResolvedValue(result);
   const { c, handle } = fake(call);
@@ -521,7 +536,8 @@ it.each([deadline, unknown])('keeps an unknown outcome pending and checks the sa
   expect(forget.pending).not.toBeNull();
   expect(forget.unknown).toBe(true);
   expect(forget.problem).toBe('');
-  expect(handle).not.toHaveBeenCalled();
+  if (fault instanceof TransportError) expect(handle).toHaveBeenCalledExactlyOnceWith(fault);
+  else expect(handle).not.toHaveBeenCalled();
   await forget.confirm();
   expect(call.mock.calls[1]).toEqual(call.mock.calls[0]);
   expect(c.nextRequestId).toHaveBeenCalledTimes(1);

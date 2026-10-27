@@ -49,6 +49,10 @@ it('states the age of a series whose last point trails the sample, and stays sil
   expect(trendAge({ ...series([]), points: [] } as TrendSeries, sample)).toBeNull();
 });
 
+it('reports an unknown age when the last point was observed after the sample (#706)', () => {
+  expect(trendAge(series([0.5]), '2026-10-09T11:59:59Z')).toBe('The age of the last point is unknown');
+});
+
 it('measures the lag against the series own cadence, so a 15 s process series is silent for a 12 s lag and states a 60 s one', () => {
   // The engine sets max_gap_ms to twice the requested interval; process series sample at least every 15 s, so 30 000 ms.
   const processSeries = (observedAt: string, maxGapMs?: number) => ({
