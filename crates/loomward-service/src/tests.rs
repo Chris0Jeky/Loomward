@@ -7486,12 +7486,13 @@ fn regranting_a_renamed_unverified_root_retires_the_grant_naming_the_old_path() 
     );
 }
 
-/// Renames an unverified grant's folder (optionally recreating another folder at the old path),
-/// re-grants it at the new path with the probe error injected, and returns the two grants' states.
+/// Renames an unverified grant's folder, lets `old_path` put something at the old path (given the
+/// old and new paths), re-grants it at the new path with the probe error injected, and returns
+/// the two grants' states.
 #[cfg(windows)]
 fn regrant_renamed_unverified(
     probe_error: Option<loomward_windows::enumerate::SourceError>,
-    replace_old: bool,
+    old_path: impl FnOnce(&std::path::Path, &std::path::Path),
 ) -> Option<(String, String)> {
     if loomward_windows::enumerate::skip_elevated_test() {
         return None;
@@ -7505,9 +7506,7 @@ fn regrant_renamed_unverified(
     svc.inner.grant(&folder, "cli_flag", true).unwrap();
     let moved = tmp.path().join("fat-folder-renamed");
     std::fs::rename(&folder, &moved).unwrap();
-    if replace_old {
-        std::fs::create_dir(&folder).unwrap();
-    }
+    old_path(&folder, &moved);
     let moved = moved.canonicalize().unwrap();
     *svc.inner.hooks.probe_error.lock().unwrap() = probe_error;
     svc.inner.grant(&moved, "cli_flag", true).unwrap();
@@ -7529,7 +7528,7 @@ fn regrant_renamed_unverified(
 fn a_definitely_non_directory_old_path_retires_the_unverified_grant() {
     use loomward_windows::enumerate::SourceError;
     for code in [267, 0xC000_0103_u32 as i32] {
-        if let Some(states) = regrant_renamed_unverified(Some(SourceError::Io(code)), false) {
+        if let Some(states) = regrant_renamed_unverified(Some(SourceError::Io(code)), |_, _| {}) {
             assert_eq!(
                 states,
                 ("identity_changed".into(), "active".into()),
@@ -7751,8 +7750,47 @@ fn an_inconclusive_old_path_probe_never_retires_an_unverified_grant() {
         SourceError::Io(995),
         SourceError::Refused,
     ] {
-        if let Some(states) = regrant_renamed_unverified(Some(error), false) {
+        if let Some(states) = regrant_renamed_unverified(Some(error), |_, _| {}) {
             assert_eq!(states, ("active".into(), "active".into()), "{error:?}");
+        }
+    }
+}
+
+/// #838: the native open refuses any non-directory and any reparse point without saying which, so a
+/// `Refused` probe retires the grant only for a plain file. A directory, a junction or a directory
+/// symlink at the old path keeps the grant active: wrongly retiring a valid grant is the dangerous
+/// direction.
+#[cfg(windows)]
+#[test]
+fn a_refused_probe_over_a_folder_or_link_never_retires_the_unverified_grant() {
+    use loomward_windows::enumerate::SourceError;
+    type Make = fn(&std::path::Path, &std::path::Path) -> bool;
+    let cases: [(&str, Make); 3] = [
+        ("directory", |old, _| std::fs::create_dir(old).is_ok()),
+        ("junction", |old, target| {
+            std::process::Command::new("cmd")
+                .arg("/C")
+                .arg("mklink")
+                .arg("/J")
+                .arg(old)
+                .arg(target)
+                .output()
+                .is_ok_and(|o| o.status.success())
+        }),
+        // Needs Developer Mode or the symlink privilege; skipped where the host refuses it.
+        ("symlink", |old, target| {
+            std::os::windows::fs::symlink_dir(target, old).is_ok()
+        }),
+    ];
+    for (name, make) in cases {
+        let mut made = false;
+        let states = regrant_renamed_unverified(Some(SourceError::Refused), |old, new| {
+            made = make(old, new);
+        });
+        if let Some(states) = states.filter(|_| made) {
+            assert_eq!(states, ("active".into(), "active".into()), "{name}");
+        } else {
+            eprintln!("skipped {name}: the host could not create it");
         }
     }
 }
@@ -7761,7 +7799,9 @@ fn an_inconclusive_old_path_probe_never_retires_an_unverified_grant() {
 #[cfg(windows)]
 #[test]
 fn an_old_path_answering_another_identity_retires_the_unverified_grant() {
-    if let Some(states) = regrant_renamed_unverified(None, true) {
+    if let Some(states) =
+        regrant_renamed_unverified(None, |old, _| std::fs::create_dir(old).unwrap())
+    {
         assert_eq!(states, ("identity_changed".into(), "active".into()));
     }
 }
