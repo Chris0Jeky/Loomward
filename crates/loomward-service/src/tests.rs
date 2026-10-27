@@ -9409,6 +9409,8 @@ fn an_unverified_run_flags_every_published_row() {
             },
         )
         .unwrap();
+        // A cancelled run drops steps still queued at its end (#934): commit them first.
+        sink.settle(&id).unwrap();
         sink.finish_run(&id, run, &RunScope::FullRoot, false)
             .unwrap();
         let (flags, file_id): (u32, Option<Vec<u8>>) = svc
