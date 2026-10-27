@@ -108,6 +108,7 @@ class Forget {
     } catch (e) {
       if (!current()) return;
       this.unknown = checkingRecord || e instanceof TransportError || e instanceof LoomwardError && e.code === 'deadline_exceeded';
+      if (e instanceof TransportError) session.handle(e);
       if (!this.unknown) {
         // Definite answers are cached: a new attempt needs a new key (#736).
         p.requestId = undefined;
