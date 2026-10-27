@@ -93,8 +93,10 @@ def window_for_label(label: str | None) -> str:
     label = (label or "").lower()
     for parts, window in (
         (("item_removed", "staging_removed", "cancelling"), "cleanup"),
-        (("create", "identities"), "create_batch"),
-        (("planned", "written", "verif", "chunk"), "write"),  # planned: the last record before data writes
+        (("create",), "create_batch"),
+        # A batch logs create_batch, creates its items, logs identities, writes the data, logs planned, then sets
+        # metadata and verifies (effects/exec.rs batch): identities and planned are both write-phase records.
+        (("identities", "planned", "written", "verif", "chunk"), "write"),
         (("publish", "rename", "committed"), "publish"),
     ):
         if any(part in label for part in parts):
