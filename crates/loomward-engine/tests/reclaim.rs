@@ -869,3 +869,30 @@ fn reclaim_oversize_deletion_set_is_unobserved() {
         (Some(total as u64), None)
     );
 }
+
+/// #954: names whose sizes overflow u64 leave that candidate's relief unknown; a saturated sum
+/// used to match a u64::MAX total and then fail the whole plan on the relief sum.
+#[test]
+fn reclaim_overflowing_name_sizes_leave_relief_unknown() {
+    let volume = ReclaimVolume {
+        volume_serial: Some("7".into()),
+        ntfs: true,
+        ..ReclaimVolume::default()
+    };
+    let files = observed(vec![
+        name("a", 1, u64::MAX, 1, 0),
+        name("b", 2, u64::MAX, 1, 0),
+    ]);
+    assert_eq!(
+        reclaim::reclaimable(
+            "cache",
+            Some(u64::MAX),
+            Some(u64::MAX),
+            Some(&files),
+            None,
+            &volume
+        )
+        .unwrap(),
+        (None, Some(RELIEF_UNOBSERVED))
+    );
+}
