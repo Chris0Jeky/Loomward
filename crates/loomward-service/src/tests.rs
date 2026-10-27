@@ -38,6 +38,10 @@ fn hello_reports_duplicate_content_reads_separately_from_effects() {
 /// holding `Inner::mutation`; `"after"`: any command after its handler returned, locks released).
 #[derive(Default)]
 pub(crate) struct Hooks {
+    /// Replaces the post-mutation listing's unique-totals window (#843).
+    pub post_mutation_totals: Mutex<Option<Duration>>,
+    /// One-shot: the next grant retirement (`identity_changed_locked`) fails (#843).
+    pub fail_identity_retire: std::sync::atomic::AtomicBool,
     pub check_presence_unlocked: std::sync::atomic::AtomicBool,
     pub forbid_presence_probe: std::sync::atomic::AtomicBool,
     pub delay: Mutex<Option<(Command, Duration)>>,
@@ -671,8 +675,43 @@ fn roots_list_degrades_slow_roots_to_unknown_totals_inside_the_deadline() {
     let tmp = temp_root();
     let svc = open(tmp.path(), DatasetClass::Synthetic);
     let sizes = [200u64, 70_000, 70_000, 70_000];
+    seed_measured_roots(&svc, &sizes);
+    // A 5% share of a one-second budget (about 50 ms for all four roots) is far below what the
+    // big roots need on any host, so they are cut deterministically while the small one is not.
+    let work = crate::ReadWork {
+        deadline: Instant::now() + Duration::from_secs(1),
+        interrupt: Mutex::new(None),
+        repair_on_read: true,
+    };
+    let started = Instant::now();
+    let roots = svc.inner.root_list_sharing(Some(&work), 5).unwrap();
+    assert!(started.elapsed() < Duration::from_secs(1));
+    let roots = roots["roots"].as_array().unwrap();
+    assert_eq!(roots.len(), sizes.len());
+    let mut cut = 0;
+    for (root, files) in roots.iter().zip(sizes) {
+        let totals = &root["totals"];
+        assert_eq!(totals["files"], files, "stored aggregates stay exact");
+        match totals["unique_objects"].as_u64() {
+            Some(n) => assert_eq!(n, files),
+            None => {
+                cut += 1;
+                assert!(totals["unique_allocated_bytes"].is_null());
+            }
+        }
+    }
+    assert!(cut >= 1, "at least one large root must exceed its share");
+    assert_eq!(
+        roots[0]["totals"]["unique_objects"], 200,
+        "the small root is exact"
+    );
+}
+
+/// One registered root per size, scanned with that many files carrying file IDs, so unique totals
+/// are measurable.
+fn seed_measured_roots(svc: &Service, sizes: &[u64]) {
     for (i, &files) in sizes.iter().enumerate() {
-        let (root, grant) = register(&svc, i as u8 + 1);
+        let (root, grant) = register(svc, i as u8 + 1);
         let dir: i64 = svc
             .inner
             .db()
@@ -750,35 +789,23 @@ fn roots_list_degrades_slow_roots_to_unknown_totals_inside_the_deadline() {
         })
         .unwrap();
     }
-    // A 5% share of a one-second budget (about 50 ms for all four roots) is far below what the
-    // big roots need on any host, so they are cut deterministically while the small one is not.
-    let work = crate::ReadWork {
-        deadline: Instant::now() + Duration::from_secs(1),
-        interrupt: Mutex::new(None),
-        repair_on_read: true,
-    };
-    let started = Instant::now();
-    let roots = svc.inner.root_list_sharing(Some(&work), 5).unwrap();
-    assert!(started.elapsed() < Duration::from_secs(1));
-    let roots = roots["roots"].as_array().unwrap();
-    assert_eq!(roots.len(), sizes.len());
-    let mut cut = 0;
-    for (root, files) in roots.iter().zip(sizes) {
-        let totals = &root["totals"];
-        assert_eq!(totals["files"], files, "stored aggregates stay exact");
-        match totals["unique_objects"].as_u64() {
-            Some(n) => assert_eq!(n, files),
-            None => {
-                cut += 1;
-                assert!(totals["unique_allocated_bytes"].is_null());
-            }
-        }
-    }
-    assert!(cut >= 1, "at least one large root must exceed its share");
-    assert_eq!(
-        roots[0]["totals"]["unique_objects"], 200,
-        "the small root is exact"
-    );
+}
+
+/// #843: the listing a mutation publishes bounds the roots' unique totals with its own window and
+/// no request deadline: past it they read unknown, and the listing still completes.
+#[test]
+fn post_mutation_listing_bounds_unique_totals_and_completes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    seed_measured_roots(&svc, &[200]);
+    let presence = svc.inner.cached_root_presence();
+    let listed = svc.inner.root_list_observed(&presence).unwrap();
+    assert_eq!(listed["roots"][0]["totals"]["unique_objects"], 200);
+    *svc.inner.hooks.post_mutation_totals.lock().unwrap() = Some(Duration::ZERO);
+    let listed = svc.inner.root_list_observed(&presence).unwrap();
+    let totals = &listed["roots"][0]["totals"];
+    assert_eq!(totals["files"], 200, "stored aggregates stay exact");
+    assert!(totals["unique_objects"].is_null(), "{totals}");
 }
 
 fn placement_fixture(svc: &Service) -> (i64, i64, String) {
@@ -7447,6 +7474,41 @@ fn regranting_a_renamed_root_mints_a_grant_for_its_new_path() {
         svc.inner.grant(&moved, "cli_flag", false).unwrap(),
         (root, false)
     );
+}
+
+/// #843: when the old grant of a renamed root cannot be retired, the re-grant answers failure
+/// before minting the new grant, so no folder ever has two active grants; a retry succeeds.
+#[cfg(windows)]
+#[test]
+fn regrant_of_a_renamed_root_fails_until_the_old_grant_retires() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    let moved = lab.path.with_file_name("lab-renamed");
+    std::fs::rename(&lab.path, &moved).unwrap();
+    let moved = moved.canonicalize().unwrap();
+    let states = || -> Vec<String> {
+        svc.inner
+            .db()
+            .prepare("SELECT state FROM st.root_grant ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    svc.inner
+        .hooks
+        .fail_identity_retire
+        .store(true, std::sync::atomic::Ordering::Release);
+    assert!(svc.inner.grant(&moved, "cli_flag", false).is_err());
+    assert_eq!(
+        states(),
+        ["active"],
+        "nothing is minted while the old grant stands"
+    );
+    let (_, fresh) = svc.inner.grant(&moved, "cli_flag", false).unwrap();
+    assert!(fresh);
+    assert_eq!(states(), ["identity_changed", "active"]);
 }
 
 /// Retro review (w12): an identity-unverified grant whose folder was renamed ends

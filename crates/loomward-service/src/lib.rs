@@ -1488,6 +1488,21 @@ impl Inner {
             },
             None => WriteCommand::RegisterRoot(observation),
         };
+        // #843: retire the grants naming the old path before the new grant exists, under the same
+        // mutation guard. A failure answers before anything is registered, so every retry path
+        // (the desktop picker included, which refuses an already-granted path) finds the same
+        // renamed grants again, and two grants for one folder are never both active.
+        for grant in renamed {
+            let id = db::root_for_grant(&self.db(), grant)
+                .ok()
+                .flatten()
+                .and_then(|row| loomward_protocol::RootId::new(self.root_id(row)).ok());
+            if !id.is_some_and(|id| {
+                self.identity_changed_locked(grant, &id, true, &mutation, &presence)
+            }) {
+                return Err(Refusal::IdentityUnavailable.into());
+            }
+        }
         let reply = self
             .catalog
             .writer()
@@ -1500,15 +1515,6 @@ impl Inner {
             return Err(Refusal::IdentityUnavailable.into());
         };
         self.remember_root_presence(grant_id, handlers::RootPresence::Online);
-        for grant in renamed {
-            // Keep mutation serialised through retirement; the connection guard is released.
-            let row = db::root_for_grant(&self.db(), grant);
-            if let Ok(Some(row)) = row {
-                if let Ok(id) = loomward_protocol::RootId::new(self.root_id(row)) {
-                    self.identity_changed_locked(grant, &id, true, &mutation, &presence);
-                }
-            }
-        }
         Ok((root_id, fresh))
     }
 

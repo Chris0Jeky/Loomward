@@ -350,6 +350,10 @@ fn stale(message: &str, reason: &str) -> ErrorBody {
     with_reason(fail(ErrorCode::StaleGeneration, message), reason)
 }
 
+/// Unique totals a post-mutation `roots.changed` listing may spend across all roots; no reader
+/// deadline is set, so the listing itself always completes (#843).
+const POST_MUTATION_TOTALS: std::time::Duration = std::time::Duration::from_secs(2);
+
 impl Inner {
     pub(crate) fn backup_scrub_pending(&self) -> Result<Option<String>, ErrorBody> {
         self.db()
@@ -894,7 +898,9 @@ impl Inner {
         self.root_list_sharing(work, 75)
     }
 
-    fn root_list_observed(&self, presence: &RootPresences) -> Result<Value, ErrorBody> {
+    /// The listing a mutation publishes as `roots.changed`, while it holds the mutation lock: its
+    /// unique totals get [`POST_MUTATION_TOTALS`] in all, past which they read unknown (#843).
+    pub(crate) fn root_list_observed(&self, presence: &RootPresences) -> Result<Value, ErrorBody> {
         self.root_list_scoped(None, 75, None, Some(presence))
     }
 
@@ -948,10 +954,23 @@ impl Inner {
         // response, split the remainder over the roots still to measure, and let time a small
         // root leaves flow to the next. A root past its share reports unknown totals, not a
         // failed list.
-        let budget_end = work.map(|w| {
-            let now = std::time::Instant::now();
-            now + w.deadline.saturating_duration_since(now) * share_percent / 100
-        });
+        let budget_end = work
+            .map(|w| {
+                let now = std::time::Instant::now();
+                now + w.deadline.saturating_duration_since(now) * share_percent / 100
+            })
+            .or_else(|| {
+                #[cfg(test)]
+                let window = self
+                    .hooks
+                    .post_mutation_totals
+                    .lock()
+                    .unwrap()
+                    .unwrap_or(POST_MUTATION_TOTALS);
+                #[cfg(not(test))]
+                let window = POST_MUTATION_TOTALS;
+                presence.map(|_| std::time::Instant::now() + window)
+            });
         let measured = |r: &db::RootRow| {
             r.dir.is_some() && r.grant_state == "active" && r.state != "never_scanned"
         };
@@ -1196,9 +1215,10 @@ impl Inner {
     pub(crate) fn identity_changed(&self, grant: i64, id: &RootId, cancel: bool) {
         let presence = self.cached_root_presence();
         let mutation = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
-        self.identity_changed_locked(grant, id, cancel, &mutation, &presence);
+        let _ = self.identity_changed_locked(grant, id, cancel, &mutation, &presence);
     }
 
+    /// False when the grant could not be retired; nothing else is done then.
     pub(crate) fn identity_changed_locked(
         &self,
         grant: i64,
@@ -1206,13 +1226,21 @@ impl Inner {
         cancel: bool,
         _mutation: &std::sync::MutexGuard<'_, ()>,
         presence: &RootPresences,
-    ) {
+    ) -> bool {
+        #[cfg(test)]
+        if self
+            .hooks
+            .fail_identity_retire
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+        {
+            return false;
+        }
         let changed = self
             .catalog
             .writer()
             .call(WriteCommand::GrantIdentityChanged { grant_id: grant });
         if changed.is_err() {
-            return;
+            return false;
         }
         self.forget_root_presence(grant);
         let _ = self.copies_fence(grant);
@@ -1238,6 +1266,7 @@ impl Inner {
         if let (Ok(revs), Ok(list)) = (self.revisions(), self.root_list_observed(presence)) {
             self.publish(EventName::RootsChanged, list, Some(revs.0), Some(revs.1));
         }
+        true
     }
 
     fn grants_list(&self) -> Handled {
