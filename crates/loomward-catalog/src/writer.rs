@@ -1055,12 +1055,6 @@ pub(crate) fn scrub_pending(conn: &Connection) -> Result<bool> {
         |r| r.get(0),
     )?)
 }
-/// Page images from before a purge sit in the WALs until they are folded in and cut, and stale
-/// cells freed without secure_delete (a staged listing deleted when it was published, a cell an
-/// earlier build freed) sit in the free space and unused tails of both files until they are
-/// rewritten: while `vacuum` is set, `VACUUM st` and `VACUUM main` run first (#391). Waits at most `wait` for a lock, so a
-/// slow reader or writer never holds the committed receipt; the caller retries until the rewrite is
-/// done and both logs are cut. Whether all of it was done.
 /// Rewrite the named stores with `VACUUM`, in order, so freed pages keep no old bytes.
 pub(crate) fn rewrite(conn: &Connection, stores: &[&str]) -> Result<()> {
     let temp: i64 = conn.query_row("PRAGMA temp_store", [], |r| r.get(0))?;
@@ -1080,6 +1074,12 @@ pub(crate) fn rewrite(conn: &Connection, stores: &[&str]) -> Result<()> {
     restore?;
     views
 }
+/// Page images from before a purge sit in the WALs until they are folded in and cut, and stale
+/// cells freed without secure_delete (a staged listing deleted when it was published, a cell an
+/// earlier build freed) sit in the free space and unused tails of both files until they are
+/// rewritten: while `vacuum` is set, `VACUUM st` and `VACUUM main` run first (#391). Waits at most `wait` for a lock, so a
+/// slow reader or writer never holds the committed receipt; the caller retries until the rewrite is
+/// done and both logs are cut. Whether all of it was done.
 pub(crate) fn wal_cut(conn: &Connection, wait: Duration, vacuum: &mut bool) -> bool {
     // A state half can commit before its catalogue purge fails. A different forget's rewrite
     // must not clear that durable health marker while the forgotten rows still exist.
