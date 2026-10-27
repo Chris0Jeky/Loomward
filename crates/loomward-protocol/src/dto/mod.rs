@@ -15,6 +15,8 @@ mod backups;
 pub use backups::*;
 mod clutter;
 pub use clutter::*;
+mod reclaim;
+pub use reclaim::*;
 mod clients;
 pub use clients::*;
 mod inventory;

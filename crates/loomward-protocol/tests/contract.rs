@@ -38,6 +38,71 @@ fn sampled_system_cpu_count_is_required_but_nullable() {
 }
 
 #[test]
+fn reclaim_sizes_are_required_nullable_and_requests_are_bounded() {
+    let mut schema = Schema::load();
+    let plan = read(&contracts().join("examples/commands/reclaim.plan.result.json"));
+    for (def, value, fields) in [
+        (
+            "ReclaimVolume",
+            &plan["volume"],
+            &["capacity_bytes", "free_bytes", "reserve_bytes"][..],
+        ),
+        (
+            "CoveredRoot",
+            &plan["covered_roots"][0],
+            &["allocated_bytes"][..],
+        ),
+        (
+            "ReclaimCandidate",
+            &plan["groups"][0]["candidates"][0],
+            &["logical_bytes", "allocated_bytes", "reclaimable_bytes"][..],
+        ),
+        ("ReclaimPlan", &plan, &["unaccounted_bytes"][..]),
+    ] {
+        for field in fields {
+            let mut unknown = value.clone();
+            unknown[field] = Value::Null;
+            assert!(schema.errors(def, &unknown).is_empty());
+            assert_eq!(roundtrip(def, &unknown).unwrap().unwrap(), unknown);
+            unknown.as_object_mut().unwrap().remove(*field);
+            assert!(!schema.errors(def, &unknown).is_empty());
+            assert!(roundtrip(def, &unknown).unwrap().is_err());
+        }
+        let mut extra = value.clone();
+        extra["execute"] = json!(true);
+        assert!(!schema.errors(def, &extra).is_empty());
+        assert!(roundtrip(def, &extra).unwrap().is_err());
+    }
+    for limit in [0, 201] {
+        let value = json!({"volume_id":"vo_lab1", "limit":limit});
+        assert!(!schema.errors("ReclaimPlanRequest", &value).is_empty());
+        assert!(roundtrip("ReclaimPlanRequest", &value).unwrap().is_err());
+    }
+    let request = json!({"volume_id": "vo_lab1", "limit": 50});
+    assert!(schema.errors("ReclaimPlanRequest", &request).is_empty());
+    assert_eq!(
+        roundtrip("ReclaimPlanRequest", &request).unwrap().unwrap(),
+        request
+    );
+    for volume_id in ["", "synthetic_volume", "rt_lab1"] {
+        let invalid = json!({"volume_id": volume_id, "limit": 50});
+        assert!(!schema.errors("ReclaimPlanRequest", &invalid).is_empty());
+        assert!(roundtrip("ReclaimPlanRequest", &invalid).unwrap().is_err());
+        let mut invalid_volume = plan["volume"].clone();
+        invalid_volume["volume_id"] = json!(volume_id);
+        assert!(!schema.errors("ReclaimVolume", &invalid_volume).is_empty());
+        assert!(roundtrip("ReclaimVolume", &invalid_volume)
+            .unwrap()
+            .is_err());
+    }
+    let legacy = json!({"volume_key": "synthetic_volume", "limit": 50});
+    assert!(!schema.errors("ReclaimPlanRequest", &legacy).is_empty());
+    assert!(roundtrip("ReclaimPlanRequest", &legacy).unwrap().is_err());
+    assert_eq!(plan["volume"]["volume_id"], "vo_lab1");
+    assert_eq!(Command::ReclaimPlan.client_result_def(), None);
+}
+
+#[test]
 fn diagnostics_elevated_session_refusal_roundtrips_through_schema_and_dto() {
     let value = json!({
         "outcome": "refused", "bytes_written": null, "refusal": "elevated_session"

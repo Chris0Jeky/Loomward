@@ -2258,6 +2258,68 @@ export interface AskTurnRecord {
   rounds: AskRound[];
 }
 
+export interface ReclaimPlanRequest {
+  volume_id: VolumeId;
+  limit: number;
+}
+
+export interface ReclaimVolume {
+  volume_id: VolumeId;
+  label: string | null;
+  bus_type: string | null;
+  capacity_bytes: NullableBytes;
+  free_bytes: NullableBytes;
+  reserve_bytes: NullableBytes;
+}
+
+export interface CoveredRoot {
+  root_id: RootId;
+  coverage: CoverageState;
+  allocated_bytes: NullableBytes;
+}
+
+export type GroupKind = "tool_owned_cleanup" | "relocate" | "archive_candidates" | "informational";
+
+export interface Relocation {
+  variable_or_setting: string;
+  suggested_target_volume: string | null;
+}
+
+/** Read-only facts, never a disposability claim. owner_step is display text only; unknown reclaimable bytes carry a reason, never zero. */
+export interface ReclaimCandidate {
+  node_id: NodeId | null;
+  name: string | null;
+  class: string;
+  provider: string;
+  kind: string | null;
+  logical_bytes: NullableBytes;
+  allocated_bytes: NullableBytes;
+  reclaimable_bytes: NullableBytes;
+  reclaimable_reason: string | null;
+  coverage: CoverageState;
+  owner_step: string;
+  relocation: Relocation | null;
+  evidence: string[];
+  uncertainty: string;
+}
+
+export interface ReclaimGroup {
+  kind: GroupKind;
+  candidates: ReclaimCandidate[];
+}
+
+/** LW-131 R1d. Four groups in GroupKind order. Outermost active grants only; unknown sizes remain null. No effects. */
+export interface ReclaimPlan {
+  volume: ReclaimVolume;
+  covered_roots: CoveredRoot[];
+  groups: ReclaimGroup[];
+  unaccounted_bytes: NullableBytes;
+  rules_version: number;
+  partial: boolean;
+  truncated: boolean;
+  budget_hit: boolean;
+}
+
 export interface DeveloperClutterRequest {
   root_id: RootId;
   limit: number;
@@ -2343,6 +2405,7 @@ export interface CommandMap {
   "threads.meaning": { request: MeaningRequest; result: MeaningResult };
   "search.query": { request: SearchRequest; result: SearchPage };
   "stats.breakdown": { request: BreakdownRequest; result: Breakdown };
+  "reclaim.plan": { request: ReclaimPlanRequest; result: ReclaimPlan };
   "clutter.developer": { request: DeveloperClutterRequest; result: DeveloperClutterReport };
   "taxonomy.get": { request: EmptyRequest; result: Taxonomy };
   "feedback.record": { request: FeedbackRequest; result: FeedbackResult };
@@ -2434,6 +2497,7 @@ export const COMMANDS = {
   "threads.meaning": { adapters: ["tauri", "http"], wave: 3, events: [] },
   "search.query": { adapters: ["tauri", "http"], wave: 2, events: [] },
   "stats.breakdown": { adapters: ["tauri", "http"], wave: 2, events: [] },
+  "reclaim.plan": { adapters: ["tauri", "http"], wave: 2, events: [] },
   "clutter.developer": { adapters: ["tauri", "http"], wave: 2, events: [] },
   "taxonomy.get": { adapters: ["tauri", "http"], wave: 3, events: [] },
   "feedback.record": { adapters: ["tauri", "http"], wave: 3, events: ["learning.updated"] },

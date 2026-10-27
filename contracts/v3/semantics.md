@@ -980,6 +980,30 @@ that anything is safe to remove.
   lifecycle (LW-086) and stale worktrees (LW-076). Each candidate's `regeneration_cost` is `unknown`.
 
 
+## Reclaim plan (LW-131 R1d)
+
+`reclaim.plan { volume_id, limit }` reads advice for a sealed volume ID from `volumes.list`, with
+`limit` from 1 to 200 per group. It is owner-only on Tauri and HTTP in personal and synthetic
+sessions; client principals (including MCP and Ask) are refused even with disclosure grants.
+Unknown or foreign volume IDs are `not_found`; malformed requests are `invalid_request`.
+The response's `volume.volume_id` is the same sealed ID returned by `volumes.list`.
+
+The plan composes developer clutter and machine stores over the volume's active grants, retaining
+only outermost roots so covered allocation is not counted twice. It uses the same volume physics
+as `volumes.list`; reserve remains `null` until a preference is recorded. The four groups always
+appear in order: `tool_owned_cleanup`, `relocate`, `archive_candidates`, `informational`.
+No candidate total is computed because candidates may overlap. `unaccounted_bytes` is volume used
+minus covered-root allocation, or `null` when the coverage or physics is unknown.
+
+Reads never request aggregate repairs. Stale roots make the plan partial and their candidate
+sizes unknown. Work-budget exhaustion sets `budget_hit` and `partial`; an empty group then says
+nothing about what the volume holds. Deadline expiry still returns `deadline_exceeded`.
+This slice performs no link-count pass (#939), so reclaimable bytes remain `null` with a reason,
+never zero. The Recycle Bin query is metadata-only and made only for a volume-root grant;
+otherwise its size is unknown. `owner_step` and relocation settings are display text only:
+nothing executes them, changes settings or performs file/process effects. MCP access and the app
+view are separate lanes.
+
 ## Owner MCP client grants (docs/48 E6)
 
 `clients.grant`, `clients.list` and `clients.revoke` accept the owner principal only, on the desktop
