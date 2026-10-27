@@ -87,7 +87,7 @@ pub struct ReclaimInput {
     pub volume: ReclaimVolume,
     /// Granted roots on that volume.
     pub covered_roots: Vec<CoveredRoot>,
-    /// `Reader::developer_clutter` per covered root.
+    /// `Reader::developer_clutter` per covered root, read `without_repairs()` (the reclaim read requests no write).
     pub developer: Vec<DeveloperClutter>,
     /// `Reader::machine_stores` per covered root.
     pub machine: Vec<MachineStores>,

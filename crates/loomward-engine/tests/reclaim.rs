@@ -79,7 +79,7 @@ impl Lab {
         self.directory(project, output, bytes)
     }
     fn input(&self) -> ReclaimInput {
-        let mut reader = self.catalog.reader().unwrap();
+        let mut reader = self.catalog.reader().unwrap().without_repairs();
         ReclaimInput {
             volume: ReclaimVolume {
                 volume_key: "synthetic-reclaim".into(),
