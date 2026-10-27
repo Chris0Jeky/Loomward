@@ -998,11 +998,35 @@ minus covered-root allocation, or `null` when the coverage or physics is unknown
 Reads never request aggregate repairs. Stale roots make the plan partial and their candidate
 sizes unknown. Work-budget exhaustion sets `budget_hit` and `partial`; an empty group then says
 nothing about what the volume holds. Deadline expiry still returns `deadline_exceeded`.
-This slice performs no link-count pass (#939), so reclaimable bytes remain `null` with a reason,
-never zero. The Recycle Bin query is metadata-only and made only for a volume-root grant;
+The plan itself performs no link-count pass: reclaimable bytes are `null` with a reason, never
+zero, unless `reclaim.observe` (below) stored a verified verdict for the candidate. The Recycle Bin query is metadata-only and made only for a volume-root grant;
 otherwise its size is unknown. `owner_step` and relocation settings are display text only:
 nothing executes them, changes settings or performs file/process effects. MCP access and the app
 view are separate lanes.
+
+## Reclaim relief observation (LW-131 R1g, #939)
+
+`reclaim.observe { volume_id }` starts a `reclaim` job (`JobResult`, `job.state` events, `jobs.get`,
+`jobs.cancel`; `root_id` is `null`) and refuses the same volumes `reclaim.plan` refuses. It is
+owner-only on Tauri and HTTP; client principals are refused. A process with an elevated token is
+refused (`permission_denied`, reason `elevated_token`). One reclaim job runs at a time (`busy`).
+
+The job recomputes the plan's candidates from the catalogue, skips stale roots, unknown sizes,
+virtual disks and system-managed space, and visits the rest largest allocation first. For each it
+lists the catalogue's names (at most 200,000), builds paths under the granted root's verified path
+and runs the metadata-only link-count pass with the listing's identity as expected; a replaced name,
+placeholder or reparse point is unknown. The relief rule is the plan's own. One verdict per
+candidate (unique allocated bytes, or a reason) is stored in `state.db` only while the grant is
+active at the generation the names were read under. Nothing else in `state.db` or the catalogue
+changes, and no content is read.
+
+The job has a ten-minute wall-clock budget. A budget stop completes the job with `coverage: partial`;
+a cancel ends it `cancelled`. Candidates it did not finish store nothing, so their relief stays
+unknown. `job.reclaim` carries counts only (`candidates_total`, `candidates_done`, `names_checked`).
+
+`reclaim.plan` shows a stored verdict only while the root's generation, the node's incarnation and
+the catalogue instance match and the root is not stale; a rescan therefore returns the candidate to
+"not observed". Revoking, forgetting or losing a root's identity deletes its verdicts.
 
 ## Owner MCP client grants (docs/48 E6)
 
