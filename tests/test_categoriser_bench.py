@@ -318,6 +318,10 @@ class Benchmark(unittest.TestCase):
         packet['markers'] = []
         packet['extensions'] = [{'ext': 'pdf', 'files': 612, 'bytes': 600_000_000}]
         self.assertTrue(bench.unsupported_claims('Contains phantomext extensions.', packet))
+        for prose in ('This folder contains files.', 'The files have extensions.',
+                      'It has several files.', 'These are mostly files.'):
+            with self.subTest(prose=prose):
+                self.assertEqual(bench.unsupported_claims(prose, packet), [])
         self.assertTrue(bench.unsupported_claims('mostly yaml files', packet))
         self.assertTrue(bench.unsupported_claims('iso and mkv files', packet))
         self.assertEqual(bench.unsupported_claims('612 pdf files', packet), [])

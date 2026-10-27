@@ -133,7 +133,12 @@ NUMBER_WORDS = re.compile(r'\b(?:one|two|three|four|five|six|seven|eight|nine|te
                           r'hundred|thousand|million|dozen|half)\b', re.IGNORECASE)
 ADJECTIVE_STOPLIST = frozenset(
     'image video audio text small large old new hidden other many few more most all some '
-    'source build rust'.split())
+    'source build rust '
+    # Ordinary prose before "files"/"extensions" names no extension (Codex on #958).
+    'a an the these those this that its their his her our your my of with and or but no any '
+    'contains contain containing has have had are is were was be been include includes '
+    'including only mostly mainly also such named called several various different both '
+    'own'.split())
 MARKER_PHRASES = {
     r'git repository': {'git_dir', 'git_file_worktree'},
     r'node modules': {'node_modules_dir'},
@@ -250,7 +255,8 @@ def unsupported_claims(sentence, packet):
             mentioned.add(lower)
     for ext_match in re.finditer(r'\b([A-Za-z0-9][A-Za-z0-9_+\-]*)\s+(?:extensions?|ext)\b',
                                  without_abbreviations, re.IGNORECASE):
-        mentioned.add(ext_match.group(1).casefold())
+        if ext_match.group(1).casefold() not in ADJECTIVE_STOPLIST:
+            mentioned.add(ext_match.group(1).casefold())
     for file_match in re.finditer(r'\b([A-Za-z0-9][A-Za-z0-9_+\-]*)\s+files?\b',
                                   without_abbreviations, re.IGNORECASE):
         word = file_match.group(1).casefold()
