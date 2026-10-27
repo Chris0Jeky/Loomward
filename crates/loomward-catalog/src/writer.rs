@@ -2540,10 +2540,14 @@ fn swap_bulk(conn: &Connection, root: i64) -> Result<()> {
         &format!("INSERT INTO file SELECT * FROM {source} ORDER BY id"),
         [root],
     )?;
+    // The same row the dropped trigger writes (search.sql `search_file_insert`), filled from the
+    // swapped rows only: the `search_name_content` view would scan every live file (review of #981).
     conn.execute(
         &format!(
-            "INSERT INTO search_name(rowid,name,root) SELECT rowid,name,root FROM search_name_content
-             WHERE rowid IN (SELECT id+{} FROM {source}) ORDER BY rowid",
+            "INSERT INTO search_name(rowid,name,root)
+             SELECT f.id+{}, char(1)||replace(replace(f.name,char(1),' '),char(2),' ')||char(2),
+                    char(128+(d.root_id>>10&31),128+(d.root_id>>5&31),128+(d.root_id&31))
+             FROM (SELECT id,name,dir_id FROM {source}) f JOIN dir d ON d.id=f.dir_id ORDER BY f.id",
             crate::search::FILE_KEY
         ),
         [root],
