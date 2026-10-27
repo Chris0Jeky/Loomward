@@ -937,27 +937,7 @@ impl PlacementInput for Input<'_> {
                 let file_id: Option<Vec<u8>> = r.get(3)?;
                 let created: Option<i64> = r.get(4)?;
                 let reparse: Option<u32> = r.get(5)?;
-                let object = file_id
-                    .filter(|id| id.len() == 16 || id.len() == 8)
-                    .and_then(|id| {
-                        serial.strip_prefix("vsn_").map(|serial| {
-                            let mut bytes = [0; 16];
-                            bytes[..id.len()].copy_from_slice(&id);
-                            loomward_windows::identity::ObjectKey {
-                                volume_serial: serial.into(),
-                                file_id: bytes,
-                                quality: if id.len() == 16 {
-                                    loomward_windows::identity::IdentityQuality::FileId128
-                                } else {
-                                    loomward_windows::identity::IdentityQuality::Legacy64 {
-                                        reason: "catalogue width".into(),
-                                    }
-                                },
-                                creation_time: created.unwrap_or(0).to_string(),
-                                reparse_tag: reparse.unwrap_or(0),
-                            }
-                        })
-                    });
+                let object = catalogue_object(&serial, file_id, created, reparse);
                 Ok(FileEntry {
                     node_id: NodeId::new(format!("nd_file_{id}")).expect("file row"),
                     logical_bytes: uint(r, 1)?,
@@ -974,6 +954,32 @@ impl PlacementInput for Input<'_> {
         check(deadline)?;
         Ok(files)
     }
+}
+
+/// A catalogue file row's listed identity, as the link-count pass expects it (`linkcount::Entry`).
+pub(crate) fn catalogue_object(
+    volume_key: &str,
+    file_id: Option<Vec<u8>>,
+    created: Option<i64>,
+    reparse: Option<u32>,
+) -> Option<loomward_windows::identity::ObjectKey> {
+    let id = file_id.filter(|id| id.len() == 16 || id.len() == 8)?;
+    let serial = volume_key.strip_prefix("vsn_")?;
+    let mut bytes = [0; 16];
+    bytes[..id.len()].copy_from_slice(&id);
+    Some(loomward_windows::identity::ObjectKey {
+        volume_serial: serial.into(),
+        file_id: bytes,
+        quality: if id.len() == 16 {
+            loomward_windows::identity::IdentityQuality::FileId128
+        } else {
+            loomward_windows::identity::IdentityQuality::Legacy64 {
+                reason: "catalogue width".into(),
+            }
+        },
+        creation_time: created.unwrap_or(0).to_string(),
+        reparse_tag: reparse.unwrap_or(0),
+    })
 }
 
 struct Store<'a> {

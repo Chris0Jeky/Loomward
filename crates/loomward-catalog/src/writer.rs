@@ -2501,6 +2501,13 @@ fn swap_bulk(conn: &Connection, root: i64) -> Result<()> {
     // The build's rows are new token keys (IDs are never reused): index them in one pass below
     // instead of queueing each through the insert triggers and reading it back (#520).
     let token_triggers = crate::search::suspend_insert_triggers(conn)?;
+    let trigram_trigger: String = conn.query_row(
+        "SELECT sql FROM sqlite_schema WHERE type='trigger' AND name='search_file_insert'",
+        [],
+        |r| r.get(0),
+    )?;
+    // Row triggers force SQLite to spool the entire INSERT SELECT input to FILE scratch.
+    conn.execute_batch("DROP TRIGGER search_file_insert")?;
     conn.execute(
         "INSERT INTO dir SELECT * FROM bulk_dir WHERE root_id=?1 ORDER BY id",
         [root],
@@ -2539,6 +2546,19 @@ fn swap_bulk(conn: &Connection, root: i64) -> Result<()> {
         &format!("INSERT INTO file SELECT * FROM {source} ORDER BY id"),
         [root],
     )?;
+    // The same row the dropped trigger writes (search.sql `search_file_insert`), filled from the
+    // swapped rows only: the `search_name_content` view would scan every live file (review of #981).
+    conn.execute(
+        &format!(
+            "INSERT INTO search_name(rowid,name,root)
+             SELECT f.id+{}, char(1)||replace(replace(f.name,char(1),' '),char(2),' ')||char(2),
+                    char(128+(d.root_id>>10&31),128+(d.root_id>>5&31),128+(d.root_id&31))
+             FROM (SELECT id,name,dir_id FROM {source}) f JOIN dir d ON d.id=f.dir_id ORDER BY f.id",
+            crate::search::FILE_KEY
+        ),
+        [root],
+    )?;
+    conn.execute_batch(&trigram_trigger)?;
     for (_, sql) in deferred {
         conn.execute_batch(&sql)?;
     }

@@ -480,6 +480,7 @@ pub(crate) fn is_mutation(c: Command) -> bool {
             | JobsCancel
             | DuplicatesInspect
             | DuplicatesCancel
+            | ReclaimObserve
             | FeedbackRecord
             | LearningRefit
             | CollectionsCreate

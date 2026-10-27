@@ -797,6 +797,22 @@ transition; otherwise status reports the observed attention state without invent
 `unjournaled_items` reports the first 64 staging-relative manifest names observed without journaled
 identities, with the full total in `unjournaled_item_count`. These entries are never adopted or removed.
 
+With staging removal enabled, cleanup first checks the staging identity and complete observed membership,
+then commits `staging_disposition` before its first removal. Its bounded facts contain the staging identity,
+manifest item count, verified/unverified counts, every distinct refusal journaled during the run
+(`refusal_codes`, including ones the run resumed past), the `stop_cause` (the refusal still active, the fence
+that ended the run, `emergency_stop`, or `cancelled` when none was active), whether the journal was blocked
+on a retryable refusal without a fence before cancellation, and `resume_possible: false`.
+`CopyStatus.disposition`, when present, projects those original
+counts and a deterministic `explanation` (at most 2,048 characters); native staging identities remain in
+the journal. The explanation states the stopping cause apart from the refusals journaled during the run, distinguishes retryable refusals from terminal stops, says cancellation ends
+resume, and identifies the evidence retained in `state.db` after removal. Journal resumability describes
+the stopped state, not an available resume command. This snapshot survives item-removal records clearing
+their current verified flags. It is intent and evidence, never a receipt that removal succeeded. A failed
+append, including a lost commit acknowledgement, performs no removal in that call. Older journal decoders
+refuse the new record kind. Facts are computed from the records a journal holds, so a journal begun by an older
+build may understate refusals it never recorded. The service removal default remains off and personal copying remains gated.
+
 ## Lazy meaning threads
 
 | Command | Revisions | Retry | Effects |
@@ -998,11 +1014,41 @@ minus covered-root allocation, or `null` when the coverage or physics is unknown
 Reads never request aggregate repairs. Stale roots make the plan partial and their candidate
 sizes unknown. Work-budget exhaustion sets `budget_hit` and `partial`; an empty group then says
 nothing about what the volume holds. Deadline expiry still returns `deadline_exceeded`.
-This slice performs no link-count pass (#939), so reclaimable bytes remain `null` with a reason,
-never zero. The Recycle Bin query is metadata-only and made only for a volume-root grant;
+The plan itself performs no link-count pass: reclaimable bytes are `null` with a reason, never
+zero, unless `reclaim.observe` (below) stored a verified verdict for the candidate. The Recycle Bin query is metadata-only and made only for a volume-root grant;
 otherwise its size is unknown. `owner_step` and relocation settings are display text only:
 nothing executes them, changes settings or performs file/process effects. MCP access and the app
 view are separate lanes.
+
+## Reclaim relief observation (LW-131 R1g, #939)
+
+`reclaim.observe { volume_id }` starts a `reclaim` job (`JobResult`, `job.state` events, `jobs.get`,
+`jobs.cancel`; `root_id` is `null`) and refuses the same volumes `reclaim.plan` refuses. It is
+owner-only on Tauri and HTTP; client principals are refused. A process with an elevated token is
+refused (`permission_denied`, reason `elevated_token`). One reclaim job runs at a time (`busy`).
+
+The job recomputes the plan's candidates from the catalogue, skips stale roots, unknown sizes,
+virtual disks and system-managed space, and visits the rest largest allocation first. For each it
+lists the catalogue's names (at most 200,000), builds paths under the granted root's verified path
+and runs the metadata-only link-count pass with the listing's identity as expected; a replaced name,
+placeholder or reparse point is unknown. The relief rule is the plan's own. One verdict per
+candidate (unique allocated bytes, or a reason) is stored in `state.db` only while the grant is
+active at the generation the names were read under. Nothing else in `state.db` or the catalogue
+changes, and no content is read.
+
+The job has a ten-minute wall-clock budget. A budget stop completes the job with `coverage: partial`;
+a cancel ends it `cancelled`. Candidates it did not finish store nothing, so their relief stays
+unknown. `job.reclaim` carries counts only (`candidates_total`, `candidates_done`, `names_checked`).
+
+`reclaim.plan` shows a stored verdict only while the root's generation, the node's incarnation, the
+candidate directory's subtree revision and the catalogue instance match, the root is complete with no
+scan in flight, and it is not stale; any rescan or catalogue write under the candidate therefore
+returns it to "not observed". Revoking, forgetting or losing a root's identity deletes its verdicts.
+
+The pass opens names through verbatim (`\\?\`) paths and first checks every directory from below the
+root through the candidate is still the catalogued, non-reparse directory; otherwise the candidate is
+unknown and nothing beneath it is opened. It re-checks the grant and cancellation every 1,000 names.
+A root that fails admission is skipped (job `partial`), and the job never changes a grant's state.
 
 ## Owner MCP client grants (docs/48 E6)
 

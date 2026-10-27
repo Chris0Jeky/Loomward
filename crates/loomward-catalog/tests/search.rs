@@ -1030,6 +1030,73 @@ fn out_of_grant_matches_never_spend_a_clients_budget() {
 }
 
 #[test]
+fn filter_only_client_root_filter_narrows_grants_and_refuses_an_ungranted_root() {
+    let (lab, a, b) = grant_oracle_lab(true, 6000);
+    let c = register(&lab, "vol-c", "Gamma", 3);
+    for extension in [None, Some("dat".to_string())] {
+        let mut r = req("");
+        r.scope = Some(vec![a.root, b.root]);
+        r.root_id = Some(a.root);
+        r.extension = extension;
+        r.work_budget = 20_000;
+        let page = search(&lab, &r);
+        assert_eq!(
+            names(&page),
+            pairs(&[
+                ("filter", "common-alpha-0.dat"),
+                ("filter", "common-alpha-1.dat"),
+                ("filter", "common-alpha-2.dat"),
+            ])
+        );
+        assert!(page.hits.iter().all(|h| h.root_id == a.root));
+        assert!(!page.budget_hit && page.next_cursor.is_none());
+        r.root_id = Some(c.root);
+        assert!(matches!(
+            lab.c.reader().unwrap().search(&r),
+            Err(Error::NotFound)
+        ));
+    }
+}
+
+#[test]
+fn filter_only_client_with_stale_root_totals_streams_correct_pages() {
+    let (lab, _, b) = grant_oracle_lab(true, 6000);
+    // Stale small counts must not select a sort of the entire grant on every page.
+    Connection::open(lab.temp.path().join("catalog.db"))
+        .unwrap()
+        .execute(
+            "UPDATE dir SET dirty_rev=agg_valid_rev+1,sub_files=0,sub_dirs=0 WHERE id=?1",
+            [b.dir],
+        )
+        .unwrap();
+    let mut reader = lab.c.reader().unwrap().without_repairs();
+    for extension in [None, Some("dat".to_string())] {
+        let mut r = req("");
+        r.scope = Some(vec![b.root]);
+        r.kind = "file".into();
+        r.extension = extension;
+        r.limit = 20;
+        r.work_budget = 20_000;
+        let mut seen = Vec::new();
+        for _ in 0..2 {
+            let page = reader.search(&r).unwrap();
+            assert!(!page.budget_hit);
+            assert!(page.hits.iter().all(|h| h.root_id == b.root));
+            assert_eq!(page.hits.len(), 20);
+            seen.extend(names(&page));
+            r.cursor = page.next_cursor;
+            assert!(r.cursor.is_some());
+        }
+        assert_eq!(
+            seen,
+            (0..40)
+                .map(|i| ("filter".into(), format!("common-beta-{i}.dat")))
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+#[test]
 fn filter_only_out_of_grant_rows_never_spend_a_clients_budget() {
     let (lab, a, b) = grant_oracle_lab(true, 6000);
     let c = register(&lab, "vol-c", "Gamma", 3);

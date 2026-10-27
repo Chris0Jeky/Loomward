@@ -193,7 +193,7 @@ fn hostile_names_reach_the_model_only_as_cleaned_data_and_no_tool_reaches_a_writ
     let chunks = planted.stored.len().div_ceil(19);
     let mut used = std::collections::BTreeSet::new();
     let mut rows_seen = 0;
-    for chunk in 0..=chunks {
+    for chunk in 0..=chunks + 2 {
         // The last turn is the model going wrong: invented tools, forged handles and node IDs,
         // hostile arguments. Every earlier turn calls every offered tool on one chunk of names.
         let tag = format!("hz{chunk:02}");
@@ -210,6 +210,22 @@ fn hostile_names_reach_the_model_only_as_cleaned_data_and_no_tool_reaches_a_writ
                     &json!({ "text": tag }).to_string(),
                 )])),
                 Upstream::Reply(calls(round2)),
+                Upstream::Reply(text("h1 is the first row.")),
+            ]
+        } else if chunk < chunks + 2 {
+            // These shared-corpus files have no ~hzNN tag: exercise extension and parent path.
+            let query = if chunk == chunks {
+                "ext-case"
+            } else {
+                "--delete"
+            };
+            vec![
+                Upstream::Reply(calls(vec![call(
+                    "a",
+                    "find",
+                    &json!({"text":query}).to_string(),
+                )])),
+                Upstream::Reply(calls(vec![call("b", "describe", r#"{"handle":"h1"}"#)])),
                 Upstream::Reply(text("h1 is the first row.")),
             ]
         } else {
@@ -247,6 +263,8 @@ fn hostile_names_reach_the_model_only_as_cleaned_data_and_no_tool_reaches_a_writ
                 );
             }
         }
+        let mut hostile_extension_seen = false;
+        let mut hostile_directory_seen = false;
         for request in provider.seen.lock().unwrap().iter() {
             for message in &request.messages {
                 match message {
@@ -262,6 +280,10 @@ fn hostile_names_reach_the_model_only_as_cleaned_data_and_no_tool_reaches_a_writ
                                 );
                             }
                             let field = path.rsplit('.').next().unwrap();
+                            hostile_extension_seen |= field == "extension" && s == r"\u{202e}fdp";
+                            hostile_directory_seen |= field == "path"
+                                && s.contains(r"proj\u{202e}; rm -rf x")
+                                && s.contains("--delete.");
                             for needle in NEEDLES.iter().filter(|n| s.contains(**n)) {
                                 assert!(
                                     !is_key && DATA_FIELDS.contains(&field),
@@ -278,6 +300,17 @@ fn hostile_names_reach_the_model_only_as_cleaned_data_and_no_tool_reaches_a_writ
                     Message::Assistant { .. } => {}
                 }
             }
+        }
+        if chunk == chunks {
+            assert!(
+                hostile_extension_seen,
+                "hostile extension never reached the model"
+            );
+        } else if chunk == chunks + 1 {
+            assert!(
+                hostile_directory_seen,
+                "hostile directory never reached the model"
+            );
         }
         assert_eq!(dump(&state.join("state.db")), state_before, "turn {chunk}");
         assert!(

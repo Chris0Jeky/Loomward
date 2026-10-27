@@ -1483,6 +1483,15 @@ mod live {
             // Opening reconciles revisions once; after the first call nothing may change.
             let catalog = dump(&f.state.join("catalog.db"));
             for row in found["rows"].as_array().unwrap() {
+                let name = row["row"]["name"].as_str().unwrap();
+                for (prefix, escaped) in [
+                    ("invoice", r"invoice\u202Efdp.exe"),
+                    ("spelled ", r"spelled \\u202E escape"),
+                ] {
+                    if name.starts_with(prefix) {
+                        assert_eq!(name, format!("{escaped}~hz{chunk:02}"));
+                    }
+                }
                 let described = assert_inert(
                     "describe",
                     &server.tool("describe", json!({"reference":row["reference"]})),

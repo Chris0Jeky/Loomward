@@ -4,6 +4,171 @@ use super::*;
 use crate::test_watchdog::watchdog;
 use std::path::Path;
 
+// Only the explicitly selected throughput bench installs this connection-local callback.
+#[derive(Default)]
+struct EndProfile {
+    sql_seconds: HashMap<String, f64>,
+    swap_started: Option<Instant>,
+    swap_seconds: Option<f64>,
+}
+static END_PROFILE: Mutex<Option<EndProfile>> = Mutex::new(None);
+fn profile_end(event: rusqlite::trace::TraceEvent<'_>) {
+    if let rusqlite::trace::TraceEvent::Profile(statement, elapsed) = event {
+        if let Some(profile) = END_PROFILE.lock().unwrap().as_mut() {
+            let sql = statement.sql();
+            if sql == "SELECT id FROM bulk_dir WHERE root_id=?1 AND parent_id IS NULL" {
+                profile.swap_started = Some(Instant::now());
+            }
+            if sql == "DELETE FROM bulk_dir WHERE root_id=?1" {
+                profile.swap_seconds = Some(profile.swap_started.unwrap().elapsed().as_secs_f64());
+            }
+            *profile.sql_seconds.entry(sql.into_owned()).or_default() += elapsed.as_secs_f64();
+        }
+    }
+}
+
+/// Fresh-process, synthetic metadata only; run each variant at least three times, interleaved:
+/// `LW646_SCRATCH=file|legacy cargo test --release -p loomward-catalog --lib
+/// writer::bulk_tests::bulk_first_scan_throughput -- --ignored --exact --nocapture`.
+/// Set `LW646_LONG_NAMES=1` for 255-byte names; legacy settings are a diagnostic, never production.
+#[test]
+#[ignore = "#646 synthetic first-scan phase benchmark; 1M entries, disposable databases"]
+fn bulk_first_scan_throughput() {
+    let variant = std::env::var("LW646_SCRATCH").unwrap_or_else(|_| "file".into());
+    let padding = if std::env::var_os("LW646_LONG_NAMES").is_some() {
+        "x".repeat(234)
+    } else {
+        String::new()
+    };
+    let rows = 1_000_000;
+    let temp = tempfile::tempdir().unwrap();
+    let conn = crate::db::open_pair(temp.path(), "synthetic").unwrap();
+    match variant.as_str() {
+        "file" => {}
+        "legacy" => {
+            conn.execute_batch("PRAGMA temp_store=MEMORY; PRAGMA main.cache_size=-262144")
+                .unwrap();
+            crate::db::grant_view(&conn).unwrap();
+        }
+        _ => panic!("LW646_SCRATCH must be file or legacy"),
+    }
+    conn.trace_v2(
+        rusqlite::trace::TraceEventCodes::SQLITE_TRACE_PROFILE,
+        Some(profile_end),
+    );
+    let writer = Writer::start(conn).unwrap();
+    writer.set_bulk_first_scan(true);
+    let (grant, root_dir) = register(&writer, 1);
+    let run = begin(&writer, grant);
+    let start = Instant::now();
+    writer
+        .call(WriteCommand::DirListing(DirListing {
+            run_id: run,
+            dir_id: root_dir,
+            files: vec![],
+            dirs: (0..rows / 1000)
+                .map(|i| obs(&format!("dir-{i:05}"), 0, None))
+                .collect(),
+            state: "complete".into(),
+            skipped: 0,
+            errors: 0,
+        }))
+        .unwrap();
+    let db = Connection::open(temp.path().join("catalog.db")).unwrap();
+    let ids: Vec<i64> = db
+        .prepare("SELECT id FROM bulk_dir WHERE parent_id=?1 ORDER BY id")
+        .unwrap()
+        .query_map([root_dir], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(ids.len(), rows / 1000);
+    let mut receipts = Vec::new();
+    for (i, dir) in ids.iter().enumerate() {
+        receipts.push(
+            writer
+                .send(WriteCommand::StageChunk {
+                    run_id: run,
+                    dir_id: *dir,
+                    seq: 0,
+                    files: (0..1000)
+                        .map(|j| {
+                            let serial = i * 1000 + j;
+                            let mut o =
+                                obs(&format!("synthetic-{serial:07}{padding}.dat"), 1, None);
+                            o.file_id = Some((serial as u128 + 10_000_000).to_le_bytes().to_vec());
+                            o
+                        })
+                        .collect(),
+                    dirs: vec![],
+                })
+                .unwrap(),
+        );
+        receipts.push(
+            writer
+                .send(WriteCommand::ListingDone {
+                    run_id: run,
+                    dir_id: *dir,
+                    outcome: ListingOutcome::Complete,
+                    skipped: 0,
+                    errors: 0,
+                })
+                .unwrap(),
+        );
+    }
+    for receipt in receipts {
+        receipt.wait().unwrap();
+    }
+    let staging_seconds = start.elapsed().as_secs_f64();
+    let before = writer.timings();
+    *END_PROFILE.lock().unwrap() = Some(EndProfile::default());
+    let start = Instant::now();
+    end(&writer, run, "completed").unwrap();
+    let end_seconds = start.elapsed().as_secs_f64();
+    let profile = END_PROFILE.lock().unwrap().take().unwrap();
+    let after = writer.timings();
+    let totals: (i64, i64) = db
+        .query_row(
+            "SELECT sub_files,sub_logical FROM dir WHERE id=?1",
+            [root_dir],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(totals, (rows as i64, rows as i64));
+    assert_eq!(bulk_rows(temp.path()), 0);
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM sqlite_schema WHERE type='index' AND tbl_name='file'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        4
+    );
+    db.execute_batch("INSERT INTO search_name(search_name,rank) VALUES('integrity-check',1)")
+        .unwrap();
+    println!(
+        "lw646 {}",
+        serde_json::json!({
+            "variant": variant, "rows": rows, "name_bytes": 21 + padding.len(),
+            "staging_seconds": staging_seconds,
+            "end_seconds": end_seconds,
+            "through_end_rows_per_second": rows as f64 / (staging_seconds + end_seconds),
+            "staging_sql_seconds": before.staging_seconds,
+            "listing_seconds": before.listing_seconds,
+            "multilink_seconds": after.multilink_seconds - before.multilink_seconds,
+            "rollup_seconds": after.rollup_seconds - before.rollup_seconds,
+            "commit_seconds": after.commit_seconds - before.commit_seconds,
+            "checkpoint_seconds": after.checkpoint_seconds - before.checkpoint_seconds,
+            "swap_seconds": profile.swap_seconds.unwrap(),
+            "end_sql_profile_seconds": profile.sql_seconds,
+        })
+    );
+    drop(db);
+    drop(writer);
+    temp.close().unwrap();
+}
+
 fn open(path: &Path, bulk: bool) -> crate::Catalog {
     open_with(path, bulk, false)
 }

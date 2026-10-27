@@ -376,9 +376,11 @@ fn example_directories_hold_exactly_the_expected_files() {
         BTreeSet::from([
             "ClientField.json".to_string(),
             "McpClient.json".to_string(),
+            "copy-disposition.json".to_string(),
             "disclosure-summary.json".to_string(),
             "duplicates-result.json".to_string(),
             "identity-observation-unverified.json".to_string(),
+            "reclaim-observe-running.json".to_string(),
             "search-freshness-restarting.json".to_string(),
             "search-page-federated.json".to_string(),
             "search-request-federated.json".to_string()

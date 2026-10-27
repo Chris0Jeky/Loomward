@@ -86,6 +86,23 @@ impl JobContext {
             }
         }
     }
+    /// Publish `reclaim.observe` counts (#939) with a job revision; repeated counts are silent.
+    pub fn set_reclaim_progress(
+        &self,
+        progress: loomward_protocol::ReclaimObserveProgress,
+    ) -> EngineResult<()> {
+        if let Some(registry) = self.registry.upgrade() {
+            if let Some(r) = registry.records.lock().unwrap().get_mut(&self.job_id) {
+                if r.terminal.is_some() || r.job.reclaim.as_ref() == Some(&progress) {
+                    return Ok(());
+                }
+                revise(&mut r.job)?;
+                r.job.reclaim = Some(progress);
+                emit(&self.events, &r.job);
+            }
+        }
+        Ok(())
+    }
     /// Whether the caller requested cancellation.
     pub fn is_cancelled(&self) -> bool {
         self.cancel.load(Ordering::Acquire)
@@ -154,18 +171,19 @@ pub(crate) struct Registry {
     last_scan: Mutex<HashMap<RootId, JobId>>,
 }
 impl Registry {
-    /// One live scan or duplicates job per root and one live refit overall: `busy` with
-    /// `detail.job_id`.
+    /// One live scan or duplicates job per root and one live refit or reclaim observation
+    /// overall: `busy` with `detail.job_id`.
     fn conflict(records: &HashMap<JobId, Record>, spec: &JobSpec) -> EngineResult<()> {
         if !matches!(
             spec.kind,
-            JobKind::Scan | JobKind::Duplicates | JobKind::Refit
+            JobKind::Scan | JobKind::Duplicates | JobKind::Refit | JobKind::Reclaim
         ) {
             return Ok(());
         }
         let Some(r) = records.values().find(|r| {
             r.job.kind == spec.kind
-                && (spec.kind == JobKind::Refit || r.job.root_id == spec.root_id)
+                && (matches!(spec.kind, JobKind::Refit | JobKind::Reclaim)
+                    || r.job.root_id == spec.root_id)
                 && r.terminal.is_none()
         }) else {
             return Ok(());
@@ -174,6 +192,7 @@ impl Registry {
             message: match spec.kind {
                 JobKind::Duplicates => "root already inspecting duplicates",
                 JobKind::Refit => "refit already running",
+                JobKind::Reclaim => "reclaim observation already running",
                 _ => "root already scanning",
             }
             .into(),
@@ -293,6 +312,7 @@ impl Registry {
             coverage: None,
             error: None,
             duplicates: None,
+            reclaim: None,
         };
         let cancel = Arc::new(AtomicBool::new(false));
         {
@@ -569,6 +589,12 @@ impl Engine {
             .get(&spec.kind)
             .cloned()
             .ok_or_else(|| EngineError::unavailable(Component::Jobs))?;
+        self.jobs.submit(spec, runner, self.events.clone(), None)
+    }
+    /// Run a caller-built runner under this registry's lifecycle: one-per-kind conflicts, events,
+    /// cancellation and retention. Used by `reclaim.observe` (#939), whose runner the service owns
+    /// because its reads and its result table are the service's.
+    pub fn job_submit_runner(&self, spec: JobSpec, runner: JobRunner) -> EngineResult<Job> {
         self.jobs.submit(spec, runner, self.events.clone(), None)
     }
     /// Acknowledge cancellation; an in-progress durable commit takes precedence.

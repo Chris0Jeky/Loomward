@@ -87,6 +87,14 @@ pub(crate) struct Hooks {
     pub busy_freshness_checkpoint: std::sync::atomic::AtomicBool,
     #[cfg(windows)]
     pub before_freshness_finish: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    /// #939: `reclaim.observe` answers as if the process held an elevated token.
+    pub reclaim_elevated: std::sync::atomic::AtomicBool,
+    /// #939: the observation's wall-clock budget instead of ten minutes.
+    pub reclaim_budget: Mutex<Option<Duration>>,
+    /// #970: names the observation has handed to the link-count pass.
+    pub reclaim_names_opened: std::sync::atomic::AtomicUsize,
+    /// #970: one-shot, the next candidate's catalogue read fails.
+    pub reclaim_fail_candidate: std::sync::atomic::AtomicBool,
 }
 
 /// What a personal space read answers in tests: wait on an explicit gate, or report fixed space.

@@ -430,7 +430,7 @@ export interface DuplicateReport {
 }
 
 /** placement.simulate is synchronous and bounded, never a job (semantics.md section 2). */
-export type JobKind = "scan" | "refit" | "teacher" | "duplicates";
+export type JobKind = "scan" | "refit" | "teacher" | "duplicates" | "reclaim";
 
 export type JobState = "queued" | "running" | "cancel_requested" | "cancelled" | "failed" | "completed";
 
@@ -479,6 +479,7 @@ export interface Job {
   coverage: CoverageState | null;
   error: ErrorBody | null;
   duplicates?: DuplicateReport;
+  reclaim?: ReclaimObserveProgress;
 }
 
 export interface JobRefRequest {
@@ -2088,7 +2089,24 @@ export interface CopyOperationRequest {
   operation_id: CopyOperationId;
 }
 
+/** LW-146: the refusal or fence active when the run was cancelled: a refusal code (grant_revoked for a revoked-grant fence), emergency_stop, or cancelled when none was active. */
+export type CopyStopCause = CopyRefusalCode | "emergency_stop" | "cancelled";
+
+/** LW-146: immutable pre-removal journal counts and deterministic explanation. Native identities remain in state.db. Absent until the disposition is durable; not a receipt of removal. */
+export interface CopyDisposition {
+  explanation: string;
+  items_total: Count;
+  items_verified: Count;
+  items_unverified: Count;
+  /** Every distinct refusal journaled during the run, including ones it resumed past; not the stopping cause. */
+  refusal_codes: CopyRefusalCode[];
+  stop_cause?: CopyStopCause;
+  resumable_before_cancel: boolean;
+  resume_possible: boolean;
+}
+
 export interface CopyStatus {
+  disposition?: CopyDisposition;
   operation_id: CopyOperationId;
   state: CopyState;
   digest: Digest;
@@ -2320,6 +2338,17 @@ export interface ReclaimPlan {
   budget_hit: boolean;
 }
 
+export interface ReclaimObserveRequest {
+  volume_id: VolumeId;
+}
+
+/** LW-131 R1g counts only. Per-candidate verdicts live in state.db and reach the owner through reclaim.plan; a candidate the job did not finish stays unknown, never zero. */
+export interface ReclaimObserveProgress {
+  candidates_total: Count;
+  candidates_done: Count;
+  names_checked: Count;
+}
+
 export interface DeveloperClutterRequest {
   root_id: RootId;
   limit: number;
@@ -2406,6 +2435,7 @@ export interface CommandMap {
   "search.query": { request: SearchRequest; result: SearchPage };
   "stats.breakdown": { request: BreakdownRequest; result: Breakdown };
   "reclaim.plan": { request: ReclaimPlanRequest; result: ReclaimPlan };
+  "reclaim.observe": { request: ReclaimObserveRequest; result: JobResult };
   "clutter.developer": { request: DeveloperClutterRequest; result: DeveloperClutterReport };
   "taxonomy.get": { request: EmptyRequest; result: Taxonomy };
   "feedback.record": { request: FeedbackRequest; result: FeedbackResult };
@@ -2498,6 +2528,7 @@ export const COMMANDS = {
   "search.query": { adapters: ["tauri", "http"], wave: 2, events: [] },
   "stats.breakdown": { adapters: ["tauri", "http"], wave: 2, events: [] },
   "reclaim.plan": { adapters: ["tauri", "http"], wave: 2, events: [] },
+  "reclaim.observe": { adapters: ["tauri", "http"], wave: 2, events: ["job.state"] },
   "clutter.developer": { adapters: ["tauri", "http"], wave: 2, events: [] },
   "taxonomy.get": { adapters: ["tauri", "http"], wave: 3, events: [] },
   "feedback.record": { adapters: ["tauri", "http"], wave: 3, events: ["learning.updated"] },

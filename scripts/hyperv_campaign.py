@@ -111,6 +111,7 @@ def window_for_label(label: str | None) -> str:
         "publish_withdrawn": "publish",
         "committed": "publish",
         "staging_removed": "cleanup",
+        "staging_disposition": "cleanup",
         "staging_left": "other",  # Cleanup retains staging without removing anything.
         "fenced": "other",  # A fence can interrupt any nonterminal phase.
         "revoked_after_publish": "other",  # Metadata-only annotation after commit; no publish work remains.

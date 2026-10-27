@@ -125,6 +125,38 @@ pub struct CopyOperationRequest {
     pub operation_id: CopyOperationId,
 }
 
+/// What ended a stopped run when it is not a refusal code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CopyStopKind {
+    EmergencyStop,
+    Cancelled,
+}
+
+/// A refusal code or a `CopyStopKind`, as one string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum CopyStopCause {
+    Refusal(CopyRefusalCode),
+    Other(CopyStopKind),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CopyDisposition {
+    pub explanation: BoundedStr<1, 2048>,
+    pub items_total: Count,
+    pub items_verified: Count,
+    pub items_unverified: Count,
+    /// Every distinct refusal journaled during the run, including ones it resumed past.
+    pub refusal_codes: BoundedVec<CopyRefusalCode, 0, 32>,
+    /// The refusal or fence active at cancellation, else `cancelled`. Absent from older services.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_cause: Option<CopyStopCause>,
+    pub resumable_before_cancel: bool,
+    pub resume_possible: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CopyStatus {
@@ -133,6 +165,10 @@ pub struct CopyStatus {
     pub digest: Digest,
     pub items_total: Count,
     pub items_verified: Count,
+    /// Pre-removal journal facts and deterministic explanation; absent until disposition is durable.
+    /// Native staging identities stay in the journal, never become effect authority in this DTO.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disposition: Option<CopyDisposition>,
     /// docs/47 Q1 default: the name (never a path) of the staging folder left in the destination
     /// parent on cancel or abandon, for the owner to remove; `null` otherwise.
     #[serde(deserialize_with = "crate::types::required_nullable")]
