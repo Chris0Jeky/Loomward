@@ -146,6 +146,41 @@ fn reclaim_counts_only_outermost_active_roots_and_keeps_adjacent_roots() {
 }
 
 #[test]
+fn reclaim_unscanned_covered_root_is_partial_with_unknown_sizes_and_no_candidates() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let scanned = fixture(&svc);
+    // Known volume space makes the unknown unaccounted total depend on root coverage.
+    svc.inner
+        .db()
+        .execute(
+            "UPDATE main.volume SET capabilities_json=?1",
+            [json!({"space":{"capacity_bytes":"200000", "free_bytes":"100000"}}).to_string()],
+        )
+        .unwrap();
+    let before = reclaim(&svc);
+    assert_eq!(before["unaccounted_bytes"], "89990");
+    let (unscanned, _) = register(&svc, 2);
+    let unscanned = svc.inner.root_id(unscanned);
+    let plan = reclaim(&svc);
+    let roots = plan["covered_roots"].as_array().unwrap();
+    assert_eq!(roots.len(), 2);
+    let root = roots.iter().find(|r| r["root_id"] == unscanned).unwrap();
+    assert_eq!(root["coverage"], "unscanned");
+    assert!(root["allocated_bytes"].is_null());
+    assert!(plan["unaccounted_bytes"].is_null());
+    assert_eq!(plan["partial"], true);
+    assert_eq!(plan["budget_hit"], false);
+    assert_eq!(before["groups"], plan["groups"]);
+    assert!(roots.iter().any(|r| r["root_id"] == scanned));
+    assert!(plan["groups"][0]["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|c| c["name"] == "target"));
+}
+
+#[test]
 fn reclaim_exhausted_detector_budget_is_explicit_and_partial() {
     let tmp = temp_root();
     let svc = open(tmp.path(), DatasetClass::Synthetic);
