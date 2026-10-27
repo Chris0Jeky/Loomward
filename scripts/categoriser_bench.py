@@ -129,7 +129,11 @@ COMMON_EXTENSIONS = set('exe msi dll pdb rlib rs py js ts json toml txt bin pdf 
                         'gguf safetensors vhdx raw xmp lrcat lrdata jpg jpeg png mp4 csv'.split())
 NUMBER_WORDS = re.compile(r'\b(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|'
                           r'thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|'
-                          r'hundred|thousand|million)\b', re.IGNORECASE)
+                          r'thirty|forty|fifty|sixty|seventy|eighty|ninety|'
+                          r'hundred|thousand|million|dozen|half)\b', re.IGNORECASE)
+ADJECTIVE_STOPLIST = frozenset(
+    'image video audio text small large old new hidden other many few more most all some '
+    'source build rust'.split())
 MARKER_PHRASES = {
     r'git repository': {'git_dir', 'git_file_worktree'},
     r'node modules': {'node_modules_dir'},
@@ -187,11 +191,19 @@ def unsupported_claims(sentence, packet):
             continue  # For example, bare 7z names an extension, not a count of seven.
         number = float(match['number'].replace(',', ''))
         unit = (match['unit'] or '').lower()
-        if unit in ('source', 'build', 'rust'):
-            count_unit = re.match(r'\s+(files?|folders?)\b', sentence[match.end():], re.IGNORECASE)
-            if count_unit:
-                unit = count_unit[1].lower()
-        if number < 0 or not math.isfinite(number):
+        noun_after = None
+        if unit:
+            noun_match = re.match(r'\s+(files?|folders?)\b', sentence[match.end():], re.IGNORECASE)
+            if noun_match:
+                noun_after = noun_match.group(1).lower()
+        if noun_after is not None:
+            if noun_after in ('file', 'files'):
+                number_ok = number in file_counts
+            else:
+                number_ok = number in folder_counts
+            word_ok = unit in extensions or unit in ADJECTIVE_STOPLIST
+            supported = number_ok and word_ok
+        elif number < 0 or not math.isfinite(number):
             supported = False
         elif unit in scales:
             supported = any(abs(number * scales[unit] - value) <= value * .05 for value in byte_totals)
@@ -236,6 +248,14 @@ def unsupported_claims(sentence, packet):
         lower = token.casefold()
         if '_' in token or lower in COMMON_EXTENSIONS or lower in allowed:
             mentioned.add(lower)
+    for ext_match in re.finditer(r'\b([A-Za-z0-9][A-Za-z0-9_+\-]*)\s+(?:extensions?|ext)\b',
+                                 without_abbreviations, re.IGNORECASE):
+        mentioned.add(ext_match.group(1).casefold())
+    for file_match in re.finditer(r'\b([A-Za-z0-9][A-Za-z0-9_+\-]*)\s+files?\b',
+                                  without_abbreviations, re.IGNORECASE):
+        word = file_match.group(1).casefold()
+        if not word.isdigit() and word not in ADJECTIVE_STOPLIST:  # "1,204 files" is a count
+            mentioned.add(word)
     problems.extend('unsupported token: ' + token for token in sorted(mentioned - allowed))
     return problems
 

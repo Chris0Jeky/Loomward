@@ -265,7 +265,7 @@ class Benchmark(unittest.TestCase):
         self.assertEqual(bench.unsupported_claims('239 days old.', packet), [])
         for sentence in ('100 GB.', '240 days old.', '-1 files.', '1204.5 files.',
                          'cargo_phantom_dir.', 'Contains .exe files.', 'Contains EXE files.',
-                         'Contains .phantomext extensions.', '999999 years old.',
+                         'Contains phantomext extensions.', '999999 years old.',
                          '999GB of build output.', 'Contains .7z files.', '1204% complete.'):
             with self.subTest(sentence=sentence):
                 self.assertTrue(bench.unsupported_claims(sentence, packet))
@@ -311,6 +311,27 @@ class Benchmark(unittest.TestCase):
         self.assertEqual(bench.unsupported_claims('7z files', packet), [])
         packet['extensions'].append({'ext': 'customext', 'files': 1, 'bytes': 1})
         self.assertEqual(bench.unsupported_claims('customext files', packet), [])
+
+    def test_issue_921_faithfulness_followups(self):
+        packet = self.records[0]['packet']
+        packet['shape'].update(files=612, folders=7, logical_bytes=600_000_000)
+        packet['markers'] = []
+        packet['extensions'] = [{'ext': 'pdf', 'files': 612, 'bytes': 600_000_000}]
+        self.assertTrue(bench.unsupported_claims('Contains phantomext extensions.', packet))
+        self.assertTrue(bench.unsupported_claims('mostly yaml files', packet))
+        self.assertTrue(bench.unsupported_claims('iso and mkv files', packet))
+        self.assertEqual(bench.unsupported_claims('612 pdf files', packet), [])
+        self.assertTrue(bench.unsupported_claims('613 pdf files', packet))
+        self.assertEqual(bench.unsupported_claims('612 image files', packet), [])
+        self.assertEqual(bench.unsupported_claims('7 pdf folders', packet), [])
+        self.assertTrue(bench.unsupported_claims('8 pdf folders', packet))
+        packet['shape'].update(files=1200, logical_bytes=500_000_000)
+        packet['extensions'] = [{'ext': 'rlib', 'files': 1200, 'bytes': 500_000_000}]
+        self.assertEqual(bench.unsupported_claims('1,200 rlib files', packet), [])
+        for word in ('thirty', 'forty', 'fifty', 'sixty', 'seventy', 'eighty', 'ninety',
+                     'dozen', 'half'):
+            with self.subTest(word=word):
+                self.assertTrue(bench.unsupported_claims(f'{word} files', packet))
 
     def test_marker_phrases_require_observed_marker(self):
         packet = self.records[0]['packet']
