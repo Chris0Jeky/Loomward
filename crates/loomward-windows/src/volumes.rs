@@ -227,6 +227,13 @@ pub fn enumerate() -> io::Result<Vec<Volume>> {
 }
 
 #[cfg(windows)]
+pub(crate) fn storage_query(
+    path: &std::path::Path,
+) -> io::Result<crate::storage_path::StorageObservation> {
+    native::storage_query(path)
+}
+
+#[cfg(windows)]
 mod native {
     use super::*;
     use crate::win::{open, wide, Handle};
@@ -236,6 +243,121 @@ mod native {
         Storage::FileSystem::*,
         System::{Ioctl::*, SystemServices::*, WindowsProgramming::*, IO::DeviceIoControl},
     };
+
+    pub(super) fn storage_query(
+        path: &Path,
+    ) -> io::Result<crate::storage_path::StorageObservation> {
+        use crate::storage_path::*;
+        crate::win::non_elevated()?;
+        let path = wide(path)?;
+        let mut mount = vec![0u16; 32768];
+        if unsafe { GetVolumePathNameW(path.as_ptr(), mount.as_mut_ptr(), mount.len() as u32) } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        let mut volume = vec![0u16; 1024];
+        if unsafe {
+            GetVolumeNameForVolumeMountPointW(
+                mount.as_ptr(),
+                volume.as_mut_ptr(),
+                volume.len() as u32,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        let len = volume
+            .iter()
+            .position(|c| *c == 0)
+            .ok_or_else(|| io::Error::other("invalid volume name"))?;
+        let guid = String::from_utf16(&volume[..len])
+            .map_err(|_| io::Error::other("invalid volume name"))?;
+        let handle = open(
+            Path::new(guid.trim_end_matches('\\')),
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        )?;
+        let unknown = || Fact::Unknown {
+            reason: "not queried by the IOCTL storage provider".into(),
+        };
+        let bus_type = Fact::from_result(
+            property::<STORAGE_DEVICE_DESCRIPTOR>(&handle, StorageDeviceProperty).and_then(|d| {
+                if d.BusType == BusTypeUnknown {
+                    Err(io::Error::other("device reports unknown bus type"))
+                } else {
+                    Ok(bus_name(d.BusType))
+                }
+            }),
+        );
+        let geometry = property::<STORAGE_ACCESS_ALIGNMENT_DESCRIPTOR>(
+            &handle,
+            StorageAccessAlignmentProperty,
+        )
+        .and_then(|d| {
+            sector_alignment(d.BytesPerLogicalSector, d.BytesPerPhysicalSector)?;
+            Ok((d.BytesPerLogicalSector, d.BytesPerPhysicalSector))
+        });
+        let (logical_sector_bytes, physical_sector_bytes) = match geometry {
+            Ok((logical, physical)) => (
+                Fact::Known { value: logical },
+                Fact::Known { value: physical },
+            ),
+            Err(error) => (
+                Fact::Unknown {
+                    reason: error.to_string(),
+                },
+                Fact::Unknown {
+                    reason: error.to_string(),
+                },
+            ),
+        };
+        let write_cache_enabled = Fact::from_result(
+            property::<STORAGE_WRITE_CACHE_PROPERTY>(&handle, StorageDeviceWriteCacheProperty)
+                .and_then(|d| {
+                    if d.WriteCacheEnabled == WriteCacheEnabled {
+                        Ok(true)
+                    } else if d.WriteCacheEnabled == WriteCacheDisabled {
+                        Ok(false)
+                    } else {
+                        Err(io::Error::other("device reports unknown write-cache state"))
+                    }
+                }),
+        );
+        Ok(StorageObservation {
+            storage_path: StoragePath {
+                volume_guid: guid,
+                disk_model: unknown(),
+                firmware: unknown(),
+                bus_type,
+                usb_vid: Fact::Unknown {
+                    reason: "USB/PnP discovery not implemented".into(),
+                },
+                usb_pid: Fact::Unknown {
+                    reason: "USB/PnP discovery not implemented".into(),
+                },
+                bridge: unknown(),
+                usb_transport: Fact::Unknown {
+                    reason: "BOT/UAS discovery not implemented".into(),
+                },
+                logical_sector_bytes,
+                physical_sector_bytes,
+                // RemovableMedia is not the PnP removal policy and must not stand in for it.
+                removal_policy: Fact::Unknown {
+                    reason: "PnP removal policy not queried".into(),
+                },
+                write_cache_enabled,
+                windows_build: Fact::Unknown {
+                    reason: "Windows build not queried".into(),
+                },
+            },
+            mount_paths: Fact::from_result(mounts(&volume[..=len])),
+            // shortcut: no WMI/COM provider yet; add MSFT_StorageReliabilityCounter when that provider lands.
+            health: HealthObservation::UnsupportedOrHidden {
+                reason: "MSFT_StorageReliabilityCounter not queried; USB SMART may be hidden"
+                    .into(),
+            },
+        })
+    }
 
     pub(super) fn classify(mount: &[u16], kind: u32) -> io::Result<Classification> {
         let mut volume = vec![0u16; 32768];

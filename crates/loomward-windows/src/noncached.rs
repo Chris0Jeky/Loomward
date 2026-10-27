@@ -1,4 +1,5 @@
 //! Sector geometry and aligned hashing shared by copy read-back and C1 tree verification.
+pub(crate) use crate::storage_path::sector_alignment;
 use sha2::{Digest, Sha256};
 use std::{
     fs::File,
@@ -81,19 +82,6 @@ pub(crate) fn physical_sector(volume: &File) -> io::Result<usize> {
         alignment.BytesPerLogicalSector,
         alignment.BytesPerPhysicalSector,
     )
-}
-pub(crate) fn sector_alignment(logical: u32, physical: u32) -> io::Result<usize> {
-    if !logical.is_power_of_two()
-        || !physical.is_power_of_two()
-        || physical < logical
-        || physical as usize > BLOCK
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "unknown sector alignment",
-        ));
-    }
-    Ok(physical as usize)
 }
 /// Hash exactly `size` bytes using sector-multiple requests. Short reads must end on a sector
 /// boundary unless they finish the stream. The callback retains each caller's I/O and budget rules.
