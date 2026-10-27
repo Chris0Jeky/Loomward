@@ -93,6 +93,9 @@ pub struct ReclaimInput {
     pub machine: Vec<MachineStores>,
     /// Link-count pass per candidate node; a missing entry means the pass has not run.
     pub files: HashMap<NodeKey, CandidateFiles>,
+    /// Verified relief `reclaim.observe` stored for this catalogue generation (docs/52 section 6.1),
+    /// already computed by [`reclaimable`] from the same candidate; unknown results are absent.
+    pub observed: HashMap<NodeKey, u64>,
     /// `loomward_windows::recycle_bin::query`, made only for a volume-root grant.
     pub recycle_bin: Option<RecycleBinSize>,
     /// The volume the owner might relocate stores to (docs/07 tiers), when one is known.
@@ -240,6 +243,7 @@ pub fn plan(input: ReclaimInput) -> EngineResult<ReclaimPlan> {
                 c.logical_bytes,
                 c.allocated_bytes,
                 input.files.get(&c.directory),
+                input.observed.get(&c.directory).copied(),
                 &input.volume,
             )?;
             let owner_step = match c.provider {
@@ -291,6 +295,7 @@ pub fn plan(input: ReclaimInput) -> EngineResult<ReclaimPlan> {
                 c.logical_bytes,
                 c.allocated_bytes,
                 input.files.get(&c.node),
+                input.observed.get(&c.node).copied(),
                 &input.volume,
             )?;
             let mut evidence = vec![c.reason.to_string()];
@@ -404,11 +409,13 @@ fn unaccounted(volume: &ReclaimVolume, roots: &[CoveredRoot]) -> Option<u64> {
 }
 
 /// docs/52 section 4: placement's verified-relief rule with the candidate as the deletion set.
-fn reclaimable(
+/// `observed` is a verdict this function already returned for the same candidate and generation.
+pub fn reclaimable(
     class: &str,
     logical: Option<u64>,
     allocated: Option<u64>,
     files: Option<&CandidateFiles>,
+    observed: Option<u64>,
     volume: &ReclaimVolume,
 ) -> EngineResult<(Option<u64>, Option<&'static str>)> {
     let unknown = |reason| Ok((None, Some(reason)));
@@ -420,6 +427,9 @@ fn reclaimable(
     let (Some(logical), Some(allocated)) = (logical, allocated) else {
         return unknown(SIZES_UNKNOWN);
     };
+    if let (None, Some(bytes)) = (files, observed) {
+        return Ok((Some(bytes), None));
+    }
     let Some(files) = files.filter(|f| f.stop.is_none() && f.files.len() <= MAX_FILES_PER_GROUP)
     else {
         return unknown(RELIEF_UNOBSERVED);
