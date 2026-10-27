@@ -186,19 +186,22 @@ fn candidates_carry_anchor_kind_and_recorded_sizes_ranked_largest_first() {
         }
     }
     // What no provider supplies is named, not valued.
-    let topics: Vec<_> = r["not_assessed"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|n| n["topic"].as_str().unwrap())
-        .collect();
     assert_eq!(
-        topics,
-        [
-            "regeneration_cost",
-            "model_host_lifecycle",
-            "stale_worktrees"
-        ]
+        r["not_assessed"],
+        json!([
+            {
+                "topic": "regeneration_cost",
+                "note": "Rebuild cost and time are not measured yet (LW-087)."
+            },
+            {
+                "topic": "model_host_lifecycle",
+                "note": "Model files and model-host state are not assessed yet (LW-086)."
+            },
+            {
+                "topic": "stale_worktrees",
+                "note": "Stale worktrees need lease and dirty-state evidence, which is not collected yet (LW-076)."
+            }
+        ])
     );
     // The sealed anchor opens as the recorded manifest.
     let (anchor, _) = ok(
