@@ -56,7 +56,10 @@ class V3ContractTests(unittest.TestCase):
                         self.assertIn(spec[key], self.defs, f'{kind} {name}.{key}')
 
     def test_copy_status_accepts_bounded_disposition_without_native_identity(self):
-        import jsonschema
+        try:
+            import jsonschema
+        except ImportError:
+            self.skipTest('jsonschema not installed')
         status = load('examples/commands/copy.status.result.json')
         status['disposition'] = {
             'explanation': 'Cancelled after source_in_use. Journal evidence remains.',
