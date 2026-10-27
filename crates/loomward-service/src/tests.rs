@@ -7450,7 +7450,7 @@ fn regranting_a_renamed_root_mints_a_grant_for_its_new_path() {
 }
 
 /// #843: when the old grant of a renamed root cannot be retired, the re-grant answers failure
-/// instead of Ok with two active grants; a retry retires it and returns the new grant.
+/// before minting the new grant, so no folder ever has two active grants; a retry succeeds.
 #[cfg(windows)]
 #[test]
 fn regrant_of_a_renamed_root_fails_until_the_old_grant_retires() {
@@ -7474,9 +7474,13 @@ fn regrant_of_a_renamed_root_fails_until_the_old_grant_retires() {
         .fail_identity_retire
         .store(true, std::sync::atomic::Ordering::Release);
     assert!(svc.inner.grant(&moved, "cli_flag", false).is_err());
-    assert_eq!(states(), ["active", "active"]);
+    assert_eq!(
+        states(),
+        ["active"],
+        "nothing is minted while the old grant stands"
+    );
     let (_, fresh) = svc.inner.grant(&moved, "cli_flag", false).unwrap();
-    assert!(!fresh, "the retry reuses the grant minted for the new path");
+    assert!(fresh);
     assert_eq!(states(), ["identity_changed", "active"]);
 }
 
