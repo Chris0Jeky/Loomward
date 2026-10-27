@@ -1,0 +1,20 @@
+{
+  "def": "CopyStatus",
+  "value": {
+    "operation_id": "cp_7f3a9c",
+    "state": "blocked",
+    "digest": "sha256:5ce0591058a0177bddc74b27b2c9112cb19f70fbf8cc335841231638aec983c8",
+    "items_total": 3,
+    "items_verified": 2,
+    "staging_folder": null,
+    "leftover_staging_folders": [],
+    "unjournaled_items": [],
+    "unjournaled_item_count": 0,
+    "refusal": {
+      "code": "source_in_use",
+      "node_id": "nd_s1_403"
+    },
+    "disposition": null
+  },
+  "reason": "disposition is optional but must be an object when present; unknown evidence is omitted"
+}

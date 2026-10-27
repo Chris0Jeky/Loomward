@@ -80,6 +80,7 @@ pub fn roundtrip(def: &str, v: &Value) -> Option<Result<Value, String>> {
         "CopyApproval" => rt::<CopyApproval>(v),
         "CopyOperationRequest" => rt::<CopyOperationRequest>(v),
         "CopyStatus" => rt::<CopyStatus>(v),
+        "CopyDisposition" => rt::<CopyDisposition>(v),
         "Protocol" => rt::<Protocol>(v),
         "RequestId" => rt::<RequestId>(v),
         "CommandName" => rt::<CommandName>(v),

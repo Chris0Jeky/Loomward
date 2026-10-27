@@ -5,6 +5,166 @@ use super::*;
 use loomward_operations::{approve, tree, Code};
 use std::{fs, sync::atomic::AtomicU32};
 
+fn disposition_row(lab: &Lab, op: u64) -> serde_json::Value {
+    lab.store
+        .lock()
+        .unwrap()
+        .rows(op)
+        .unwrap()
+        .iter()
+        .map(|r| serde_json::from_str::<serde_json::Value>(&r.body).unwrap())
+        .find(|r| r["kind"] == "staging_disposition")
+        .expect("LW-146: disposition must precede removal")
+}
+
+#[test]
+fn disposition_distinguishes_resumable_and_terminal_refusals_and_keeps_verified_counts() {
+    for code in [Refusal::SourceInUse, Refusal::SourceChanged] {
+        let Some(lab) = Lab::new() else { return };
+        fs::write(lab.src().join("f"), b"payload").unwrap();
+        let op = lab.start(&["f"]);
+        let crash = Control::new(true).with_hook(|p, _| {
+            if p == Point::Verified(0) {
+                Flow::Crash
+            } else {
+                Flow::Continue
+            }
+        });
+        assert!(matches!(run(&lab.store, op, &crash), Err(Fault::Crashed)));
+        let r = replay(&lab.store, op).unwrap();
+        lab.store
+            .lock()
+            .unwrap()
+            .append(
+                op,
+                r.epoch,
+                Record::Transition {
+                    to: if code.resumable() {
+                        OpState::Blocked
+                    } else {
+                        OpState::NeedsAttention
+                    },
+                    code: Some(code),
+                },
+            )
+            .unwrap();
+        cancel(&lab.store, op, &lab.plan(op), &Control::new(true)).unwrap();
+        let row = disposition_row(&lab, op);
+        assert_eq!(row["facts"]["items_verified"], 1);
+        assert_eq!(row["facts"]["items_unverified"], 0);
+        assert_eq!(row["facts"]["resumable_before_cancel"], code.resumable());
+        assert_eq!(row["facts"]["resume_possible"], false);
+        assert!(lab.dest_names().is_empty());
+    }
+}
+
+#[test]
+fn disposition_append_failure_preserves_all_staging_even_after_a_lost_ack() {
+    use loomward_operations::store::fault::{Kind, Stage};
+    for stage in [Stage::Row, Stage::Head, Stage::Ack] {
+        let Some(lab) = Lab::new() else { return };
+        fs::write(lab.src().join("f"), b"payload").unwrap();
+        let op = lab.start(&["f"]);
+        let crash = Control::new(true).with_hook(|p, _| {
+            if p == Point::Verified(0) {
+                Flow::Crash
+            } else {
+                Flow::Continue
+            }
+        });
+        assert!(matches!(run(&lab.store, op, &crash), Err(Fault::Crashed)));
+        let staging = lab.dest().join(&staging_dirs(&lab)[0]);
+        lab.store
+            .lock()
+            .unwrap()
+            .set_fault(Some(Box::new(move |record, at| {
+                (serde_json::to_value(record).unwrap()["kind"] == "staging_disposition"
+                    && at == stage)
+                    .then_some(Kind::Full)
+            })));
+        assert!(
+            matches!(
+                cancel(&lab.store, op, &lab.plan(op), &Control::new(true)),
+                Err(Fault::Journal(_))
+            ),
+            "{stage:?}"
+        );
+        assert_eq!(fs::read(staging.join("f")).unwrap(), b"payload");
+        lab.store.lock().unwrap().set_fault(None);
+        cancel(&lab.store, op, &lab.plan(op), &Control::new(true)).unwrap();
+        assert!(!staging.exists());
+        disposition_row(&lab, op);
+    }
+}
+
+#[test]
+fn uncertain_membership_or_staging_identity_preserves_every_item() {
+    for replace in [false, true] {
+        let Some(lab) = Lab::new() else { return };
+        fs::write(lab.src().join("f"), b"payload").unwrap();
+        let op = lab.start(&["f"]);
+        let crash = Control::new(true).with_hook(|p, _| {
+            if p == Point::Verified(0) {
+                Flow::Crash
+            } else {
+                Flow::Continue
+            }
+        });
+        assert!(matches!(run(&lab.store, op, &crash), Err(Fault::Crashed)));
+        let staging = lab.dest().join(&staging_dirs(&lab)[0]);
+        if replace {
+            fs::rename(&staging, lab.dest().join("displaced")).unwrap();
+            fs::create_dir(&staging).unwrap();
+            fs::write(staging.join("f"), b"replacement").unwrap();
+        } else {
+            fs::write(staging.join("extra"), b"keep").unwrap();
+        }
+        let out = cancel(&lab.store, op, &lab.plan(op), &Control::new(true)).unwrap();
+        assert_eq!(out.state, OpState::NeedsAttention);
+        assert_eq!(
+            fs::read(staging.join("f")).unwrap(),
+            if replace {
+                &b"replacement"[..]
+            } else {
+                &b"payload"[..]
+            }
+        );
+    }
+}
+
+#[test]
+fn published_copy_never_gets_a_removal_disposition() {
+    let Some(lab) = Lab::new() else { return };
+    fs::write(lab.src().join("f"), b"payload").unwrap();
+    let op = lab.start(&["f"]);
+    let control = Control::new(true).with_hook(|p, _| {
+        if p == Point::AfterPublish {
+            Flow::Crash
+        } else {
+            Flow::Continue
+        }
+    });
+    assert!(matches!(run(&lab.store, op, &control), Err(Fault::Crashed)));
+    cancel(&lab.store, op, &lab.plan(op), &Control::new(true)).unwrap();
+    assert_eq!(
+        fs::read(
+            lab.dest()
+                .join(lab.plan(op).manifest.destination.folder_name)
+                .join("f")
+        )
+        .unwrap(),
+        b"payload"
+    );
+    assert!(lab
+        .store
+        .lock()
+        .unwrap()
+        .rows(op)
+        .unwrap()
+        .iter()
+        .all(|r| !r.body.contains("staging_disposition")));
+}
+
 /// #888 item 6: the lab flag reaches the fence negated. A fixed NTFS USB disk is a copy
 /// destination only in a synthetic lab session; any other session is refused.
 #[test]

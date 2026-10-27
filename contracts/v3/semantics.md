@@ -797,6 +797,19 @@ transition; otherwise status reports the observed attention state without invent
 `unjournaled_items` reports the first 64 staging-relative manifest names observed without journaled
 identities, with the full total in `unjournaled_item_count`. These entries are never adopted or removed.
 
+With staging removal enabled, cleanup first checks the staging identity and complete observed membership,
+then commits `staging_disposition` before its first removal. Its bounded facts contain the staging identity,
+manifest item count, verified/unverified counts, distinct refusal codes, whether the journal was blocked
+on a retryable refusal without a fence before cancellation, and `resume_possible: false`.
+`CopyStatus.disposition`, when present, projects those original
+counts and a deterministic `explanation` (at most 2,048 characters); native staging identities remain in
+the journal. The explanation distinguishes retryable refusals from terminal stops, says cancellation ends
+resume, and identifies the evidence retained in `state.db` after removal. Journal resumability describes
+the stopped state, not an available resume command. This snapshot survives item-removal records clearing
+their current verified flags. It is intent and evidence, never a receipt that removal succeeded. A failed
+append, including a lost commit acknowledgement, performs no removal in that call. Older journal decoders
+refuse the new record kind. The service removal default remains off and personal copying remains gated.
+
 ## Lazy meaning threads
 
 | Command | Revisions | Retry | Effects |

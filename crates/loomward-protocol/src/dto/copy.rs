@@ -127,12 +127,28 @@ pub struct CopyOperationRequest {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct CopyDisposition {
+    pub explanation: BoundedStr<1, 2048>,
+    pub items_total: Count,
+    pub items_verified: Count,
+    pub items_unverified: Count,
+    pub refusal_codes: BoundedVec<CopyRefusalCode, 0, 32>,
+    pub resumable_before_cancel: bool,
+    pub resume_possible: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CopyStatus {
     pub operation_id: CopyOperationId,
     pub state: CopyState,
     pub digest: Digest,
     pub items_total: Count,
     pub items_verified: Count,
+    /// Pre-removal journal facts and deterministic explanation; absent until disposition is durable.
+    /// Native staging identities stay in the journal, never become effect authority in this DTO.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disposition: Option<CopyDisposition>,
     /// docs/47 Q1 default: the name (never a path) of the staging folder left in the destination
     /// parent on cancel or abandon, for the owner to remove; `null` otherwise.
     #[serde(deserialize_with = "crate::types::required_nullable")]

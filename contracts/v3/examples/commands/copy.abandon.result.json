@@ -11,5 +11,16 @@
   "refusal": {
     "code": "source_changed",
     "node_id": "nd_s1_402"
+  },
+  "disposition": {
+    "explanation": "Cancelled or abandoned; journaled cause: source_changed. 2 of 3 items verified; 1 unverified. No resumable refusal was active at cancellation. No resume command is available; this cancelled operation cannot resume. Journal evidence remains in state.db after successful identity-bound staging removal. Cleanup does not modify the source.",
+    "items_total": 3,
+    "items_verified": 2,
+    "items_unverified": 1,
+    "refusal_codes": [
+      "source_changed"
+    ],
+    "resumable_before_cancel": false,
+    "resume_possible": false
   }
 }

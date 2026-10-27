@@ -2088,7 +2088,19 @@ export interface CopyOperationRequest {
   operation_id: CopyOperationId;
 }
 
+/** LW-146: immutable pre-removal journal counts and deterministic explanation. Native identities remain in state.db. Absent until the disposition is durable; not a receipt of removal. */
+export interface CopyDisposition {
+  explanation: string;
+  items_total: Count;
+  items_verified: Count;
+  items_unverified: Count;
+  refusal_codes: CopyRefusalCode[];
+  resumable_before_cancel: boolean;
+  resume_possible: boolean;
+}
+
 export interface CopyStatus {
+  disposition?: CopyDisposition;
   operation_id: CopyOperationId;
   state: CopyState;
   digest: Digest;

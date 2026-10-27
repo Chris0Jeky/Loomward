@@ -590,9 +590,52 @@ impl Prepared {
 
 // ---- crash-point classes --------------------------------------------------------------------------
 
+#[test]
+fn disposition_is_durable_before_every_cleanup_crash_boundary() {
+    let case = Case {
+        scenario: Scenario::AbandonVerified,
+        removal: true,
+        tree: None,
+    };
+    let Some(clean) = Prepared::new(case) else {
+        return;
+    };
+    let (code, labels) = clean.child(None);
+    assert_eq!(code, 0);
+    let before = labels
+        .iter()
+        .position(|l| l == "before staging_disposition")
+        .expect("explain before cleanup");
+    let after = labels
+        .iter()
+        .position(|l| l == "after staging_disposition")
+        .unwrap();
+    let first_removal = labels
+        .iter()
+        .position(|l| l == "before cleanup removal")
+        .unwrap();
+    assert!(before < after && after < first_removal);
+    for (n, label) in labels.iter().enumerate().skip(before) {
+        let mut p = Prepared::new(case).unwrap();
+        let snapshot = dest_snapshot(&p.lab.dest());
+        let (code, _) = p.child(Some(n as u64 + 1));
+        assert_eq!(code, crash::EXIT as i32);
+        p.lab.reopen();
+        let rows = p.lab.store.lock().unwrap().rows(p.op).unwrap();
+        let recorded = rows.iter().any(|r| r.body.contains("staging_disposition"));
+        if n == before {
+            assert!(!recorded);
+            assert_eq!(dest_snapshot(&p.lab.dest()), snapshot);
+        } else {
+            assert!(recorded, "{label}");
+        }
+        p.recover_then_abandon(label, &snapshot);
+    }
+}
+
 /// docs/47 section 10's CP-01 to CP-15 (every section 5 journal boundary, mid-write at four offsets,
 /// mid-verify, mid-abandon), extended with section 12's lane C2 items and the C5 records as CP-16 to
-/// CP-22. CP-F marks refusal records reached by the fault scenarios; CP-Fence covers the pending
+/// CP-23 (explain-first disposition). CP-F marks refusal records reached by the fault scenarios; CP-Fence covers the pending
 /// annotation before commit (#751). An unknown label fails the matrix.
 fn class(label: &str) -> &'static str {
     match label {
@@ -627,9 +670,12 @@ fn class(label: &str) -> &'static str {
         "before publish_withdrawn" | "after publish_withdrawn" => "CP-17",
         "confirm item" => "CP-18",
         "before item_removed"
+        | "before cleanup removal"
+        | "after cleanup removal"
         | "after item_removed"
         | "before staging_removed"
         | "after staging_removed" => "CP-19",
+        "before staging_disposition" | "after staging_disposition" => "CP-23",
         "before planned" | "after planned" => "CP-20",
         "before staging_left" | "after staging_left" => "CP-21",
         "before transition:refused" | "after transition:refused" => "CP-22",

@@ -55,6 +55,23 @@ class V3ContractTests(unittest.TestCase):
                     if isinstance(spec, dict) and isinstance(spec.get(key), str):
                         self.assertIn(spec[key], self.defs, f'{kind} {name}.{key}')
 
+    def test_copy_status_accepts_bounded_disposition_without_native_identity(self):
+        import jsonschema
+        status = load('examples/commands/copy.status.result.json')
+        status['disposition'] = {
+            'explanation': 'Cancelled after source_in_use. Journal evidence remains.',
+            'items_total': 3, 'items_verified': 2, 'items_unverified': 1,
+            'refusal_codes': ['source_in_use'], 'resumable_before_cancel': True,
+            'resume_possible': False,
+        }
+        validator = jsonschema.Draft202012Validator({
+            '$defs': self.defs, '$ref': '#/$defs/CopyStatus'})
+        validator.validate(status)
+        for field, value in [('explanation', 'x' * 2049),
+                             ('refusal_codes', ['source_in_use'] * 33)]:
+            changed = dict(status, disposition=dict(status['disposition'], **{field: value}))
+            self.assertFalse(validator.is_valid(changed))
+
     def test_cold_learning_queue_has_required_null_model_ids(self):
         try:
             import jsonschema

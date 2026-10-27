@@ -697,6 +697,7 @@ foreach ($script in $scripts) {
             "publish_withdrawn": "publish",
             "committed": "publish",
             "staging_removed": "cleanup",
+            "staging_disposition": "cleanup",
             "staging_left": "other",
             "fenced": "other",
             "revoked_after_publish": "other",

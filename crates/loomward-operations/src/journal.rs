@@ -85,6 +85,47 @@ impl Refusal {
     }
 }
 
+/// LW-146: one bounded snapshot before cancelling cleanup changes any item evidence.
+/// No paths, names, model output or per-item list; refusal codes are distinct journal facts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StagingDisposition {
+    pub staging: ObjectId,
+    pub items_total: u32,
+    pub items_verified: u32,
+    pub items_unverified: u32,
+    pub refusal_codes: Vec<Refusal>,
+    /// The journal was blocked on a retryable refusal, without a fence, before cancellation.
+    pub resumable_before_cancel: bool,
+    pub resume_possible: bool,
+}
+
+impl StagingDisposition {
+    pub fn explanation(&self) -> String {
+        let cause = if self.refusal_codes.is_empty() {
+            "no refusal was journaled".into()
+        } else {
+            self.refusal_codes
+                .iter()
+                .map(|code| {
+                    serde_json::to_value(code)
+                        .expect("refusal serialises")
+                        .as_str()
+                        .unwrap()
+                        .to_owned()
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let resume = if self.resumable_before_cancel {
+            "The journal marked the stopped run resumable before cancel or abandon."
+        } else {
+            "No resumable refusal was active at cancellation."
+        };
+        format!("Cancelled or abandoned; journaled cause: {cause}. {} of {} items verified; {} unverified. {resume} No resume command is available; this cancelled operation cannot resume. Only journaled unpublished staging is eligible for identity-bound removal. The journal, manifest digest, identities, refusal codes and this disposition remain in state.db; staged bytes do not remain after successful removal. Cleanup does not modify the source.", self.items_verified, self.items_total, self.items_unverified)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Record {
@@ -149,6 +190,10 @@ pub enum Record {
     StagingRemoved {
         id: ObjectId,
     },
+    /// Durable explanation facts before any cancellation cleanup; retained after item removal.
+    StagingDisposition {
+        facts: StagingDisposition,
+    },
     /// Intent (lane C5, #506): set these creation times next, on items (and on the staging folder when
     /// `staging` is set). Creation-time preservation changes the identity record, so recovery must accept
     /// the journaled ID with either its original or its planned creation time.
@@ -173,6 +218,7 @@ impl Record {
                 | Record::PublishWithdrawn
                 | Record::ItemRemoved { .. }
                 | Record::StagingRemoved { .. }
+                | Record::StagingDisposition { .. }
                 | Record::StagingLeft { .. }
                 | Record::Transition {
                     to: OpState::Cancelling | OpState::Cancelled,
@@ -241,6 +287,7 @@ pub struct Replay {
     pub staging_removed: bool,
     /// `Record::StagingLeft`: the staging folder was left for the owner (Q1 default).
     pub staging_left: bool,
+    pub disposition: Option<StagingDisposition>,
     pub open_batch: Vec<u32>,
     /// Final name of a publish intent that is neither withdrawn nor superseded.
     pub publish: Option<String>,
@@ -249,6 +296,8 @@ pub struct Replay {
     names: HashMap<String, u32>,
     seen: HashSet<ObjectId>,
     fence_causes: Vec<FenceCause>,
+    refusal_codes: Vec<Refusal>,
+    resumable_before_cancel: bool,
 }
 
 pub(crate) fn component_ok(s: &str) -> bool {
@@ -291,6 +340,7 @@ impl Replay {
             staging_planned: None,
             staging_removed: false,
             staging_left: false,
+            disposition: None,
             open_batch: Vec::new(),
             publish: None,
             seq: 0,
@@ -298,6 +348,8 @@ impl Replay {
             names: HashMap::new(),
             seen: HashSet::new(),
             fence_causes: Vec::new(),
+            refusal_codes: Vec::new(),
+            resumable_before_cancel: false,
         }
     }
 
@@ -358,6 +410,9 @@ impl Replay {
     }
 
     fn go(&mut self, to: OpState) -> Result<(), &'static str> {
+        if to == OpState::Cancelling && !self.cancelled {
+            self.resumable_before_cancel = self.state == OpState::Blocked && !self.fenced;
+        }
         self.state = self
             .state
             .transition(to)
@@ -392,6 +447,7 @@ impl Replay {
                 }
                 self.epoch = epoch;
                 self.fenced = true;
+                self.remember_refusal(Refusal::GrantRevoked);
                 if !self.fence_causes.contains(cause) {
                     self.fence_causes.push(*cause);
                 }
@@ -531,6 +587,7 @@ impl Replay {
                 if self.state != Copying || !code.is_item() {
                     return Err("item failure outside copying");
                 }
+                self.remember_refusal(code);
                 // A create that failed inside the open batch leaves the batch; the rest still commit.
                 self.open_batch.retain(|&x| x != i);
                 let item = self.item(i)?;
@@ -597,6 +654,18 @@ impl Replay {
                 }
                 self.staging_left = true;
             }
+            Record::StagingDisposition { facts } => {
+                if self.state != Cancelling
+                    || self.publish.is_some()
+                    || self.staging_left
+                    || self.staging_removed
+                    || self.disposition.is_some()
+                    || self.staging_disposition().as_ref() != Some(&facts)
+                {
+                    return Err("disposition does not match unpublished cancelling staging");
+                }
+                self.disposition = Some(facts);
+            }
             Record::Transition { to, code } => {
                 match to {
                     Preparing | Publishing | Committed => {
@@ -626,6 +695,9 @@ impl Replay {
                     _ => {}
                 }
                 self.go(to)?;
+                if let Some(code) = code {
+                    self.remember_refusal(code);
+                }
             }
             Record::PublishIntent { final_name } => {
                 if !component_ok(&final_name) || self.staging_tokens.contains(&final_name) {
@@ -663,6 +735,29 @@ impl Replay {
             }
         }
         Ok(())
+    }
+
+    fn remember_refusal(&mut self, code: Refusal) {
+        if !self.refusal_codes.contains(&code) {
+            self.refusal_codes.push(code);
+        }
+    }
+
+    /// The immutable pre-removal counts, or the facts a first disposition must match exactly.
+    pub fn staging_disposition(&self) -> Option<StagingDisposition> {
+        if let Some(facts) = &self.disposition {
+            return Some(facts.clone());
+        }
+        let items_verified = self.items.iter().filter(|i| i.verified).count() as u32;
+        Some(StagingDisposition {
+            staging: self.staging?,
+            items_total: self.items.len() as u32,
+            items_verified,
+            items_unverified: self.items.len() as u32 - items_verified,
+            refusal_codes: self.refusal_codes.clone(),
+            resumable_before_cancel: self.resumable_before_cancel,
+            resume_possible: false,
+        })
     }
 
     /// Items that hold a journaled identity, with their journaled names.

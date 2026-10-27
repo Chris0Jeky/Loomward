@@ -612,6 +612,7 @@ pub struct Outcome {
     pub staging_left: Option<String>,
     pub items_total: u32,
     pub items_verified: u32,
+    pub disposition: Option<loomward_operations::StagingDisposition>,
     /// Staging tokens intended but never identity-committed: a folder under such a name may exist,
     /// empty and unjournaled. Never adopted or removed; reported for the owner.
     pub leftover_staging: Vec<String>,
@@ -997,6 +998,7 @@ fn status_observing(store: &Mutex<Store>, op: u64, idle: bool) -> Result<Outcome
             .flatten(),
         items_total: r.items.len() as u32,
         items_verified: r.items.iter().filter(|i| i.verified).count() as u32,
+        disposition: r.disposition.clone(),
         leftover_staging: match r.staging {
             Some(_) => r.staging_tokens[..r.staging_tokens.len() - 1].to_vec(),
             None => r.staging_tokens.clone(),
@@ -2183,6 +2185,21 @@ fn clean(store: &Mutex<Store>, op: u64, plan: &Plan, control: &Control) -> Resul
             }
         }
     }
+    // Refuse the whole cleanup before touching even known items if membership is uncertain.
+    let folders = resolved
+        .iter()
+        .filter(|(_, _, is_dir)| *is_dir)
+        .map(|(h, key, _)| (h.name.clone(), key.clone()))
+        .collect();
+    let expected = resolved.iter().map(|(h, _, _)| h.name.clone()).collect();
+    if listing(&staging, &folders).ok().as_ref() != Some(&expected) {
+        attention(&log)?;
+        return status(store, op);
+    }
+    if r.disposition.is_none() {
+        let facts = r.staging_disposition().expect("journaled staging identity");
+        log(Record::StagingDisposition { facts })?;
+    }
     let remove = |effect: &mut dyn FnMut() -> bool| removal(&journal, r.state, control, effect);
     for (h, key, is_dir) in resolved.into_iter().rev() {
         let Ok((path, name)) = path_of(&h.name, &keys) else {
@@ -2240,7 +2257,10 @@ fn removal(
 ) -> Result<Option<bool>, Fault> {
     match journal.while_in(state, || {
         control.at(Point::CheckedRemoval)?;
-        Ok(effect())
+        hit("before cleanup removal");
+        let removed = effect();
+        hit("after cleanup removal");
+        Ok(removed)
     }) {
         Ok(removed) => Ok(Some(removed)),
         Err(Stop::Superseded) => Ok(None),
