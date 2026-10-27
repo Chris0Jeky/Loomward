@@ -249,12 +249,14 @@ impl IoCancellation {
         Ok(IoRegistration {
             handle,
             threads: self.threads.clone(),
+            cancelled: self.cancelled.clone(),
         })
     }
 }
 struct IoRegistration {
     handle: Arc<Registered>,
     threads: Arc<Mutex<Vec<Weak<Registered>>>>,
+    cancelled: Arc<AtomicBool>,
 }
 impl IoRegistration {
     /// Whether the watchdog interrupted a call of this registration for exceeding its budget.
@@ -266,7 +268,13 @@ impl IoRegistration {
     /// identity, which callers would read as a changed root (review of #932).
     fn result<T>(&self, result: Result<T, SourceError>) -> Result<T, SourceError> {
         if self.timed_out() {
-            return Err(SourceError::Io(ERROR_TIMEOUT as i32));
+            // A run-level cancel wins: the operation was aborted, whatever timed out first (#934).
+            let code = if self.cancelled.load(Ordering::Acquire) {
+                ERROR_OPERATION_ABORTED
+            } else {
+                ERROR_TIMEOUT
+            };
+            return Err(SourceError::Io(code as i32));
         }
         result
     }
@@ -1129,7 +1137,9 @@ impl DirSource for NativeSource {
         };
         match outcome {
             ListOutcome::Incomplete(reason)
-                if thread.timed_out() && reason != IncompleteReason::Cancelled =>
+                if thread.timed_out()
+                    && reason != IncompleteReason::Cancelled
+                    && !thread.cancelled.load(Ordering::Acquire) =>
             {
                 ListOutcome::Incomplete(IncompleteReason::Io(ERROR_TIMEOUT as i32))
             }
@@ -2642,6 +2652,12 @@ mod cancellation_tests {
         assert_eq!(
             registration.result(Ok(7)),
             Err(SourceError::Io(ERROR_TIMEOUT as i32))
+        );
+        // #934 item 3: a run-level cancel after the timeout reports aborted, not a timeout.
+        cancel.cancel();
+        assert_eq!(
+            registration.result(Ok(7)),
+            Err(SourceError::Io(ERROR_OPERATION_ABORTED as i32))
         );
     }
     fn cancellation_scenario(between_calls: bool) {
