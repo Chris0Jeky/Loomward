@@ -103,8 +103,8 @@ struct Tracked {
     retry_after: Option<Instant>,
     changed: Instant,
     job: Option<loomward_protocol::JobId>,
-    // The final bit witnesses a targeted run that consumed every pending hint without lost coverage.
-    started: Option<(u64, Option<Bookmark>, bool)>,
+    // The bit witnesses targeted hint coverage; the final value retains the pre-run filter boundary.
+    started: Option<(u64, Option<Bookmark>, bool, i64)>,
     completed: Option<(u64, Option<Bookmark>, bool)>,
 }
 
@@ -544,7 +544,13 @@ impl Inner {
                 _ => None,
             };
             if let Some(root) = self.freshness.roots.lock().unwrap().get_mut(&row) {
-                root.started = Some((root.epoch, bookmark, targeted == Some(root.epoch)));
+                let previous_since = root.started.map_or(root.since, |started| started.3);
+                root.started = Some((
+                    root.epoch,
+                    bookmark,
+                    targeted == Some(root.epoch),
+                    previous_since,
+                ));
                 if matches!(scope, RunScope::FullRoot) || targeted == Some(root.epoch) {
                     root.since = since;
                 }
@@ -570,6 +576,16 @@ impl Inner {
             let Some(row) = db::root_for_grant(&self.db(), grant).ok().flatten() else {
                 return;
             };
+            if !settled {
+                let mut roots = self.freshness.roots.lock().unwrap();
+                let Some(root) = roots.get_mut(&row) else {
+                    return;
+                };
+                if let Some((_, _, _, since)) = root.started {
+                    // Restore before draining late hints from a cancelled or failed traversal.
+                    root.since = since;
+                }
+            }
             // Flush kernel notifications before comparing the scan's start epoch.
             let healthy = self.freshness_checkpoint(row) == Some(Ok(()));
             {
@@ -580,9 +596,16 @@ impl Inner {
                 let started = root.started.take();
                 // A full traversal retains its witness across checkpoint timeouts; targeted
                 // settlement needs uninterrupted coverage and a healthy checkpoint now.
-                root.completed = started.filter(|(_, _, targeted)| {
-                    settled && (matches!(scope, RunScope::FullRoot) || (*targeted && healthy))
-                });
+                root.completed = started
+                    .filter(|(_, _, targeted, _)| {
+                        settled && (matches!(scope, RunScope::FullRoot) || (*targeted && healthy))
+                    })
+                    .map(|(epoch, bookmark, targeted, _)| (epoch, bookmark, targeted));
+                if root.completed.is_none() {
+                    if let Some((_, _, _, since)) = started {
+                        root.since = since;
+                    }
+                }
             }
             if healthy {
                 self.freshness_settle(row, grant);
@@ -1636,6 +1659,130 @@ mod refresh_tests {
         let result = settle(svc, job.as_str());
         assert_eq!(result["state"], "completed");
         result
+    }
+
+    #[test]
+    fn freshness_cancelled_run_retains_late_directory_hint() {
+        let Some(lab) = lab() else { return };
+        let svc = &lab.svc;
+        settle(svc, &start(svc, &lab.root, "full"));
+        f3_wait_live(svc);
+        svc.inner.freshness.pause_pump();
+        let row = db::roots(&svc.inner.db(), Some(1)).unwrap().remove(0);
+        let change_time = loomward_windows::identity::observe(&lab.path.join("b"))
+            .unwrap()
+            .change_time
+            .parse::<i64>()
+            .unwrap();
+        let old_since = (change_time - FILETIME_UNIX_EPOCH) * 100 - 1_000_000_000;
+        svc.inner
+            .freshness
+            .roots
+            .lock()
+            .unwrap()
+            .get_mut(&1)
+            .unwrap()
+            .since = old_since;
+        // Keep the delayed directory modification outside the filter's 100 ms slack.
+        std::thread::sleep(Duration::from_millis(150));
+        svc.inner.freshness_begin(row.grant, &RunScope::FullRoot);
+        svc.inner
+            .freshness_finish(row.grant, &RunScope::FullRoot, false);
+        assert!(svc.inner.freshness.stale(1));
+
+        let hints = vec![loomward_windows::watch::Change::Name {
+            action: 3,
+            name: "b".encode_utf16().collect(),
+        }];
+        let kept = loomward_windows::watch::without_access_only(
+            &lab.path,
+            hints.clone(),
+            svc.inner.freshness.since(1).unwrap() / 100 + FILETIME_UNIX_EPOCH,
+        );
+        assert_eq!(kept, hints, "cancelled scan dropped the delayed change");
+        assert_eq!(svc.inner.freshness.since(1), Some(old_since));
+        svc.inner.freshness.record(1, kept);
+        assert_eq!(automatic(svc)["coverage"], "complete");
+        assert!(!svc.inner.freshness.stale(1));
+    }
+
+    #[test]
+    fn freshness_completed_run_keeps_advanced_since() {
+        let Some(lab) = lab() else { return };
+        let svc = &lab.svc;
+        settle(svc, &start(svc, &lab.root, "full"));
+        f3_wait_live(svc);
+        svc.inner.freshness.pause_pump();
+        let row = db::roots(&svc.inner.db(), Some(1)).unwrap().remove(0);
+        let old_since = svc.inner.freshness.since(1).unwrap();
+        svc.inner.freshness_begin(row.grant, &RunScope::FullRoot);
+        let started_since = svc.inner.freshness.since(1).unwrap();
+        assert!(started_since > old_since);
+        svc.inner
+            .freshness_finish(row.grant, &RunScope::FullRoot, true);
+        assert_eq!(svc.inner.freshness.since(1), Some(started_since));
+        assert!(!svc.inner.freshness.stale(1));
+    }
+
+    #[test]
+    fn freshness_failed_publication_restores_since() {
+        use loomward_engine::scan::ScanSink;
+
+        let Some(lab) = lab() else { return };
+        let svc = &lab.svc;
+        settle(svc, &start(svc, &lab.root, "full"));
+        f3_wait_live(svc);
+        svc.inner.freshness.pause_pump();
+        let root = RootId::new(&lab.root).unwrap();
+        let since = svc.inner.freshness.since(1);
+        svc.inner
+            .db()
+            .execute_batch(
+                "CREATE TRIGGER main.fail_begin BEFORE INSERT ON scan_run
+             BEGIN SELECT RAISE(ABORT,'synthetic begin failure'); END;",
+            )
+            .unwrap();
+        assert!(svc
+            .inner
+            .scan
+            .begin_run(&root, 100, &RunScope::FullRoot)
+            .is_err());
+        svc.inner
+            .db()
+            .execute_batch("DROP TRIGGER main.fail_begin")
+            .unwrap();
+        assert_eq!(
+            svc.inner.freshness.since(1),
+            since,
+            "failed begin advanced since"
+        );
+
+        svc.inner
+            .scan
+            .begin_run(&root, 101, &RunScope::FullRoot)
+            .unwrap();
+        svc.inner
+            .db()
+            .execute_batch(
+                "CREATE TRIGGER main.fail_end BEFORE UPDATE OF state ON scan_run
+             WHEN NEW.state='completed' BEGIN SELECT RAISE(ABORT,'synthetic end failure'); END;",
+            )
+            .unwrap();
+        assert!(svc
+            .inner
+            .scan
+            .finish_run(&root, 101, &RunScope::FullRoot, true)
+            .is_err());
+        svc.inner
+            .db()
+            .execute_batch("DROP TRIGGER main.fail_end")
+            .unwrap();
+        assert_eq!(
+            svc.inner.freshness.since(1),
+            since,
+            "failed end advanced since"
+        );
+        assert!(svc.inner.freshness.stale(1));
     }
 
     #[test]

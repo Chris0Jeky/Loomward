@@ -592,13 +592,18 @@ impl ScanSink for CatalogScanSink {
                 strategy: "native".into(),
                 started_at_ns: now_ns(),
             })
-            .map_err(|e| match e {
-                CatalogError::NotFound => revoked(),
-                CatalogError::Invalid("run already active") => EngineError::Busy {
-                    message: "root writer busy".into(),
-                    detail: None,
-                },
-                _ => internal("catalogue writer failed"),
+            .map_err(|e| {
+                if let Some(inner) = self.inner.upgrade() {
+                    inner.freshness_finish(grant, scope, false);
+                }
+                match e {
+                    CatalogError::NotFound => revoked(),
+                    CatalogError::Invalid("run already active") => EngineError::Busy {
+                        message: "root writer busy".into(),
+                        detail: None,
+                    },
+                    _ => internal("catalogue writer failed"),
+                }
             })?;
         let WriteReply::Run(catalog_run) = reply else {
             return Err(internal("unexpected writer reply"));
@@ -927,12 +932,12 @@ impl ScanSink for CatalogScanSink {
         let complete = complete && receipts_settled;
         let settled = settled && receipts_settled;
         let limited = limited && receipts_settled;
-        let catalog_run = {
+        let (catalog_run, grant) = {
             let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
             let r = Self::active(&mut s, root, run)?;
             let catalog_run = r.run.take().unwrap().1;
             r.dirs.clear();
-            catalog_run
+            (catalog_run, r.grant)
         };
         // Only an engine-complete run may let the writer finalise absence and coverage; the writer
         // still requires its own full traversal for that. A settled traversal with coverage gaps
@@ -956,16 +961,12 @@ impl ScanSink for CatalogScanSink {
             let _ = end("failed");
             // Throttling may have held back the last publication's event: announce it now.
             self.invalidated(root, true);
+            if let Some(inner) = self.inner.upgrade() {
+                inner.freshness_finish(grant, scope, false);
+            }
             return Err(listing_error(e));
         }
-        let grant = self
-            .state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .roots
-            .get(root)
-            .map(|r| r.grant);
-        if let (Some(inner), Some(grant)) = (self.inner.upgrade(), grant) {
+        if let Some(inner) = self.inner.upgrade() {
             #[cfg(test)]
             if matches!(scope, RunScope::Targeted(_)) {
                 inner.hooks.gate(
