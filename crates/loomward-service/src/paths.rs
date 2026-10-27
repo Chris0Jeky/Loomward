@@ -37,6 +37,42 @@ pub fn lock_state_dir(state_dir: &Path) -> Result<std::fs::File, String> {
     }
 }
 
+/// How long a "wants the lock" marker counts, judged by its mtime: twice the desktop's retry.
+pub const LOCK_WANTED_FRESH: std::time::Duration = std::time::Duration::from_secs(30);
+
+fn lock_wanted_path(state_dir: &Path) -> Result<PathBuf, String> {
+    Ok(prospective_dir(state_dir)?.join("lock.wanted"))
+}
+
+/// The desktop's "wants the lock" marker beside `lock` (#886), never in a database. It carries no
+/// authority: the only reaction to it is a lock holder releasing early. Best effort.
+pub fn want_lock(state_dir: &Path) -> Result<(), String> {
+    let file = std::fs::File::options()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(lock_wanted_path(state_dir)?)
+        .map_err(|e| e.to_string())?;
+    file.set_modified(std::time::SystemTime::now())
+        .map_err(|e| e.to_string())
+}
+
+pub fn unwant_lock(state_dir: &Path) {
+    if let Ok(path) = lock_wanted_path(state_dir) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// A fresh marker. A stale one (older than [`LOCK_WANTED_FRESH`], or dated in the future) is ignored.
+pub fn lock_wanted(state_dir: &Path) -> bool {
+    lock_wanted_path(state_dir)
+        .and_then(|path| std::fs::symlink_metadata(path).map_err(|e| e.to_string()))
+        .ok()
+        .filter(std::fs::Metadata::is_file)
+        .and_then(|meta| meta.modified().ok()?.elapsed().ok())
+        .is_some_and(|age| age <= LOCK_WANTED_FRESH)
+}
+
 /// Resolve a local destination before creating it; reject unsafe existing ancestors.
 pub fn prospective_dir(path: &Path) -> Result<PathBuf, String> {
     if network_path(path) {
@@ -460,6 +496,39 @@ mod tests {
         assert_eq!(lock_state_dir(&state).unwrap_err(), "busy: Loomward's data is in use by another Loomward process, for example an agent's Loomward tools. Stop that agent, or try again in a moment.");
         drop(lock);
         assert!(lock_state_dir(&state).is_ok());
+    }
+
+    #[test]
+    fn lock_wanted_marker_is_fresh_by_mtime_and_removable() {
+        let tmp = tempfile::tempdir_in(test_roots_base()).unwrap();
+        let state = tmp.path().join("state");
+        drop(lock_state_dir(&state).unwrap());
+        assert!(!lock_wanted(&state));
+        want_lock(&state).unwrap();
+        assert!(state.join("lock.wanted").is_file() && lock_wanted(&state));
+        let marker = std::fs::File::options()
+            .write(true)
+            .open(state.join("lock.wanted"))
+            .unwrap();
+        let now = std::time::SystemTime::now();
+        for (mtime, fresh) in [
+            (
+                now - LOCK_WANTED_FRESH - std::time::Duration::from_secs(5),
+                false,
+            ),
+            (now + std::time::Duration::from_secs(60), false),
+            (now, true),
+        ] {
+            marker.set_modified(mtime).unwrap();
+            assert_eq!(lock_wanted(&state), fresh);
+        }
+        drop(marker);
+        // Rewriting a stale marker makes it fresh again.
+        want_lock(&state).unwrap();
+        assert!(lock_wanted(&state));
+        unwant_lock(&state);
+        assert!(!state.join("lock.wanted").exists() && !lock_wanted(&state));
+        unwant_lock(&state);
     }
 
     #[test]

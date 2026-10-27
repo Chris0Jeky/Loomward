@@ -88,7 +88,7 @@ pub fn serve(mut protocol: Protocol) -> io::Result<()> {
     let stdout = io::stdout();
     let mut sink = stdout.lock();
     loop {
-        protocol.host.release_if_idle();
+        protocol.host.tick();
         let frame = match protocol.host.time_left() {
             Some(left) => match rx.recv_timeout(left) {
                 Ok(frame) => frame,
@@ -100,7 +100,7 @@ pub fn serve(mut protocol: Protocol) -> io::Result<()> {
                 Err(_) => break,
             },
         };
-        protocol.host.release_if_idle();
+        protocol.host.tick();
         let stop = matches!(frame, Frame::Oversized { stop: true });
         let response = match frame {
             Frame::Json(raw) => match json::parse(&raw) {

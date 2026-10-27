@@ -79,6 +79,12 @@ Python reference for live catalogues; the Python reference is untouched.
   agent's Loomward tools; stop that agent or try again"), so an agent calling in a tight loop can always be stopped by
   the owner, and the owner can then revoke its grant. ponytail: a named-pipe endpoint in the desktop is the upgrade if
   agents and the open app must work at the same time.
+- **Yielding to the desktop (#886).** When the lock is busy, the desktop writes an empty `lock.wanted` file beside
+  `lock` (never in a database, so `state.db` and `ask.db` stay unchanged) and removes it once it holds the lock or gives
+  up. A server holding the lock checks for it before each call and at least every half second, even with
+  `--idle-release-secs 0`; when it is present it releases the lock at once and answers `busy` for 30 seconds. A
+  marker older than 30 seconds by its mtime is ignored. It carries no authority: only the lock holder reacts to it, and
+  only by releasing.
 - **References.** Results name nodes by opaque session references (`r1`, `r2`, ...), never a `NodeId`. A reference
   survives an idle release while the catalogue instance and generation are unchanged, and is re-checked against the
   live grant on use; a rescan, revocation or restart makes it unknown ("call find again").

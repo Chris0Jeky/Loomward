@@ -1162,6 +1162,10 @@ fn a_second_instance_on_one_state_directory_is_refused_until_the_first_closes() 
         assert!(started.elapsed() >= Duration::from_secs(15));
         assert!(started.elapsed() < Duration::from_secs(20));
         assert!(state.join("lock").is_file());
+        assert!(
+            !state.join("lock.wanted").exists(),
+            "a refused launch left its yield marker"
+        );
         // An OS lock on a handle, not a marker file: closing the first frees the directory.
         drop(first);
         launch::open(&launch, None).expect("reopen after the first closed");
@@ -1174,9 +1178,13 @@ fn launch_retries_a_shared_lock_released_after_one_second() {
     let state = scratch.path().join("state");
     let lock = loomward_service::paths::lock_state_dir(&state).unwrap();
     let started = std::time::Instant::now();
+    let marker = state.clone();
     let release = std::thread::spawn(move || {
         std::thread::sleep(Duration::from_secs(1));
+        // The waiting launch asked the holder to yield (#886).
+        let wanted = loomward_service::paths::lock_wanted(&marker);
         drop(lock);
+        wanted
     });
     let launch = Launch {
         state_dir: Some(state.clone()),
@@ -1184,8 +1192,15 @@ fn launch_retries_a_shared_lock_released_after_one_second() {
     };
     let opened = launch::open(&launch, None);
     let elapsed = started.elapsed();
-    release.join().unwrap();
+    assert!(
+        release.join().unwrap(),
+        "the waiting launch wrote no yield marker"
+    );
     assert!(opened.is_ok(), "launch did not wait for the shared lock");
+    assert!(
+        !state.join("lock.wanted").exists(),
+        "the launch kept its yield marker after taking the lock"
+    );
     assert!(elapsed >= Duration::from_secs(1));
     assert!(state.join("state.db").is_file());
 }

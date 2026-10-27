@@ -14,7 +14,10 @@ use loomward_http::fixture::{FixtureService, EXAMPLES_DIR};
 use loomward_protocol::{
     CallContext, DatasetClass, EventStream, RequestEnvelope, ResponseEnvelope, ViewService,
 };
-use loomward_service::{paths::lock_state_dir, Config, Service};
+use loomward_service::{
+    paths::{lock_state_dir, unwant_lock, want_lock},
+    Config, Service,
+};
 use std::ffi::OsString;
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -188,21 +191,32 @@ pub fn open(
     };
     // Before the stores open: a second instance must not touch them (docs/41 section 3).
     let deadline = Instant::now() + Duration::from_secs(15);
+    let mut wanted = false;
     let lock = loop {
         match lock_state_dir(&state_dir) {
-            Ok(lock) => break lock,
+            Ok(lock) => break Ok(lock),
             Err(e) => {
                 let Some(message) = e.strip_prefix("busy: ") else {
-                    return Err(e);
+                    break Err(e);
                 };
                 let remaining = deadline.saturating_duration_since(Instant::now());
                 if remaining.is_zero() {
-                    return Err(message.into());
+                    break Err(message.into());
+                }
+                // Ask a busy agent's loomward-mcp to yield (#886). Best effort: without the
+                // marker the retry still waits for an idle release.
+                if !wanted {
+                    wanted = true;
+                    let _ = want_lock(&state_dir);
                 }
                 std::thread::sleep(remaining.min(Duration::from_millis(250)));
             }
         }
     };
+    if wanted {
+        unwant_lock(&state_dir);
+    }
+    let lock = lock?;
     let service = Service::open(Config {
         state_dir,
         dataset: launch.dataset,
