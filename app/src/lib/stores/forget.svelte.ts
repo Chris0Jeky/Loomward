@@ -143,8 +143,10 @@ class Forget {
       this.unknown = checkingRecord || e instanceof TransportError || e instanceof LoomwardError && e.code === 'deadline_exceeded';
       if (e instanceof TransportError) session.handle(e);
       if (!this.unknown) {
-        // Definite answers are cached: a new attempt needs a new key (#736).
-        p.requestId = undefined;
+        // Definite answers are cached: a new attempt needs a new key (#736). A send bound to a state
+        // read keeps its key, expired, so the next attempt reads state again first (semantics §3).
+        if (this.key?.expectedStateRev !== undefined) this.key.mintedAt = -Infinity;
+        else p.requestId = undefined;
         this.problem = session.handle(e);
       }
     } finally {

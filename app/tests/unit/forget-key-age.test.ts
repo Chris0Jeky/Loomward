@@ -128,3 +128,19 @@ it('ignores a prior state read from an identity that changed while it was in fli
   expect(forget.unknown).toBe(true);
   expect(forget.done).toBe('');
 });
+
+it('reads state again after a state-bound send fails definitively, never sending unbound', async () => {
+  const call = await uncertain();
+  vi.advanceTimersByTime(600_000);
+  call.mockImplementation(async r => {
+    if (r.command === 'grants.list') return reply(r, { grants: [revoked] });
+    throw new LoomwardError({ code: 'state_rev_changed', message: 'state changed', retryable: false, detail: null } as never);
+  });
+  await forget.confirm();
+  expect(forget.unknown).toBe(false);
+  await forget.confirm();
+  const commands = call.mock.calls.map(([r]) => r.command);
+  expect(commands).toEqual(['roots.forget', 'grants.list', 'roots.forget', 'grants.list', 'roots.forget']);
+  for (const [r] of call.mock.calls.filter(([r]) => r.command === 'roots.forget').slice(1))
+    expect(r.expected_state_rev).toBe('42');
+});
