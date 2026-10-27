@@ -75,13 +75,15 @@ fn human_label<'a>(record: &'a Value, axis: &str) -> Option<&'a str> {
         .as_str()
 }
 
-struct Scored {
-    truth: String,
-    prediction: Prediction,
-    record_id: String,
+// pub(crate) so the in-crate evaluation tests can pin the selective-risk
+// ranking with hand-built scores; the computation itself is unchanged.
+pub(crate) struct Scored {
+    pub(crate) truth: String,
+    pub(crate) prediction: Prediction,
+    pub(crate) record_id: String,
 }
 
-fn model_report(
+pub(crate) fn model_report(
     name: &str,
     model_id: &str,
     labels: &[String],
