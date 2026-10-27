@@ -38,6 +38,8 @@ fn hello_reports_duplicate_content_reads_separately_from_effects() {
 /// holding `Inner::mutation`; `"after"`: any command after its handler returned, locks released).
 #[derive(Default)]
 pub(crate) struct Hooks {
+    /// One-shot: the next grant retirement (`identity_changed_locked`) fails (#843).
+    pub fail_identity_retire: std::sync::atomic::AtomicBool,
     pub check_presence_unlocked: std::sync::atomic::AtomicBool,
     pub forbid_presence_probe: std::sync::atomic::AtomicBool,
     pub delay: Mutex<Option<(Command, Duration)>>,
@@ -7445,6 +7447,37 @@ fn regranting_a_renamed_root_mints_a_grant_for_its_new_path() {
         svc.inner.grant(&moved, "cli_flag", false).unwrap(),
         (root, false)
     );
+}
+
+/// #843: when the old grant of a renamed root cannot be retired, the re-grant answers failure
+/// instead of Ok with two active grants; a retry retires it and returns the new grant.
+#[cfg(windows)]
+#[test]
+fn regrant_of_a_renamed_root_fails_until_the_old_grant_retires() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    let moved = lab.path.with_file_name("lab-renamed");
+    std::fs::rename(&lab.path, &moved).unwrap();
+    let moved = moved.canonicalize().unwrap();
+    let states = || -> Vec<String> {
+        svc.inner
+            .db()
+            .prepare("SELECT state FROM st.root_grant ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    svc.inner
+        .hooks
+        .fail_identity_retire
+        .store(true, std::sync::atomic::Ordering::Release);
+    assert!(svc.inner.grant(&moved, "cli_flag", false).is_err());
+    assert_eq!(states(), ["active", "active"]);
+    let (_, fresh) = svc.inner.grant(&moved, "cli_flag", false).unwrap();
+    assert!(!fresh, "the retry reuses the grant minted for the new path");
+    assert_eq!(states(), ["identity_changed", "active"]);
 }
 
 /// Retro review (w12): an identity-unverified grant whose folder was renamed ends

@@ -1505,7 +1505,11 @@ impl Inner {
             let row = db::root_for_grant(&self.db(), grant);
             if let Ok(Some(row)) = row {
                 if let Ok(id) = loomward_protocol::RootId::new(self.root_id(row)) {
-                    self.identity_changed_locked(grant, &id, true, &mutation, &presence);
+                    // #843: the new grant stands, but the old one is still active; answer failure so
+                    // a retry (which finds the same renamed grant) retires it.
+                    if !self.identity_changed_locked(grant, &id, true, &mutation, &presence) {
+                        return Err(Refusal::IdentityUnavailable.into());
+                    }
                 }
             }
         }
