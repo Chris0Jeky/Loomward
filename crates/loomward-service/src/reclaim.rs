@@ -29,8 +29,8 @@ use std::{
 const DETECTOR_CAP: usize = 200;
 /// docs/52 section 6.1: the observation's default wall-clock budget.
 const OBSERVE_BUDGET: Duration = Duration::from_secs(600);
-/// Names opened between cancellation checks.
-const OBSERVE_CHUNK: usize = 4096;
+/// Names opened between cancellation and grant checks.
+const OBSERVE_CHUNK: usize = 1000;
 
 fn root_path(path: &str) -> String {
     path.replace('/', "\\")
@@ -297,8 +297,10 @@ impl Inner {
         })
     }
 
-    /// Verified relief stored for this root's current generation, catalogue instance and node
-    /// incarnations; any other row is not shown, so its candidate stays `RELIEF_UNOBSERVED`.
+    /// Verified relief stored for this root's current generation, catalogue instance, node
+    /// incarnation and subtree revision, on a complete root with no scan in flight. A targeted or
+    /// partial run moves `subtree_rev` without a generation bump (#970 review); any other row is
+    /// not shown, so its candidate stays `RELIEF_UNOBSERVED`.
     fn observed_relief(
         &self,
         conn: &Connection,
@@ -309,9 +311,12 @@ impl Inner {
                 "SELECT o.node_kind,o.node_id,o.unique_allocated_bytes FROM st.reclaim_relief o
                  JOIN main.root r ON r.grant_id=o.grant_id
                  WHERE r.id=?1 AND o.catalog_instance=?2 AND o.generation=r.generation
+                   AND r.state='complete' AND r.active_run IS NULL
                    AND o.unique_allocated_bytes IS NOT NULL
                    AND o.incarnation IS (CASE o.node_kind WHEN 'dir' THEN (SELECT born_run FROM main.dir WHERE id=o.node_id)
-                                         ELSE (SELECT born_run FROM main.file WHERE id=o.node_id) END)",
+                                         ELSE (SELECT born_run FROM main.file WHERE id=o.node_id) END)
+                   AND o.subtree_rev IS (CASE o.node_kind WHEN 'dir' THEN (SELECT subtree_rev FROM main.dir WHERE id=o.node_id)
+                                         ELSE (SELECT d.subtree_rev FROM main.file f JOIN main.dir d ON d.id=f.dir_id WHERE f.id=o.node_id) END)",
             )
             .map_err(sql_error)?;
         let rows = stmt
@@ -407,28 +412,27 @@ impl Inner {
                 roots.push(None);
                 continue;
             };
-            // The same admission as a scan or a duplicate inspection before any native open.
-            self.session_root_gate(root)
-                .map_err(|e| self.root_admission_error(root, e))?;
+            // The same admission as a scan or a duplicate inspection before any native open. A root
+            // that fails it is skipped (its candidates stay unknown, the job partial); this read job
+            // never ends a grant: identity changes stay with scans and freshness (#970 review).
             let id = RootId::new(self.root_id(root.root)).expect("rt_ id");
-            let granted = self.engine.granted_root(
-                id.clone(),
-                root.grant,
-                &CatalogRootIdentity {
-                    row: root.root,
-                    instance: self.instance.clone(),
-                },
-            );
-            if matches!(&granted, Err(EngineError::PermissionDenied { message })
-                if message == "root_identity_changed")
-            {
-                self.identity_changed(root.grant, &id, true);
-            }
-            roots.push(Some(ObservedRoot {
+            let granted = self.session_root_gate(root).ok().and_then(|()| {
+                self.engine
+                    .granted_root(
+                        id,
+                        root.grant,
+                        &CatalogRootIdentity {
+                            row: root.root,
+                            instance: self.instance.clone(),
+                        },
+                    )
+                    .ok()
+            });
+            roots.push(granted.map(|granted| ObservedRoot {
                 grant: root.grant,
                 row: root.root,
                 generation,
-                path: granted?.path().to_path_buf(),
+                path: verbatim(granted.path()),
             }));
         }
         let observation = Observation {
@@ -546,7 +550,58 @@ type Listed = (
     u32,
 );
 
-/// Observe one candidate and store its verdict; `None` when it was not finished or not stored.
+/// One directory to check before opening beneath it: path and catalogue identity.
+type ListedDir = (PathBuf, Option<Vec<u8>>, Option<i64>);
+
+/// A candidate's names in one read snapshot, with what binds a stored verdict to it.
+struct Listing {
+    volume_key: String,
+    incarnation: i64,
+    subtree_rev: i64,
+    /// The candidate's path under the granted root (a verbatim path on Windows).
+    base: PathBuf,
+    /// Every directory from below the root down through the candidate, parents first.
+    dirs: Vec<ListedDir>,
+    names: Vec<Listed>,
+}
+
+/// A `\\?\` path, so Win32 never reads `com3` or `nul.txt` as a device and long paths open.
+pub(crate) fn verbatim(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let text = path.as_os_str().to_string_lossy();
+        if text.starts_with(r"\\?\") {
+            return path.to_path_buf();
+        }
+        if let Some(unc) = text.strip_prefix(r"\\") {
+            return PathBuf::from(format!(r"\\?\UNC\{unc}"));
+        }
+        PathBuf::from(format!(r"\\?\{text}"))
+    }
+    #[cfg(not(windows))]
+    path.to_path_buf()
+}
+
+/// Each directory is still the catalogued one and not a reparse point, checked parents first, so
+/// no open below a directory swapped for a junction or symlink after the scan reaches elsewhere.
+/// ponytail: path-based, so a swap between this check and the opens is not excluded; opening
+/// relative to pinned directory handles closes that window but `linkcount` takes paths today.
+fn dirs_unchanged(volume_key: &str, dirs: &[ListedDir]) -> bool {
+    dirs.iter().all(|(path, id, created)| {
+        let expected = crate::placement::catalogue_object(volume_key, id.clone(), *created, None);
+        loomward_windows::identity::observe(path).is_ok_and(|o| {
+            o.attributes & 0x10 != 0
+                && o.attributes & 0x400 == 0
+                && o.object.reparse_tag == 0
+                && expected.is_some_and(|e| {
+                    e.file_id == o.object.file_id && e.volume_serial == o.object.volume_serial
+                })
+        })
+    })
+}
+
+/// Observe one candidate and store its verdict. `Ok(None)` when it was not finished or failed on
+/// its own: it stays unknown with no row. Only a failed store fails the job.
 fn observe_one(
     conn: &Connection,
     inner: &Inner,
@@ -556,13 +611,37 @@ fn observe_one(
     deadline: Instant,
     ctx: &JobContext,
 ) -> EngineResult<Option<usize>> {
-    let Some((volume_key, incarnation, base, listed)) = list(conn, root, task)? else {
-        return Ok(None);
+    let listing = list(conn, root, task);
+    #[cfg(test)]
+    let listing = if inner
+        .hooks
+        .reclaim_fail_candidate
+        .swap(false, std::sync::atomic::Ordering::AcqRel)
+    {
+        Err(internal("injected candidate failure"))
+    } else {
+        listing
     };
-    let mut stop = (listed.len() > MAX_FILES_PER_GROUP).then_some(Stop::FileBudget);
+    let Listing {
+        volume_key,
+        incarnation,
+        subtree_rev,
+        base,
+        dirs,
+        names,
+    } = match listing {
+        Ok(Some(listing)) => listing,
+        Ok(None) => return Ok(None),
+        Err(e) => {
+            eprintln!("loomward-service: reclaim candidate left unknown: {e}");
+            return Ok(None);
+        }
+    };
+    let stop = (names.len() > MAX_FILES_PER_GROUP).then_some(Stop::FileBudget);
+    let dirs_ok = stop.is_some() || dirs_unchanged(&volume_key, &dirs);
     let mut outcomes = Vec::new();
-    if stop.is_none() {
-        let entries: Vec<_> = listed
+    if stop.is_none() && dirs_ok {
+        let entries: Vec<_> = names
             .iter()
             .map(
                 |(_, rel, _, _, id, created, reparse, attrs)| linkcount::Entry {
@@ -581,21 +660,42 @@ fn observe_one(
                 },
             )
             .collect();
-        for chunk in entries.chunks(OBSERVE_CHUNK) {
-            if ctx.is_cancelled() {
+        for (i, chunk) in entries.chunks(OBSERVE_CHUNK).enumerate() {
+            #[cfg(test)]
+            if i > 0 {
+                inner.hooks.gate(Command::ReclaimObserve, "chunk");
+            }
+            #[cfg(not(test))]
+            let _ = i;
+            // The job has no root, so revoking one cannot cancel it: it stops opening here instead.
+            let active = conn
+                .query_row(
+                    "SELECT state='active' FROM st.root_grant WHERE id=?1",
+                    [root.grant],
+                    |r| r.get::<_, bool>(0),
+                )
+                .optional()
+                .map_err(internal)?
+                .unwrap_or(false);
+            if ctx.is_cancelled() || !active {
                 return Ok(None);
             }
+            #[cfg(test)]
+            inner
+                .hooks
+                .reclaim_names_opened
+                .fetch_add(chunk.len(), std::sync::atomic::Ordering::AcqRel);
             let report = linkcount::observe(chunk, deadline);
             outcomes.extend(report.outcomes);
+            // A budget stop inside the candidate leaves it unfinished: no row, a partial job.
             if report.stop.is_some() {
-                stop = report.stop;
-                break;
+                return Ok(None);
             }
         }
     }
     let checked = outcomes.len();
     let mut outcomes = outcomes.into_iter();
-    let files = listed
+    let files = names
         .into_iter()
         .map(
             |(id, _, logical, allocated, file_id, created, reparse, _)| FileEntry {
@@ -610,26 +710,37 @@ fn observe_one(
             },
         )
         .collect();
-    let (bytes, reason) = reclaim::reclaimable(
-        task.class,
-        Some(task.logical),
-        Some(task.allocated),
-        Some(&CandidateFiles { files, stop }),
-        None,
-        &job.volume,
-    )?;
+    let verdict = if dirs_ok {
+        reclaim::reclaimable(
+            task.class,
+            Some(task.logical),
+            Some(task.allocated),
+            Some(&CandidateFiles { files, stop }),
+            None,
+            &job.volume,
+        )
+    } else {
+        Ok((None, Some(reclaim::RELIEF_UNOBSERVED)))
+    };
+    let (bytes, reason) = match verdict {
+        Ok(verdict) => verdict,
+        Err(e) => {
+            eprintln!("loomward-service: reclaim candidate left unknown: {e}");
+            return Ok(None);
+        }
+    };
     let (kind, id) = node_parts(task.node);
     // Written only while the grant is active at the generation the names were read under, so a
     // revocation or rescan that lands first leaves no row behind.
     inner
         .db()
         .execute(
-            "INSERT INTO st.reclaim_relief(grant_id,node_kind,node_id,volume_id,generation,incarnation,catalog_instance,observed_at_ns,unique_allocated_bytes,reason)
-             SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10 WHERE EXISTS(SELECT 1 FROM st.root_grant g JOIN main.root r ON r.grant_id=g.id
+            "INSERT INTO st.reclaim_relief(grant_id,node_kind,node_id,volume_id,generation,incarnation,subtree_rev,catalog_instance,observed_at_ns,unique_allocated_bytes,reason)
+             SELECT ?1,?2,?3,?4,?5,?6,?12,?7,?8,?9,?10 WHERE EXISTS(SELECT 1 FROM st.root_grant g JOIN main.root r ON r.grant_id=g.id
                 WHERE g.id=?1 AND g.state='active' AND r.id=?11 AND r.generation=?5)
              ON CONFLICT(grant_id,node_kind,node_id) DO UPDATE SET volume_id=excluded.volume_id,generation=excluded.generation,
-                incarnation=excluded.incarnation,catalog_instance=excluded.catalog_instance,observed_at_ns=excluded.observed_at_ns,
-                unique_allocated_bytes=excluded.unique_allocated_bytes,reason=excluded.reason",
+                incarnation=excluded.incarnation,subtree_rev=excluded.subtree_rev,catalog_instance=excluded.catalog_instance,
+                observed_at_ns=excluded.observed_at_ns,unique_allocated_bytes=excluded.unique_allocated_bytes,reason=excluded.reason",
             params![
                 root.grant,
                 kind,
@@ -642,6 +753,7 @@ fn observe_one(
                 bytes.map(|b| b as i64),
                 reason,
                 root.row,
+                subtree_rev,
             ],
         )
         .map_err(internal)?;
@@ -656,17 +768,15 @@ fn node_parts(node: NodeKey) -> (&'static str, i64) {
     }
 }
 
-/// The candidate's names in one read snapshot, at most one past the cap, with the volume key,
-/// the node's incarnation and the candidate's path under the granted root. `None` when the root
+/// placement `files()`'s visibility rules, with each directory's path below the candidate.
+const VISIBLE: &str = "WITH RECURSIVE visible(id,rel,depth) AS (SELECT id,'',0 FROM main.dir WHERE id=?1 AND listing_state NOT IN ('excluded','absent_pending') AND flags & ?2=0
+     UNION ALL SELECT d.id,v.rel||d.name||char(92),v.depth+1 FROM main.dir d JOIN visible v ON d.parent_id=v.id WHERE d.listing_state NOT IN ('excluded','absent_pending') AND d.flags & ?2=0)";
+
+/// The candidate's names in one read snapshot, at most one past the cap. `None` when the root
 /// moved on (revoked, rescanned, scanning or partial) or the candidate's path cannot be built.
-#[allow(clippy::type_complexity)]
-fn list(
-    conn: &Connection,
-    root: &ObservedRoot,
-    task: &Task,
-) -> EngineResult<Option<(String, i64, PathBuf, Vec<Listed>)>> {
+fn list(conn: &Connection, root: &ObservedRoot, task: &Task) -> EngineResult<Option<Listing>> {
     conn.execute_batch("BEGIN").map_err(internal)?;
-    let read = || -> rusqlite::Result<Option<(String, i64, PathBuf, Vec<Listed>)>> {
+    let read = || -> rusqlite::Result<Option<Listing>> {
         let current: Option<String> = conn
             .query_row(
                 "SELECT v.volume_key FROM main.root r JOIN st.root_grant g ON g.id=r.grant_id JOIN main.volume v ON v.id=r.volume_id
@@ -692,23 +802,35 @@ fn list(
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
         }?;
+        // Any write under the candidate's directory moves it, with or without a generation bump.
+        let subtree_rev: i64 =
+            conn.query_row("SELECT subtree_rev FROM main.dir WHERE id=?1", [dir], |r| {
+                r.get(0)
+            })?;
         // Ancestors from the candidate up to the root row, whose path is the granted root's.
-        let mut stmt = conn.prepare_cached(
-            "WITH RECURSIVE a(id,parent_id,name,depth) AS (SELECT id,parent_id,name,0 FROM main.dir WHERE id=?1
-             UNION ALL SELECT d.id,d.parent_id,d.name,a.depth+1 FROM main.dir d JOIN a ON d.id=a.parent_id WHERE a.depth<511)
-             SELECT parent_id IS NULL,name FROM a ORDER BY depth DESC",
-        )?;
-        let chain = stmt
+        let chain = conn
+            .prepare_cached(
+                "WITH RECURSIVE a(id,parent_id,name,file_id,created_ft,depth) AS (SELECT id,parent_id,name,file_id,created_ft,0 FROM main.dir WHERE id=?1
+                 UNION ALL SELECT d.id,d.parent_id,d.name,d.file_id,d.created_ft,a.depth+1 FROM main.dir d JOIN a ON d.id=a.parent_id WHERE a.depth<511)
+                 SELECT parent_id IS NULL,name,file_id,created_ft FROM a ORDER BY depth DESC",
+            )?
             .query_map([dir], |r| {
-                Ok((r.get::<_, bool>(0)?, r.get::<_, String>(1)?))
+                Ok((
+                    r.get::<_, bool>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, Option<Vec<u8>>>(2)?,
+                    r.get::<_, Option<i64>>(3)?,
+                ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        if !chain.first().is_some_and(|(top, _)| *top) {
+        if !chain.first().is_some_and(|(top, ..)| *top) {
             return Ok(None);
         }
         let mut base = root.path.clone();
-        for (_, name) in chain.iter().skip(1) {
+        let mut dirs = Vec::new();
+        for (_, name, file_id, created) in chain.into_iter().skip(1) {
             base.push(name);
+            dirs.push((base.clone(), file_id, created));
         }
         let row = |r: &rusqlite::Row| -> rusqlite::Result<Listed> {
             Ok((
@@ -723,7 +845,7 @@ fn list(
                 r.get::<_, Option<u32>>(7)?.unwrap_or(0),
             ))
         };
-        let listed = if let Some(name) = file_name {
+        let names = if let Some(name) = file_name {
             base.push(name);
             conn.prepare_cached(
                 "SELECT id,'',logical,allocated,file_id,created_ft,reparse_tag,attrs FROM main.file WHERE id=?1 AND flags & ?2=0",
@@ -731,20 +853,37 @@ fn list(
             .query_map(params![id, loomward_catalog::EXCLUDED_FLAGS], row)?
             .collect::<rusqlite::Result<Vec<_>>>()?
         } else {
-            // placement `files()`'s visibility rules, with each name's path below the candidate.
-            conn.prepare_cached(
-                "WITH RECURSIVE visible(id,rel) AS (SELECT id,'' FROM main.dir WHERE id=?1 AND listing_state NOT IN ('excluded','absent_pending') AND flags & ?2=0
-                 UNION ALL SELECT d.id,v.rel||d.name||char(92) FROM main.dir d JOIN visible v ON d.parent_id=v.id WHERE d.listing_state NOT IN ('excluded','absent_pending') AND d.flags & ?2=0)
-                 SELECT f.id,v.rel||f.name,f.logical,f.allocated,f.file_id,f.created_ft,f.reparse_tag,f.attrs FROM main.file f JOIN visible v ON v.id=f.dir_id
-                 WHERE f.flags & ?2=0 ORDER BY f.id LIMIT ?3",
-            )?
+            let subdirs = conn
+                .prepare_cached(&format!(
+                    "{VISIBLE} SELECT v.rel,d.file_id,d.created_ft FROM visible v JOIN main.dir d ON d.id=v.id
+                     WHERE v.depth>0 ORDER BY v.depth,v.id LIMIT ?3"
+                ))?
+                .query_map(
+                    params![id, loomward_catalog::EXCLUDED_FLAGS, MAX_FILES_PER_GROUP as i64],
+                    |r| Ok((r.get::<_, String>(0)?, r.get(1)?, r.get(2)?)),
+                )?
+                .collect::<rusqlite::Result<Vec<(String, _, _)>>>()?;
+            for (rel, file_id, created) in subdirs {
+                dirs.push((base.join(rel.trim_end_matches('\\')), file_id, created));
+            }
+            conn.prepare_cached(&format!(
+                "{VISIBLE} SELECT f.id,v.rel||f.name,f.logical,f.allocated,f.file_id,f.created_ft,f.reparse_tag,f.attrs
+                 FROM main.file f JOIN visible v ON v.id=f.dir_id WHERE f.flags & ?2=0 ORDER BY f.id LIMIT ?3"
+            ))?
             .query_map(
                 params![id, loomward_catalog::EXCLUDED_FLAGS, MAX_FILES_PER_GROUP as i64 + 1],
                 row,
             )?
             .collect::<rusqlite::Result<Vec<_>>>()?
         };
-        Ok(Some((volume_key, incarnation, base, listed)))
+        Ok(Some(Listing {
+            volume_key,
+            incarnation,
+            subtree_rev,
+            base,
+            dirs,
+            names,
+        }))
     };
     let result = read();
     conn.execute_batch("COMMIT").map_err(internal)?;

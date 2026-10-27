@@ -33,7 +33,8 @@ pub fn open(dir: &Path) -> Sql<Connection> {
     )",
     )?;
     // #939 (docs/52 section 6.1): one relief verdict per reclaim candidate, valid only while the
-    // root's generation, the node's incarnation (born_run) and the catalogue instance still match.
+    // root's generation, the node's incarnation (born_run), its directory's subtree_rev and the
+    // catalogue instance still match.
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS st.reclaim_relief (
         grant_id INTEGER NOT NULL REFERENCES root_grant(id),
@@ -42,6 +43,7 @@ pub fn open(dir: &Path) -> Sql<Connection> {
         volume_id INTEGER NOT NULL,
         generation INTEGER NOT NULL,
         incarnation INTEGER NOT NULL,
+        subtree_rev INTEGER NOT NULL,
         catalog_instance TEXT NOT NULL,
         observed_at_ns INTEGER NOT NULL,
         unique_allocated_bytes INTEGER CHECK(unique_allocated_bytes IS NULL OR unique_allocated_bytes>=0),

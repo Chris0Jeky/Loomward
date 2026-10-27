@@ -691,3 +691,218 @@ fn reclaim_observe_is_owner_only_and_refuses_what_the_plan_refuses() {
     assert_eq!(refused.message.as_str(), "no_active_grant");
     assert_eq!(relief_rows(&svc), 0);
 }
+
+#[cfg(windows)]
+fn names_opened(svc: &Service) -> usize {
+    svc.inner
+        .hooks
+        .reclaim_names_opened
+        .load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// #970 review 1: rows written under a candidate without a generation bump (a targeted or running
+/// scan) retire its verdict, as does a scan in flight on the root.
+#[cfg(windows)]
+#[test]
+fn reclaim_observe_rows_lapse_when_the_subtree_changes_without_a_generation_bump() {
+    let Some(lab) = cargo_lab(|_| {}) else { return };
+    settle(&lab.svc, &observe_job(&lab.svc));
+    assert_eq!(target_candidate(&lab.svc)["reclaimable_bytes"], "20480");
+    let db = || lab.svc.inner.db();
+    db().execute(
+        "UPDATE main.dir SET subtree_rev=subtree_rev+1 WHERE name='target'",
+        [],
+    )
+    .unwrap();
+    let after = target_candidate(&lab.svc);
+    assert!(after["allocated_bytes"].is_string(), "{after}");
+    assert!(after["reclaimable_bytes"].is_null(), "{after}");
+    db().execute(
+        "UPDATE main.dir SET subtree_rev=subtree_rev-1 WHERE name='target'",
+        [],
+    )
+    .unwrap();
+    assert_eq!(target_candidate(&lab.svc)["reclaimable_bytes"], "20480");
+    db().execute(
+        "UPDATE main.root SET active_run=(SELECT max(id) FROM main.scan_run)",
+        [],
+    )
+    .unwrap();
+    assert!(target_candidate(&lab.svc)["reclaimable_bytes"].is_null());
+}
+
+/// #970 review 2: a directory replaced by a junction after the scan is never traversed, even when
+/// it leads back to the same objects.
+#[cfg(windows)]
+#[test]
+fn reclaim_observe_never_opens_names_below_a_junction() {
+    let Some(lab) = cargo_lab(|target| {
+        std::fs::write(target.join("debug").join("deep.bin"), vec![4u8; 4096]).unwrap();
+    }) else {
+        return;
+    };
+    let debug = lab.path.join("target").join("debug");
+    let moved = lab.path.join("moved-debug");
+    std::fs::rename(&debug, &moved).unwrap();
+    let made = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(&debug)
+        .arg(&moved)
+        .output()
+        .unwrap();
+    assert!(made.status.success(), "{made:?}");
+    let job = settle(&lab.svc, &observe_job(&lab.svc));
+    assert_eq!(job["state"], "completed", "{job:?}");
+    assert_eq!(names_opened(&lab.svc), 0);
+    assert!(target_candidate(&lab.svc)["reclaimable_bytes"].is_null());
+    std::fs::remove_dir(&debug).unwrap();
+}
+
+/// #970 review 3: a name Win32 would read as a device is opened as the file it is.
+#[cfg(windows)]
+#[test]
+fn reclaim_observe_device_names_are_ordinary_names() {
+    let verbatim = |p: &std::path::Path| {
+        let p = p.to_str().unwrap();
+        if p.starts_with(r"\\?\") {
+            std::path::PathBuf::from(p)
+        } else {
+            std::path::PathBuf::from(format!(r"\\?\{p}"))
+        }
+    };
+    let Some(lab) = cargo_lab(|target| {
+        std::fs::write(verbatim(&target.join("com3")), vec![5u8; 4096]).unwrap();
+    }) else {
+        return;
+    };
+    let job = settle(&lab.svc, &observe_job(&lab.svc));
+    assert_eq!(job["state"], "completed", "{job:?}");
+    let after = target_candidate(&lab.svc);
+    std::fs::remove_file(verbatim(&lab.path.join("target").join("com3"))).unwrap();
+    assert_eq!(after["reclaimable_bytes"], "24576", "{after}");
+}
+
+#[cfg(windows)]
+fn many_lab() -> Option<Lab> {
+    cargo_lab(|target| {
+        std::fs::create_dir(target.join("many")).unwrap();
+        for i in 0..1200 {
+            std::fs::write(target.join("many").join(format!("f{i}.bin")), [6u8; 10]).unwrap();
+        }
+    })
+}
+
+/// #970 review 4: revoking the root stops the pass at the next chunk; nothing is stored.
+#[cfg(windows)]
+#[test]
+fn reclaim_observe_revocation_stops_opening_names() {
+    let Some(lab) = many_lab() else { return };
+    let hooks = lab.svc.inner.hooks.clone();
+    let gate = (Command::ReclaimObserve, "chunk");
+    hooks.closed.lock().unwrap().push(gate);
+    let id = observe_job(&lab.svc);
+    hooks.until("second chunk", |h| {
+        h.arrived.lock().unwrap().contains(&gate)
+    });
+    assert_eq!(names_opened(&lab.svc), 1000);
+    ok(
+        "roots.revoke",
+        call(
+            &lab.svc,
+            "roots.revoke",
+            json!({"root_id": lab.root, "purge_catalog": false}),
+        ),
+    );
+    hooks.open(gate.0, gate.1);
+    let job = settle(&lab.svc, &id);
+    assert_eq!(job["state"], "completed", "{job:?}");
+    assert_eq!(job["coverage"], "partial");
+    assert_eq!(names_opened(&lab.svc), 1000);
+    assert_eq!(relief_rows(&lab.svc), 0);
+}
+
+/// #970 review 7: a budget that expires inside the last candidate is a partial job, not complete.
+#[cfg(windows)]
+#[test]
+fn reclaim_observe_budget_inside_a_candidate_is_partial() {
+    let Some(lab) = many_lab() else { return };
+    let hooks = lab.svc.inner.hooks.clone();
+    *hooks.reclaim_budget.lock().unwrap() = Some(Duration::from_secs(5));
+    let gate = (Command::ReclaimObserve, "chunk");
+    hooks.closed.lock().unwrap().push(gate);
+    let id = observe_job(&lab.svc);
+    hooks.until("second chunk", |h| {
+        h.arrived.lock().unwrap().contains(&gate)
+    });
+    std::thread::sleep(Duration::from_secs(6));
+    hooks.open(gate.0, gate.1);
+    let job = settle(&lab.svc, &id);
+    assert_eq!(job["state"], "completed", "{job:?}");
+    assert_eq!(job["coverage"], "partial");
+    assert_eq!(relief_rows(&lab.svc), 0);
+}
+
+/// #970 review 6: one candidate's failure leaves it unknown; the others are still observed.
+#[cfg(windows)]
+#[test]
+fn reclaim_observe_one_candidate_failure_does_not_fail_the_job() {
+    let Some(lab) = cargo_lab(|target| {
+        let project = target.parent().unwrap();
+        std::fs::write(project.join("package.json"), b"{}").unwrap();
+        std::fs::create_dir(project.join("node_modules")).unwrap();
+        std::fs::write(project.join("node_modules").join("x.bin"), vec![7u8; 4096]).unwrap();
+    }) else {
+        return;
+    };
+    lab.svc
+        .inner
+        .hooks
+        .reclaim_fail_candidate
+        .store(true, std::sync::atomic::Ordering::Release);
+    let job = settle(&lab.svc, &observe_job(&lab.svc));
+    assert_eq!(job["state"], "completed", "{job:?}");
+    assert_eq!(job["coverage"], "partial");
+    assert_eq!(relief_rows(&lab.svc), 1);
+}
+
+/// #970 review 5: a root that fails admission is skipped, and the read job writes no grant state.
+#[cfg(windows)]
+#[test]
+fn reclaim_observe_skips_a_root_that_fails_admission() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let root = fixture(&svc);
+    let grants = || {
+        svc.inner
+            .db()
+            .query_row("SELECT group_concat(state) FROM st.root_grant", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .unwrap()
+    };
+    let before = grants();
+    let job = settle(&svc, &observe_job(&svc));
+    assert_eq!(job["state"], "completed", "{job:?}");
+    assert_eq!(job["coverage"], "partial");
+    assert_eq!(relief_rows(&svc), 0);
+    assert_eq!(grants(), before);
+    let _ = root;
+}
+
+/// #970 review 3: roots that are not already verbatim (the lab's canonical roots are) gain the
+/// prefix, shares through `UNC`.
+#[cfg(windows)]
+#[test]
+fn reclaim_observe_paths_are_verbatim() {
+    use std::path::{Path, PathBuf};
+    for (input, expected) in [
+        (r"C:\lab\root", r"\\?\C:\lab\root"),
+        (r"\\?\C:\lab\root", r"\\?\C:\lab\root"),
+        (r"\\server\share\root", r"\\?\UNC\server\share\root"),
+    ] {
+        assert_eq!(
+            crate::reclaim::verbatim(Path::new(input)),
+            PathBuf::from(expected)
+        );
+    }
+}

@@ -91,6 +91,10 @@ pub(crate) struct Hooks {
     pub reclaim_elevated: std::sync::atomic::AtomicBool,
     /// #939: the observation's wall-clock budget instead of ten minutes.
     pub reclaim_budget: Mutex<Option<Duration>>,
+    /// #970: names the observation has handed to the link-count pass.
+    pub reclaim_names_opened: std::sync::atomic::AtomicUsize,
+    /// #970: one-shot, the next candidate's catalogue read fails.
+    pub reclaim_fail_candidate: std::sync::atomic::AtomicBool,
 }
 
 /// What a personal space read answers in tests: wait on an explicit gate, or report fixed space.
