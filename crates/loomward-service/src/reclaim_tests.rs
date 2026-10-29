@@ -584,7 +584,8 @@ fn selection_ids(svc: &Service) -> Vec<Value> {
         .unwrap()
         .iter()
         .flat_map(|g| g["candidates"].as_array().unwrap())
-        .filter_map(|c| (!c["node_id"].is_null()).then(|| c["node_id"].clone()))
+        .filter(|c| !c["node_id"].is_null())
+        .map(|c| c["node_id"].clone())
         .collect()
 }
 

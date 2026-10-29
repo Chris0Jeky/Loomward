@@ -147,9 +147,10 @@ pub(super) fn read(
     if !fresh {
         result["reason"] = json!("Selected coverage is incomplete, stale or unavailable. Refresh the granted roots before observing again.");
     }
-    let stored: Option<(String, String, i64, Option<String>, Option<String>)> = gathered.input.conn.query_row(
+    let stored = gathered.input.conn.query_row(
         "SELECT catalog_instance,members,observed_at_ns,unique_allocated_bytes,reason FROM st.reclaim_selection WHERE volume_id=?1",
-        [gathered.volume_row], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        [gathered.volume_row], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?,
+            r.get::<_, i64>(2)?, r.get::<_, Option<String>>(3)?, r.get::<_, Option<String>>(4)?)),
     ).optional().map_err(sql_error)?;
     if let Some((instance, bindings, at, bytes, reason)) = stored {
         let saved: Vec<Binding> = serde_json::from_str(&bindings)
