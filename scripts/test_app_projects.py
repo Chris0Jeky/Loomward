@@ -67,7 +67,8 @@ def live_projects(page, token, state, check, live_call):
         expect(candidate.get_by_role('button', name='Add to collection', exact=True)).to_be_enabled()
         page.get_by_label('Collection name', exact=True).fill('New project collection')
         page.get_by_role('button', name='Create collection', exact=True).click()
-        expect(candidate.get_by_label('Add to collection', exact=True).locator('option').filter(has_text='New project collection')).to_have_count(1)
+        expect(page.get_by_role('status', name='Collection result')).to_contain_text('Collection created')
+        expect(candidate.get_by_role('combobox').locator('option').filter(has_text='New project collection')).to_have_count(1)
         with closing(sqlite3.connect(state / 'catalog.db')) as db:
             db.execute('UPDATE root SET generation=generation+1 WHERE id=1')
             db.execute('UPDATE revision SET catalog_rev=catalog_rev+1')
