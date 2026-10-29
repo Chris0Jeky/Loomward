@@ -72,7 +72,7 @@ fn discovery_pages_bind_root_catalogue_and_state_and_never_write() {
     );
     refused(
         svc.call(req, &CallContext::client("mcp:projects")),
-        ErrorCode::CapabilityUnavailable,
+        ErrorCode::PermissionDenied,
     );
 }
 

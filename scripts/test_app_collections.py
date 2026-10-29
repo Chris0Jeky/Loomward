@@ -19,7 +19,7 @@ def run_collections(page, base: str) -> None:
     expect(result).to_contain_text('Collection created')
     assert result_node.evaluate("el => el.isConnected && el.textContent.includes('Collection created')")
     expect(page.get_by_role('button', name='Create collection', exact=True)).to_be_focused()
-    expect(page.get_by_role('heading', name='Projects', level=2)).to_be_visible()
+    expect(page.get_by_role('heading', name='Projects', level=2, exact=True)).to_be_visible()
     page.get_by_label('Collection name', exact=True).fill('Projects')
     page.get_by_role('button', name='Create collection', exact=True).click()
     expect(page.get_by_role('alert', name='Collection error')).to_contain_text('already exists')
