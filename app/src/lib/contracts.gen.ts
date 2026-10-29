@@ -2295,6 +2295,7 @@ export interface AskTurnRecord {
 export interface ReclaimPlanRequest {
   volume_id: VolumeId;
   limit: number;
+  selection?: NodeId[];
 }
 
 export interface ReclaimVolume {
@@ -2352,10 +2353,12 @@ export interface ReclaimPlan {
   partial: boolean;
   truncated: boolean;
   budget_hit: boolean;
+  selection?: ReclaimSelection;
 }
 
 export interface ReclaimObserveRequest {
   volume_id: VolumeId;
+  selection?: NodeId[];
 }
 
 /** LW-131 R1g counts only. Per-candidate verdicts live in state.db and reach the owner through reclaim.plan; a candidate the job did not finish stays unknown, never zero. */
@@ -2363,6 +2366,16 @@ export interface ReclaimObserveProgress {
   candidates_total: Count;
   candidates_done: Count;
   names_checked: Count;
+}
+
+export type ReclaimSelectionStatus = "unobserved" | "recorded" | "expired";
+
+export interface ReclaimSelection {
+  members: NodeId[];
+  status: ReclaimSelectionStatus;
+  observed_at: NullableTimestamp;
+  reclaimable_bytes: NullableBytes;
+  reason: string | null;
 }
 
 export interface DeveloperClutterRequest {

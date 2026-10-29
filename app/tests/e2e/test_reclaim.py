@@ -12,10 +12,10 @@ def run(ctx) -> dict:
 
     def read_only():
         main = page.locator('main')
-        # The only controls: read again, and the read-only observe job (cancel appears only while it runs).
-        expect(main.get_by_role('button')).to_have_text(['Look again', 'Observe hard links'])
+        expect(main.get_by_role('button')).to_have_text(['Look again', 'Observe hard links', 'Observe selection', 'Clear selection'])
         expect(main.get_by_role('combobox')).to_have_count(1)
-        expect(main.locator('a, form, input, [role="button"]')).to_have_count(0)
+        expect(main.locator('a, form, [role="button"]')).to_have_count(0)
+        expect(main.locator('input:not([type="checkbox"]):not([inputmode="numeric"])')).to_have_count(0)
 
     page.goto(f'{base}/?transport=mock#/reclaim')
     expect(page.get_by_role('heading', name='Reclaim', level=1)).to_be_visible()
@@ -47,9 +47,39 @@ def run(ctx) -> dict:
     expect(cleanup).not_to_contain_text('hard links outside the candidate, or not observed')
     expect(page.get_by_role('button', name='Cancel observation')).to_have_count(0)
     read_only()
+    choice = page.get_by_role('checkbox', name='Include target in selection', exact=True)
+    target = page.get_by_label('Space target (bytes)', exact=True)
+    estimate = page.get_by_label('Selection estimate', exact=True)
+    target.fill('6145')
+    choice.focus()
+    page.keyboard.press('Space')
+    expect(choice).to_be_checked()
+    page.get_by_role('button', name='Observe selection', exact=True).click()
+    # Changing the selection while the request runs cannot adopt its eventual result.
+    choice.uncheck()
+    expect(estimate).to_contain_text('Union estimate: unknown')
+    expect(page.get_by_role('button', name='Cancel observation')).to_have_count(0, timeout=10000)
+    expect(estimate).not_to_contain_text('6144 bytes')
+    choice.check()
+    page.get_by_role('button', name='Observe selection', exact=True).click()
+    expect(estimate).to_contain_text('6144 bytes', timeout=10000)
+    expect(estimate).to_contain_text('1 bytes short')
+    expect(estimate).to_contain_text('Recorded less than a minute ago')
+    target.fill('9007199254740993')
+    expect(estimate).to_contain_text('9007199254734849 bytes short')
+    target.fill('1e3')
+    expect(target).to_have_attribute('aria-invalid', 'true')
+    expect(page.get_by_role('button', name='Observe selection', exact=True)).to_be_disabled()
+    target.fill('0')
+    page.get_by_role('button', name='Observe selection', exact=True).click()
+    page.get_by_role('button', name='Cancel observation', exact=True).click()
+    expect(status).to_contain_text('Observation cancelled', timeout=10000)
+    expect(estimate).to_contain_text('Union estimate: unknown')
+    expect(estimate).not_to_contain_text('6144 bytes')
     page.get_by_label('Volume to review').select_option(index=1)
     expect(page.get_by_role('button', name='Look again', exact=True)).to_be_enabled()
     expect(cleanup).to_contain_text('Estimated reclaimable: unknown')
+    expect(choice).not_to_be_checked()
     for width in [1440, 390]:
         page.set_viewport_size({'width': width, 'height': 900})
         check(page.evaluate('document.documentElement.scrollWidth <= innerWidth'), f'Reclaim fits at {width}px')
@@ -65,6 +95,7 @@ def run(ctx) -> dict:
     candidate.update(name='<img src=x onerror=alert(1)>', logical_bytes=None, allocated_bytes=None,
                      owner_step='<a href="https://example.invalid">cargo clean</a>', coverage='partial')
     failed = False
+    selection_status = 'recorded'
     requests = []
 
     def reply(route):
@@ -81,6 +112,11 @@ def run(ctx) -> dict:
         result = deepcopy(volume_list if request['command'] == 'volumes.list' else report)
         if request['command'] == 'reclaim.plan':
             result['volume']['volume_id'] = request['payload']['volume_id']
+            if 'selection' in request['payload']:
+                result['selection'] = {'members': request['payload']['selection'], 'status': selection_status,
+                    'observed_at': '2026-10-01T00:00:00Z',
+                    'reclaimable_bytes': '9007199254740993' if selection_status == 'recorded' else None,
+                    'reason': None if selection_status == 'recorded' else 'A selected member changed. Observe again.'}
         route.fulfill(json={'protocol': 'loomward/3', 'request_id': request['request_id'], 'ok': True, 'result': result,
                             'meta': {'served_at': '2026-10-01T00:00:00Z', 'elapsed_ms': 0, 'dataset_class': 'synthetic',
                                      'budget_hit': False, 'catalog_rev': '1', 'state_rev': '1'}})
@@ -103,6 +139,17 @@ def run(ctx) -> dict:
         read_only()
         check(requests[-1] == {'volume_id': page.get_by_label('Volume to review').input_value(), 'limit': 50},
               'Reclaim sends exactly the listed volume identity and limit 50')
+        page.get_by_role('checkbox').check()
+        target.fill('9007199254740992')
+        page.get_by_role('button', name='Look again', exact=True).click()
+        expect(estimate).to_contain_text('9007199254740993 bytes')
+        expect(estimate).to_contain_text('1 bytes above')
+        selection_status = 'expired'
+        page.get_by_role('button', name='Look again', exact=True).click()
+        expect(estimate).to_contain_text('This observation has expired.')
+        expect(estimate).to_contain_text('Target coverage is unknown.')
+        expect(estimate).not_to_contain_text('9007199254740993 bytes')
+        check(set(requests[-1]) == {'volume_id', 'limit', 'selection'}, 'Selection sends IDs, never paths or an execution instruction')
         failed = True
         page.get_by_role('button', name='Look again', exact=True).click()
         expect(page.locator('main [role="alert"]')).to_have_text('unknown volume')

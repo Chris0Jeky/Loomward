@@ -52,10 +52,23 @@ pub fn open(dir: &Path) -> Sql<Connection> {
         PRIMARY KEY(grant_id,node_kind,node_id)
     )",
     )?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS st.reclaim_selection (
+        volume_id INTEGER PRIMARY KEY,
+        catalog_instance TEXT NOT NULL,
+        members TEXT NOT NULL CHECK(json_valid(members)),
+        observed_at_ns INTEGER NOT NULL,
+        unique_allocated_bytes TEXT,
+        reason TEXT,
+        CHECK((unique_allocated_bytes IS NULL)<>(reason IS NULL))
+    )",
+    )?;
     // Repeat an interrupted forget's derived-state cleanup before serving this session.
     conn.execute_batch(
         "DELETE FROM st.root_freshness WHERE grant_id IN (SELECT grant_id FROM st.root_forgotten);
-         DELETE FROM st.reclaim_relief WHERE grant_id IN (SELECT grant_id FROM st.root_forgotten)",
+         DELETE FROM st.reclaim_relief WHERE grant_id IN (SELECT grant_id FROM st.root_forgotten);
+         DELETE FROM st.reclaim_selection WHERE EXISTS(SELECT 1 FROM json_each(members) m
+           JOIN st.root_forgotten f ON f.grant_id=json_extract(m.value,'$.grant'))",
     )?;
     Ok(conn)
 }

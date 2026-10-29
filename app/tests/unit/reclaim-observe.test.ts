@@ -22,6 +22,19 @@ async function mock() {
 }
 
 describe('reclaim observe store', () => {
+  it('observes a selection without changing the old per-candidate result', async () => {
+    const { client, store, volume_id } = await mock();
+    const selection = ['nd_synthetic'];
+    await store.start(volume_id, selection);
+    await vi.advanceTimersByTimeAsync(2000);
+    const report = (await client.call('reclaim.plan', { volume_id, limit: 50, selection })).result;
+    expect(report.selection).toMatchObject({ members: selection, status: 'recorded', reclaimable_bytes: '6144' });
+    expect(report.groups[0]!.candidates[0]!.reclaimable_bytes).toBeNull();
+    expect((await client.call('reclaim.plan', { volume_id, limit: 50 })).result.selection).toBeUndefined();
+    for (const invalid of [[], ['nd_synthetic', 'nd_synthetic'], ['nd_unknown']]) {
+      await expect(client.call('reclaim.observe', { volume_id, selection: invalid })).rejects.toMatchObject({ code: 'invalid_request' });
+    }
+  });
   it('starts, follows progress events and ends completed, after which the plan shows a number', async () => {
     const { client, store, volume_id } = await mock();
     const plan = async () => (await client.call('reclaim.plan', { volume_id, limit: 50 })).result.groups[0]!.candidates[0]!;

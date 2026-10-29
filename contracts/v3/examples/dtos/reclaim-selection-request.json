@@ -1,0 +1,4 @@
+{
+  "def": "ReclaimObserveRequest",
+  "value": { "volume_id": "vo_lab1", "selection": ["nd_target", "nd_cache"] }
+}

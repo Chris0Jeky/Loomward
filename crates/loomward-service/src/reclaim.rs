@@ -24,6 +24,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod selection;
+
 /// Detectors cap all classes together, so they read their maximum; the planner applies the
 /// request's limit per group after grouping (Codex on #959).
 const DETECTOR_CAP: usize = 200;
@@ -54,8 +56,8 @@ struct Task {
     root: usize,
     node: NodeKey,
     class: &'static str,
-    logical: u64,
-    allocated: u64,
+    logical: Option<u64>,
+    allocated: Option<u64>,
 }
 
 /// A root the job may open under: its grant, catalogue row, generation and verified path.
@@ -72,6 +74,7 @@ struct Observation {
     roots: Vec<Option<ObservedRoot>>,
     tasks: Vec<Task>,
     budget: Duration,
+    selection: Option<Vec<selection::Binding>>,
 }
 
 impl Inner {
@@ -244,6 +247,13 @@ impl Inner {
     ) -> Result<Out, ErrorBody> {
         let r: ReclaimPlanRequest = req.decode_payload()?;
         let deadline = work.map_or_else(|| Instant::now() + Duration::from_secs(2), |w| w.deadline);
+        let gathered =
+            self.reclaim_gather(r.volume_id.as_str(), r.limit.get() as usize, deadline, work)?;
+        let selection = r
+            .selection
+            .as_ref()
+            .map(|ids| selection::read(self, &gathered, ids))
+            .transpose()?;
         let Gathered {
             input,
             volume_row,
@@ -251,7 +261,7 @@ impl Inner {
             roots,
             budget_hit,
             online,
-        } = self.reclaim_gather(r.volume_id.as_str(), r.limit.get() as usize, deadline, work)?;
+        } = gathered;
         let mut bin_unknown = false;
         for (i, root) in roots.iter().enumerate() {
             // A stale root's sizes are unknown, so a stored verdict for it is not shown either.
@@ -273,7 +283,7 @@ impl Inner {
         plan.budget_hit |= budget_hit;
         plan.partial |= budget_hit || bin_unknown;
         let bytes = |b: Option<u64>| b.map(Bytes);
-        let wire = json!({
+        let mut wire = json!({
             "volume": {
                 "volume_id": format!("vo_{volume_row}"), "label": plan.volume.label,
                 "bus_type": plan.volume.bus_type, "capacity_bytes": bytes(plan.volume.capacity_bytes),
@@ -297,6 +307,9 @@ impl Inner {
             "unaccounted_bytes": bytes(plan.unaccounted_bytes), "rules_version": plan.rules_version,
             "partial": plan.partial, "truncated": plan.truncated, "budget_hit": plan.budget_hit,
         });
+        if let Some(selection) = selection {
+            wire["selection"] = selection;
+        }
         let dto: ReclaimPlan = serde_json::from_value(wire)
             .map_err(|_| fail(ErrorCode::ResourceBudget, "reclaim projection bounds"))?;
         let mut result = serde_json::to_value(dto)
@@ -373,11 +386,16 @@ impl Inner {
         }
         let deadline = Instant::now() + Duration::from_secs(5);
         let gathered = self.reclaim_gather(r.volume_id.as_str(), 200, deadline, None)?;
+        let selection = r
+            .selection
+            .as_ref()
+            .map(|ids| selection::prepare(self, &gathered, ids))
+            .transpose()?;
         let planner = &gathered.planner;
         let mut seen = HashSet::new();
         let mut tasks = Vec::new();
         for (i, covered) in planner.covered_roots.iter().enumerate() {
-            if covered.coverage == "stale" {
+            if covered.coverage == "stale" && selection.is_none() {
                 continue;
             }
             let developer = planner.developer[i].candidates.iter().map(|c| {
@@ -398,10 +416,17 @@ impl Inner {
                     continue;
                 }
                 // The plan states these without a pass: no name is opened for them.
-                let (Some(logical), Some(allocated)) = (logical, allocated) else {
+                if selection.is_none()
+                    && (logical.is_none()
+                        || allocated.is_none()
+                        || matches!(class, "virtual_disk" | "system_managed"))
+                {
                     continue;
-                };
-                if matches!(class, "virtual_disk" | "system_managed") {
+                }
+                if selection
+                    .as_ref()
+                    .is_some_and(|members| !members.iter().any(|m| m.node() == node))
+                {
                     continue;
                 }
                 tasks.push(Task {
@@ -453,6 +478,7 @@ impl Inner {
             roots,
             tasks,
             budget: self.observe_budget(),
+            selection,
         };
         drop(gathered);
         let weak = self.weak.clone();
@@ -469,8 +495,9 @@ impl Inner {
 
     /// Forgetting, revoking or losing a root's identity deletes its relief verdicts.
     pub(crate) fn drop_reclaim_relief(&self, grant: i64) -> Result<(), ErrorBody> {
-        self.db()
-            .execute("DELETE FROM st.reclaim_relief WHERE grant_id=?1", [grant])
+        let conn = self.db();
+        conn.execute("DELETE FROM st.reclaim_selection WHERE EXISTS(SELECT 1 FROM json_each(members) WHERE json_extract(value,'$.grant')=?1)", [grant]).map_err(sql_error)?;
+        conn.execute("DELETE FROM st.reclaim_relief WHERE grant_id=?1", [grant])
             .map(drop)
             .map_err(sql_error)
     }
@@ -500,6 +527,9 @@ fn gone() -> EngineError {
 
 /// The job body. It holds the service only per candidate, so a stopping service is not kept alive.
 fn observe(weak: &Weak<Inner>, job: &Observation, ctx: &JobContext) -> EngineResult<CoverageState> {
+    if let Some(members) = &job.selection {
+        return selection::observe(weak, job, members, ctx);
+    }
     let deadline = Instant::now() + job.budget;
     let conn = db::open(&weak.upgrade().ok_or_else(gone)?.state_dir).map_err(internal)?;
     conn.execute_batch("PRAGMA query_only=ON")
@@ -736,8 +766,8 @@ fn observe_one(
     let verdict = if dirs_ok {
         reclaim::reclaimable(
             task.class,
-            Some(task.logical),
-            Some(task.allocated),
+            task.logical,
+            task.allocated,
             Some(&CandidateFiles { files, stop }),
             None,
             &job.volume,
@@ -798,6 +828,16 @@ const VISIBLE: &str = "WITH RECURSIVE visible(id,rel,depth) AS (SELECT id,'',0 F
 /// The candidate's names in one read snapshot, at most one past the cap. `None` when the root
 /// moved on (revoked, rescanned, scanning or partial) or the candidate's path cannot be built.
 fn list(conn: &Connection, root: &ObservedRoot, task: &Task) -> EngineResult<Option<Listing>> {
+    list_bounded(conn, root, task, MAX_FILES_PER_GROUP, MAX_FILES_PER_GROUP)
+}
+
+fn list_bounded(
+    conn: &Connection,
+    root: &ObservedRoot,
+    task: &Task,
+    name_limit: usize,
+    dir_limit: usize,
+) -> EngineResult<Option<Listing>> {
     conn.execute_batch("BEGIN").map_err(internal)?;
     let read = || -> rusqlite::Result<Option<Listing>> {
         let current: Option<String> = conn
@@ -883,7 +923,7 @@ fn list(conn: &Connection, root: &ObservedRoot, task: &Task) -> EngineResult<Opt
                 ))?
                 .query_map(
                     // One past the cap, so an overflow is seen and leaves the candidate unknown.
-                    params![id, loomward_catalog::EXCLUDED_FLAGS, MAX_FILES_PER_GROUP as i64 + 1],
+                    params![id, loomward_catalog::EXCLUDED_FLAGS, dir_limit.saturating_sub(dirs.len()) as i64 + 1],
                     |r| Ok((r.get::<_, String>(0)?, r.get(1)?, r.get(2)?)),
                 )?
                 .collect::<rusqlite::Result<Vec<(String, _, _)>>>()?;
@@ -895,7 +935,7 @@ fn list(conn: &Connection, root: &ObservedRoot, task: &Task) -> EngineResult<Opt
                  FROM main.file f JOIN visible v ON v.id=f.dir_id WHERE f.flags & ?2=0 ORDER BY f.id LIMIT ?3"
             ))?
             .query_map(
-                params![id, loomward_catalog::EXCLUDED_FLAGS, MAX_FILES_PER_GROUP as i64 + 1],
+                params![id, loomward_catalog::EXCLUDED_FLAGS, name_limit as i64 + 1],
                 row,
             )?
             .collect::<rusqlite::Result<Vec<_>>>()?

@@ -103,6 +103,44 @@ fn reclaim_sizes_are_required_nullable_and_requests_are_bounded() {
 }
 
 #[test]
+fn reclaim_selection_is_additive_bounded_and_preserves_exact_bytes() {
+    let mut schema = Schema::load();
+    for (def, mut request) in [
+        (
+            "ReclaimPlanRequest",
+            json!({"volume_id":"vo_lab1", "limit":50}),
+        ),
+        ("ReclaimObserveRequest", json!({"volume_id":"vo_lab1"})),
+    ] {
+        assert_eq!(roundtrip(def, &request).unwrap().unwrap(), request);
+        for length in [0, 1, 12, 13] {
+            request["selection"] = json!((0..length)
+                .map(|i| format!("nd_case{i}"))
+                .collect::<Vec<_>>());
+            let valid = (1..=12).contains(&length);
+            assert_eq!(schema.errors(def, &request).is_empty(), valid);
+            assert_eq!(roundtrip(def, &request).unwrap().is_ok(), valid);
+        }
+        request["selection"] = Value::Null;
+        assert!(!schema.errors(def, &request).is_empty());
+        assert!(roundtrip(def, &request).unwrap().is_err());
+    }
+    let value = json!({"members":["nd_a","nd_b"], "status":"recorded",
+        "observed_at":"2026-10-29T00:00:00Z", "reclaimable_bytes":"18446744073709551615", "reason":null});
+    assert!(schema.errors("ReclaimSelection", &value).is_empty());
+    assert_eq!(
+        roundtrip("ReclaimSelection", &value).unwrap().unwrap(),
+        value
+    );
+    for field in ["observed_at", "reclaimable_bytes", "reason"] {
+        let mut missing = value.clone();
+        missing.as_object_mut().unwrap().remove(field);
+        assert!(!schema.errors("ReclaimSelection", &missing).is_empty());
+        assert!(roundtrip("ReclaimSelection", &missing).unwrap().is_err());
+    }
+}
+
+#[test]
 fn diagnostics_elevated_session_refusal_roundtrips_through_schema_and_dto() {
     let value = json!({
         "outcome": "refused", "bytes_written": null, "refusal": "elevated_session"
@@ -383,6 +421,8 @@ fn example_directories_hold_exactly_the_expected_files() {
             "duplicates-result.json".to_string(),
             "identity-observation-unverified.json".to_string(),
             "reclaim-observe-running.json".to_string(),
+            "reclaim-selection-request.json".to_string(),
+            "reclaim-selection-recorded.json".to_string(),
             "search-freshness-restarting.json".to_string(),
             "search-page-federated.json".to_string(),
             "search-request-federated.json".to_string()

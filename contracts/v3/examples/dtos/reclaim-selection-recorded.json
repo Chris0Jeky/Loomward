@@ -1,0 +1,10 @@
+{
+  "def": "ReclaimSelection",
+  "value": {
+    "members": ["nd_target", "nd_cache"],
+    "status": "recorded",
+    "observed_at": "2026-10-29T00:00:00Z",
+    "reclaimable_bytes": "20480",
+    "reason": null
+  }
+}

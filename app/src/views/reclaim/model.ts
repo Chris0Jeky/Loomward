@@ -1,4 +1,4 @@
-import type { GroupKind, Job, ReclaimObserveProgress, ReclaimPlan, Volume } from '../../lib/contracts.gen';
+import type { GroupKind, Job, ReclaimObserveProgress, ReclaimPlan, ReclaimSelection, Volume } from '../../lib/contracts.gen';
 import { formatBytes, parseBytes } from '../../lib/format/bytes';
 import { LoomwardError } from '../../lib/transport/client';
 
@@ -27,7 +27,29 @@ export function unaccountedText(report: ReclaimPlan): string {
 }
 
 export const OBSERVE_EXPLAINER =
-  'Observing reads only metadata (link counts) of the folders you granted, to measure what removing each candidate would really free. It can take minutes and changes nothing.';
+  'Observing reads only metadata (link counts) of the folders you granted to record an allocation estimate. It can take minutes and changes nothing. The estimate does not guarantee physical space recovery.';
+
+export function targetBytes(text: string): bigint | null {
+  const bytes = parseBytes(text);
+  return bytes !== null && bytes <= 18446744073709551615n ? bytes : null;
+}
+
+export function selectionComparison(result: ReclaimSelection | null, target: string): string {
+  const need = targetBytes(target);
+  if (need === null) return 'Enter a whole number of bytes from 0 to 18446744073709551615.';
+  const bytes = result?.status === 'recorded' ? parseBytes(result.reclaimable_bytes) : null;
+  if (bytes === null) return 'Target coverage is unknown.';
+  return bytes >= need
+    ? `The recorded estimate covers the target, with ${(bytes - need).toString()} bytes above it.`
+    : `The recorded estimate is ${(need - bytes).toString()} bytes short of the target.`;
+}
+
+export function observationAge(at: string, now: number): string {
+  const seconds = Math.max(0, Math.floor((now - Date.parse(at)) / 1000));
+  if (seconds < 60) return 'less than a minute ago';
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes} minute${minutes === 1 ? '' : 's'} ago`;
+}
 
 /** Plain words for a refused or failed observe request. The service's own text is the fallback. */
 export function observeRefusal(e: unknown): string {

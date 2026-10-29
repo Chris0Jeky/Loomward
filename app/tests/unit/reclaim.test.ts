@@ -4,8 +4,8 @@ import { Client, LoomwardError } from '../../src/lib/transport/client';
 import { createMockTransport } from '../../src/lib/transport/mock';
 import { readFileSync } from 'node:fs';
 import { ScriptTarget, transpileModule } from 'typescript';
-import type { ReclaimPlan, Volume } from '../../src/lib/contracts.gen';
-import { defaultVolume, GROUP_HEADINGS, unaccountedText } from '../../src/views/reclaim/model';
+import type { ReclaimPlan, ReclaimSelection, Volume } from '../../src/lib/contracts.gen';
+import { defaultVolume, GROUP_HEADINGS, observationAge, selectionComparison, targetBytes, unaccountedText } from '../../src/views/reclaim/model';
 
 describe('mock reclaim transport', () => {
   it('serves the contract example for the selected listed volume, with unknown relief intact', async () => {
@@ -29,6 +29,17 @@ describe('mock reclaim transport', () => {
 });
 
 describe('reclaim display model', () => {
+  it('compares exact byte targets and keeps unknown, expired and zero separate', () => {
+    const result: ReclaimSelection = { members: ['nd_a'], status: 'recorded', observed_at: '2026-10-29T00:00:00Z', reclaimable_bytes: '9007199254740993', reason: null };
+    expect(selectionComparison(result, '9007199254740992')).toContain('1 bytes above');
+    expect(selectionComparison(result, '9007199254740994')).toContain('1 bytes short');
+    expect(selectionComparison({ ...result, reclaimable_bytes: '0' }, '0')).toContain('covers');
+    expect(selectionComparison({ ...result, reclaimable_bytes: null }, '0')).toBe('Target coverage is unknown.');
+    expect(selectionComparison({ ...result, status: 'expired' }, '0')).toBe('Target coverage is unknown.');
+    for (const invalid of ['', '-1', '1.5', '1e3', '01', '18446744073709551616']) expect(targetBytes(invalid)).toBeNull();
+    expect(targetBytes('18446744073709551615')).toBe(18446744073709551615n);
+    expect(observationAge(result.observed_at!, Date.parse('2026-10-29T00:02:00Z'))).toBe('2 minutes ago');
+  });
   it('names the four groups in contract order', () => {
     expect(Object.keys(GROUP_HEADINGS)).toEqual(resultFixture.groups.map((g) => g.kind));
     expect(Object.values(GROUP_HEADINGS)).toEqual(['Tool-owned cleanup', 'Relocate', 'Archive candidates', 'Informational']);
@@ -56,7 +67,7 @@ describe('reclaim view', () => {
   function reader(call: (command: string, payload: unknown) => Promise<unknown>) {
     const read = source.slice(source.indexOf('  async function read('), source.indexOf('\n  $effect('));
     return new Function('session', `
-      let report = null, loading = true, error = '', generation = 0;
+      let report = null, loading = true, error = '', generation = 0, members = [], selectionResult = null;
       ${transpileModule(read, { compilerOptions: { target: ScriptTarget.ES2022 } }).outputText}
       return { read, state: () => ({ report, loading, error }) };
     `)({ client: { call }, handle: String }) as {
@@ -65,14 +76,17 @@ describe('reclaim view', () => {
     };
   }
 
-  it('only offers volume selection, read again and the read-only observe/cancel pair, with owner steps as text', () => {
-    expect(source.match(/<button\b/g)).toHaveLength(3);
+  it('offers read-only selection, target and observe/cancel controls, with owner steps as text', () => {
+    expect(source.match(/<button\b/g)).toHaveLength(5);
     expect(source.match(/<select\b/g)).toHaveLength(1);
     expect(source).toContain('>Look again</button>');
     expect(source).toContain('>Observe hard links</button>');
     expect(source).toContain('>Cancel observation</button>');
     expect(source).toContain('Owner step: {candidate.owner_step}</p>');
-    expect(source).not.toMatch(/<a\b|<form\b|<input\b|{@html|clipboard|exec\(|invoke\(/);
+    expect(source.match(/<input\b/g)).toHaveLength(2);
+    expect(source).toContain('type="checkbox"');
+    expect(source).toContain('inputmode="numeric"');
+    expect(source).not.toMatch(/<a\b|<form\b|{@html|clipboard|exec\(|invoke\(/);
     expect([...source.matchAll(/c.call\('([^']+)'/g)].map((m) => m[1])).toEqual(['reclaim.plan', 'volumes.list']);
   });
 

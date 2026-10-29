@@ -6,6 +6,12 @@ use super::*;
 pub struct ReclaimPlanRequest {
     pub volume_id: VolumeId,
     pub limit: Int<1, 200>,
+    #[serde(
+        default,
+        deserialize_with = "crate::types::optional_present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub selection: Option<BoundedVec<NodeId, 1, 12>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -96,6 +102,33 @@ pub struct ReclaimPlan {
     pub partial: bool,
     pub truncated: bool,
     pub budget_hit: bool,
+    #[serde(
+        default,
+        deserialize_with = "crate::types::optional_present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub selection: Option<ReclaimSelection>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReclaimSelectionStatus {
+    Unobserved,
+    Recorded,
+    Expired,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReclaimSelection {
+    pub members: BoundedVec<NodeId, 1, 12>,
+    pub status: ReclaimSelectionStatus,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub observed_at: Option<Timestamp>,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub reclaimable_bytes: Option<Bytes>,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub reason: Option<Text<256>>,
 }
 
 /// `reclaim.observe` (#939): the volume whose plan candidates the job observes.
@@ -103,6 +136,12 @@ pub struct ReclaimPlan {
 #[serde(deny_unknown_fields)]
 pub struct ReclaimObserveRequest {
     pub volume_id: VolumeId,
+    #[serde(
+        default,
+        deserialize_with = "crate::types::optional_present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub selection: Option<BoundedVec<NodeId, 1, 12>>,
 }
 
 /// Counts only: per-candidate results live in `state.db` and reach the owner through `reclaim.plan`.
