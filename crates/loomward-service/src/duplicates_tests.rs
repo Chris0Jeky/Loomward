@@ -16,7 +16,8 @@ fn duplicates_select_candidates_before_opening_root_metadata() {
         "duplicates.inspect",
         duplicate_request(&lab.root, 1024),
     ));
-    assert_eq!(error.code, ErrorCode::DeviceOffline);
+    assert_eq!(error.code, ErrorCode::NotFound);
+    assert_eq!(error.detail.unwrap()["reason"], "root_folder_missing");
     assert!(svc
         .inner
         .hooks
