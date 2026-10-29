@@ -23,6 +23,15 @@ Application inventory should use appropriate package/registry/provider mechanism
 Uninstall proposals must hand off to the registered/supported uninstaller under explicit user control. Treat uninstall commands as untrusted structured provider data to verify, not text for an LLM to modify. Driver packages, system components, shared runtimes and application-managed content are excluded from a generic cleanup flow.
 
 ## Developer-aware providers
+
+Collections offers an explicit **Find projects** action for one granted, catalogued folder.
+It reads recorded manifest names using the developer-clutter marker families, including folders
+without build outputs. Multiple markers describe one candidate; nested candidates stay separate.
+Evidence is a probable project boundary, not dependency completeness or a safe movement unit.
+Partial, excluded, stale and budget-limited observations do not establish absence. Inspect opens
+the existing Explorer inspector; Add to collection remains explicit and checks both the observed
+root generation and the current collection revision. Discovery never opens source paths, scans,
+repairs aggregates, creates collections or adds membership.
 Detect project roots and preserve group integrity. Potential providers cover Git worktrees, build artifacts, language package caches, downloaded installers, model bundles, media editing projects, game libraries and virtual disks. “Recreatable” needs evidence: a manifest/lockfile, reproducible process, necessary network/credentials and acceptable rebuild cost. Do not label source changes, untracked files or local datasets as caches.
 
 For WSL/container/VM storage, first inspect using supported management interfaces and explicit read scopes. Shrinking or moving a virtual disk is a dedicated future operation with shutdown/consistency requirements, not a generic move of a large `.vhdx`. No such action is implemented in the reference.

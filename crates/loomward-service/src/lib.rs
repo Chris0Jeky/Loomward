@@ -42,6 +42,7 @@ mod learning;
 mod meaning;
 pub mod paths;
 mod placement;
+mod projects;
 mod reclaim;
 mod sink;
 #[cfg(test)]

@@ -16,6 +16,7 @@
     }
   },
   "commands": {
+    "projects.find": { "request": "ProjectsRequest", "result": "ProjectsPage", "adapters": ["tauri", "http"], "wave": 2, "effects": "none" },
     "session.hello":              { "request": "EmptyRequest",              "result": "SessionInfo",           "adapters": ["tauri", "http"], "wave": 1, "effects": "none" },
     "health.get":                 { "request": "EmptyRequest",              "result": "Health",                "adapters": ["tauri", "http"], "wave": 2, "effects": "none" },
     "apps.list": {"request": "MetadataPageRequest", "result": "ApplicationPage", "adapters": ["tauri", "http"], "wave": 2, "effects": "none"},

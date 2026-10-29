@@ -24,7 +24,7 @@ const NOT_ASSESSED: [(&str, &str); 3] = [
 ];
 
 /// The wire `CoverageState` word for a catalogue coverage string; anything else reads unknown.
-fn coverage(c: &str) -> &str {
+pub(crate) fn coverage(c: &str) -> &str {
     match c {
         "complete" | "partial" | "stale" | "unscanned" | "denied" | "excluded" | "cancelled" => c,
         _ => "unknown",

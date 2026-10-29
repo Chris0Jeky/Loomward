@@ -1,0 +1,30 @@
+{
+  "root_id": "rt_1",
+  "generation": "12",
+  "coverage": "partial",
+  "partial": true,
+  "budget_hit": false,
+  "candidates": [
+    {
+      "node_id": "nd_0020",
+      "name": "Synthetic project",
+      "path": {
+        "text": "Synthetic root / Synthetic project",
+        "truncated": false
+      },
+      "coverage": "complete",
+      "markers": [
+        {
+          "name": "Cargo.toml",
+          "provider": "cargo"
+        },
+        {
+          "name": "package.json",
+          "provider": "npm"
+        }
+      ],
+      "markers_truncated": false
+    }
+  ],
+  "next_cursor": null
+}

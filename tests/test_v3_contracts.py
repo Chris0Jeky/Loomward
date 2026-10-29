@@ -18,6 +18,26 @@ class V3ContractTests(unittest.TestCase):
         self.defs = self.schema['$defs']
         self.commands = load('commands.json')
 
+    def test_project_discovery_is_explicit_bounded_and_read_only(self):
+        self.assertTrue('projects.find' in self.commands['commands'],
+                        'An explicit catalogue-only project discovery command is missing')
+        command = self.commands['commands']['projects.find']
+        self.assertEqual(command['effects'], 'none')
+        self.assertEqual(command['adapters'], ['tauri', 'http'])
+        self.assertNotIn('client_result', command)
+        try:
+            import jsonschema
+        except ImportError:
+            self.skipTest('jsonschema not installed')
+        validator = jsonschema.Draft202012Validator({
+            '$defs': self.defs, '$ref': '#/$defs/' + command['request']})
+        request = {'root_id': 'rt_1', 'limit': 50, 'cursor': None}
+        validator.validate(request)
+        for limit in (0, 201):
+            self.assertFalse(validator.is_valid(dict(request, limit=limit)))
+        self.assertFalse(validator.is_valid(dict(request, path='Synthetic project')))
+        self.assertFalse(validator.is_valid({'limit': 50, 'cursor': None}))
+
     def test_schema_is_valid_json_schema(self):
         try:
             import jsonschema

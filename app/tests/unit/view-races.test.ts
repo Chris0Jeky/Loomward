@@ -270,6 +270,7 @@ describe('map slice installation', () => {
 
 function explorer(call: ReturnType<typeof vi.fn>) {
   const state = {
+    route: { search: '' },
     session: { client: { call }, epoch: 0, handle: (e: Error) => e.message },
     untrack, tick: async () => {}, document: { activeElement: null }, HTMLElement: class {},
     LoomwardError, fallbackStep, onRefetchError, resolveTrail,

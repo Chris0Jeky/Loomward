@@ -40,7 +40,7 @@ const REVS: Partial<Record<string, 'c' | 's' | 'cs'>> = {
   'health.get': 'c', 'tree.children': 'c', 'search.query': 'c',
   'roots.list': 'cs', 'tree.slice': 'cs', 'placement.candidates': 'cs', 'placement.simulate': 'cs',
   'proposals.list': 'cs', 'proposals.get': 'cs', 'volumes.declare_tier': 'cs',
-  'roots.revoke': 'cs', 'roots.forget': 'cs', 'backups.list': 's', 'backups.forget': 's', 'alerts.list': 's', 'alerts.configure': 's', 'clutter.developer': 'cs', 'grants.list': 's', 'grants.revoke': 's', 'volumes.list': 's', 'tiers.model': 's',
+  'roots.revoke': 'cs', 'roots.forget': 'cs', 'backups.list': 's', 'backups.forget': 's', 'alerts.list': 's', 'alerts.configure': 's', 'clutter.developer': 'cs', 'projects.find': 'cs', 'grants.list': 's', 'grants.revoke': 's', 'volumes.list': 's', 'tiers.model': 's',
 };
 
 class CommandFailure extends Error {
@@ -321,7 +321,34 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
     ...scan.roots().map((r, k) => ({ grant_id: `gr_mock_lab_${k}`, root_id: r.root_id })),
   ];
 
+  const projectCursors = new Map<string, { root: string; rev: string; state: string; offset: number }>();
   const handlers: Record<string, (payload: Record<string, unknown>) => unknown> = {
+    'projects.find': (p) => {
+      if (Object.keys(p).sort().join(',') !== 'cursor,limit,root_id') fail('invalid_request', 'Expected root_id, limit and cursor.');
+      const limit = int(p.limit, 'limit', 1, 200), id = str(p.root_id, 'root_id');
+      const roots = (handlers['roots.list']!({}) as RootList).roots;
+      const root = roots.find(r => r.root_id === id && r.grant_state === 'active') ?? fail('not_found', 'unknown root');
+      let offset = 0;
+      if (p.cursor !== null) {
+        const c = projectCursors.get(str(p.cursor, 'cursor')) ?? fail('stale_generation', 'Find projects again.');
+        if (c.root !== id) fail('invalid_request', 'Cursor belongs to another folder.');
+        if (c.rev !== views.catalogRev() || c.state !== collections.stateRev()) fail('stale_generation', 'Project results changed.');
+        offset = c.offset;
+      }
+      // Invented marker observations on real mock nodes keep Inspect and membership connected.
+      const all = roots[0]?.root_id === id ? tree.nodes.filter(n => n.kind === 'dir' && rootId(topOf(n)[0]!) === id).slice(0, 3) : [];
+      const candidates = all.slice(offset, offset + limit).map(n => ({ node_id: n.id, name: n.name,
+        path: { text: pathOf(n), truncated: false }, coverage: n.coverage,
+        markers: [{ name: 'Cargo.toml', provider: 'cargo' }, { name: 'package.json', provider: 'npm' }], markers_truncated: false }));
+      let next_cursor: string | null = null;
+      if (offset + candidates.length < all.length) {
+        next_cursor = `cu_projects_${projectCursors.size + 1}`;
+        if (projectCursors.size >= 2048) projectCursors.clear();
+        projectCursors.set(next_cursor, { root: id, rev: views.catalogRev(), state: collections.stateRev(), offset: offset + candidates.length });
+      }
+      return { root_id: id, generation: GENERATION, coverage: root.scan.coverage, partial: root.scan.coverage !== 'complete',
+        budget_hit: id === HOSTILE_ROOT_ID, candidates, next_cursor };
+    },
     'session.hello': (): SessionInfo => ({
       protocol: 'loomward/3', engine_version: 'mock-0.3 (no engine)', adapter: 'http', dataset_class: DATASET, session_started_at: t0,
       enumeration_strategy: 'std_read_dir',
@@ -411,7 +438,14 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
     const h = Object.hasOwn(handlers, req.command) ? handlers[req.command] : undefined;
     if (!h && !req.command.startsWith('collections.')) return err('capability_unavailable', `the mock transport does not implement ${req.command}`);
     try {
-      if (req.command === 'roots.forget' && req.expected_state_rev != null && String(req.expected_state_rev) !== collections.stateRev()) {
+      if (req.expected_generation !== undefined) {
+        if (req.command === 'collections.update_members') {
+          const p = req.payload;
+          if (!Array.isArray(p.add) || p.add.length !== 1 || !Array.isArray(p.remove) || p.remove.length || (Array.isArray(p.remove_members) && p.remove_members.length)) fail('invalid_request', 'Generation requires exactly one add.');
+        }
+        if (req.expected_generation !== GENERATION) fail('stale_generation', 'Project observations changed; find projects again.');
+      }
+      if (req.command === 'roots.forget'  && req.expected_state_rev != null && String(req.expected_state_rev) !== collections.stateRev()) {
         failWith('stale_generation', 'state.db changed since your read; re-read and ask the owner again', { reason: 'state_rev_changed' });
       }
       const result = await (req.command.startsWith('collections.') ? collections.handle(req) : h!((req.payload ?? {}) as Record<string, unknown>)) as Record<string, unknown>;
@@ -432,7 +466,7 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
     mode: 'mock',
     call: async (req) => {
       if (req.command !== 'collections.create' && req.command !== 'collections.update_members') return respond(req);
-      const binding = JSON.stringify([req.command, req.payload, req.expected_state_rev]);
+      const binding = JSON.stringify([req.command, req.payload, req.expected_state_rev, req.expected_generation]);
       const saved = retained.get(req.request_id);
       if (saved && now().getTime() - saved.at < 600_000) {
         if (saved.binding === binding) return structuredClone(await saved.response);
