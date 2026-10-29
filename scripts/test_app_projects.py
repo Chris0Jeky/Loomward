@@ -73,6 +73,7 @@ def live_projects(page, token, state, check, live_call):
         evidence.mkdir(parents=True, exist_ok=True)
         for width in [1440, 390]:
             page.set_viewport_size({'width': width, 'height': 900})
+            page.evaluate('scrollTo(0, 0)')
             check(page.evaluate('document.documentElement.scrollWidth <= innerWidth'), f'projects: fits {width}px')
             page.screenshot(path=str(evidence / f'projects-{width}.png'), full_page=True)
         # A second project replaces the first brief rather than appending another one.
@@ -118,8 +119,8 @@ def live_projects(page, token, state, check, live_call):
         candidate.get_by_role('button', name='Add to collection', exact=True).click()
         expect(candidate.get_by_role('alert')).to_contain_text('changed')
         candidate.get_by_role('button', name='Show recorded footprint', exact=True).click()
-        expect(region.get_by_role('alert')).to_contain_text('observations or access changed')
         expect(region.get_by_role('article')).to_have_count(0)
+        expect(region.get_by_role('alert')).to_contain_text('observations or access changed')
         # Partial empty must never be described as proof that no projects exist.
         with closing(sqlite3.connect(state / 'catalog.db')) as db:
             db.execute('DELETE FROM file WHERE dir_id>=101')
@@ -136,6 +137,8 @@ def live_projects(page, token, state, check, live_call):
         expect(region).to_contain_text('No recognised project markers are recorded')
         (evidence / 'projects-native.json').write_text(json.dumps({'dataset': 'synthetic', 'production_http': True,
             'filesystem_observation': False, 'discovery_database_unchanged': True, 'generation_guard': True,
+            'footprint_database_unchanged': True, 'footprint_three_guarded_reads': True,
+            'footprint_large_bytes_and_unknowns': True, 'footprint_stale_results_discarded': True,
             'explicit_membership': True, 'widths': [1440, 390], 'partial_and_empty': True}, indent=2) + '\n', encoding='utf-8')
     finally:
         page.remove_listener('request', observe)
