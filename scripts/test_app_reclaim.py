@@ -76,6 +76,7 @@ def live_reclaim(browser, exe, dist, check, live_call):
             evidence.mkdir(parents=True, exist_ok=True)
             for width in [1440, 390]:
                 page.set_viewport_size({'width': width, 'height': 900})
+                page.evaluate('window.scrollTo(0, 0)')
                 check(page.evaluate('document.documentElement.scrollWidth <= innerWidth'), f'native selection: fits {width}px')
                 page.screenshot(path=str(evidence / f'selection-{width}.png'), full_page=True)
             check(snapshot() == before, 'native selection: contents, modification times and hard links unchanged')

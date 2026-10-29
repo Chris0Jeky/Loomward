@@ -531,6 +531,10 @@ def live_personal_scan(browser, exe: Path) -> None:
         ask = page.get_by_role('group', name='Forget owner-folder?')
         expect(ask).to_contain_text('Your files are not touched')
         ask.get_by_role('button', name='Forget', exact=True).click()
+        # Follow the existing unknown-outcome flow before asserting completion.
+        expect(page.get_by_role('status').filter(has_text=re.compile(r'Forgotten at|Forget outcome pending'))).to_be_visible()
+        if ask.get_by_role('button', name='Check status', exact=True).is_visible():
+            ask.get_by_role('button', name='Check status', exact=True).click()
         expect(page.get_by_role('status').filter(has_text='Forgotten')).to_contain_text('No scanned file was touched')
         expect(page.locator('main section[aria-labelledby="h-roots"] table tbody')).to_contain_text('No roots granted')
         grants = live_call(page, token, 'grants.list', {})['result']['grants']
