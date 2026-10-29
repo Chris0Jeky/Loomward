@@ -48,6 +48,7 @@ from test_app_copy import run_copy
 from test_app_inventory import run_inventory
 from test_app_ask import live_ask_isolated, run_ask
 from test_app_clutter import live_clutter, run_clutter
+from test_app_reclaim import live_reclaim
 from test_app_agent_access import run_agent_access
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -530,6 +531,10 @@ def live_personal_scan(browser, exe: Path) -> None:
         ask = page.get_by_role('group', name='Forget owner-folder?')
         expect(ask).to_contain_text('Your files are not touched')
         ask.get_by_role('button', name='Forget', exact=True).click()
+        # Follow the existing unknown-outcome flow before asserting completion.
+        expect(page.get_by_role('status').filter(has_text=re.compile(r'Forgotten at|Forget outcome pending'))).to_be_visible()
+        if ask.get_by_role('button', name='Check status', exact=True).is_visible():
+            ask.get_by_role('button', name='Check status', exact=True).click()
         expect(page.get_by_role('status').filter(has_text='Forgotten')).to_contain_text('No scanned file was touched')
         expect(page.locator('main section[aria-labelledby="h-roots"] table tbody')).to_contain_text('No roots granted')
         grants = live_call(page, token, 'grants.list', {})['result']['grants']
@@ -774,6 +779,7 @@ def run_live_serve(browser_path: str | None) -> None:
             live_backups(page, token)
             live_alerts(page, token)
             live_clutter(page, token, check, live_call)
+            live_reclaim(browser, exe, DIST, check, live_call)
             live_diagnostics(page, token)
             live_scan_refusals(browser, exe)
             live_personal_scan(browser, exe)

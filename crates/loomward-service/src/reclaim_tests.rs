@@ -523,6 +523,467 @@ fn target_candidate(svc: &Service) -> Value {
 
 #[cfg(windows)]
 #[test]
+fn reclaim_selection_closes_cross_candidate_links() {
+    let Some(lab) = cargo_lab(|target| {
+        let cache = target.parent().unwrap().join(".cargo/registry/cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::hard_link(target.join("one.bin"), cache.join("shared.bin")).unwrap();
+    }) else {
+        return;
+    };
+    settle(&lab.svc, &observe_job(&lab.svc));
+    let plan = reclaim(&lab.svc);
+    let candidates: Vec<_> = plan["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|g| g["candidates"].as_array().unwrap())
+        .filter(|c| c["name"] == "target" || c["class"] == "package_cache")
+        .collect();
+    assert_eq!(candidates.len(), 2);
+    assert!(candidates.iter().all(|c| c["reclaimable_bytes"].is_null()));
+    let selection: Vec<_> = candidates.iter().map(|c| c["node_id"].clone()).collect();
+    let catalogue = row_checksums(&lab.svc.inner.db());
+    let catalog_path = loomward_catalog::sqlite_dir(&lab.svc.inner.state_dir).join("catalog.db");
+    let catalogue_bytes = std::fs::read(&catalog_path).unwrap();
+    let job = ok(
+        "reclaim.observe",
+        call(
+            &lab.svc,
+            "reclaim.observe",
+            json!({"volume_id": volume_id(&lab.svc), "selection": selection}),
+        ),
+    )
+    .0;
+    let done = settle(&lab.svc, job["job"]["job_id"].as_str().unwrap());
+    assert_eq!(done["coverage"], "complete", "{done:?}");
+    assert_eq!(done["reclaim"]["names_checked"], 3);
+    let result = ok(
+        "reclaim.plan",
+        call(
+            &lab.svc,
+            "reclaim.plan",
+            json!({"volume_id": volume_id(&lab.svc), "limit": 50, "selection": selection}),
+        ),
+    )
+    .0;
+    assert_eq!(
+        result["selection"]["reclaimable_bytes"], "20480",
+        "{result:?}"
+    );
+    assert!(result["selection"]["reason"].is_null());
+    assert!(result["selection"]["observed_at"].is_string());
+    assert_eq!(row_checksums(&lab.svc.inner.db()), catalogue);
+    assert_eq!(std::fs::read(catalog_path).unwrap(), catalogue_bytes);
+}
+
+#[cfg(windows)]
+fn selection_ids(svc: &Service) -> Vec<Value> {
+    reclaim(svc)["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|g| g["candidates"].as_array().unwrap())
+        .filter(|c| !c["node_id"].is_null())
+        .map(|c| c["node_id"].clone())
+        .collect()
+}
+
+#[cfg(windows)]
+fn selection_job(svc: &Service, selection: &[Value]) -> String {
+    ok(
+        "reclaim.observe",
+        call(
+            svc,
+            "reclaim.observe",
+            json!({"volume_id":volume_id(svc), "selection": selection}),
+        ),
+    )
+    .0["job"]["job_id"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+#[cfg(windows)]
+fn selected_result(svc: &Service, selection: &[Value]) -> Value {
+    ok(
+        "reclaim.plan",
+        call(
+            svc,
+            "reclaim.plan",
+            json!({"volume_id":volume_id(svc), "limit":50, "selection": selection}),
+        ),
+    )
+    .0["selection"]
+        .clone()
+}
+
+#[test]
+fn reclaim_selection_rejects_duplicates_non_candidates_wrong_volumes_and_ancestry() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let root = fixture(&svc);
+    let plan = reclaim(&svc);
+    let candidate = plan["groups"][0]["candidates"][0]["node_id"].clone();
+    let request = |selection: Value| {
+        call(
+            &svc,
+            "reclaim.plan",
+            json!({"volume_id": volume_id(&svc), "limit":50, "selection":selection}),
+        )
+    };
+    assert_eq!(
+        err(request(json!([candidate, candidate]))).code,
+        ErrorCode::InvalidRequest
+    );
+    let root_dir = crate::db::active_root_dir(&svc.inner.db(), svc.inner.root_row(&root).unwrap())
+        .unwrap()
+        .unwrap();
+    let mut not_candidate = json!({"node_id":format!("nd_dir_{root_dir}")});
+    svc.inner.seal(&mut not_candidate).unwrap();
+    assert_eq!(
+        err(request(json!([not_candidate["node_id"]]))).code,
+        ErrorCode::InvalidRequest
+    );
+    let nested = scanned(
+        &svc,
+        2,
+        &dir(
+            "",
+            &[],
+            vec![dir(
+                "linked",
+                &[(".git", 12), ("Cargo.toml", 8)],
+                vec![dir("target", &[("output.bin", 20)], vec![])],
+            )],
+        ),
+    );
+    let nested_row = svc.inner.root_row(&nested).unwrap();
+    let nested_plan = reclaim(&svc);
+    let ids: Vec<_> = nested_plan["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|g| g["candidates"].as_array().unwrap())
+        .filter(|c| {
+            c["name"] == "linked" || (c["name"] == "target" && c["allocated_bytes"] == "20")
+        })
+        .map(|c| c["node_id"].clone())
+        .collect();
+    assert_eq!(ids.len(), 2, "{nested_plan}");
+    assert!(err(request(json!(ids)))
+        .message
+        .as_str()
+        .contains("descendant"));
+    // A genuine second volume, with the selected node left on the first.
+    svc.inner.db().execute("INSERT INTO main.volume(volume_key,display_name,filesystem,identity_json,capabilities_json,device_json,online,observed_at_ns) VALUES('other','Other','NTFS','{}','{}','{}',1,0)", []).unwrap();
+    let other: i64 = svc
+        .inner
+        .db()
+        .query_row(
+            "SELECT id FROM main.volume WHERE volume_key='other'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    svc.inner
+        .db()
+        .execute(
+            "UPDATE main.root SET volume_id=?1 WHERE id=?2",
+            rusqlite::params![other, nested_row],
+        )
+        .unwrap();
+    let wrong = err(call(
+        &svc,
+        "reclaim.plan",
+        json!({"volume_id":svc.inner.volume_id(other), "limit":50, "selection":[candidate]}),
+    ));
+    assert_eq!(wrong.code, ErrorCode::InvalidRequest);
+}
+
+#[cfg(windows)]
+#[test]
+fn reclaim_selection_external_links_and_identity_mismatch_stay_unknown() {
+    for mismatch in [false, true] {
+        let Some(lab) = cargo_lab(|target| {
+            if !mismatch {
+                std::fs::hard_link(
+                    target.join("one.bin"),
+                    target.parent().unwrap().join("outside.bin"),
+                )
+                .unwrap();
+            }
+        }) else {
+            return;
+        };
+        if mismatch {
+            let file = lab.path.join("target/two.bin");
+            std::fs::remove_file(&file).unwrap();
+            std::fs::write(file, vec![3u8; 12288]).unwrap();
+        }
+        let selection = selection_ids(&lab.svc);
+        settle(&lab.svc, &selection_job(&lab.svc, &selection));
+        let result = selected_result(&lab.svc, &selection);
+        assert_eq!(result["status"], "recorded", "{result}");
+        assert!(result["reclaimable_bytes"].is_null());
+        assert!(result["reason"].as_str().unwrap().contains("hard-link"));
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn reclaim_selection_cancel_and_global_budgets_replace_previous_estimates_with_unknown() {
+    let Some(lab) = cargo_lab(|target| {
+        let cache = target.parent().unwrap().join(".cargo/registry/cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        for n in 0..4 {
+            std::fs::write(cache.join(format!("{n}.bin")), vec![4u8; 4096]).unwrap();
+        }
+    }) else {
+        return;
+    };
+    let selection = selection_ids(&lab.svc);
+    assert_eq!(selection.len(), 2);
+    settle(&lab.svc, &selection_job(&lab.svc, &selection));
+    assert!(selected_result(&lab.svc, &selection)["reclaimable_bytes"].is_string());
+    let hooks = &lab.svc.inner.hooks;
+    let gate = (Command::ReclaimObserve, "candidate");
+    hooks.closed.lock().unwrap().push(gate);
+    let id = selection_job(&lab.svc, &selection);
+    hooks.until("selection reached candidate", |h| {
+        h.arrived.lock().unwrap().contains(&gate)
+    });
+    ok(
+        "jobs.cancel",
+        call(&lab.svc, "jobs.cancel", json!({"job_id":id})),
+    );
+    hooks.open(gate.0, gate.1);
+    assert_eq!(settle(&lab.svc, &id)["state"], "cancelled");
+    let cancelled = selected_result(&lab.svc, &selection);
+    assert!(cancelled["reclaimable_bytes"].is_null(), "{cancelled}");
+    assert!(cancelled["reason"].as_str().unwrap().contains("cancelled"));
+    *hooks.reclaim_budget.lock().unwrap() = Some(Duration::ZERO);
+    assert_eq!(
+        settle(&lab.svc, &selection_job(&lab.svc, &selection))["coverage"],
+        "partial"
+    );
+    assert!(selected_result(&lab.svc, &selection)["reason"]
+        .as_str()
+        .unwrap()
+        .contains("time budget"));
+    *hooks.reclaim_budget.lock().unwrap() = None;
+    hooks
+        .reclaim_selection_limit
+        .store(5, std::sync::atomic::Ordering::Release);
+    hooks
+        .reclaim_names_opened
+        .store(0, std::sync::atomic::Ordering::Release);
+    let done = settle(&lab.svc, &selection_job(&lab.svc, &selection));
+    assert_eq!(done["coverage"], "partial");
+    assert!(names_opened(&lab.svc) <= 5);
+    let limited = selected_result(&lab.svc, &selection);
+    assert!(limited["reclaimable_bytes"].is_null());
+    assert!(
+        limited["reason"].as_str().unwrap().contains("budget"),
+        "{limited}"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn reclaim_selection_directory_budget_and_placeholder_are_unknown() {
+    let Some(lab) = cargo_lab(|target| {
+        for n in 0..6 {
+            std::fs::create_dir(target.join(format!("empty-{n}"))).unwrap();
+        }
+    }) else {
+        return;
+    };
+    let selection = selection_ids(&lab.svc);
+    lab.svc
+        .inner
+        .hooks
+        .reclaim_selection_limit
+        .store(5, std::sync::atomic::Ordering::Release);
+    let done = settle(&lab.svc, &selection_job(&lab.svc, &selection));
+    assert_eq!(done["coverage"], "partial");
+    assert_eq!(names_opened(&lab.svc), 0);
+    assert!(selected_result(&lab.svc, &selection)["reason"]
+        .as_str()
+        .unwrap()
+        .contains("directory budget"));
+    lab.svc
+        .inner
+        .hooks
+        .reclaim_selection_limit
+        .store(0, std::sync::atomic::Ordering::Release);
+    lab.svc
+        .inner
+        .db()
+        .execute(
+            "UPDATE main.file SET attrs=attrs | 4096 WHERE name='one.bin'",
+            [],
+        )
+        .unwrap();
+    settle(&lab.svc, &selection_job(&lab.svc, &selection));
+    assert!(selected_result(&lab.svc, &selection)["reclaimable_bytes"].is_null());
+}
+
+#[cfg(windows)]
+#[test]
+fn reclaim_selection_shared_ancestors_cannot_hide_directory_budget_overflow() {
+    let Some(lab) = cargo_lab(|target| {
+        let root = target.parent().unwrap();
+        let cache = root.join(".cargo/registry/cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(cache.join("first.bin"), vec![1u8; 12288]).unwrap();
+        for name in ["a", "b"] {
+            let folder = root.join(".cargo/git/db").join(name);
+            std::fs::create_dir_all(&folder).unwrap();
+            std::fs::write(folder.join("file.bin"), vec![2u8; 4096]).unwrap();
+        }
+    }) else {
+        return;
+    };
+    let selection: Vec<_> = reclaim(&lab.svc)["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|g| g["candidates"].as_array().unwrap())
+        .filter(|c| c["class"] == "package_cache")
+        .map(|c| c["node_id"].clone())
+        .collect();
+    assert_eq!(selection.len(), 2);
+    let hidden = lab.path.join(".cargo/git/db/b");
+    let moved = lab.path.join("moved-b");
+    std::fs::rename(&hidden, &moved).unwrap();
+    let made = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(&hidden)
+        .arg(&moved)
+        .output()
+        .unwrap();
+    assert!(made.status.success(), "{made:?}");
+    lab.svc
+        .inner
+        .hooks
+        .reclaim_selection_limit
+        .store(6, std::sync::atomic::Ordering::Release);
+    let done = settle(&lab.svc, &selection_job(&lab.svc, &selection));
+    let result = selected_result(&lab.svc, &selection);
+    std::fs::remove_dir(&hidden).unwrap();
+    assert_eq!(done["coverage"], "partial", "{done:?}");
+    assert!(result["reclaimable_bytes"].is_null(), "{result}");
+    assert!(
+        result["reason"].as_str().unwrap().contains("budget"),
+        "{result}"
+    );
+    assert!(
+        names_opened(&lab.svc) <= 1,
+        "no files below the truncated second candidate are opened"
+    );
+    std::fs::rename(&moved, &hidden).unwrap();
+    lab.svc
+        .inner
+        .hooks
+        .reclaim_selection_limit
+        .store(7, std::sync::atomic::Ordering::Release);
+    assert_eq!(
+        settle(&lab.svc, &selection_job(&lab.svc, &selection))["coverage"],
+        "complete"
+    );
+    assert_eq!(
+        selected_result(&lab.svc, &selection)["reclaimable_bytes"],
+        "20480"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn reclaim_selection_expires_on_each_binding_and_is_removed_by_revoke_or_forget() {
+    for forget in [false, true] {
+        let Some(lab) = cargo_lab(|_| {}) else { return };
+        let selection = selection_ids(&lab.svc);
+        settle(&lab.svc, &selection_job(&lab.svc, &selection));
+        for (change, restore) in [
+            ("UPDATE main.dir SET subtree_rev=subtree_rev+1 WHERE name='target'", "UPDATE main.dir SET subtree_rev=subtree_rev-1 WHERE name='target'"),
+            ("UPDATE main.root SET generation=generation+1", "UPDATE main.root SET generation=generation-1"),
+            ("UPDATE st.reclaim_selection SET catalog_instance='old'", "UPDATE st.reclaim_selection SET catalog_instance=(SELECT value FROM main.meta WHERE key='instance_id')"),
+            ("UPDATE st.reclaim_selection SET members=json_set(members,'$[0].incarnation',-1)", "UPDATE st.reclaim_selection SET members=json_set(members,'$[0].incarnation',(SELECT born_run FROM main.dir WHERE name='target'))"),
+        ] {
+            lab.svc.inner.db().execute_batch(change).unwrap();
+            let expired = selected_result(&lab.svc, &selection);
+            assert_eq!(expired["status"], "expired", "{change}: {expired}");
+            assert!(expired["reclaimable_bytes"].is_null());
+            lab.svc.inner.db().execute_batch(restore).unwrap();
+        }
+        assert_eq!(
+            selected_result(&lab.svc, &selection)["reclaimable_bytes"],
+            "20480"
+        );
+        ok(
+            "roots.revoke",
+            call(
+                &lab.svc,
+                "roots.revoke",
+                json!({"root_id":lab.root, "purge_catalog":false}),
+            ),
+        );
+        if forget {
+            ok(
+                "roots.forget",
+                call(&lab.svc, "roots.forget", json!({"root_id":lab.root})),
+            );
+        }
+        let rows: i64 = lab
+            .svc
+            .inner
+            .db()
+            .query_row("SELECT count(*) FROM st.reclaim_selection", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(rows, 0);
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn reclaim_selection_revocation_during_observation_cannot_publish_or_open_names() {
+    let Some(lab) = cargo_lab(|_| {}) else { return };
+    let selection = selection_ids(&lab.svc);
+    let hooks = &lab.svc.inner.hooks;
+    let gate = (Command::ReclaimObserve, "chunk");
+    hooks.closed.lock().unwrap().push(gate);
+    let id = selection_job(&lab.svc, &selection);
+    hooks.until("selection reached native names", |h| {
+        h.arrived.lock().unwrap().contains(&gate)
+    });
+    ok(
+        "roots.revoke",
+        call(
+            &lab.svc,
+            "roots.revoke",
+            json!({"root_id":lab.root, "purge_catalog":false}),
+        ),
+    );
+    hooks.open(gate.0, gate.1);
+    assert_eq!(settle(&lab.svc, &id)["coverage"], "partial");
+    assert_eq!(names_opened(&lab.svc), 0);
+    let rows: i64 = lab
+        .svc
+        .inner
+        .db()
+        .query_row("SELECT count(*) FROM st.reclaim_selection", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(rows, 0);
+}
+
+#[cfg(windows)]
+#[test]
 fn reclaim_observe_counts_hard_links_inside_a_candidate_once() {
     let Some(lab) = cargo_lab(|target| {
         std::fs::hard_link(

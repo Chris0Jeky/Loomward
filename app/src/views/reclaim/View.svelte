@@ -3,14 +3,14 @@
 </script>
 <script lang="ts">
   import { untrack } from 'svelte';
-  import type { ReclaimPlan, Volume } from '../../lib/contracts.gen';
+  import type { ReclaimPlan, ReclaimSelection, Volume } from '../../lib/contracts.gen';
   import { formatBytes } from '../../lib/format/bytes';
   import { escapedName } from '../../lib/format/names';
   import { ReclaimObserve } from '../../lib/stores/reclaim-observe.svelte';
   import { session } from '../../lib/stores/session.svelte';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
   import { COVERAGE_WORDS } from '../clutter/model';
-  import { defaultVolume, GROUP_HEADINGS, OBSERVE_EXPLAINER, observeLines, unaccountedText } from './model';
+  import { defaultVolume, GROUP_HEADINGS, OBSERVE_EXPLAINER, observationAge, observeLines, selectionComparison, targetBytes, unaccountedText } from './model';
 
   let volumes = $state<Volume[]>([]);
   let selected = $state('');
@@ -18,6 +18,10 @@
   let loading = $state(true);
   let error = $state('');
   let generation = 0;
+  let members = $state<string[]>([]);
+  let target = $state('');
+  let selectionResult = $state<ReclaimSelection | null>(null);
+  let now = $state(Date.now());
   const observe = new ReclaimObserve();
   const lines = $derived(observeLines(observe));
 
@@ -25,26 +29,49 @@
     const c = session.client;
     if (!c || !id) { generation++; report = null; loading = false; return; }
     const mine = ++generation;
-    loading = true; error = ''; report = null;
+    const requested = [...members];
+    loading = true; error = ''; report = null; selectionResult = null;
     try {
-      const { result } = await c.call('reclaim.plan', { volume_id: id, limit: 50 });
-      if (mine === generation) report = result;
+      const { result } = await c.call('reclaim.plan', { volume_id: id, limit: 50, ...(requested.length ? { selection: requested } : {}) });
+      if (mine === generation) {
+        report = result;
+        if (requested.join() === members.join() && result.selection?.members.length === members.length
+            && result.selection.members.every((m) => members.includes(m))) selectionResult = result.selection;
+      }
     } catch (e) {
       if (mine === generation) { error = session.handle(e); report = null; }
     } finally { if (mine === generation) loading = false; }
   }
+
+  function toggle(id: string, checked: boolean): void {
+    members = checked ? [...members, id] : members.filter((m) => m !== id);
+    selectionResult = null;
+  }
+
+  async function observeSelection(): Promise<void> {
+    selectionResult = null;
+    await observe.start(selected, [...members]);
+    if (!observe.active) await read(selected);
+  }
+
+  $effect(() => {
+    if (!selectionResult?.observed_at) return;
+    now = Date.now();
+    const timer = setInterval(() => { now = Date.now(); }, 10000);
+    return () => clearInterval(timer);
+  });
 
   $effect(() => {
     const c = session.client;
     void session.epoch;
     let current = true;
     if (c) void (async () => {
-      generation++; report = null; loading = true; error = '';
+      generation++; report = null; selectionResult = null; loading = true; error = '';
       try {
         const { result } = await c.call('volumes.list', {});
         if (!current) return;
         volumes = result.volumes;
-        if (!volumes.some((v) => v.volume_id === selected)) selected = defaultVolume(volumes);
+        if (!volumes.some((v) => v.volume_id === selected)) { selected = defaultVolume(volumes); members = []; }
         await untrack(() => read(selected));
       } catch (e) { if (current) { error = session.handle(e); loading = false; } }
     })();
@@ -77,7 +104,7 @@
   <div class="controls">
     <div class="lw-field">
       <label class="lbl" for="reclaim-volume">Volume to review</label>
-      <select id="reclaim-volume" bind:value={selected} disabled={loading || !volumes.length || observe.active} onchange={(e) => { selected = e.currentTarget.value; void read(selected); }}>
+      <select id="reclaim-volume" bind:value={selected} disabled={loading || !volumes.length || observe.active} onchange={(e) => { selected = e.currentTarget.value; members = []; selectionResult = null; void read(selected); }}>
         {#each volumes as v (v.volume_id)}<option value={v.volume_id}>{escapedName(v.display_name)}</option>{/each}
       </select>
     </div>
@@ -90,6 +117,35 @@
   <p class="live bad" class:has={!!lines.problem} role="status" aria-label="Observation problem">{lines.problem}</p>
   {#if !loading && !volumes.length && !error}<p class="empty">No recorded volume is available.</p>{/if}
   <p class="live bad" class:has={!!error} role="alert">{error}</p>
+</section>
+
+<section class="panel" aria-labelledby="selection-h">
+  <h2 id="selection-h">Inspect a selection</h2>
+  <p>Choose up to 12 candidates on this volume. Observing them together checks shared hard links once across the selected set.</p>
+  <div class="controls">
+    <div class="lw-field">
+      <label class="lbl" for="reclaim-target">Space target (bytes)</label>
+      <input id="reclaim-target" type="text" inputmode="numeric" maxlength="20" bind:value={target}
+        aria-invalid={target !== '' && targetBytes(target) === null} aria-describedby="selection-comparison" />
+    </div>
+    <button class="btn" disabled={!members.length || loading || observe.pending || observe.active || targetBytes(target) === null}
+      onclick={() => void observeSelection()}>Observe selection</button>
+    <button class="btn" disabled={!members.length} onclick={() => { members = []; selectionResult = null; }}>Clear selection</button>
+  </div>
+  <p class="muted small">{members.length} of 12 selected. Moving items to the Recycle Bin or renaming them on the same volume does not immediately free this space.</p>
+  <div role="status" aria-label="Selection estimate">
+    {#if selectionResult?.status === 'recorded'}
+      <p>Recorded union estimate: {selectionResult.reclaimable_bytes === null ? 'unknown' : `${selectionResult.reclaimable_bytes} bytes (${formatBytes(selectionResult.reclaimable_bytes)})`}.</p>
+    {:else if selectionResult?.status === 'expired'}
+      <p><strong>This observation has expired.</strong> Current union estimate: unknown.</p>
+    {:else}
+      <p>This selection has not been observed. Union estimate: unknown.</p>
+    {/if}
+    {#if selectionResult?.observed_at}<p class="muted">Recorded {observationAge(selectionResult.observed_at, now)} · <time datetime={selectionResult.observed_at}>{selectionResult.observed_at}</time></p>{/if}
+    {#if selectionResult?.reason}<p>{selectionResult.reason}</p>{/if}
+    <p id="selection-comparison">{selectionComparison(selectionResult, target)}</p>
+  </div>
+  <p class="muted small">Recorded allocation evidence only. This does not approve removal or promise physical space recovery.</p>
 </section>
 
 <div aria-busy={loading}>
@@ -110,6 +166,12 @@
             {#each group.candidates as candidate}
               <li>
                 <h3><VisibleName name={candidate.name ?? 'Name unknown'} /></h3>
+                {#if candidate.node_id}
+                  <label class="selection-choice"><input type="checkbox" checked={members.includes(candidate.node_id)}
+                    disabled={members.length === 12 && !members.includes(candidate.node_id)}
+                    onchange={(e) => toggle(candidate.node_id!, e.currentTarget.checked)} />
+                    Include <VisibleName name={candidate.name ?? 'Name unknown'} /> in selection</label>
+                {/if}
                 <p>{candidate.class.replaceAll('_', ' ')} · {candidate.provider}{candidate.kind ? ` · ${candidate.kind.replaceAll('_', ' ')}` : ''}</p>
                 <p>Allocated: {formatBytes(candidate.allocated_bytes)} · Logical: {formatBytes(candidate.logical_bytes)} · Estimated reclaimable: {formatBytes(candidate.reclaimable_bytes)}</p>
                 {#if candidate.reclaimable_reason}<p class="muted">{candidate.reclaimable_reason}</p>{/if}
@@ -134,6 +196,9 @@
 </div>
 
 <style>
+  .selection-choice { display: inline-flex; align-items: center; gap: var(--sp-2); min-height: 44px; }
+  .selection-choice input { width: 1.125rem; height: 1.125rem; flex-shrink: 0; }
+  #reclaim-target { max-width: 100%; }
   .candidates { padding-inline-start: var(--sp-4); margin: 0; }
   .candidates > li + li { border-top: 1px solid var(--line); padding-top: var(--sp-4); margin-top: var(--sp-4); }
   .candidates p, .candidates li { overflow-wrap: anywhere; }

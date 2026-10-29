@@ -66,13 +66,13 @@ export class ReclaimObserve {
       if (current()) { this.apply(result.job); this.problem = ''; }
     } catch (e) { const message = session.handle(e); if (current()) this.problem = message; }
   }
-  async start(volumeId: string): Promise<void> {
+  async start(volumeId: string, selection?: string[]): Promise<void> {
     const c = session.client;
     if (!c || this.pending || this.active) return;
     this.pending = true; this.problem = '';
     const current = this.capture();
     try {
-      const { result } = await c.call('reclaim.observe', { volume_id: volumeId });
+      const { result } = await c.call('reclaim.observe', { volume_id: volumeId, ...(selection ? { selection } : {}) });
       if (current()) { this.apply(result.job); this.ownJobId = result.job.job_id; }
     } catch (e) {
       session.handle(e);

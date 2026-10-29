@@ -1080,6 +1080,39 @@ root through the candidate is still the catalogued, non-reparse directory; other
 unknown and nothing beneath it is opened. It re-checks the grant and cancellation every 1,000 names.
 A root that fails admission is skipped (job `partial`), and the job never changes a grant's state.
 
+### Selected reclaim sets (#1002)
+
+Both owner commands additionally accept `selection: [NodeId, ...]` (1–12 sealed IDs).
+Omitting it preserves the existing per-candidate behavior and result shape. The service resolves
+IDs against the current volume's candidates, refuses repeated IDs, wrong-volume or non-candidate
+nodes, and rejects ancestor/descendant pairs. The request never takes a filesystem path or an
+execution instruction. The target is an exact decimal byte string compared in the view; it is
+not an effect, a stored permission or an automatic subset search.
+
+With a selection, `reclaim.observe` performs one union observation with a shared ten-minute,
+200,000-name and 200,000-directory budget. Distinct catalogue names are counted once; shared
+objects use the existing identity-matched hard-link closure rule. Each member must have complete
+size coverage, and every link of every object must be in the selected union. Missing identity,
+an outside link, recall/reparse risk, cancellation or incomplete work gives an unknown aggregate,
+never a partial known sum. Cancellation and active grants are checked between chunks of at most
+1,000 metadata opens; SQL walks also check cancellation and the deadline. A blocked OS metadata
+call cannot be preempted. The existing path-based directory-check/open race remains; observations
+are never effect authority.
+
+Only the latest selection aggregate per volume is retained in `state.db`, together with its
+catalogue instance, member node incarnations, roots, active grants, generations, subtree revisions
+and observation time. No name/object graph is retained. Publication checks all bindings in the
+same SQL statement that writes the aggregate. Revoking or forgetting any member's root removes
+the result. A changed binding or stale root prevents a known result from being read.
+
+`reclaim.plan` with a selection adds `selection: { members, status, observed_at,
+reclaimable_bytes, reason }`. Status is `unobserved`, `recorded` or `expired`; timestamps and
+bytes are required nullable fields. A recorded attempt may have unknown bytes with a reason.
+Different selections never borrow the last selection's estimate. The UI clears the result on
+selection changes, shows its age, and compares only recorded known bytes with the target using
+integer arithmetic. The estimate does not approve deletion or guarantee physical space recovery;
+Recycle Bin moves and same-volume renames do not immediately free this allocation.
+
 ## Owner MCP client grants (docs/48 E6)
 
 `clients.grant`, `clients.list` and `clients.revoke` accept the owner principal only, on the desktop

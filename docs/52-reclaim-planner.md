@@ -150,6 +150,35 @@ result.
   unfinished candidates unknown. A rescan (new generation) invalidates the rows. `state.db` changes only in the new table,
   and the catalogue stays byte-identical. The job refuses an elevated token.
 
+### 6.2 Inspect a selected set (#1002)
+
+The Reclaim view lets the owner select up to 12 current candidates on one volume, enter a target
+in whole bytes, and explicitly observe that set. This is read-only inspection. It adds no automatic
+subset search, execution control or permission to remove anything.
+
+The optional `selection` property on `reclaim.observe` and `reclaim.plan` contains sealed node IDs.
+Old requests retain their behavior. The service derives paths from current catalogue records and
+active grants; duplicate IDs, wrong-volume/non-candidate nodes and ancestor/descendant selections
+are refused. One union pass has global limits of 200,000 names, 200,000 directories and ten minutes.
+It uses the existing non-elevated, no-recall identity checks and `ReliefTally` link closure. Two
+individually unknown candidates can yield a known union when their shared hard links close together;
+an external link, mismatch, partial coverage or stopped pass keeps the whole union unknown.
+
+Only one latest aggregate per volume and its member bindings are retained, without a name/object
+graph. The publication statement checks the catalogue instance, volume, active grants, root
+generations, node incarnations and subtree revisions together. Reads also require fresh, complete
+roots with no scan in flight. Any changed member expires the result; revoke/forget removes it.
+
+The view shows the recorded observation's age, exact byte estimate, reason when unknown, and exact
+target comparison. Changing the selection clears the old result immediately. Recorded allocation
+is neither freed space nor deletion approval. Recycle Bin moves and same-volume renames do not
+immediately recover it. The existing directory-check/open race and physical-model limitations remain.
+
+The native regression and `reclaim_selection_fixture` use two disposable candidates with three
+names for two NTFS objects: individually unknown, jointly 20,480 allocated bytes counted once.
+The production HTTP/Svelte qualification compares that complete case with PR1001's independent
+Python oracle in the test process only. Loomward never starts the Python experiment.
+
 ## 7. Validation
 
 - **Synthetic fixtures** (`fixtures/reclaim/`, synthetic names only): one tree per class, plus hard-link groups that
@@ -178,6 +207,7 @@ result.
 | R1e | tool-agreement run on the owner's machine | none (agent runs read-only tool commands) | section 7 record |
 | R1f | proposed to the external-disk lane: MCP `reclaim_plan` tool | none | as docs/48 E4 |
 | R1g | `reclaim.observe` job: bounded link-count observation stored per candidate and root generation (section 6.1, #939) | none (metadata opens on granted roots) | section 6.1 acceptance |
+| R1h | selected-set inspection and exact target comparison (section 6.2, #1002) | none (metadata opens on granted roots) | native union, invalidation, budgets and real HTTP/Svelte journey |
 
 ## 9. What this design deliberately does not do
 
