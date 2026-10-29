@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -39,7 +40,9 @@ def live_reclaim(browser, exe, dist, check, live_call):
             page.goto(url)
             expect(page.get_by_role('status', name='Session status')).to_contain_text('Dataset synthetic')
             page.evaluate("location.hash = '#/health'")
-            page.locator('ul.scans li').get_by_role('button', name='Scan selected-lab', exact=True).click()
+            expect(page.get_by_role('heading', name='Grants & health', level=1)).to_be_visible()
+            expect(page.locator('ul.scans li')).to_have_count(1)
+            page.locator('ul.scans li').get_by_role('button', name=re.compile(r'^Scan .*selected-lab$')).click()
             expect(page.locator('ul.scans li .job')).to_contain_text('Finished, complete coverage', timeout=30000)
             page.evaluate("location.hash = '#/reclaim'")
             expect(page.get_by_role('checkbox')).to_have_count(2)
