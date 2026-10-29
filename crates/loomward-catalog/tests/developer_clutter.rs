@@ -744,3 +744,154 @@ fn unrepaired_read_never_changes_rows_even_when_the_root_needs_repair() {
     lab.report(200);
     assert_ne!(row_checksums(&lab.db), before);
 }
+
+#[test]
+fn project_discovery_consolidates_exact_markers_without_outputs_and_keeps_nested_roots() {
+    let lab = Lab::new();
+    lab.db.execute("UPDATE root SET generation=12", []).unwrap();
+    let parent = lab.directory(lab.dir, "project", 0);
+    for name in [
+        "Cargo.toml",
+        "package.json",
+        "pyproject.toml",
+        "requirements.txt",
+        "demo.csproj",
+        "demo.sln",
+        "build.gradle",
+        "build.gradle.kts",
+    ] {
+        lab.manifest(parent, name);
+    }
+    let nested = lab.directory(parent, "nested", 0);
+    lab.manifest(nested, "package.json");
+    let decoy = lab.directory(lab.dir, "decoy", 0);
+    for name in [
+        "cargo.toml",
+        "PACKAGE.JSON",
+        "Cargo.toml.bak",
+        ".csproj",
+        ".sln",
+        "demo.csproj.bak",
+        "build.gradle.kts.bak",
+    ] {
+        lab.manifest(decoy, name);
+    }
+    let mut reader = lab.catalog.reader().unwrap();
+    let first = reader.projects(lab.root, 1, 0).unwrap();
+    assert!(!first.partial);
+    assert_eq!(first.generation, Some(12));
+    assert_eq!(first.candidates.len(), 1);
+    assert_eq!(first.candidates[0].directory, NodeKey::Dir(parent));
+    assert_eq!(first.candidates[0].markers.len(), 8);
+    let second = reader
+        .projects(lab.root, 1, first.next_after.unwrap())
+        .unwrap();
+    assert_eq!(second.candidates[0].directory, NodeKey::Dir(nested));
+    assert!(second.next_after.is_none());
+    assert!(reader.projects(lab.root, 0, 0).is_err());
+    assert!(reader.projects(lab.root, 201, 0).is_err());
+    assert!(reader.projects(lab.root, 1, -1).is_err());
+}
+
+#[test]
+fn project_discovery_shields_incomplete_stale_excluded_and_unknown_without_repairs() {
+    let lab = Lab::new();
+    for state in ["excluded", "denied", "unscanned", "stale"] {
+        let d = lab.directory(lab.dir, state, 0);
+        lab.manifest(d, "Cargo.toml");
+        let child = lab.directory(d, "hidden", 0);
+        lab.manifest(child, "package.json");
+        lab.db
+            .execute(
+                "UPDATE dir SET listing_outcome=?1 WHERE id=?2",
+                params![state, d],
+            )
+            .unwrap();
+    }
+    let d = lab.directory(lab.dir, "partial", 0);
+    lab.manifest(d, "Cargo.toml");
+    lab.db.execute("UPDATE dir SET listing_state='incomplete',seen_run=2,dirty_rev=99,agg_valid_rev=0 WHERE id=?1",[d]).unwrap();
+    // The retained marker from run 1 must not be rediscovered in an incomplete run 2 listing.
+    let page = lab
+        .catalog
+        .reader()
+        .unwrap()
+        .projects(lab.root, 50, 0)
+        .unwrap();
+    assert!(page.partial);
+    assert!(page.candidates.is_empty());
+    assert!(page.generation.is_none());
+    assert_eq!(
+        lab.db
+            .query_row(
+                "SELECT dirty_rev-agg_valid_rev FROM dir WHERE id=?1",
+                [d],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        99
+    );
+    lab.db
+        .execute("UPDATE file SET seen_run=2 WHERE dir_id=?1", [d])
+        .unwrap();
+    let page = lab
+        .catalog
+        .reader()
+        .unwrap()
+        .projects(lab.root, 50, 0)
+        .unwrap();
+    assert_eq!(page.candidates.len(), 1);
+    assert_eq!(page.candidates[0].name, "partial");
+    assert_ne!(page.candidates[0].coverage, "complete");
+}
+
+#[test]
+fn project_discovery_bounds_evidence_and_requires_current_grant_and_generation() {
+    let lab = Lab::new();
+    let d = lab.directory(lab.dir, "project", 0);
+    for n in 0..20 {
+        lab.manifest(d, &format!("project-{n}.csproj"));
+    }
+    let page = lab
+        .catalog
+        .reader()
+        .unwrap()
+        .projects(lab.root, 50, 0)
+        .unwrap();
+    assert_eq!(page.candidates[0].markers.len(), 16);
+    assert!(page.candidates[0].markers_truncated);
+    let mut reader = lab.catalog.reader().unwrap();
+    reader.expect_generation(NodeKey::Dir(d), 42);
+    assert!(reader.projects(lab.root, 50, 0).is_err());
+    lab.catalog
+        .writer()
+        .call(WriteCommand::RevokeGrant {
+            grant_id: lab.grant,
+            revoked_at_ns: 1,
+        })
+        .unwrap();
+    assert!(lab
+        .catalog
+        .reader()
+        .unwrap()
+        .projects(lab.root, 50, 0)
+        .is_err());
+}
+
+#[test]
+fn project_discovery_refuses_expired_deadlines_and_bounds_large_catalogues() {
+    let lab = Lab::new();
+    let mut reader = lab.catalog.reader().unwrap();
+    reader.set_deadline(std::time::Instant::now());
+    assert!(matches!(
+        reader.projects(lab.root, 50, 0),
+        Err(Error::Cancelled)
+    ));
+    lab.db.execute("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<30000)
+        INSERT INTO dir(root_id,parent_id,name,id_quality,id_basis,depth,attrs,flags,listing_state,born_run,seen_run,sub_complete)
+        SELECT ?1,?2,'generated-'||x,'path_observation','none',1,16,0,'complete',1,1,1 FROM n",params![lab.root,lab.dir]).unwrap();
+    assert!(matches!(
+        lab.catalog.reader().unwrap().projects(lab.root, 50, 0),
+        Err(Error::ResourceBudget)
+    ));
+}

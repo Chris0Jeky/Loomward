@@ -67,6 +67,9 @@ impl Reader {
                 )))?.collect::<rusqlite::Result<Vec<_>>>()?;
             report.truncated = rows.len() > cap;
             for (id, anchor, anchor_name, provider) in rows.into_iter().take(cap) {
+                if crate::projects::project_provider(&anchor_name) != Some(provider.as_str()) {
+                    return Err(Error::Invalid("developer clutter marker"));
+                }
                 let row = query::get(conn, NodeKey::Dir(id))?;
                 let coverage = row.coverage();
                 let known = coverage == "complete" && row.valid && !scanning;

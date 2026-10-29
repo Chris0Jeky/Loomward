@@ -281,8 +281,17 @@ report `personal_metadata_unsupported`. There is no synthetic fallback for perso
 Rules:
 
 - `expected_generation` is accepted only for commands anchored in exactly one root (`tree.*`, `node.inspect`,
-  `stats.breakdown` on a root or node anchor). Elsewhere it is `invalid_request`. If the root's current
+  `projects.find`, `stats.breakdown` on a root or node anchor, and `collections.update_members` with exactly
+  one add and no removals). Elsewhere it is `invalid_request`. If the root's current
   generation differs, the response is `stale_generation`.
+- `projects.find` is owner-only, bounded to 1–200 candidates from one active granted root. It reads
+  catalogue metadata without aggregate repairs or source-path access. Exact developer-clutter marker
+  families identify probable folders, including ones without outputs; they establish neither dependency
+  completeness nor movement units. Each folder carries at most 16 markers with explicit truncation.
+  Cursors bind root, catalogue generation, catalogue revision, state revision and service session.
+  Incomplete coverage or a work-budget refusal cannot establish absence. Discovery changes no membership.
+  A collection add carrying `expected_generation` rechecks the active grant, node incarnation, generation,
+  watcher freshness and safe ancestor observations inside its existing state-revision transaction.
 - `expected_state_rev` is accepted only by `volumes.declare_tier`, `collections.update_members` and `roots.forget`; elsewhere it
   is `invalid_request`. A mismatch is `stale_generation` with `detail.reason = "state_rev_changed"` and nothing
   is written (section 3, step 3).

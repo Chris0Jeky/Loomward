@@ -10,6 +10,36 @@ export const PROTOCOL = "loomward/3";
 
 // ---- $defs
 
+export interface ProjectsRequest {
+  root_id: RootId;
+  limit: number;
+  cursor: Cursor | null;
+}
+
+export interface ProjectMarker {
+  name: string;
+  provider: DeveloperClutterProvider;
+}
+
+export interface ProjectCandidate {
+  node_id: NodeId;
+  name: string;
+  path: DisplayPath;
+  coverage: CoverageState;
+  markers: ProjectMarker[];
+  markers_truncated: boolean;
+}
+
+export interface ProjectsPage {
+  root_id: RootId;
+  generation: Generation | null;
+  coverage: CoverageState;
+  partial: boolean;
+  budget_hit: boolean;
+  candidates: ProjectCandidate[];
+  next_cursor: Cursor | null;
+}
+
 export type Protocol = "loomward/3";
 
 export type RequestId = string;
@@ -2440,6 +2470,7 @@ export const CLIENT_FIELDS = ["path", "size", "modified", "attributes", "volumes
 // ---- commands (commands.json)
 
 export interface CommandMap {
+  "projects.find": { request: ProjectsRequest; result: ProjectsPage };
   "session.hello": { request: EmptyRequest; result: SessionInfo };
   "health.get": { request: EmptyRequest; result: Health };
   "apps.list": { request: MetadataPageRequest; result: ApplicationPage };
@@ -2533,6 +2564,7 @@ export type CommandKey = keyof CommandMap;
 
 /** Where each command exists (elsewhere: capability_unavailable), its wave and its events. */
 export const COMMANDS = {
+  "projects.find": { adapters: ["tauri", "http"], wave: 2, events: [] },
   "session.hello": { adapters: ["tauri", "http"], wave: 1, events: [] },
   "health.get": { adapters: ["tauri", "http"], wave: 2, events: [] },
   "apps.list": { adapters: ["tauri", "http"], wave: 2, events: [] },

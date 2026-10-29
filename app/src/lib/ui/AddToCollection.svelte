@@ -4,7 +4,7 @@
   import type { Collection, NodeId } from '../contracts.gen';
   import { escapedName } from '../format/names';
   import { Say } from './say.svelte';
-  let { nodeId }: { nodeId: NodeId } = $props();
+  let { nodeId, expectedGeneration, onAdded }: { nodeId: NodeId; expectedGeneration?: string; onAdded?: () => void } = $props();
   let collections = $state<Collection[]>([]);
   let selected = $state('');
   let busy = $state(false);
@@ -19,13 +19,14 @@
   });
   async function add(): Promise<void> {
     if (!selected || !session.client || busy) return;
-    const id = nodeId, collection_id = selected;
+    const id = nodeId, collection_id = selected, observed = expectedGeneration;
     busy = true; error = ''; result.clear();
     try {
       const { meta } = await session.client.call('collections.members', { collection_id, limit: 1, cursor: null });
       if (meta.state_rev === null) throw new Error('The collection revision is unknown; refresh before adding.');
-      await session.client.call('collections.update_members', { collection_id, add: [id], remove: [] }, { expectedStateRev: meta.state_rev });
+      await session.client.call('collections.update_members', { collection_id, add: [id], remove: [] }, { expectedStateRev: meta.state_rev, expectedGeneration: observed });
       result.say('Added to collection. No file was changed.');
+      onAdded?.();
     } catch (e) { error = session.handle(e); }
     finally { busy = false; }
   }

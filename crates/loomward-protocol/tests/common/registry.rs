@@ -13,6 +13,10 @@ fn rt<T: DeserializeOwned + Serialize>(v: &Value) -> Result<Value, String> {
 /// `None` when the def has no registered type (the coverage test fails on that).
 pub fn roundtrip(def: &str, v: &Value) -> Option<Result<Value, String>> {
     Some(match def {
+        "ProjectsRequest" => rt::<ProjectsRequest>(v),
+        "ProjectMarker" => rt::<ProjectMarker>(v),
+        "ProjectCandidate" => rt::<ProjectCandidate>(v),
+        "ProjectsPage" => rt::<ProjectsPage>(v),
         "ClientEntryRow" => rt::<ClientEntryRow>(v),
         "ClientSearchHit" => rt::<ClientSearchHit>(v),
         "ClientSearchPage" => rt::<ClientSearchPage>(v),

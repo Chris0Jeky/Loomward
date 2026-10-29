@@ -18,6 +18,7 @@ export class LoomwardError extends Error {
 export interface CallOptions {
   deadlineMs?: number;
   expectedStateRev?: string;
+  expectedGeneration?: string;
   signal?: AbortSignal;
   /** A mutation retried after an unknown outcome reuses its id, so the service replays rather than repeats it. */
   requestId?: string;
@@ -44,7 +45,7 @@ export class Client {
     const request_id = opts.requestId ?? this.nextRequestId();
     const res = asResponse(
       await this.transport.call(
-        { protocol: 'loomward/3', request_id, command, payload: payload as unknown as Record<string, unknown>, deadline_ms: opts.deadlineMs ?? 5000, ...(opts.expectedStateRev !== undefined ? { expected_state_rev: opts.expectedStateRev } : {}) },
+        { protocol: 'loomward/3', request_id, command, payload: payload as unknown as Record<string, unknown>, deadline_ms: opts.deadlineMs ?? 5000, ...(opts.expectedStateRev !== undefined ? { expected_state_rev: opts.expectedStateRev } : {}), ...(opts.expectedGeneration !== undefined ? { expected_generation: opts.expectedGeneration } : {}) },
         opts.signal,
       ),
       request_id,

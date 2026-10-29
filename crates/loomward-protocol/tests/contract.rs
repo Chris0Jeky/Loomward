@@ -5,6 +5,27 @@
 mod common;
 
 use common::registry::roundtrip;
+
+#[test]
+fn project_generation_precondition_requires_one_add_and_no_removals() {
+    let base = serde_json::json!({"protocol":"loomward/3","request_id":"projects_guard",
+        "command":"collections.update_members","expected_generation":"12","expected_state_rev":"3",
+        "payload":{"collection_id":"co_1","add":["nd_1"],"remove":[]}});
+    let valid: RequestEnvelope = serde_json::from_value(base.clone()).unwrap();
+    assert!(valid.validate().is_ok());
+    for payload in [
+        serde_json::json!({"collection_id":"co_1","add":["nd_1","nd_2"],"remove":[]}),
+        serde_json::json!({"collection_id":"co_1","add":["nd_1"],"remove":["nd_2"]}),
+        serde_json::json!({"collection_id":"co_1","add":["nd_1"],"remove":[],"remove_members":["om_2"]}),
+    ] {
+        let mut invalid = base.clone();
+        invalid["payload"] = payload;
+        assert!(serde_json::from_value::<RequestEnvelope>(invalid)
+            .unwrap()
+            .validate()
+            .is_err());
+    }
+}
 use jsonschema::Validator;
 use loomward_protocol::{
     decode_exact, Command, EventEnvelope, EventName, RequestEnvelope, ResponseEnvelope,

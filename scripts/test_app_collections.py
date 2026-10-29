@@ -22,7 +22,7 @@ def run_collections(page, base: str) -> None:
     expect(page.get_by_role('heading', name='Projects', level=2)).to_be_visible()
     page.get_by_label('Collection name', exact=True).fill('Projects')
     page.get_by_role('button', name='Create collection', exact=True).click()
-    expect(page.locator('main [role=alert]')).to_contain_text('already exists')
+    expect(page.get_by_role('alert', name='Collection error')).to_contain_text('already exists')
     page.get_by_role('link', name='Explorer', exact=True).click()
     expect(page.get_by_role('heading', name='Explorer', level=1)).to_be_focused()
     page.get_by_role('button', name='Inspect ', exact=False).first.click()

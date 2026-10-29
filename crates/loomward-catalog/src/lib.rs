@@ -15,6 +15,8 @@ mod cloud;
 mod crashpoint;
 pub use cloud::{cloud_state, CloudBytes, CloudState, CloudSummary};
 mod developer_clutter;
+mod projects;
+pub use projects::{ProjectCandidate, ProjectPage};
 mod evidence_facts;
 #[cfg(feature = "test-hooks")]
 pub use crashpoint::CRASH_EXIT;

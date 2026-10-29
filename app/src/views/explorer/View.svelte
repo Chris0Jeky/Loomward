@@ -10,6 +10,7 @@
   import { LoomwardError } from '../../lib/transport/client';
   import { fallbackStep, onRefetchError, resolveTrail, type Crumb } from './refetch';
   import { session } from '../../lib/stores/session.svelte';
+  import { route } from '../../lib/stores/route.svelte';
   import NodeMeaning from '../../lib/ui/NodeMeaning.svelte';
   import AddToCollection from '../../lib/ui/AddToCollection.svelte';
   import CopyTo from '../../lib/ui/CopyTo.svelte';
@@ -28,13 +29,15 @@
   let inspector = $state<HTMLElement>();
   let inspection = 0;
   let inspectAbort: AbortController | null = null;
-  async function inspect(row: EntryRow): Promise<void> {
+  let detailGeneration = $state<string | undefined>();
+  async function inspect(node_id: NodeId, expectedGeneration?: string): Promise<void> {
     inspectAbort?.abort();
     const ctl = inspectAbort = new AbortController();
     const mine = ++inspection;
     detail = null; inspectError = '';
+    detailGeneration = expectedGeneration;
     try {
-      const { result } = await session.client!.call('node.inspect', { node_id: row.node_id }, { signal: ctl.signal });
+      const { result } = await session.client!.call('node.inspect', { node_id }, { signal: ctl.signal, expectedGeneration });
       if (mine !== inspection) return;
       detail = result;
       await tick(); inspector?.focus();
@@ -327,9 +330,9 @@
   }
 
   /** Keep the user's place (refreshing starting points beside it), or find the starting points. */
-  function reload() {
-    if (trail.length || searching) { void loadStarts(undefined, true); void show(); }
-    else void loadStarts();
+  async function reload(): Promise<void> {
+    if (trail.length || searching) await Promise.all([loadStarts(undefined, true), show()]);
+    else await loadStarts();
   }
 
   $effect(() => () => { startsRequest++; startsAbort?.abort(); inspection++; inspectAbort?.abort(); abort?.abort(); });
@@ -338,8 +341,17 @@
   // keep the user's place and ask again; the first time, find the starting points.
   $effect(() => {
     void session.epoch;
+    const params = new URLSearchParams(route.search);
     if (!session.client) return;
-    untrack(reload);
+    let current = true;
+    untrack(() => {
+      inspection++; inspectAbort?.abort(); detail = null;
+      void reload().then(() => {
+        const node = params.get('node'), observed = params.get('generation');
+        if (current && node && observed) void inspect(node, observed);
+      });
+    });
+    return () => { current = false; inspection++; inspectAbort?.abort(); };
   });
 </script>
 
@@ -454,7 +466,7 @@
               {#if r.coverage !== 'complete'}<span class="tag warn">{r.coverage}</span>{/if}
               {#each r.flags as f (f)}<span class="tag">{String(f).replaceAll('_', ' ')}</span>{/each}
             </td>
-            <td><button class="btn" type="button" data-inspect onkeydown={rowKeys} aria-label={`Inspect ${escapedName(r.name)}`} onclick={() => void inspect(r)}>Inspect</button></td>
+            <td><button class="btn" type="button" data-inspect onkeydown={rowKeys} aria-label={`Inspect ${escapedName(r.name)}`} onclick={() => void inspect(r.node_id)}>Inspect</button></td>
           </tr>
         {:else}
           <tr><td colspan="8" class="muted">{busy ? 'Loading' : error ? 'Nothing is shown because the last request failed.' : searching && budgetHit ? 'Nothing found yet: the engine stopped at its work budget before finding a match.' : searching && scope?.partial ? 'No matches in what is catalogued so far; coverage is partial, so this is not proof of absence.' : searching ? 'No matches.' : 'Nothing to show.'}</td></tr>
@@ -477,7 +489,7 @@
     <h3>Meaning thread</h3>
     <NodeMeaning nodeId={detail.row.node_id} />
     {#if detail.identity.durable_reference === 'available'}
-      {#key detail.row.node_id}<AddToCollection nodeId={detail.row.node_id} />{/key}
+      {#key detail.row.node_id}<AddToCollection nodeId={detail.row.node_id} expectedGeneration={detailGeneration} />{/key}
     {:else}<p class="muted">This node has no durable identity, so it cannot join a collection.</p>{/if}
   </section>
 {/if}

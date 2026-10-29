@@ -9,6 +9,10 @@
     { "$ref": "#/$defs/EventEnvelope" }
   ],
   "$defs": {
+    "ProjectsRequest": {"type": "object", "additionalProperties": false, "required": ["root_id", "limit", "cursor"], "properties": {"root_id": {"$ref": "#/$defs/RootId"}, "limit": {"type": "integer", "minimum": 1, "maximum": 200}, "cursor": {"anyOf": [{"$ref": "#/$defs/Cursor"}, {"type": "null"}]}}},
+    "ProjectMarker": {"type": "object", "additionalProperties": false, "required": ["name", "provider"], "properties": {"name": {"type": "string", "maxLength": 260}, "provider": {"$ref": "#/$defs/DeveloperClutterProvider"}}},
+    "ProjectCandidate": {"type": "object", "additionalProperties": false, "required": ["node_id", "name", "path", "coverage", "markers", "markers_truncated"], "properties": {"node_id": {"$ref": "#/$defs/NodeId"}, "name": {"type": "string", "maxLength": 260}, "path": {"$ref": "#/$defs/DisplayPath"}, "coverage": {"$ref": "#/$defs/CoverageState"}, "markers": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"$ref": "#/$defs/ProjectMarker"}}, "markers_truncated": {"type": "boolean"}}},
+    "ProjectsPage": {"type": "object", "additionalProperties": false, "required": ["root_id", "generation", "coverage", "partial", "budget_hit", "candidates", "next_cursor"], "properties": {"root_id": {"$ref": "#/$defs/RootId"}, "generation": {"anyOf": [{"$ref": "#/$defs/Generation"}, {"type": "null"}]}, "coverage": {"$ref": "#/$defs/CoverageState"}, "partial": {"type": "boolean"}, "budget_hit": {"type": "boolean"}, "candidates": {"type": "array", "maxItems": 200, "items": {"$ref": "#/$defs/ProjectCandidate"}}, "next_cursor": {"anyOf": [{"$ref": "#/$defs/Cursor"}, {"type": "null"}]}}},
     "Protocol": { "const": "loomward/3" },
     "RequestId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}$" },
     "CommandName": { "type": "string", "pattern": "^[a-z]+(\\.[a-z_]+)+$", "maxLength": 64 },

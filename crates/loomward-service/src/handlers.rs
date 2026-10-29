@@ -514,6 +514,7 @@ impl Inner {
             SearchQuery => self.search(req, work, None),
             StatsBreakdown => self.breakdown(req, work),
             ClutterDeveloper => self.clutter_developer(req, work),
+            ProjectsFind => self.projects_find(req, work),
             ReclaimPlan => self.reclaim_plan(req, work),
             ReclaimObserve => self.reclaim_observe(req),
             TiersModel | PlacementCandidates | PlacementSimulate | ProposalsList | ProposalsGet => {
