@@ -15,6 +15,12 @@ def live_projects(page, token, state, check, live_call):
             db.execute("INSERT INTO dir(id,root_id,parent_id,name,file_id,id_quality,id_basis,depth,attrs,created_ft,listing_state,born_run,seen_run,sub_complete) VALUES(?,1,?,?,?,'native_file_id_128','listed',1,16,123,'complete',1,1,1)", (ident, parent, name, ident.to_bytes(16, 'little')))
         for owner, name in [(101, 'Cargo.toml'), (101, 'package.json'), (102, 'pyproject.toml'), (103, 'cargo.toml'), (103, '.csproj'), (104, 'Cargo.toml')]:
             db.execute('INSERT INTO file(dir_id,name,logical,allocated,attrs,born_run,seen_run) VALUES(?,?,1,1,32,1,1)', (owner, name))
+        db.execute("INSERT INTO ext(ext,family) VALUES('mov','video') ON CONFLICT(ext) DO NOTHING")
+        db.execute("INSERT INTO file(dir_id,name,ext_id,logical,allocated,attrs,born_run,seen_run) VALUES(101,'Synthetic footage.mov',(SELECT id FROM ext WHERE ext='mov'),9007199254740993,NULL,32,1,1)")
+        for size in range(1, 14):
+            db.execute('INSERT INTO file(dir_id,name,logical,allocated,attrs,born_run,seen_run) VALUES(101,?,?,?,32,1,1)', (f'Generated example {size:02}.bin', size, size))
+        db.execute('UPDATE dir SET sub_files=17,sub_dirs=1,sub_logical=9007199254741087,sub_allocated=94,sub_alloc_unknown=1,sub_complete=0 WHERE id=101')
+        db.execute('UPDATE dir SET sub_files=1,sub_logical=1,sub_allocated=1 WHERE id=102')
         db.execute("UPDATE dir SET listing_state='excluded' WHERE id=104")
         db.execute('UPDATE revision SET catalog_rev=catalog_rev+1')
         db.commit()
@@ -47,12 +53,49 @@ def live_projects(page, token, state, check, live_call):
         candidate = region.get_by_role('article', name='Synthetic project', exact=True)
         expect(candidate).to_contain_text('Cargo.toml')
         expect(candidate).to_contain_text('package.json')
+        check(not any(r['command'] in ['node.inspect', 'stats.breakdown', 'tree.children'] for r in requests), 'footprint: discovery does not load project briefs eagerly')
+        brief_before, brief_start = snapshot(), len(requests)
+        candidate.get_by_role('button', name='Show recorded footprint', exact=True).click()
+        footprint = candidate.get_by_role('region', name='Recorded project footprint', exact=True)
+        expect(footprint).to_contain_text('9007199254741087 bytes')
+        expect(footprint).to_contain_text('9007199254740993 bytes')
+        expect(footprint.locator('dt').filter(has_text='Allocated size').locator('xpath=following-sibling::dd[1]')).to_have_text('unknown')
+        expect(footprint).to_contain_text('Incomplete observations')
+        expect(footprint).to_contain_text('Recorded scan finished: unknown')
+        expect(footprint.locator('ol li')).to_have_count(12)
+        expect(footprint.locator('ol li').first).to_contain_text('Synthetic footage.mov')
+        expect(footprint).to_contain_text('only the returned first page')
+        brief_requests = requests[brief_start:]
+        check(sorted(r['command'] for r in brief_requests) == ['node.inspect', 'stats.breakdown', 'tree.children'], 'footprint: only three existing read commands, no effect or scan requests')
+        check(all(r.get('expected_generation') == result['generation'] and r['payload']['node_id'] == result['candidates'][0]['node_id'] for r in brief_requests), 'footprint: every read binds the discovered node and generation')
+        check(snapshot() == brief_before, 'footprint: catalogue, state and grants unchanged by reading')
         evidence = Path(os.environ.get('LOOMWARD_PROJECTS_EVIDENCE', str(Path(__file__).resolve().parents[1] / 'target/project-ui-evidence')))
         evidence.mkdir(parents=True, exist_ok=True)
         for width in [1440, 390]:
             page.set_viewport_size({'width': width, 'height': 900})
+            page.evaluate('scrollTo(0, 0)')
             check(page.evaluate('document.documentElement.scrollWidth <= innerWidth'), f'projects: fits {width}px')
             page.screenshot(path=str(evidence / f'projects-{width}.png'), full_page=True)
+        # A second project replaces the first brief rather than appending another one.
+        nested = region.get_by_role('article', name='Nested project', exact=True)
+        nested.get_by_role('button', name='Show recorded footprint', exact=True).click()
+        expect(region.get_by_role('region', name='Recorded project footprint')).to_have_count(1)
+        expect(nested.get_by_role('region', name='Recorded project footprint')).to_contain_text('Coverage: complete')
+        # Dirty recorded aggregates remain dirty; a read must not repair them or display stale totals.
+        with closing(sqlite3.connect(state / 'catalog.db')) as db:
+            db.execute('UPDATE dir SET dirty_rev=agg_valid_rev+1 WHERE id=101')
+            db.execute('UPDATE revision SET catalog_rev=catalog_rev+1')
+            db.commit()
+        dirty_before = snapshot()
+        candidate.get_by_role('button', name='Show recorded footprint', exact=True).click()
+        expect(footprint).to_contain_text('unknown for this coverage state')
+        expect(footprint).not_to_contain_text('9007199254741087')
+        check(snapshot() == dirty_before, 'footprint: dirty catalogue rows and grants remain unchanged')
+        # Fixture authoring restores recorded validity for the existing explicit action journey.
+        with closing(sqlite3.connect(state / 'catalog.db')) as db:
+            db.execute('UPDATE dir SET agg_valid_rev=dirty_rev WHERE id=101')
+            db.execute('UPDATE revision SET catalog_rev=catalog_rev+1')
+            db.commit()
         candidate.get_by_role('link', name='Inspect in Explorer').click()
         expect(page.get_by_role('heading', name='Explorer', exact=True)).to_be_visible()
         expect(page.locator('main')).to_contain_text('Synthetic project')
@@ -75,6 +118,9 @@ def live_projects(page, token, state, check, live_call):
             db.commit()
         candidate.get_by_role('button', name='Add to collection', exact=True).click()
         expect(candidate.get_by_role('alert')).to_contain_text('changed')
+        candidate.get_by_role('button', name='Show recorded footprint', exact=True).click()
+        expect(region.get_by_role('article')).to_have_count(0)
+        expect(region.get_by_role('alert')).to_contain_text('observations or access changed')
         # Partial empty must never be described as proof that no projects exist.
         with closing(sqlite3.connect(state / 'catalog.db')) as db:
             db.execute('DELETE FROM file WHERE dir_id>=101')
@@ -84,12 +130,15 @@ def live_projects(page, token, state, check, live_call):
         expect(region).to_contain_text('This does not establish that no projects exist')
         with closing(sqlite3.connect(state / 'catalog.db')) as db:
             db.execute("UPDATE dir SET listing_state='complete' WHERE id=104")
+            db.execute('UPDATE dir SET sub_complete=1 WHERE id=101')
             db.execute('UPDATE revision SET catalog_rev=catalog_rev+1')
             db.commit()
         region.get_by_role('button', name='Find projects', exact=True).click()
         expect(region).to_contain_text('No recognised project markers are recorded')
         (evidence / 'projects-native.json').write_text(json.dumps({'dataset': 'synthetic', 'production_http': True,
             'filesystem_observation': False, 'discovery_database_unchanged': True, 'generation_guard': True,
+            'footprint_database_unchanged': True, 'footprint_three_guarded_reads': True,
+            'footprint_large_bytes_and_unknowns': True, 'footprint_stale_results_discarded': True,
             'explicit_membership': True, 'widths': [1440, 390], 'partial_and_empty': True}, indent=2) + '\n', encoding='utf-8')
     finally:
         page.remove_listener('request', observe)

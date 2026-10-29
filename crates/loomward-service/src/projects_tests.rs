@@ -13,6 +13,110 @@ fn discover(svc: &Service, root: &str, limit: usize, cursor: Value) -> ResponseE
 }
 
 #[test]
+fn guarded_project_footprint_reads_never_repair_dirty_catalogue() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let root = scanned(&svc, 1, &projects());
+    let (page, _) = ok("projects.find", discover(&svc, &root, 50, Value::Null));
+    let node = page["candidates"][0]["node_id"].clone();
+    let generation = page["generation"].as_str().unwrap().parse::<u64>().unwrap();
+    let read = |command, payload, expected: Option<u64>| {
+        let mut req = request(command, payload);
+        req.expected_generation = expected.map(Generation);
+        svc.call(req, &CallContext::http())
+    };
+    let (detail, _) = ok(
+        "node.inspect",
+        read("node.inspect", json!({"node_id":node}), Some(generation)),
+    );
+    assert_eq!(detail["row"]["coverage"], "complete");
+    svc.inner
+        .db()
+        .execute("UPDATE main.dir SET dirty_rev=agg_valid_rev+1", [])
+        .unwrap();
+    let before = svc.inner.revisions().unwrap();
+    for (command, payload) in [
+        ("node.inspect", json!({"node_id":node})),
+        (
+            "stats.breakdown",
+            json!({"node_id":node,"by":"ext_family","basis":"logical","limit":8}),
+        ),
+        (
+            "tree.children",
+            json!({"node_id":node,"sort":"size_desc","basis":"logical","limit":12,"cursor":null}),
+        ),
+    ] {
+        refused(
+            read(command, payload.clone(), Some(generation + 1)),
+            ErrorCode::StaleGeneration,
+        );
+        let (result, _) = ok(command, read(command, payload, Some(generation)));
+        assert_eq!(
+            svc.inner.revisions().unwrap(),
+            before,
+            "{command} repaired the catalogue"
+        );
+        assert!(svc
+            .inner
+            .db()
+            .query_row(
+                "SELECT count(*)>0 FROM main.dir WHERE dirty_rev>agg_valid_rev",
+                [],
+                |r| r.get::<_, bool>(0)
+            )
+            .unwrap());
+        if command == "node.inspect" {
+            assert_eq!(result["row"]["coverage"], "stale");
+        }
+        if command == "stats.breakdown" {
+            assert_eq!(result["complete"], false);
+        }
+    }
+    // Existing unguarded owner reads retain their repair behavior.
+    ok(
+        "node.inspect",
+        read("node.inspect", json!({"node_id":node}), None),
+    );
+    assert!(svc.inner.revisions().unwrap().0 > before.0);
+}
+
+#[test]
+fn guarded_project_footprint_refuses_same_generation_revision_race() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let root = scanned(&svc, 1, &projects());
+    let (page, _) = ok("projects.find", discover(&svc, &root, 50, Value::Null));
+    let node = page["candidates"][0]["node_id"].clone();
+    let generation = page["generation"].as_str().unwrap().parse::<u64>().unwrap();
+    for (command, payload) in [
+        ("node.inspect", json!({"node_id":node})),
+        (
+            "stats.breakdown",
+            json!({"node_id":node,"by":"ext_family","basis":"logical","limit":8}),
+        ),
+        (
+            "tree.children",
+            json!({"node_id":node,"sort":"size_desc","basis":"logical","limit":12,"cursor":null}),
+        ),
+    ] {
+        let mut req = request(command, payload);
+        req.expected_generation = Some(Generation(generation));
+        ok(command, svc.call(req.clone(), &CallContext::http()));
+        let path = loomward_catalog::sqlite_dir(&svc.inner.state_dir).join("catalog.db");
+        *svc.inner.hooks.before_generation_read.lock().unwrap() = Some(Box::new(move || {
+            rusqlite::Connection::open(path)
+                .unwrap()
+                .execute("UPDATE revision SET catalog_rev=catalog_rev+1", [])
+                .unwrap();
+        }));
+        refused(
+            svc.call(req, &CallContext::http()),
+            ErrorCode::StaleGeneration,
+        );
+    }
+}
+
+#[test]
 fn discovery_pages_bind_root_catalogue_and_state_and_never_write() {
     let tmp = temp_root();
     let svc = open(tmp.path(), DatasetClass::Synthetic);

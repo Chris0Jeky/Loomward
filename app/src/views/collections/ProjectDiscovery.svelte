@@ -5,6 +5,9 @@
   import { escapedName } from '../../lib/format/names';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
   import AddToCollection from '../../lib/ui/AddToCollection.svelte';
+  import ProjectFootprint from './ProjectFootprint.svelte';
+  import { loadFootprint, type Footprint } from './footprint';
+  import { LoomwardError } from '../../lib/transport/client';
 
   let { onAdded, collectionListKey }: { onAdded: () => void; collectionListKey: string } = $props();
   let roots = $state<Root[]>([]);
@@ -15,9 +18,34 @@
   let adding = $state<string | null>(null);
   let sequence = 0;
   let abort: AbortController | null = null;
+  let expanded = $state<string | null>(null);
+  let footprint = $state<Footprint | null>(null);
+  let footprintError = $state('');
+  let footprintAbort: AbortController | null = null;
+
+  function closeFootprint(): void {
+    footprintAbort?.abort(); expanded = null; footprint = null; footprintError = '';
+  }
+  async function expand(node: string): Promise<void> {
+    const wasOpen = expanded === node;
+    closeFootprint();
+    const client = session.client, generation = page?.generation, root = page?.root_id, epoch = session.epoch;
+    if (wasOpen || !client || generation == null || !root) return;
+    expanded = node;
+    const ctl = footprintAbort = new AbortController();
+    try {
+      const result = await loadFootprint(client, node, root, generation, ctl.signal);
+      if (!ctl.signal.aborted && session.client === client && session.epoch === epoch) footprint = result;
+    } catch (e) {
+      if (ctl.signal.aborted || session.client !== client || session.epoch !== epoch) return;
+      if (e instanceof LoomwardError && ['stale_generation', 'permission_denied', 'not_found'].includes(e.code)) {
+        clear(); error = 'Project observations or access changed. Find projects again.';
+      } else footprintError = session.handle(e);
+    }
+  }
 
   function clear(): void {
-    sequence++; abort?.abort(); page = null; adding = null; error = ''; busy = false;
+    sequence++; abort?.abort(); closeFootprint(); page = null; adding = null; error = ''; busy = false;
   }
   async function find(append = false): Promise<void> {
     const client = session.client, root = selected, previous = append ? page : null;
@@ -69,6 +97,14 @@
         <p class="path"><VisibleName name={candidate.path.text} />{candidate.path.truncated ? ' (path shortened)' : ''}</p>
         <p>Recorded markers: {#each candidate.markers as marker, i}{i ? ', ' : ''}<VisibleName name={marker.name} /> ({marker.provider}){/each}{candidate.markers_truncated ? '; more markers recorded' : ''}.</p>
         <p class="muted">Coverage: {candidate.coverage}.</p>
+        {#if page.generation !== null}
+          <button class="btn" type="button" aria-expanded={expanded === candidate.node_id} onclick={() => void expand(candidate.node_id)}>{expanded === candidate.node_id ? 'Hide recorded footprint' : 'Show recorded footprint'}</button>
+          {#if expanded === candidate.node_id}
+            {#if footprint}<ProjectFootprint data={footprint} root={roots.find(r => r.root_id === page!.root_id)} generation={page.generation} />
+            {:else if footprintError}<p class="note bad" role="alert">Recorded footprint unavailable: {footprintError}</p>
+            {:else}<p role="status">Loading recorded footprint…</p>{/if}
+          {/if}
+        {/if}
         {#if page.generation !== null && (candidate.coverage === 'complete' || candidate.coverage === 'partial')}
           <div class="controls">
             <a class="btn" href={`#/explorer?node=${encodeURIComponent(candidate.node_id)}&generation=${encodeURIComponent(page.generation)}`}>Inspect in Explorer</a>

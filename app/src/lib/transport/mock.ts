@@ -37,7 +37,7 @@ const REVS: Partial<Record<string, 'c' | 's' | 'cs'>> = {
   'reclaim.plan': 'cs',
   'collections.list': 'cs', 'collections.create': 'cs', 'collections.members': 'cs', 'collections.update_members': 'cs',
   'node.inspect': 'cs', 'threads.meaning': 'cs',
-  'health.get': 'c', 'tree.children': 'c', 'search.query': 'c',
+  'health.get': 'c', 'tree.children': 'c', 'search.query': 'c', 'stats.breakdown': 'c',
   'roots.list': 'cs', 'tree.slice': 'cs', 'placement.candidates': 'cs', 'placement.simulate': 'cs',
   'proposals.list': 'cs', 'proposals.get': 'cs', 'volumes.declare_tier': 'cs',
   'roots.revoke': 'cs', 'roots.forget': 'cs', 'backups.list': 's', 'backups.forget': 's', 'alerts.list': 's', 'alerts.configure': 's', 'clutter.developer': 'cs', 'projects.find': 'cs', 'grants.list': 's', 'grants.revoke': 's', 'volumes.list': 's', 'tiers.model': 's',
@@ -393,6 +393,27 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
     },
         'tree.slice': (p) => slice(p as unknown as TreeSliceRequest),
     'tree.children': (p) => children(p as unknown as TreeChildrenRequest),
+    'stats.breakdown': (p) => {
+      const n = nodeFor(p.node_id);
+      if (p.by !== 'ext_family' || p.basis !== 'logical') fail('capability_unavailable', 'The mock supports logical file families only.');
+      if (n.kind === 'file') fail('invalid_request', 'A folder is required.');
+      const limit = int(p.limit, 'limit', 1, 64), pending = [...n.children];
+      const groups = new Map<string, { bytes: bigint; files: number }>();
+      let complete = n.coverage === 'complete';
+      while (pending.length) {
+        const child = tree.nodes[pending.pop()!]!;
+        if (child.coverage !== 'complete') complete = false;
+        if (['denied', 'excluded', 'unscanned'].includes(child.coverage)) continue;
+        if (child.kind !== 'file') { pending.push(...child.children); continue; }
+        const key = child.family ?? 'none', group = groups.get(key) ?? { bytes: 0n, files: 0 };
+        group.bytes += child.logical; group.files++; groups.set(key, group);
+      }
+      const ordered = [...groups].sort((a, b) => a[1].bytes > b[1].bytes ? -1 : a[1].bytes < b[1].bytes ? 1 : a[0].localeCompare(b[0]));
+      return { node_id: n.id, by: 'ext_family', basis: 'logical', generation: GENERATION, complete,
+        buckets: ordered.slice(0, limit).map(([key, value]) => ({ key, label: key, bytes: String(value.bytes), files: value.files })),
+        other: { bytes: String(ordered.slice(limit).reduce((sum, [, value]) => sum + value.bytes, 0n)), files: ordered.slice(limit).reduce((sum, [, value]) => sum + value.files, 0) },
+        unknown: { bytes: '0', files: 0 } };
+    },
     'search.query': (p) => search(p as unknown as SearchRequest),
     ...views.handlers,
     ...createInventoryMock(now, fail),
