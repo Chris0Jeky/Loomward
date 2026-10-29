@@ -604,6 +604,7 @@ struct Listing {
     base: PathBuf,
     /// Every directory from below the root down through the candidate, parents first.
     dirs: Vec<ListedDir>,
+    directory_overflow: bool,
     names: Vec<Listed>,
 }
 
@@ -679,6 +680,7 @@ fn observe_one(
         subtree_rev,
         base,
         dirs,
+        directory_overflow,
         names,
     } = match listing {
         Ok(Some(listing)) => listing,
@@ -689,8 +691,8 @@ fn observe_one(
         }
     };
     // Directories past the cap would go unchecked, so they leave the candidate unknown too.
-    let stop = (names.len() > MAX_FILES_PER_GROUP || dirs.len() > MAX_FILES_PER_GROUP)
-        .then_some(Stop::FileBudget);
+    let stop =
+        (names.len() > MAX_FILES_PER_GROUP || directory_overflow).then_some(Stop::FileBudget);
     let dirs_ok = stop.is_some() || dirs_unchanged(&volume_key, &dirs, deadline, ctx);
     let mut outcomes = Vec::new();
     if stop.is_none() && dirs_ok {
@@ -828,7 +830,14 @@ const VISIBLE: &str = "WITH RECURSIVE visible(id,rel,depth) AS (SELECT id,'',0 F
 /// The candidate's names in one read snapshot, at most one past the cap. `None` when the root
 /// moved on (revoked, rescanned, scanning or partial) or the candidate's path cannot be built.
 fn list(conn: &Connection, root: &ObservedRoot, task: &Task) -> EngineResult<Option<Listing>> {
-    list_bounded(conn, root, task, MAX_FILES_PER_GROUP, MAX_FILES_PER_GROUP)
+    list_bounded(
+        conn,
+        root,
+        task,
+        MAX_FILES_PER_GROUP,
+        MAX_FILES_PER_GROUP,
+        &HashSet::new(),
+    )
 }
 
 fn list_bounded(
@@ -837,6 +846,7 @@ fn list_bounded(
     task: &Task,
     name_limit: usize,
     dir_limit: usize,
+    seen_dirs: &HashSet<PathBuf>,
 ) -> EngineResult<Option<Listing>> {
     conn.execute_batch("BEGIN").map_err(internal)?;
     let read = || -> rusqlite::Result<Option<Listing>> {
@@ -895,6 +905,11 @@ fn list_bounded(
             base.push(name);
             dirs.push((base.clone(), file_id, created));
         }
+        let new_ancestors = dirs
+            .iter()
+            .filter(|(path, ..)| !seen_dirs.contains(path))
+            .count();
+        let mut directory_overflow = new_ancestors > dir_limit;
         let row = |r: &rusqlite::Row| -> rusqlite::Result<Listed> {
             Ok((
                 r.get(0)?,
@@ -923,10 +938,12 @@ fn list_bounded(
                 ))?
                 .query_map(
                     // One past the cap, so an overflow is seen and leaves the candidate unknown.
-                    params![id, loomward_catalog::EXCLUDED_FLAGS, dir_limit.saturating_sub(dirs.len()) as i64 + 1],
+                    params![id, loomward_catalog::EXCLUDED_FLAGS, dir_limit.saturating_sub(new_ancestors) as i64 + 1],
                     |r| Ok((r.get::<_, String>(0)?, r.get(1)?, r.get(2)?)),
                 )?
                 .collect::<rusqlite::Result<Vec<(String, _, _)>>>()?;
+            // Selected candidates cannot overlap, but their ancestor chains can.
+            directory_overflow |= subdirs.len() > dir_limit.saturating_sub(new_ancestors);
             for (rel, file_id, created) in subdirs {
                 dirs.push((base.join(rel.trim_end_matches('\\')), file_id, created));
             }
@@ -946,6 +963,7 @@ fn list_bounded(
             subtree_rev,
             base,
             dirs,
+            directory_overflow,
             names,
         }))
     };

@@ -207,7 +207,8 @@ pub(super) fn observe(
     conn.progress_handler(
         1000,
         Some(move || Instant::now() >= deadline || cancellation.is_cancelled()),
-    );
+    )
+    .map_err(internal)?;
     let mut tally = ReliefTally::default();
     let limit = MAX_FILES_PER_GROUP;
     #[cfg(test)]
@@ -270,6 +271,7 @@ pub(super) fn observe(
                 task,
                 limit - seen_names.len(),
                 limit - seen_dirs.len(),
+                &seen_dirs,
             )?
             else {
                 return Ok(Some("A selected candidate has incomplete coverage."));
@@ -288,7 +290,7 @@ pub(super) fn observe(
                 .into_iter()
                 .filter(|(p, ..)| seen_dirs.insert(p.clone()))
                 .collect();
-            if seen_dirs.len() > limit || listing.names.len() > limit - seen_names.len() {
+            if listing.directory_overflow || listing.names.len() > limit - seen_names.len() {
                 return Ok(Some("The selection name or directory budget was reached."));
             }
             for directories in dirs.chunks(OBSERVE_CHUNK) {
@@ -386,7 +388,8 @@ pub(super) fn observe(
             Some("The selection could not be completely observed.")
         }
     };
-    conn.progress_handler(0, None::<fn() -> bool>);
+    conn.progress_handler(0, None::<fn() -> bool>)
+        .map_err(internal)?;
     if ctx.is_cancelled() {
         reason = Some("Observation was cancelled.");
     }

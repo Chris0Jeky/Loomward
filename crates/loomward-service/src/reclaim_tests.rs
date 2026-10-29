@@ -556,7 +556,7 @@ fn reclaim_selection_closes_cross_candidate_links() {
     )
     .0;
     let done = settle(&lab.svc, job["job"]["job_id"].as_str().unwrap());
-    assert_eq!(done["coverage"], "complete", "{done}");
+    assert_eq!(done["coverage"], "complete", "{done:?}");
     assert_eq!(done["reclaim"]["names_checked"], 3);
     let result = ok(
         "reclaim.plan",
@@ -569,7 +569,7 @@ fn reclaim_selection_closes_cross_candidate_links() {
     .0;
     assert_eq!(
         result["selection"]["reclaimable_bytes"], "20480",
-        "{result}"
+        "{result:?}"
     );
     assert!(result["selection"]["reason"].is_null());
     assert!(result["selection"]["observed_at"].is_string());
@@ -831,6 +831,75 @@ fn reclaim_selection_directory_budget_and_placeholder_are_unknown() {
 
 #[cfg(windows)]
 #[test]
+fn reclaim_selection_shared_ancestors_cannot_hide_directory_budget_overflow() {
+    let Some(lab) = cargo_lab(|target| {
+        let root = target.parent().unwrap();
+        let cache = root.join(".cargo/registry/cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(cache.join("first.bin"), vec![1u8; 12288]).unwrap();
+        for name in ["a", "b"] {
+            let folder = root.join(".cargo/git/db").join(name);
+            std::fs::create_dir_all(&folder).unwrap();
+            std::fs::write(folder.join("file.bin"), vec![2u8; 4096]).unwrap();
+        }
+    }) else {
+        return;
+    };
+    let selection: Vec<_> = reclaim(&lab.svc)["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|g| g["candidates"].as_array().unwrap())
+        .filter(|c| c["class"] == "package_cache")
+        .map(|c| c["node_id"].clone())
+        .collect();
+    assert_eq!(selection.len(), 2);
+    let hidden = lab.path.join(".cargo/git/db/b");
+    let moved = lab.path.join("moved-b");
+    std::fs::rename(&hidden, &moved).unwrap();
+    let made = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(&hidden)
+        .arg(&moved)
+        .output()
+        .unwrap();
+    assert!(made.status.success(), "{made:?}");
+    lab.svc
+        .inner
+        .hooks
+        .reclaim_selection_limit
+        .store(6, std::sync::atomic::Ordering::Release);
+    let done = settle(&lab.svc, &selection_job(&lab.svc, &selection));
+    let result = selected_result(&lab.svc, &selection);
+    std::fs::remove_dir(&hidden).unwrap();
+    assert_eq!(done["coverage"], "partial", "{done:?}");
+    assert!(result["reclaimable_bytes"].is_null(), "{result}");
+    assert!(
+        result["reason"].as_str().unwrap().contains("budget"),
+        "{result}"
+    );
+    assert!(
+        names_opened(&lab.svc) <= 1,
+        "no files below the truncated second candidate are opened"
+    );
+    std::fs::rename(&moved, &hidden).unwrap();
+    lab.svc
+        .inner
+        .hooks
+        .reclaim_selection_limit
+        .store(7, std::sync::atomic::Ordering::Release);
+    assert_eq!(
+        settle(&lab.svc, &selection_job(&lab.svc, &selection))["coverage"],
+        "complete"
+    );
+    assert_eq!(
+        selected_result(&lab.svc, &selection)["reclaimable_bytes"],
+        "20480"
+    );
+}
+
+#[cfg(windows)]
+#[test]
 fn reclaim_selection_expires_on_each_binding_and_is_removed_by_revoke_or_forget() {
     for forget in [false, true] {
         let Some(lab) = cargo_lab(|_| {}) else { return };
@@ -852,19 +921,18 @@ fn reclaim_selection_expires_on_each_binding_and_is_removed_by_revoke_or_forget(
             selected_result(&lab.svc, &selection)["reclaimable_bytes"],
             "20480"
         );
+        ok(
+            "roots.revoke",
+            call(
+                &lab.svc,
+                "roots.revoke",
+                json!({"root_id":lab.root, "purge_catalog":false}),
+            ),
+        );
         if forget {
             ok(
                 "roots.forget",
                 call(&lab.svc, "roots.forget", json!({"root_id":lab.root})),
-            );
-        } else {
-            ok(
-                "roots.revoke",
-                call(
-                    &lab.svc,
-                    "roots.revoke",
-                    json!({"root_id":lab.root, "purge_catalog":false}),
-                ),
             );
         }
         let rows: i64 = lab

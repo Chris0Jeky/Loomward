@@ -22,7 +22,7 @@ def run(ctx) -> dict:
     expect(page.get_by_label('Volume to review')).to_have_value('vo_f')
     for heading in headings:
         expect(page.get_by_role('heading', name=heading, exact=True, level=2)).to_be_visible()
-    expect(page.locator('main h2')).to_have_text(['Volume', *headings])
+    expect(page.locator('main h2')).to_have_text(['Volume', 'Inspect a selection', *headings])
     cleanup = page.get_by_role('region', name='Tool-owned cleanup', exact=True)
     expect(cleanup).to_contain_text('target')
     expect(cleanup).to_contain_text('Allocated: 7.81 KiB')
