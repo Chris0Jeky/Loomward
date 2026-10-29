@@ -517,6 +517,14 @@ pub(crate) const MAX_PENDING: u64 = 64;
 
 const MAX_READS: usize = 8;
 
+fn guarded_observation(request: &RequestEnvelope, command: Command) -> bool {
+    request.expected_generation.is_some()
+        && matches!(
+            command,
+            Command::NodeInspect | Command::StatsBreakdown | Command::TreeChildren
+        )
+}
+
 struct ReadPermit(Arc<Inner>);
 impl ReadPermit {
     fn acquire(inner: Arc<Inner>) -> Option<Self> {
@@ -848,7 +856,8 @@ impl ViewService for Service {
             let work = Arc::new(ReadWork {
                 deadline,
                 interrupt: Mutex::new(None),
-                repair_on_read: matches!(&ctx.principal, Principal::Owner),
+                repair_on_read: matches!(&ctx.principal, Principal::Owner)
+                    && !guarded_observation(&request, command),
             });
             let worker_work = work.clone();
             let metadata_cursor = Arc::new(Mutex::new(None));
@@ -1157,6 +1166,19 @@ impl Inner {
             None => self.handle(request, command, ctx, work, metadata_cursor),
             Some(g) => self.client_handle(request, command, g, work),
         };
+        let out = out.and_then(|out| {
+            if grant.is_none() && guarded_observation(request, command) {
+                // Composed observations must not carry pre-read revisions across a concurrent commit.
+                let (catalog, state) = self.revisions()?;
+                if out.catalog_rev != Some(catalog) || out.state_rev != Some(state) {
+                    return Err(fail(
+                        ErrorCode::StaleGeneration,
+                        "Project observations or access changed; read again.",
+                    ));
+                }
+            }
+            Ok(out)
+        });
         let out = out.and_then(|out| match out.result {
             Value::Object(ref map) => command.validate_result(map).map(|_| out).map_err(|_| {
                 fail(

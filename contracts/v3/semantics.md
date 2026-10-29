@@ -284,6 +284,10 @@ Rules:
   `projects.find`, `stats.breakdown` on a root or node anchor, and `collections.update_members` with exactly
   one add and no removals). Elsewhere it is `invalid_request`. If the root's current
   generation differs, the response is `stale_generation`.
+- Owner `node.inspect`, `stats.breakdown` and `tree.children` calls carrying `expected_generation`
+  read recorded observations without aggregate repairs. They refuse with `stale_generation` if the
+  catalogue or state revision changes during the read; stale aggregates remain visibly stale.
+  Unguarded owner reads retain their existing repair behavior.
 - `projects.find` is owner-only, bounded to 1–200 candidates from one active granted root. It reads
   catalogue metadata without aggregate repairs or source-path access. Exact developer-clutter marker
   families identify probable folders, including ones without outputs; they establish neither dependency
