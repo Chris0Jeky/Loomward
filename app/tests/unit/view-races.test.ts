@@ -420,3 +420,123 @@ describe('Explorer starting points after invalidation', () => {
     await vi.waitFor(() => expect(state.starts).toEqual([rootA]));
   });
 });
+
+type TodayCode = { load(): Promise<void>; loadReclaim(ids: string[]): Promise<void>; effect(): void; onEvent(ev: { event: string }): void };
+
+function today(call: ReturnType<typeof vi.fn>) {
+  const state = {
+    session: { client: { call }, epoch: 0, connectionEpoch: 0, handle: (e: Error) => e.message },
+    scans: { settled: 0 }, untrack, alive: true, ticket: 0, reclaimTicket: 0, started: false, timer: undefined,
+    JOBS_LIMIT: 100, REFRESH_MS: 250,
+    roots: null as unknown, alerts: null as unknown, jobs: null as unknown, reclaim: new Map<string, unknown>(), failedReclaim: 0,
+    loadProblems: [] as string[], reclaimProblems: [] as string[], loaded: false, refreshed: 0,
+  };
+  return { state, code: viewScript('today', state, 'session.epoch') as unknown as TodayCode };
+}
+
+const todayReply = (root: string) => async (command: string) => ({
+  result: command === 'roots.list' ? { roots: [{ root_id: root }] } : command === 'jobs.list' ? { jobs: [] } : { items: [] },
+});
+
+describe('Today loads', () => {
+  it('lets a stale load never overwrite a newer one', async () => {
+    const old = deferred<unknown>();
+    const call = vi.fn(todayReply('rt_new'));
+    call.mockImplementationOnce(() => old.promise as never); // the first load's roots.list is still in flight
+    const { state, code } = today(call);
+    const older = code.load();
+    await code.load();
+    expect(state.roots).toEqual([{ root_id: 'rt_new' }]);
+    old.resolve({ result: { roots: [{ root_id: 'rt_old' }] } });
+    await older;
+    expect(state.roots).toEqual([{ root_id: 'rt_new' }]);
+    expect(state.refreshed).toBe(1);
+  });
+
+  it('drops a load that finishes after the connection changed', async () => {
+    const reply = deferred<unknown>();
+    const { state, code } = today(vi.fn(() => reply.promise as never));
+    const loading = code.load();
+    state.session.connectionEpoch++;
+    reply.resolve({ result: { roots: [], jobs: [], items: [] } });
+    await loading;
+    expect(state.loaded).toBe(false);
+    expect(state.roots).toBeNull();
+  });
+
+  it('lets a stale reclaim read never overwrite a newer one', async () => {
+    const old = deferred<unknown>();
+    const call = vi.fn(async () => ({ result: 'new_plan' }));
+    call.mockImplementationOnce(() => old.promise as never);
+    const { state, code } = today(call);
+    const older = code.loadReclaim(['vo_a']);
+    await code.loadReclaim(['vo_a']);
+    old.resolve({ result: 'old_plan' });
+    await older;
+    expect([...state.reclaim]).toEqual([['vo_a', 'new_plan']]);
+  });
+
+  it('drops a reclaim read that finishes after the connection changed, though the client object is the same', async () => {
+    const reply = deferred<unknown>();
+    const { state, code } = today(vi.fn(() => reply.promise as never));
+    const loading = code.loadReclaim(['vo_a']);
+    state.session.connectionEpoch++;
+    reply.resolve({ result: 'plan_from_the_old_engine' });
+    await loading;
+    expect(state.reclaim.size).toBe(0);
+  });
+
+  it('keeps reading during a long burst: job.state every 100 ms for 2 s still reads once per window', () => {
+    vi.useFakeTimers();
+    try {
+      const call = vi.fn(todayReply('rt_a'));
+      const { code } = today(call);
+      code.effect();
+      expect(call).toHaveBeenCalledTimes(3);
+      for (let t = 0; t < 2000; t += 100) {
+        code.onEvent({ event: 'job.state' });
+        vi.advanceTimersByTime(100);
+      }
+      const reads = (call.mock.calls.length - 3) / 3; // reads after the first, while the burst was still running
+      expect(reads).toBeGreaterThanOrEqual(5); // a trailing debounce would have read 0 times
+      expect(reads).toBeLessThanOrEqual(8); // about one per window, not one per event (19)
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('replaces reclaim errors each round instead of piling them up', async () => {
+    const call = vi.fn(async () => { throw new Error('plan unreadable'); });
+    const { state, code } = today(call);
+    await code.loadReclaim(['vo_a']);
+    await code.loadReclaim(['vo_a']);
+    expect(state.reclaimProblems).toEqual(['plan unreadable']);
+    call.mockImplementation(async () => ({ result: 'plan' }) as never);
+    await code.loadReclaim(['vo_a']);
+    expect(state.reclaimProblems).toEqual([]);
+  });
+
+  it('reads at once, then coalesces a burst of scan-end triggers into one more read', () => {
+    vi.useFakeTimers();
+    try {
+      const call = vi.fn(todayReply('rt_a'));
+      const { state, code } = today(call);
+      code.effect();
+      expect(call).toHaveBeenCalledTimes(3); // roots, alerts, jobs: the first read does not wait
+      state.scans.settled++;
+      code.effect(); // scans.settled
+      code.onEvent({ event: 'job.state' }); // the same scan ending
+      code.onEvent({ event: 'scan.progress' }); // not a trigger
+      code.onEvent({ event: 'job.state' });
+      expect(call).toHaveBeenCalledTimes(3);
+      vi.advanceTimersByTime(249);
+      expect(call).toHaveBeenCalledTimes(3);
+      vi.advanceTimersByTime(1);
+      expect(call).toHaveBeenCalledTimes(6); // one more read for the whole burst
+      vi.advanceTimersByTime(1000);
+      expect(call).toHaveBeenCalledTimes(6);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
