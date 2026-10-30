@@ -5,7 +5,10 @@ A standard-user CI invocation is now prepared; its runtime result and the native
 UNVERIFIED until actual execution is recorded.**
 This follow-up does not close [#738](https://github.com/Chris0Jeky/Loomward/issues/738), open C8,
 or change any production capability, staging-removal default or fixture guard.
-All existing CI checks remain in place.
+The Windows native tests no longer run as the elevated hosted account: [#814](https://github.com/Chris0Jeky/Loomward/pull/814)
+moved them under the disposable standard user, and the tests that pin an elevated-token refusal
+(invariant 2) run in their own elevated step ([#1007](https://github.com/Chris0Jeky/Loomward/issues/1007)).
+The other CI checks (rustfmt, Clippy, the Linux workspace tests) remain in place.
 
 ## Source and scope
 

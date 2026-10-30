@@ -28,7 +28,9 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    # The standard-user child is bounded to 35 minutes by its script and the elevated step to 20, so
+    # setup, the later Clippy steps and cleanup still fit and a bound fires before the job is killed.
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -42,6 +44,14 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
       - run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
       - run: cargo +stable fmt --all -- --check
+      # The hosted bootstrap is elevated and every native open refuses an elevated token (invariant 2).
+      # Run only the tests that assert that refusal here, before the unelevated step below, which
+      # cannot reach those branches. The script fails if any listed test did not run or skipped it.
+      - name: Windows elevated-token refusal tests
+        if: runner.os == 'Windows'
+        shell: pwsh
+        timeout-minutes: 20
+        run: ./scripts/test_windows_elevated_refusals.ps1
       # The fixture guards require a real non-elevated token; the hosted bootstrap is elevated.
       - name: Windows native gates under a disposable standard user
         if: runner.os == 'Windows'

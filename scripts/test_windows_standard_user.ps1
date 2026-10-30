@@ -136,11 +136,14 @@ public static class QualificationCloudProbe {
         Write-Host '::endgroup::'
         if ($cargoExit -ne 0) { exit $cargoExit }
         $outputText = $cargoOutput -join "`n"
-        if ($NoSetupSkip -and $outputText -match '(?i)\bskipped:') {
+        if ($NoSetupSkip -and $outputText -match '(?i)\bskipped(?: \(elevated\))?:') {
             throw 'A required native fixture refused setup.'
         }
         # libtest hides passing tests' output without --show-output; callers pass it with this switch.
-        if ($NoElevatedSkip -and $outputText.Contains('SKIPPED (elevated): ')) {
+        # Both spellings: the shared `SKIPPED (elevated): ` marker and the per-fixture `skipped: elevated token`.
+        # The child proves a non-elevated token first, so either is defence in depth.
+        if ($NoElevatedSkip -and ($outputText.Contains('SKIPPED (elevated): ') -or
+            $outputText -match '(?i)\bskipped: elevated token')) {
             throw 'A native test returned early for elevation under the standard user.'
         }
         if ($MinimumPassed -gt 0) {
@@ -331,9 +334,10 @@ $fixtureVolume = [IO.Path]::GetPathRoot($runnerTemp)
 
 function Set-QualificationGrant {
     param([string]$Path, [string]$Rights)
+    # Recorded before icacls so cleanup also undoes a grant that applied only in part.
+    $grantedPaths.Add($Path)
     & icacls.exe $Path /grant "*$($createdUser.SID.Value):$Rights" /Q | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Cannot grant the qualification account access to $Path" }
-    $grantedPaths.Add($Path)
 }
 
 try {
@@ -392,6 +396,10 @@ try {
     $stderr = Join-Path $work 'stderr.log'
     $credential = [PSCredential]::new("$env:COMPUTERNAME\$accountName", $password)
     $process = Start-Process -FilePath (Join-Path $PSHOME 'pwsh.exe') -Credential $credential -LoadUserProfile -UseNewEnvironment -NoNewWindow -PassThru -WorkingDirectory $work -ArgumentList "-NoProfile -NonInteractive -File `"$childScript`" -Child -Configuration `"$configurationPath`"" -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+    # Force the process handle open so ExitCode cannot depend on the object outliving its wait handle.
+    $null = $process.Handle
+    # This bound must stay well below the native job's timeout-minutes in ci.yml, so it always fires
+    # first and the `finally` below prints the child's logs; a job-level kill would lose them.
     $deadline = [DateTime]::UtcNow.AddMinutes(35)
     while (-not $process.WaitForExit(1000)) {
         if ([DateTime]::UtcNow -ge $deadline) {
@@ -404,17 +412,24 @@ try {
     if ($childExit -isnot [int]) { throw 'The qualification child did not provide an integer exit code.' }
     Write-Host "Standard-user qualification child exit code: $childExit"
 } finally {
-    if ($null -ne $process -and -not $process.HasExited) {
+    if ($null -ne $process) {
         try {
-            $process.Kill($true)
-            if (-not $process.WaitForExit(10000)) { throw 'The owned process tree did not stop.' }
+            if (-not $process.HasExited) {
+                $process.Kill($true)
+                if (-not $process.WaitForExit(10000)) { throw 'The owned process tree did not stop.' }
+            }
         } catch { Write-Warning "Qualification process cleanup failed: $_"; $cleanupFailed = $true }
     }
-    if ($null -ne $process) { $process.Dispose() }
+    # Diagnostics must never skip the account, profile, ACL and filter cleanup below.
+    if ($null -ne $process) {
+        try { $process.Dispose() } catch { Write-Warning "Qualification process dispose failed: $_" }
+    }
     if ($createdWork) {
         foreach ($name in @('stdout.log', 'stderr.log')) {
-            $log = Join-Path $work $name
-            if (Test-Path -LiteralPath $log) { Get-Content -LiteralPath $log }
+            try {
+                $log = Join-Path $work $name
+                if (Test-Path -LiteralPath $log) { Get-Content -LiteralPath $log }
+            } catch { Write-Warning "Cannot print ${name}: $_" }
         }
     }
     if ($null -ne $createdUser) {
