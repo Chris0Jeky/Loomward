@@ -169,8 +169,8 @@ pub fn read_tree(
     }
 }
 
-/// `read_tree` hashing only files whose size `want` accepts; every other file keeps its observed
-/// size and gets `content: Err("not_requested")` without spending read budget (#1011).
+/// `read_tree` hashing only files whose root-relative path and size `want` accepts; every other
+/// file keeps its observed size and gets `content: Err("not_requested")` without spending read budget (#1011).
 #[cfg(any(feature = "content-read", test))]
 #[doc(hidden)]
 pub fn read_tree_wanting(
@@ -179,7 +179,7 @@ pub fn read_tree_wanting(
     budget: Budget,
     max_entries: usize,
     cancel: Arc<AtomicBool>,
-    want: &dyn Fn(u64) -> bool,
+    want: &dyn Fn(&Path, u64) -> bool,
 ) -> Result<(loomward_operations::tree::Tree, u64), Reason> {
     #[cfg(windows)]
     {

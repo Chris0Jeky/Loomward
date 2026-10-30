@@ -53,10 +53,11 @@ pub(crate) fn read_tree(
     max_entries: usize,
     cancel: Arc<AtomicBool>,
 ) -> Result<(Tree, u64), Reason> {
-    read_tree_wanting(root, expected, budget, max_entries, cancel, &|_| true)
+    read_tree_wanting(root, expected, budget, max_entries, cancel, &|_, _| true)
 }
 
-/// `read_tree` that hashes only the files whose listed size `want` accepts (#1011). Any other file
+/// `read_tree` that hashes only the files whose root-relative path (the `Tree` key) and listed size
+/// `want` accepts (#1011, #1037). Any other file
 /// is still opened, bound and observed, but its content and named streams are `not_requested` and
 /// cost no read budget.
 pub(crate) fn read_tree_wanting(
@@ -65,7 +66,7 @@ pub(crate) fn read_tree_wanting(
     budget: Budget,
     max_entries: usize,
     cancel: Arc<AtomicBool>,
-    want: &dyn Fn(u64) -> bool,
+    want: &dyn Fn(&Path, u64) -> bool,
 ) -> Result<(Tree, u64), Reason> {
     read_tree_from(
         &NativeSource::default(),
@@ -90,7 +91,7 @@ fn read_tree_from(
     max_entries: usize,
     cancel: Arc<AtomicBool>,
     geometry: fn(&File) -> io::Result<usize>,
-    want: &dyn Fn(u64) -> bool,
+    want: &dyn Fn(&Path, u64) -> bool,
 ) -> Result<(Tree, u64), Reason> {
     let mut meter = Meter::new(budget);
     meter.cancel = Some(cancel);
@@ -290,7 +291,7 @@ fn read_tree_from(
                     relative: relative.clone(),
                     expected,
                 };
-                if want(size) {
+                if want(&relative, size) {
                     node.content = reader
                         .hash(0, &entry, false, &mut meter)
                         .map_err(Reason::as_str);
@@ -1722,7 +1723,7 @@ mod tests {
             100,
             Default::default(),
             |_| Err(io::Error::from_raw_os_error(1)),
-            &|_| true,
+            &|_, _| true,
         );
         assert_eq!(result.unwrap_err(), Reason::GeometryUnavailable);
         assert_eq!(
@@ -1870,7 +1871,7 @@ mod tests {
                 100,
                 Default::default(),
                 crate::noncached::sector_for_file,
-                &|_| true,
+                &|_, _| true,
             )
             .unwrap()
             .0
@@ -1911,7 +1912,7 @@ mod tests {
             100,
             Default::default(),
             crate::noncached::sector_for_file,
-            &|_| true,
+            &|_, _| true,
         )
         .unwrap()
         .0;
@@ -1944,7 +1945,7 @@ mod tests {
                 max,
                 Default::default(),
                 crate::noncached::sector_for_file,
-                &|_| true,
+                &|_, _| true,
             )
             .unwrap()
             .0
@@ -1980,7 +1981,7 @@ mod tests {
                 max,
                 Default::default(),
                 crate::noncached::sector_for_file,
-                &|_| true,
+                &|_, _| true,
             )
             .unwrap()
             .0
@@ -2007,7 +2008,8 @@ mod tests {
         std::fs::write(temp.path().join("five"), b"fives").unwrap();
         std::fs::write(temp.path().join("sub").join("big"), vec![7u8; 64 * 1024]).unwrap();
         let (_, expected) = NativeSource::default().open_root(temp.path()).unwrap();
-        let run = |want: Option<&dyn Fn(u64) -> bool>| {
+        type Want<'a> = &'a dyn Fn(&Path, u64) -> bool;
+        let run = |want: Option<Want>| {
             match want {
                 None => read_tree(temp.path(), &expected, budget(), 100, Default::default()),
                 Some(want) => read_tree_wanting(
@@ -2025,7 +2027,7 @@ mod tests {
         let big = Path::new("sub").join("big");
         let big = big.to_str().unwrap();
         let (default, default_bytes) = run(None);
-        let (all, all_bytes) = run(Some(&|_| true));
+        let (all, all_bytes) = run(Some(&|_, _| true));
         assert!(default_bytes >= 64 * 1024 + 5, "{default_bytes}");
         assert_eq!(all_bytes, default_bytes);
         assert_eq!(
@@ -2041,7 +2043,7 @@ mod tests {
                 b.metadata[&Class::NamedStreams]
             );
         }
-        let (none, none_bytes) = run(Some(&|_| false));
+        let (none, none_bytes) = run(Some(&|_, _| false));
         assert_eq!(none_bytes, 0);
         for name in ["five", big] {
             let node = file(&none, name);
@@ -2050,9 +2052,15 @@ mod tests {
             assert_eq!(node.metadata[&Class::NamedStreams], Err("not_requested"));
         }
         assert_eq!(none.nodes[Path::new("")].as_ref().unwrap().children, Ok(()));
-        let (five, five_bytes) = run(Some(&|size| size == 5));
+        let (five, five_bytes) = run(Some(&|_, size| size == 5));
         assert!(five_bytes < 64 * 1024, "{five_bytes}");
         assert_eq!(file(&five, "five").content, file(&default, "five").content);
         assert_eq!(file(&five, big).content, Err("not_requested"));
+        // #1037: the predicate sees the root-relative path, the same key the tree uses.
+        let (by_path, by_path_bytes) = run(Some(&|path, _| path == Path::new("sub").join("big")));
+        assert!(by_path_bytes >= 64 * 1024, "{by_path_bytes}");
+        assert_eq!(file(&by_path, big).content, file(&default, big).content);
+        assert_eq!(file(&by_path, "five").content, Err("not_requested"));
+        assert_eq!(file(&by_path, "five").size, file(&default, "five").size);
     }
 }

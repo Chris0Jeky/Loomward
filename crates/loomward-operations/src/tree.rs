@@ -286,6 +286,17 @@ pub fn compare(source: &Tree, destination: &Tree) -> Report {
     report
 }
 
+/// Whether `path` is selected or lies under a selected folder: the exact rule `compare_selected`
+/// uses to keep a source entry whole. The engine reads source file content by the same rule, so
+/// the files it hashes and the files compared cannot drift apart (#1037).
+pub fn is_under_selected(
+    selected: &std::collections::BTreeSet<PathBuf>,
+    path: &std::path::Path,
+) -> bool {
+    path.ancestors()
+        .any(|a| !a.as_os_str().is_empty() && selected.contains(a))
+}
+
 /// Selected-set comparison (#1009): compares only the `selected` relative paths and everything
 /// under a selected directory, so a plan that copied some files out of a folder can pass.
 /// Unselected source entries are ignored; every destination entry still counts, so anything
@@ -310,10 +321,7 @@ pub fn compare_selected(
         });
         return report;
     }
-    let under_selected = |path: &Path| {
-        path.ancestors()
-            .any(|a| !a.as_os_str().is_empty() && selected.contains(a))
-    };
+    let under_selected = |path: &Path| is_under_selected(selected, path);
     // A folder selected whole keeps every check, even when a path inside it is also listed.
     let containers: BTreeSet<&Path> = selected
         .iter()
@@ -777,5 +785,29 @@ mod tests {
                 "selected_not_in_source" | "empty_selection"
             ));
         }
+    }
+    /// #1037: the rule the engine reads source content by. A selected path and everything under
+    /// a selected folder is in; a name sharing a prefix, an ancestor and the root are not.
+    #[test]
+    fn under_selected_is_the_selected_path_and_what_lies_below_it() {
+        let selected = selection(&["m/sub", "m/planned"]);
+        for (path, under) in [
+            ("m/sub", true),
+            ("m/sub/f", true),
+            ("m/sub/deep/f", true),
+            ("m/planned", true),
+            ("m/sub2", false),
+            ("m/subf", false),
+            ("m", false),
+            ("", false),
+            ("other/sub", false),
+        ] {
+            assert_eq!(
+                is_under_selected(&selected, Path::new(path)),
+                under,
+                "{path:?}"
+            );
+        }
+        assert!(!is_under_selected(&selection(&[]), Path::new("m/sub")));
     }
 }
