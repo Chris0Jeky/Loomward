@@ -124,8 +124,7 @@ impl Reader {
 
 fn read(conn: &Connection, root: i64, baseline: Option<i64>, cap: usize) -> Result<NewSince> {
     query::revisions(conn, Some(root))?; // an unknown or revoked root is NotFound
-    let mut out = NewSince::default();
-    out.latest = conn
+    let latest = conn
         .query_row(
             &format!("{RUN} WHERE root_id=?1 AND state='completed' ORDER BY id DESC LIMIT 1"),
             [root],
@@ -133,6 +132,10 @@ fn read(conn: &Connection, root: i64, baseline: Option<i64>, cap: usize) -> Resu
         )
         .optional()?
         .map(|r| r.0);
+    let mut out = NewSince {
+        latest,
+        ..NewSince::default()
+    };
     let baseline_state = match baseline {
         Some(id) => {
             let (run, state) = conn
