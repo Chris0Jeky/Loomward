@@ -59,7 +59,11 @@
         "bytes_read": "24",
         "partial": true,
         "truncated": false,
-        "stop": null
+        "stop": null,
+        "candidate_space": {
+          "files": 12,
+          "bytes": "4096"
+        }
       }
     }
   }

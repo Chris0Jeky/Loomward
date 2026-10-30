@@ -325,6 +325,9 @@ fn duplicates_native_service_job_reads_synthetic_content_and_never_counts_links_
     assert!(report.bytes_read.get() > 0 && report.partial);
     assert!(report.skipped.is_empty());
     assert_eq!(report.stop, None);
+    // The catalogue's candidate space rides along: five same-size names (four bytes each), none unknown.
+    let space = report.candidate_space.as_ref().unwrap();
+    assert_eq!((space.files.get(), space.bytes.get()), (5, 20));
     // The content budget is the reader's shared meter, not a UI estimate.
     let (limited, _) = ok(
         "duplicates.inspect",

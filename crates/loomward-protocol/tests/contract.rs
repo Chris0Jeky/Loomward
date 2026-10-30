@@ -211,6 +211,69 @@ fn reclaim_selection_is_additive_bounded_and_preserves_exact_bytes() {
 }
 
 #[test]
+fn reclaim_relief_keeps_unknowns_null_and_refuses_extra_fields() {
+    let mut schema = Schema::load();
+    let result = read(&contracts().join("examples/commands/reclaim.sample.result.json"));
+    for field in ["after", "direction", "change_bytes"] {
+        let mut unknown = result.clone();
+        unknown[field] = Value::Null;
+        assert!(schema.errors("ReclaimRelief", &unknown).is_empty());
+        assert_eq!(
+            roundtrip("ReclaimRelief", &unknown).unwrap().unwrap(),
+            unknown
+        );
+        unknown.as_object_mut().unwrap().remove(field);
+        assert!(!schema.errors("ReclaimRelief", &unknown).is_empty());
+        assert!(roundtrip("ReclaimRelief", &unknown).unwrap().is_err());
+    }
+    for field in [
+        "capacity_bytes",
+        "free_bytes",
+        "recycle_bin_bytes",
+        "estimate_bytes",
+    ] {
+        let mut sample = result["after"].clone();
+        sample[field] = Value::Null;
+        assert!(schema.errors("ReliefSample", &sample).is_empty());
+        assert_eq!(roundtrip("ReliefSample", &sample).unwrap().unwrap(), sample);
+        sample.as_object_mut().unwrap().remove(field);
+        assert!(!schema.errors("ReliefSample", &sample).is_empty());
+        assert!(roundtrip("ReliefSample", &sample).unwrap().is_err());
+    }
+    let mut exact = result.clone();
+    exact["change_bytes"] = json!("18446744073709551615");
+    assert!(schema.errors("ReclaimRelief", &exact).is_empty());
+    assert_eq!(roundtrip("ReclaimRelief", &exact).unwrap().unwrap(), exact);
+    for bad in [json!("-1"), json!(5), json!("18446744073709551616")] {
+        let mut invalid = result.clone();
+        invalid["change_bytes"] = bad;
+        assert!(roundtrip("ReclaimRelief", &invalid).unwrap().is_err());
+    }
+    let mut extra = result.clone();
+    extra["cleanup_freed"] = json!("10000");
+    assert!(!schema.errors("ReclaimRelief", &extra).is_empty());
+    assert!(roundtrip("ReclaimRelief", &extra).unwrap().is_err());
+    let request = read(&contracts().join("examples/commands/reclaim.sample.request.json"));
+    for bad in [
+        json!({"volume_id":"vo_lab1"}),
+        json!({"volume_id":"vo_lab1","role":"during"}),
+        json!({"volume_id":"vo_lab1","role":"after","estimate_bytes":null}),
+        json!({"volume_id":"vo_lab1","role":"after","path":"C:\\"}),
+    ] {
+        assert!(!schema.errors("ReclaimSampleRequest", &bad).is_empty());
+        assert!(roundtrip("ReclaimSampleRequest", &bad).unwrap().is_err());
+    }
+    assert!(schema.errors("ReclaimSampleRequest", &request).is_empty());
+    assert_eq!(
+        roundtrip("ReclaimSampleRequest", &request)
+            .unwrap()
+            .unwrap(),
+        request
+    );
+    assert_eq!(Command::ReclaimSample.client_result_def(), None);
+}
+
+#[test]
 fn diagnostics_elevated_session_refusal_roundtrips_through_schema_and_dto() {
     let value = json!({
         "outcome": "refused", "bytes_written": null, "refusal": "elevated_session"

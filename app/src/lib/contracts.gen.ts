@@ -480,6 +480,12 @@ export interface DuplicateSkip {
   reason: string;
 }
 
+/** Eligible files sharing an exact logical size with another eligible file in the root, before any cap (semantics.md, Duplicate inspection). */
+export interface DuplicateCandidateSpace {
+  files: Count;
+  bytes: ByteCount;
+}
+
 export interface DuplicateReport {
   entries: DuplicateEntry[];
   groups: number[][];
@@ -490,6 +496,8 @@ export interface DuplicateReport {
   partial: boolean;
   truncated: boolean;
   stop: string | null;
+  /** Optional and additive: absent means the candidate space is unknown, never zero. Never null. */
+  candidate_space?: DuplicateCandidateSpace;
 }
 
 /** placement.simulate is synchronous and bounded, never a job (semantics.md section 2). */
@@ -2417,6 +2425,7 @@ export interface ReclaimPlan {
   truncated: boolean;
   budget_hit: boolean;
   selection?: ReclaimSelection;
+  relief?: ReclaimRelief;
 }
 
 export interface ReclaimObserveRequest {
@@ -2429,6 +2438,37 @@ export interface ReclaimObserveProgress {
   candidates_total: Count;
   candidates_done: Count;
   names_checked: Count;
+}
+
+export type SampleRole = "before" | "after";
+
+/** #1013. estimate_bytes is the plan's estimate as the owner saw it, kept beside a before sample; it is refused with an after sample. */
+export interface ReclaimSampleRequest {
+  volume_id: VolumeId;
+  role: SampleRole;
+  estimate_bytes?: ByteCount;
+}
+
+/** #1013. Volume metadata at one moment; anything unreadable is null, never zero. */
+export interface ReliefSample {
+  sampled_at: Timestamp;
+  capacity_bytes: NullableBytes;
+  free_bytes: NullableBytes;
+  recycle_bin_bytes: NullableBytes;
+  estimate_bytes: NullableBytes;
+}
+
+export type ReliefStatus = "not_checked" | "different_volume" | "unreadable" | "compared";
+
+export type ReliefDirection = "more_free" | "less_free" | "unchanged";
+
+/** #1013. Observed free-space change between two samples of one volume identity. direction and change_bytes are null unless status is compared. It never attributes the change to a cleanup. */
+export interface ReclaimRelief {
+  before: ReliefSample;
+  after: ReliefSample | null;
+  status: ReliefStatus;
+  direction: ReliefDirection | null;
+  change_bytes: NullableBytes;
 }
 
 export type ReclaimSelectionStatus = "unobserved" | "recorded" | "expired";
@@ -2529,6 +2569,7 @@ export interface CommandMap {
   "stats.breakdown": { request: BreakdownRequest; result: Breakdown };
   "reclaim.plan": { request: ReclaimPlanRequest; result: ReclaimPlan };
   "reclaim.observe": { request: ReclaimObserveRequest; result: JobResult };
+  "reclaim.sample": { request: ReclaimSampleRequest; result: ReclaimRelief };
   "clutter.developer": { request: DeveloperClutterRequest; result: DeveloperClutterReport };
   "taxonomy.get": { request: EmptyRequest; result: Taxonomy };
   "feedback.record": { request: FeedbackRequest; result: FeedbackResult };
@@ -2623,6 +2664,7 @@ export const COMMANDS = {
   "stats.breakdown": { adapters: ["tauri", "http"], wave: 2, events: [] },
   "reclaim.plan": { adapters: ["tauri", "http"], wave: 2, events: [] },
   "reclaim.observe": { adapters: ["tauri", "http"], wave: 2, events: ["job.state"] },
+  "reclaim.sample": { adapters: ["tauri", "http"], wave: 2, events: [] },
   "clutter.developer": { adapters: ["tauri", "http"], wave: 2, events: [] },
   "taxonomy.get": { adapters: ["tauri", "http"], wave: 3, events: [] },
   "feedback.record": { adapters: ["tauri", "http"], wave: 3, events: ["learning.updated"] },

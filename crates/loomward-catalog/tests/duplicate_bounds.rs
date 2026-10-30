@@ -126,3 +126,42 @@ fn duplicate_candidates_rejects_bad_cap_and_prunes_singletons() {
     assert!(counts.values().all(|&n| n >= 2));
     assert!(counts.values().any(|&n| n == 2));
 }
+
+#[test]
+fn candidate_space_counts_the_whole_eligible_same_size_population_beyond_the_cap() {
+    // 150 pairs of equal-size files: 300 candidates against a cap of 200 entries.
+    let mut files: Vec<Observation> = (0..150u64)
+        .flat_map(|i| {
+            (0..2).map(move |n| Observation::file(format!("p{i:03}-{n}"), 1000 + i, Some(4096)))
+        })
+        .collect();
+    // Ineligible: a unique size, empty files, and a cloud placeholder that would otherwise
+    // make a third member of the 1000-byte group.
+    files.push(Observation::file("lone", 77, Some(4096)));
+    files.push(Observation::file("empty-a", 0, Some(0)));
+    files.push(Observation::file("empty-b", 0, Some(0)));
+    let mut placeholder = Observation::file("cloud", 1000, Some(0));
+    placeholder.flags = 1 << 3;
+    files.push(placeholder);
+    let (_tmp, catalog, root) = setup_with_files(files);
+    let mut reader = catalog.reader().unwrap();
+
+    let all = reader.duplicate_candidates(root, 1, 200).unwrap();
+    assert!(all.truncated);
+    assert_eq!(all.entries.len(), 200);
+    let space = all.space.expect("a small root counts within budget");
+    assert_eq!(space.files, 300);
+    assert_eq!(
+        space.bytes,
+        (0..150u64).map(|i| 2 * (1000 + i)).sum::<u64>()
+    );
+
+    // The floor applies as in selection: sizes 1100..1149 leave 50 pairs.
+    let floored = reader.duplicate_candidates(root, 1100, 200).unwrap();
+    assert_eq!(floored.space.unwrap().files, 100);
+    assert_eq!(floored.entries.len(), 100);
+
+    // Nothing shares a size above every file: a known zero, distinct from unknown.
+    let none = reader.duplicate_candidates(root, 5000, 2).unwrap();
+    assert_eq!(none.space.map(|s| (s.files, s.bytes)), Some((0, 0)));
+}

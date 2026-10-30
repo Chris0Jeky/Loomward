@@ -54,7 +54,11 @@ preview of exactly what is sent**, and added:
    pass, when the repository takes the `sensitive_data` overlay. Local requests (stage 3) follow the Ask grant rule
    (docs/46 Q3); whether they also get a per-request preview is this design's open question, not yet decided.
 
-Every summary is shown with what it rests on: the facts that produced it and which stage spoke. A category or
+Every summary is shown with what it rests on: the facts that produced it and which stage spoke. Stage 1's renderer is
+`loomward_learn::explain::explain` (LW-138, #877): a pure function from a validated evidence packet to fact-only
+lines, each with the packet fields (JSON pointers) it came from. It words coldness as "no activity evidence seen
+since <month>", states unknown facts as unknown, says when an axis abstains or its rules disagree, and presents a
+rule vote as an inference, never as a decision or advice. A category or
 summary is never an approval: the Recycle Bin effect still needs the owner's per-plan confirmation, and a learned
 score never pre-approves anything (invariant 3).
 
