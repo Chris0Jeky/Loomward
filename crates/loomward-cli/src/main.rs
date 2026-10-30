@@ -6,7 +6,7 @@ use std::process::ExitCode;
 
 mod verify_tree;
 
-const USAGE: &str = "Usage: loomward-native capabilities | scan ROOT [MAX_ENTRIES] | plan SCENARIO.json | receipt (copy.status JSON on stdin) | verify-tree SOURCE DESTINATION --state-dir DIR [--max-entries N] [--budget-bytes N] [--budget-secs N]";
+const USAGE: &str = "Usage: loomward-native capabilities | scan ROOT [MAX_ENTRIES] | plan SCENARIO.json | receipt (copy.status JSON on stdin) | verify-tree SOURCE DESTINATION --state-dir DIR [--max-entries N] [--budget-bytes N] [--budget-secs N] [--only LIST]";
 
 fn execute(args: &[String]) -> Result<serde_json::Value, String> {
     match args.first().map(String::as_str) {
