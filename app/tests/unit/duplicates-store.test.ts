@@ -8,7 +8,7 @@ import { createMockTransport } from '../../src/lib/transport/mock';
 import { DUPLICATES_FIXTURE } from '../../src/lib/transport/mock-scan';
 import type { DuplicateReport, EventEnvelope, Job, SessionInfo } from '../../src/lib/contracts.gen';
 import type { Transport } from '../../src/lib/transport/transport';
-import { sanitizeDuplicatesReport, skippedNotice } from '../../src/views/duplicates/View.svelte';
+import { candidateCoverage, sanitizeDuplicatesReport, skippedNotice } from '../../src/views/duplicates/View.svelte';
 
 const job = (patch: Partial<Job> = {}): Job => ({ job_id: 'jb_fixture', kind: 'duplicates', root_id: 'rt_fixture', seq: 1, rev: 0, state: 'queued', created_at: '2026-10-01T00:00:00Z', started_at: null, finished_at: null, coverage: null, error: null, progress: null, ...patch });
 afterEach(() => { session.client = null; session.info = null; vi.useRealTimers(); });
@@ -221,6 +221,50 @@ describe('duplicates root picker', () => {
     const source = readFileSync(new URL('../../src/views/duplicates/View.svelte', import.meta.url), 'utf8');
     expect(source).toContain('escapedName(r.display_path.text)');
     expect(source).not.toMatch(/<option[^>]*>\{r\.display_path\.text\}<\/option>/);
+  });
+});
+
+describe('duplicates candidate coverage', () => {
+  const entries = (n: number) => Array.from({ length: n }, (_, i) => ({ relative_path: `f${i}.txt`, logical_bytes: '16' }));
+  const report = (patch: Partial<DuplicateReport> = {}): DuplicateReport => ({
+    entries: entries(200), groups: [], links: [], links_not_compared: 0, skipped: [], bytes_read: '0', partial: true, truncated: true, stop: 'entry_budget',
+    candidate_space: { files: 41312, bytes: String(41_000_000_000) },
+    ...patch,
+  });
+  it('says examined of candidate files with the size, and why the rest were not examined', () => {
+    const { heading, detail } = candidateCoverage(report());
+    expect(heading).toBe('Examined 200 of 41,312 candidate files (38.2 GiB).');
+    expect(detail).toBe('41,112 candidate files were not examined: the candidate cap was reached.');
+  });
+  it('names the byte and time budgets and warns that listed files may be unread', () => {
+    const bytes = candidateCoverage(report({ stop: 'byte_budget' }));
+    expect(bytes.detail).toContain('the byte budget was spent');
+    expect(bytes.detail).toContain('Some listed files may not have been read');
+    expect(candidateCoverage(report({ stop: 'time_budget' })).detail).toContain('the time budget ran out');
+  });
+  it('shows an unknown candidate space as unknown, never zero, whether absent or (malformed) null', () => {
+    for (const candidate_space of [undefined, null as unknown as undefined]) {
+      const { heading, detail } = candidateCoverage(report({ candidate_space }));
+      expect(heading).toBe('Examined 200 candidate files. The size of the candidate space is unknown, so how much of the root this covers is unknown.');
+      expect(heading).not.toMatch(/ of 0/);
+      expect(detail).toBe('The run ended because the candidate cap was reached.');
+    }
+  });
+  it('treats a malformed candidate space as unknown and a known zero as zero', () => {
+    expect(candidateCoverage(report({ candidate_space: { files: -1, bytes: '1' } })).heading).toContain('unknown');
+    expect(candidateCoverage(report({ entries: [], stop: null, truncated: false, candidate_space: { files: 0, bytes: '0' } })).heading).toBe('Examined 0 of 0 candidate files (0 B).');
+  });
+  it('reports a fully examined root with nothing left over and does not count skipped entries as examined', () => {
+    const full = candidateCoverage(report({ entries: entries(12), stop: null, truncated: false, candidate_space: { files: 12, bytes: '192' } }));
+    expect(full).toEqual({ heading: 'Examined 12 of 12 candidate files (192 B).', detail: '' });
+    const skipped = candidateCoverage(report({ entries: entries(12), stop: null, skipped: [{ entry: 3, reason: 'changed_during_read' }], candidate_space: { files: 12, bytes: '192' } }));
+    expect(skipped.heading).toBe('Examined 11 of 12 candidate files (192 B).');
+    expect(skipped.detail).toBe('1 candidate file was not examined.');
+  });
+  it('renders the coverage heading in the result panel', () => {
+    const source = readFileSync(new URL('../../src/views/duplicates/View.svelte', import.meta.url), 'utf8');
+    expect(source).toContain('candidateCoverage(safeReport)');
+    expect(source).toContain('{coverage.heading}');
   });
 });
 
