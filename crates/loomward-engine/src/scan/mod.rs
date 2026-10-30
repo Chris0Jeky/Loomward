@@ -234,6 +234,19 @@ impl Engine {
         budget: loomward_windows::duplicate_reader::Budget,
         max_entries: usize,
     ) -> EngineResult<loomward_operations::tree::Report> {
+        self.compare_selected_trees(source, destination, budget, max_entries, None)
+    }
+
+    /// `compare_trees`, limited to `selection` when given (`tree::compare_selected`, #1009).
+    /// Unselected source files are still read today; only the comparison is limited.
+    pub fn compare_selected_trees(
+        &self,
+        source: &GrantedRoot,
+        destination: &GrantedRoot,
+        budget: loomward_windows::duplicate_reader::Budget,
+        max_entries: usize,
+        selection: Option<&std::collections::BTreeSet<std::path::PathBuf>>,
+    ) -> EngineResult<loomward_operations::tree::Report> {
         use loomward_windows::duplicate_reader::{read_tree, Budget};
         use std::time::Instant;
         let left_cancel = self.duplicate_read_admission(source)?;
@@ -263,7 +276,10 @@ impl Engine {
         let right = read("destination", destination, right_cancel.clone())?;
         #[cfg(test)]
         tree_gate_tests::point(tree_gate_tests::TreePoint::AfterDestinationRead);
-        let report = loomward_operations::tree::compare(&left, &right);
+        let report = match selection {
+            Some(selected) => loomward_operations::tree::compare_selected(&left, &right, selected),
+            None => loomward_operations::tree::compare(&left, &right),
+        };
         self.finish_tree_reads(source, destination, left_cancel, right_cancel)?;
         Ok(report)
     }

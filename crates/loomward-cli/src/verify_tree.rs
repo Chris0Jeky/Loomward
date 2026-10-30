@@ -3,7 +3,7 @@ use loomward_engine::{scan::CatalogRootIdentity, scan::GrantedRoot, Engine, Engi
 use loomward_operations::tree::{DifferenceKind, Report};
 use loomward_protocol::{DatasetClass, RootId};
 use loomward_service::{paths, Config, Service};
-use std::{path::PathBuf, time::Duration};
+use std::{collections::BTreeSet, path::PathBuf, time::Duration};
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct Args {
@@ -13,6 +13,7 @@ pub(super) struct Args {
     pub(super) max_entries: usize,
     pub(super) budget_bytes: u64,
     pub(super) budget_secs: u64,
+    pub(super) only: Option<PathBuf>,
 }
 
 pub(super) fn parse(args: &[String]) -> Result<Args, String> {
@@ -31,6 +32,7 @@ pub(super) fn parse(args: &[String]) -> Result<Args, String> {
         max_entries: 50_000,
         budget_bytes: 1024 * 1024 * 1024,
         budget_secs: 60,
+        only: None,
     };
     let mut seen = std::collections::HashSet::new();
     let mut options = args[2..].chunks_exact(2);
@@ -43,6 +45,7 @@ pub(super) fn parse(args: &[String]) -> Result<Args, String> {
             "--max-entries" => parsed.max_entries = pair[1].parse().map_err(|_| usage())?,
             "--budget-bytes" => parsed.budget_bytes = pair[1].parse().map_err(|_| usage())?,
             "--budget-secs" => parsed.budget_secs = pair[1].parse().map_err(|_| usage())?,
+            "--only" => parsed.only = Some(pair[1].clone().into()),
             _ => return Err(usage()),
         }
     }
@@ -50,6 +53,31 @@ pub(super) fn parse(args: &[String]) -> Result<Args, String> {
         return Err(usage());
     }
     Ok(parsed)
+}
+
+/// `--only` (#1009): one relative path per line, as the approved plan names them. Anything that
+/// could leave the source (absolute, `..`, `.`, a drive or a root) is refused, as is an empty list,
+/// which would compare nothing.
+fn selection(text: &str) -> Result<BTreeSet<PathBuf>, String> {
+    use std::path::Component;
+    let mut paths = BTreeSet::new();
+    for (number, line) in text.trim_start_matches('\u{feff}').lines().enumerate() {
+        if line.is_empty() {
+            continue;
+        }
+        let path = PathBuf::from(line);
+        if !path.components().all(|c| matches!(c, Component::Normal(_))) {
+            return Err(format!(
+                "--only: line {} is not a relative path inside the source",
+                number + 1
+            ));
+        }
+        paths.insert(path);
+    }
+    if paths.is_empty() {
+        return Err("--only: the list names no paths".into());
+    }
+    Ok(paths)
 }
 
 // Resolve the CLI's explicit path to an existing durable grant, never a caller-supplied identity.
@@ -169,10 +197,16 @@ pub(super) fn admit(
 }
 
 pub(super) fn run(args: Args) -> Result<(serde_json::Value, u8), String> {
+    let only = match &args.only {
+        Some(list) => Some(selection(
+            &std::fs::read_to_string(list).map_err(|e| format!("--only: {e}"))?,
+        )?),
+        None => None,
+    };
     let (engine, source, destination) =
         admit(&args, ["rt_verify_source", "rt_verify_destination"])?;
     let report = engine
-        .compare_trees(
+        .compare_selected_trees(
             &source,
             &destination,
             Budget {
@@ -180,6 +214,7 @@ pub(super) fn run(args: Args) -> Result<(serde_json::Value, u8), String> {
                 time: Duration::from_secs(args.budget_secs),
             },
             args.max_entries,
+            only.as_ref(),
         )
         .map_err(|e| e.to_string())?;
     let status = exit_status(&report);
@@ -188,13 +223,19 @@ pub(super) fn run(args: Args) -> Result<(serde_json::Value, u8), String> {
         "source": root_identity(&source)?,
         "destination": root_identity(&destination)?,
     });
+    if let Some(paths) = &only {
+        json["selection"] = serde_json::json!({ "paths": paths.len() });
+    }
     let outcome = match status {
         0 => "equal",
         1 => "differences",
         _ => "unknown or refused",
     };
+    let scope = only.as_ref().map_or(String::new(), |paths| {
+        format!(" over {} selected path(s)", paths.len())
+    });
     eprintln!(
-        "loomward-native verify-tree: {outcome}; {} difference(s), {} unknown(s)",
+        "loomward-native verify-tree: {outcome}{scope}; {} difference(s), {} unknown(s)",
         report.differences.len(),
         report.unknowns.len()
     );
@@ -236,6 +277,47 @@ mod tests {
             (parsed.max_entries, parsed.budget_bytes, parsed.budget_secs),
             (12, 34, 0)
         );
+        assert_eq!(parsed.only, None);
+        let parsed = parse(&args(&[
+            "source",
+            "destination",
+            "--state-dir",
+            "state",
+            "--only",
+            "plan.txt",
+        ]))
+        .unwrap();
+        assert_eq!(parsed.only, Some(PathBuf::from("plan.txt")));
+    }
+
+    #[test]
+    fn selection_takes_relative_plan_paths_and_refuses_anything_else() {
+        let text = "\u{feff}a/model.safetensors\r\n\r\nb/c.gguf\na/model.safetensors\n";
+        assert_eq!(
+            selection(text).unwrap().into_iter().collect::<Vec<_>>(),
+            vec![
+                PathBuf::from("a/model.safetensors"),
+                PathBuf::from("b/c.gguf")
+            ]
+        );
+        for text in [
+            "",
+            "\n\n",
+            "../escape",
+            "a/../../b",
+            "./a",
+            "/abs",
+            "a\n/abs",
+        ] {
+            assert!(
+                selection(text).unwrap_err().starts_with("--only"),
+                "{text:?}"
+            );
+        }
+        #[cfg(windows)]
+        for text in [r"C:\x", r"\\server\share\x", "C:x", r"a\..\..\b"] {
+            assert!(selection(text).is_err(), "{text:?}");
+        }
     }
 
     #[test]
@@ -264,6 +346,15 @@ mod tests {
                 "--state-dir",
                 "again",
             ],
+            vec![
+                "source",
+                "destination",
+                "--state-dir",
+                "state",
+                "--only",
+                "",
+            ],
+            vec!["source", "destination", "--state-dir", "state", "--only"],
             vec![
                 "source",
                 "destination",
