@@ -1,0 +1,9 @@
+{
+  "def": "AppsListRequest",
+  "reason": "sort is absent for the registry order, never null",
+  "value": {
+    "limit": 200,
+    "cursor": null,
+    "sort": null
+  }
+}

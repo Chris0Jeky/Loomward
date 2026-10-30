@@ -1823,6 +1823,15 @@ export interface MetadataPageRequest {
   cursor: Cursor | null;
 }
 
+/** size_desc: provider-estimated size, largest first; unknown sizes last, never as zero; ties keep registry order. A cursor is bound to the order it was issued under. */
+export type AppsSort = "size_desc";
+
+export interface AppsListRequest {
+  limit: number;
+  cursor: Cursor | null;
+  sort?: AppsSort;
+}
+
 export type InventoryProviderState = "available" | "denied" | "unavailable" | "partial";
 
 export interface InventoryProvider {
@@ -2594,7 +2603,7 @@ export interface CommandMap {
   "insight.folder": { request: InsightFolderRequest; result: InsightFolder };
   "session.hello": { request: EmptyRequest; result: SessionInfo };
   "health.get": { request: EmptyRequest; result: Health };
-  "apps.list": { request: MetadataPageRequest; result: ApplicationPage };
+  "apps.list": { request: AppsListRequest; result: ApplicationPage };
   "desktop.contexts": { request: MetadataPageRequest; result: DesktopPage };
   "roots.list": { request: EmptyRequest; result: RootList };
   "roots.request_grant": { request: RootGrantRequest; result: RootGrantResult };

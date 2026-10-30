@@ -605,3 +605,165 @@ fn metadata_modules_expose_no_effect_or_unbounded_filesystem_api() {
     assert!(registry.contains("\"EstimatedSize\""));
     assert!(!registry.contains("KEY_WRITE"));
 }
+
+/// Rows named by their registry key with an estimated size (`None` is unknown, never zero).
+struct Sized(Vec<(&'static str, Option<&'static str>)>);
+impl Provider for Sized {
+    fn dataset(&self) -> DatasetClass {
+        DatasetClass::Synthetic
+    }
+    fn read(&self, cmd: Command, deadline: Instant) -> Result<Value, ErrorBody> {
+        let mut page = Fixtures.read(cmd, deadline)?;
+        let row = page["applications"][0].clone();
+        page["applications"] = Value::Array(
+            self.0
+                .iter()
+                .map(|(key, size)| {
+                    let mut r = row.clone();
+                    r["registry_key"] = json!(key);
+                    r["estimated_size_bytes"] = json!(size);
+                    r["size_reason"] = json!(size.is_none().then_some("provider field absent"));
+                    r
+                })
+                .collect(),
+        );
+        Ok(page)
+    }
+}
+
+fn keys(page: &Value) -> Vec<&str> {
+    assert_eq!(page["ok"], true, "{page}");
+    page["result"]["applications"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["registry_key"].as_str().unwrap())
+        .collect()
+}
+
+#[test]
+fn size_desc_orders_largest_first_with_unknown_last_ties_in_registry_order_and_paged_cursor() {
+    let tmp = tempfile::tempdir().unwrap();
+    // Registry order: a small, an unknown, two tied at 500, the largest, an explicit 0 (known,
+    // so it outranks unknown) and a second unknown.
+    let rows = vec![
+        ("small", Some("10")),
+        ("unknown1", None),
+        ("tie_a", Some("500")),
+        ("tie_b", Some("500")),
+        ("largest", Some("18446744073709551615")),
+        ("zero", Some("0")),
+        ("unknown2", None),
+    ];
+    let s = open(
+        tmp.path(),
+        DatasetClass::Synthetic,
+        Some(Arc::new(Sized(rows))),
+    );
+    let all = [
+        "largest", "tie_a", "tie_b", "small", "zero", "unknown1", "unknown2",
+    ];
+    let one = call(
+        &s,
+        "apps.list",
+        json!({"limit": 200, "cursor": null, "sort": "size_desc"}),
+        60_000,
+    );
+    assert_eq!(keys(&one), all);
+    // Unknown stays unknown: the wire value and its reason are untouched, and a real 0 sorts above it.
+    let last = &one["result"]["applications"][5];
+    assert!(last["estimated_size_bytes"].is_null());
+    assert_eq!(last["size_reason"], "provider field absent");
+    // Default order is the registry order, unchanged.
+    let plain = call(
+        &s,
+        "apps.list",
+        json!({"limit": 200, "cursor": null}),
+        60_000,
+    );
+    assert_eq!(
+        keys(&plain),
+        ["small", "unknown1", "tie_a", "tie_b", "largest", "zero", "unknown2"]
+    );
+    // Pages of 3 (a boundary inside the tie and one inside the unknowns) concatenate to one order.
+    let mut seen = Vec::new();
+    let mut cursor = Value::Null;
+    let mut pages = 0;
+    loop {
+        let page = call(
+            &s,
+            "apps.list",
+            json!({"limit": 3, "cursor": cursor, "sort": "size_desc"}),
+            60_000,
+        );
+        assert_eq!(page["ok"], true);
+        seen.extend(keys(&page).into_iter().map(String::from));
+        pages += 1;
+        cursor = page["result"]["next_cursor"].clone();
+        if cursor.is_null() {
+            break;
+        }
+    }
+    assert_eq!(pages, 3);
+    assert_eq!(seen, all);
+}
+
+#[test]
+fn cursor_issued_under_one_sort_is_refused_under_another() {
+    let tmp = tempfile::tempdir().unwrap();
+    let rows = vec![("a", Some("1")), ("b", Some("2")), ("c", None)];
+    let s = open(
+        tmp.path(),
+        DatasetClass::Synthetic,
+        Some(Arc::new(Sized(rows))),
+    );
+    let sorted = call(
+        &s,
+        "apps.list",
+        json!({"limit": 1, "cursor": null, "sort": "size_desc"}),
+        60_000,
+    )["result"]["next_cursor"]
+        .clone();
+    let plain = call(&s, "apps.list", json!({"limit": 1, "cursor": null}), 60_000)["result"]
+        ["next_cursor"]
+        .clone();
+    for (cursor, sort) in [(&sorted, None), (&plain, Some("size_desc"))] {
+        let mut payload = json!({"limit": 1, "cursor": cursor});
+        if let Some(sort) = sort {
+            payload["sort"] = json!(sort);
+        }
+        let refused = call(&s, "apps.list", payload, 60_000);
+        assert_eq!(refused["error"]["code"], "invalid_request");
+        assert_eq!(
+            refused["error"]["message"],
+            "cursor belongs to another sort order"
+        );
+    }
+    // Each still resumes under its own order, and an unknown sort is a schema error.
+    let ok = call(
+        &s,
+        "apps.list",
+        json!({"limit": 1, "cursor": sorted, "sort": "size_desc"}),
+        60_000,
+    );
+    assert_eq!(keys(&ok), ["a"]);
+    assert_eq!(
+        call(
+            &s,
+            "apps.list",
+            json!({"limit": 1, "cursor": null, "sort": "name_asc"}),
+            60_000
+        )["error"]["code"],
+        "invalid_request"
+    );
+    // desktop.contexts takes no sort.
+    assert_eq!(
+        call(
+            &s,
+            "desktop.contexts",
+            json!({"limit": 1, "cursor": null, "sort": "size_desc"}),
+            60_000
+        )["error"]["code"],
+        "invalid_request"
+    );
+}

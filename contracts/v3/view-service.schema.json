@@ -3206,6 +3206,8 @@
       "properties": { "status": { "$ref": "#/$defs/LearningStatus" } }
     },
     "MetadataPageRequest": {"type": "object", "additionalProperties": false, "required": ["limit", "cursor"], "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 200}, "cursor": {"anyOf": [{"$ref": "#/$defs/Cursor"}, {"type": "null"}]}}},
+    "AppsSort": {"enum": ["size_desc"], "$comment": "size_desc: provider-estimated size, largest first; unknown sizes last, never as zero; ties keep registry order. A cursor is bound to the order it was issued under."},
+    "AppsListRequest": {"type": "object", "additionalProperties": false, "required": ["limit", "cursor"], "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 200}, "cursor": {"anyOf": [{"$ref": "#/$defs/Cursor"}, {"type": "null"}]}, "sort": {"$ref": "#/$defs/AppsSort"}}},
     "InventoryProviderState": {"enum": ["available", "denied", "unavailable", "partial"]},
     "InventoryProvider": {"type": "object", "additionalProperties": false, "required": ["provider", "state", "reason"], "properties": {"provider": {"type": "string", "minLength": 1, "maxLength": 64}, "state": {"$ref": "#/$defs/InventoryProviderState"}, "reason": {"anyOf": [{"type": "string", "maxLength": 1024}, {"type": "null"}]}}},
     "InventoryTextState": {"enum": ["known", "missing", "unknown"]},

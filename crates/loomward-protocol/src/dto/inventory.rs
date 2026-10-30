@@ -77,6 +77,27 @@ pub struct MetadataPageRequest {
     pub cursor: Option<Cursor>,
 }
 
+/// `apps.list` order. Absent means the registry order the providers report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppsSort {
+    SizeDesc,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AppsListRequest {
+    pub limit: Int<1, 200>,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub cursor: Option<Cursor>,
+    #[serde(
+        default,
+        deserialize_with = "crate::types::optional_present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub sort: Option<AppsSort>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InventoryProvider {

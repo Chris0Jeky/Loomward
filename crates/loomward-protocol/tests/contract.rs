@@ -660,6 +660,7 @@ fn example_directories_hold_exactly_the_expected_files() {
     assert_eq!(
         have,
         BTreeSet::from([
+            "apps-list-request-largest-first.json".to_string(),
             "ClientField.json".to_string(),
             "McpClient.json".to_string(),
             "copy-disposition.json".to_string(),

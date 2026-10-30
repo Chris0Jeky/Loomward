@@ -27,6 +27,8 @@ pub enum Position {
     Metadata {
         snapshot: std::sync::Arc<serde_json::Value>,
         offset: usize,
+        /// The `apps.list` order the snapshot was sorted under; a cursor never resumes under another.
+        sort: Option<loomward_protocol::AppsSort>,
     },
 }
 
