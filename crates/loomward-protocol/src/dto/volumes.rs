@@ -74,6 +74,85 @@ pub struct VolumeFeatures {
     pub usn_journal: Option<bool>,
 }
 
+/// LW-137: removal policy as the OS reports it. `null` on the wire is unknown, never a default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StorageRemovalPolicy {
+    ExpectNoRemoval,
+    ExpectOrderlyRemoval,
+    ExpectSurpriseRemoval,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StorageUsbTransport {
+    Bot,
+    Uas,
+}
+
+/// Individual reliability properties the device reported; an absent one is `null`, never zero.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StorageCounters {
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub temperature_celsius: Option<Count>,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub read_errors_total: Option<Count>,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub read_errors_uncorrected: Option<Count>,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub write_errors_total: Option<Count>,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub write_errors_uncorrected: Option<Count>,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub power_on_hours: Option<Count>,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub wear_percent: Option<Count>,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub start_stop_cycles: Option<Count>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StorageHealthState {
+    CountersPresent,
+    UnsupportedOrHidden,
+}
+
+/// Reported counters are evidence, not a verdict: there is no healthy state. `unsupported_or_hidden`
+/// (including SMART behind a USB bridge) is unknown, and a client must never present it as healthy.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StorageHealth {
+    pub state: StorageHealthState,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub reason: Option<Text<256>>,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub counters: Option<StorageCounters>,
+}
+
+/// LW-137 storage-path facts for one volume. Every `null` is unknown, never a default; the volume
+/// GUID, device serial and mount paths are not carried. Observation only, never authority.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VolumeStoragePath {
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub bus_type: Option<Text<32>>,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub bridge: Option<Text<64>>,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub usb_transport: Option<StorageUsbTransport>,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub logical_sector_bytes: Option<Count>,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub physical_sector_bytes: Option<Count>,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub removal_policy: Option<StorageRemovalPolicy>,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub write_cache_enabled: Option<bool>,
+    pub health: StorageHealth,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Volume {
@@ -96,6 +175,14 @@ pub struct Volume {
     pub device: DeviceHint,
     pub tier: TierInfo,
     pub features: VolumeFeatures,
+    /// Absent when the service did not observe the storage path (offline, no active grant, query
+    /// refused); absent is unknown, never healthy. Additive: older services omit it.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::types::optional_present"
+    )]
+    pub storage_path: Option<VolumeStoragePath>,
     pub observed_at: Timestamp,
 }
 
