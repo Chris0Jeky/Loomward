@@ -124,7 +124,7 @@ fn query_candidates(
     scanning: bool,
 ) -> Result<MachineStores> {
     let mut report = MachineStores {
-        rules_version: 4,
+        rules_version: 5,
         ..MachineStores::default()
     };
     let mut stmt = conn.prepare(sql)?;

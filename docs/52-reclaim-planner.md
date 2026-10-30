@@ -29,7 +29,7 @@ owner remove or relocate, how much would that really free, how sure are we, and 
 | Stale worktrees | `ClutterTopic::StaleWorktrees` is reported as not assessed (LW-076 lease evidence) | still not assessed |
 | Model stores | `ClutterTopic::ModelHostLifecycle` not assessed (LW-086) | still not assessed |
 
-## 3. Candidate classes (rules version 2 proposal)
+## 3. Candidate classes (rules version 5)
 
 Each class is a **recogniser over catalogue rows** (names and structure only, as rules version 1 is), plus a fixed
 statement of which tool owns the data and what its owner-run command is. Recognisers never read file contents.
@@ -48,6 +48,16 @@ statement of which tool owns the data and what its owner-run command is. Recogni
 | Installer caches (rules v4) | `ProgramData\Package Cache` and `Windows\Installer` directly under the granted root's `ProgramData` or `Windows` directory | informational (`system_managed`): never remove by hand, they back repair and uninstall; never summed as reclaimable | none |
 | Recycle Bin contents | `$Recycle.Bin` on the volume (per-volume, system-managed) | empty the Recycle Bin (owner, Explorer) | none |
 | System-managed space | `hiberfil.sys`, `pagefile.sys`, `swapfile.sys`, `WinSxS`, `SoftwareDistribution` | informational only: Disk Cleanup / `DISM /Online /Cleanup-Image /AnalyzeComponentStore`; never summed as reclaimable | none |
+
+**Creative-AI and Steam edges (rules v3, v5).** A ComfyUI `models` child holding Hugging Face `models--*` or `datasets--*`
+caches with `blobs` and `snapshots` (typically `models/diffusers`) reports provider `huggingface`, so the owner step is
+`huggingface-cli delete-cache` rather than a hand review; it still plans under Relocate. A ComfyUI child folder known
+empty is not listed: its listing and aggregate are complete and valid, it has no catalogue rows beneath it, and the root is
+not mid-scan (otherwise it stays, with unknown sizes), so stock folders do not crowd the candidate cap. The signature
+rows (`comfy`, `custom_nodes`, `Stable-diffusion`, `webui.py`, `appmanifest_*.acf`) must be unshielded and, where a file,
+observed in the same run as an incomplete listing. A granted root that is itself a `models` folder or `steamapps/common`
+yields no candidates and no "not assessed" signal, because the parent that proves the layout is outside the grant (the
+LM Studio rule behaves the same).
 
 **Driver extracts (rules v4).** Names cannot show that a grant is a volume root, so `driver-extract` does not rely on one:
 an `AMD` or `NVIDIA` directory directly under the granted root is recognised only when it holds an installer payload,

@@ -24,7 +24,7 @@ use std::{
 };
 
 /// The plan's recogniser rules version (docs/52 section 3).
-pub const RULES_VERSION: u32 = 4;
+pub const RULES_VERSION: u32 = 5;
 /// Reason for unknown relief when the link-count pass did not verify every identity.
 pub const RELIEF_UNOBSERVED: &str = "hard links outside the candidate, or not observed";
 const SIZES_UNKNOWN: &str =

@@ -74,7 +74,7 @@ fn machine_store_signature_produces_catalogue_advice() {
     lab.directory(cache, "content-v2", 100);
     lab.directory(cache, "index-v5", 23);
     let report = lab.report(200);
-    assert_eq!(report.rules_version, 4);
+    assert_eq!(report.rules_version, 5);
     assert!(!report.partial);
     assert!(!report.truncated);
     assert!(!report.budget_hit);
@@ -486,6 +486,255 @@ fn creative_ai_and_game_library_decoys_are_not_candidates() {
     let report = lab.report(200);
     let names: Vec<_> = report.candidates.iter().map(|c| c.name.as_str()).collect();
     assert!(names.is_empty(), "{names:?}");
+}
+
+// Rules v3 follow-ups (#1026): the signature rows of the ComfyUI, A1111 and Steam rules follow the
+// same shields as every other rule, so a shielded or stale row cannot make a candidate.
+impl Lab {
+    /// Turns each shield on for one row in turn, calls `check` while it is on, then restores the row.
+    fn shielding(&self, table: &str, id: i64, mut check: impl FnMut(&str)) {
+        let (attrs, restore) = if table == "dir" {
+            (16, "flags=0,attrs=16,listing_state='complete'")
+        } else {
+            (32, "flags=0,attrs=32")
+        };
+        let mut sets = vec![
+            format!("flags={EXCLUDED_FLAGS}"),
+            "flags=1".to_string(),
+            "flags=2".to_string(),
+            "flags=64".to_string(),
+            "flags=128".to_string(),
+            "flags=512".to_string(),
+            format!("attrs={}", attrs | 1024),
+        ];
+        if table == "dir" {
+            for state in ["excluded", "denied", "absent_pending"] {
+                sets.push(format!("listing_state='{state}'"));
+            }
+        }
+        for set in sets {
+            self.db
+                .execute(&format!("UPDATE {table} SET {set} WHERE id=?1"), [id])
+                .unwrap();
+            check(&set);
+            self.db
+                .execute(&format!("UPDATE {table} SET {restore} WHERE id=?1"), [id])
+                .unwrap();
+        }
+    }
+    fn child(&self, parent: i64, name: &str) -> i64 {
+        self.db
+            .query_row(
+                "SELECT id FROM dir WHERE parent_id=?1 AND name=?2",
+                params![parent, name],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+}
+
+#[test]
+fn comfyui_signature_directories_must_not_be_shielded() {
+    let lab = Lab::new();
+    let (install, models) = comfy_install(&lab, lab.dir, "ComfyUI");
+    let checkpoints = lab.directory(models, "checkpoints", 5);
+    let expected = [NodeKey::Dir(checkpoints)];
+    assert_eq!(lab.nodes(), expected);
+    // A reparse point, flagged row or excluded, denied or pending-removal listing is not evidence.
+    for name in ["comfy", "custom_nodes"] {
+        lab.shielding("dir", lab.child(install, name), |set| {
+            assert!(lab.nodes().is_empty(), "{name}: {set}");
+        });
+    }
+    assert_eq!(lab.nodes(), expected);
+}
+
+#[test]
+fn a1111_signature_rows_must_not_be_shielded_or_stale() {
+    let lab = Lab::new();
+    let install = lab.directory(lab.dir, "webui", 0);
+    let webui = lab.file(install, "webui.py", 1, Some(1));
+    let models = lab.directory(install, "models", 400);
+    let stable = lab.directory(models, "Stable-diffusion", 300);
+    let expected = [NodeKey::Dir(models)];
+    assert_eq!(lab.nodes(), expected);
+    lab.shielding("file", webui, |set| {
+        assert!(lab.nodes().is_empty(), "webui.py: {set}");
+    });
+    lab.shielding("dir", stable, |set| {
+        assert!(lab.nodes().is_empty(), "Stable-diffusion: {set}");
+    });
+    // In an incomplete listing, a file seen in an earlier run is not evidence; a same-run one is.
+    lab.db
+        .execute(
+            "UPDATE dir SET listing_state='incomplete',seen_run=2 WHERE id=?1",
+            [install],
+        )
+        .unwrap();
+    assert!(lab.nodes().is_empty());
+    lab.db
+        .execute("UPDATE file SET seen_run=2 WHERE id=?1", [webui])
+        .unwrap();
+    assert_eq!(lab.nodes(), expected);
+    // A stale listing of the folder holding webui.py cannot supply it.
+    lab.db
+        .execute(
+            "UPDATE dir SET listing_outcome='stale' WHERE id=?1",
+            [install],
+        )
+        .unwrap();
+    assert!(lab.nodes().is_empty());
+}
+
+#[test]
+fn steam_manifest_rows_must_not_be_shielded_or_stale() {
+    let lab = Lab::new();
+    let library = lab.directory(lab.dir, "SteamLibrary", 0);
+    let steamapps = lab.directory(library, "steamapps", 0);
+    let manifest = lab.file(steamapps, "appmanifest_480.acf", 1, Some(1));
+    let common = lab.directory(steamapps, "common", 0);
+    let game = lab.directory(common, "Synthetic Game", 500);
+    let expected = [NodeKey::Dir(game)];
+    assert_eq!(lab.nodes(), expected);
+    lab.shielding("file", manifest, |set| {
+        assert!(lab.nodes().is_empty(), "manifest: {set}");
+    });
+    lab.shielding("dir", steamapps, |set| {
+        assert!(lab.nodes().is_empty(), "steamapps: {set}");
+    });
+    lab.db
+        .execute(
+            "UPDATE dir SET listing_state='incomplete',seen_run=2 WHERE id=?1",
+            [steamapps],
+        )
+        .unwrap();
+    assert!(lab.nodes().is_empty());
+    lab.db
+        .execute("UPDATE file SET seen_run=2 WHERE id=?1", [manifest])
+        .unwrap();
+    assert_eq!(lab.nodes(), expected);
+    for outcome in ["stale", "excluded", "denied", "unscanned"] {
+        lab.db
+            .execute(
+                "UPDATE dir SET listing_outcome=?2 WHERE id=?1",
+                params![steamapps, outcome],
+            )
+            .unwrap();
+        assert!(lab.nodes().is_empty(), "{outcome}");
+    }
+}
+
+#[test]
+fn comfyui_skips_stock_folders_known_empty_after_a_complete_listing() {
+    let lab = Lab::new();
+    let (_, models) = comfy_install(&lab, lab.dir, "ComfyUI");
+    let used = lab.directory(models, "checkpoints", 300);
+    let empty = lab.directory(models, "vae", 0);
+    // Each of these is not known empty, so each stays a candidate with its unknowns visible.
+    let kept = [
+        (lab.directory(models, "loras", 0), "sub_complete=0"),
+        (
+            lab.directory(models, "clip", 0),
+            "listing_state='incomplete',listing_outcome='partial'",
+        ),
+        (lab.directory(models, "unet", 0), "listing_outcome='stale'"),
+        (
+            lab.directory(models, "upscale_models", 0),
+            "dirty_rev=1,agg_valid_rev=0",
+        ),
+        (lab.directory(models, "gligen", 0), "sub_files=1"),
+        (lab.directory(models, "photomaker", 0), "sub_dirs=1"),
+        (lab.directory(models, "style_models", 0), "sub_logical=7"),
+    ];
+    for (id, set) in kept {
+        lab.db
+            .execute(&format!("UPDATE dir SET {set} WHERE id=?1"), [id])
+            .unwrap();
+    }
+    // Catalogue rows beneath the folder count even when its aggregates say empty.
+    let with_file = lab.directory(models, "embeddings", 0);
+    lab.file(with_file, "a.pt", 0, Some(0));
+    let with_dir = lab.directory(models, "hypernetworks", 0);
+    lab.directory(with_dir, "nested", 0);
+    let mut expected: Vec<_> = kept
+        .iter()
+        .map(|(id, _)| NodeKey::Dir(*id))
+        .chain([
+            NodeKey::Dir(used),
+            NodeKey::Dir(with_file),
+            NodeKey::Dir(with_dir),
+        ])
+        .collect();
+    expected = sorted(expected);
+    assert_eq!(lab.nodes(), expected);
+    assert!(!lab.nodes().contains(&NodeKey::Dir(empty)));
+    // Mid-scan, emptiness is not established: the folder stays listed with unknown sizes.
+    let WriteReply::Run(_) = lab
+        .catalog
+        .writer()
+        .call(WriteCommand::BeginRun {
+            grant_id: lab.grant,
+            mode: "full".into(),
+            strategy: "fixture".into(),
+            started_at_ns: 1,
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert!(lab.nodes().contains(&NodeKey::Dir(empty)));
+}
+
+#[test]
+fn hugging_face_caches_under_a_comfyui_models_folder_report_huggingface() {
+    let lab = Lab::new();
+    let (_, models) = comfy_install(&lab, lab.dir, "ComfyUI");
+    let diffusers = lab.directory(models, "diffusers", 40);
+    let model = lab.directory(diffusers, "models--synthetic", 40);
+    lab.directory(model, "blobs", 0);
+    let snapshots = lab.directory(model, "snapshots", 0);
+    let checkpoints = lab.directory(models, "checkpoints", 5);
+    // A diffusers folder without a Hugging Face signature stays a ComfyUI folder.
+    let plain = lab.directory(models, "diffusion_models", 5);
+    let half = lab.directory(plain, "models--synthetic", 5);
+    lab.directory(half, "blobs", 0);
+    let provider = |lab: &Lab, node: i64| {
+        lab.report(200)
+            .candidates
+            .iter()
+            .find(|c| c.node == NodeKey::Dir(node))
+            .map(|c| (c.provider, c.class))
+    };
+    // Without its snapshots child the cache signature is incomplete, so ComfyUI still owns the folder.
+    lab.db
+        .execute("UPDATE dir SET name='snapshots2' WHERE id=?1", [snapshots])
+        .unwrap();
+    assert_eq!(provider(&lab, diffusers), Some(("comfyui", "model_store")));
+    lab.db
+        .execute("UPDATE dir SET name='snapshots' WHERE id=?1", [snapshots])
+        .unwrap();
+    let hf = provider(&lab, diffusers).unwrap();
+    assert_eq!(hf, ("huggingface", "model_store"));
+    let c = lab
+        .report(200)
+        .candidates
+        .into_iter()
+        .find(|c| c.node == NodeKey::Dir(diffusers))
+        .unwrap();
+    assert!(c.owner_step.contains("huggingface-cli delete-cache"));
+    assert_eq!(
+        provider(&lab, checkpoints),
+        Some(("comfyui", "model_store"))
+    );
+    assert_eq!(provider(&lab, plain), Some(("comfyui", "model_store")));
+    // Without a usable listing the Hugging Face rule cannot apply, so the ComfyUI rule still does.
+    lab.db
+        .execute(
+            "UPDATE dir SET listing_state='unlisted',sub_complete=0 WHERE id=?1",
+            [diffusers],
+        )
+        .unwrap();
+    assert_eq!(provider(&lab, diffusers), Some(("comfyui", "model_store")));
 }
 
 #[test]
@@ -1268,7 +1517,7 @@ fn windows_leftover_rules_are_recognised_with_their_own_owner_steps() {
         ),
     ];
     let report = lab.report(200);
-    assert_eq!(report.rules_version, 4);
+    assert_eq!(report.rules_version, 5);
     assert!(!report.partial && !report.truncated && !report.budget_hit);
     assert_eq!(report.candidates.len(), expected.len());
     for (node, class, step) in expected {
