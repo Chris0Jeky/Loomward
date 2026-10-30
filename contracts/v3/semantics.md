@@ -221,6 +221,17 @@ releases the service read permit while at most eight unfinished observation help
 own permits until the OS calls return.
 Stored canonical row references and input digests survive restart and never confer effect authority.
 
+`volumes.list` rows may carry an optional `storage_path` (LW-137): the bus type, bridge, BOT/UAS,
+sector geometry, removal policy and write-cache facts the Windows storage query observed through
+an active online grant's own root, plus a `health` object. A `null` fact is unknown, never a
+default. `health.state` is `counters_present` (the device reported reliability counters, an
+absent counter is `null`, not zero) or `unsupported_or_hidden` (nothing reported, including SMART
+behind a USB bridge). Neither is a verdict and no state means healthy: clients show
+`unsupported_or_hidden` and an absent `storage_path` (offline volume, no active grant, query
+refused) as unknown. `volumes.changed` and `volumes.declare_tier` rows carry no `storage_path`.
+The volume GUID, device serial and mount paths are never carried, and the field is observation,
+not authority.
+
 ## 4. Idempotency
 
 | Read-only command | Idempotency | Deadline | Pagination and unknowns |

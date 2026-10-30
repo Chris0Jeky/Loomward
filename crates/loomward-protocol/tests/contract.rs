@@ -59,6 +59,55 @@ fn sampled_system_cpu_count_is_required_but_nullable() {
 }
 
 #[test]
+fn volume_storage_path_is_additive_and_never_reads_as_healthy() {
+    let mut schema = Schema::load();
+    let list = read(&contracts().join("examples/commands/volumes.list.result.json"));
+    let volume = list["volumes"][1].clone();
+    assert_eq!(
+        volume["storage_path"]["health"]["state"],
+        "unsupported_or_hidden"
+    );
+    assert!(schema.errors("Volume", &volume).is_empty());
+    assert_eq!(roundtrip("Volume", &volume).unwrap().unwrap(), volume);
+    // Additive: a row without the field is still valid (older services), and stays without it.
+    let mut absent = volume.clone();
+    absent.as_object_mut().unwrap().remove("storage_path");
+    assert!(schema.errors("Volume", &absent).is_empty());
+    assert_eq!(roundtrip("Volume", &absent).unwrap().unwrap(), absent);
+    // A null storage_path is not a spelling of "absent", and no health state means healthy.
+    let mut null = volume.clone();
+    null["storage_path"] = Value::Null;
+    assert!(!schema.errors("Volume", &null).is_empty());
+    assert!(roundtrip("Volume", &null).unwrap().is_err());
+    for state in ["healthy", "ok", "good"] {
+        let mut healthy = volume.clone();
+        healthy["storage_path"]["health"]["state"] = json!(state);
+        assert!(!schema.errors("Volume", &healthy).is_empty());
+        assert!(roundtrip("Volume", &healthy).unwrap().is_err());
+    }
+    // Every fact and counter is required-nullable: omission is refused, null is unknown.
+    for (pointer, field) in [
+        ("/storage_path", "bridge"),
+        ("/storage_path", "removal_policy"),
+        ("/storage_path/health", "reason"),
+    ] {
+        let mut missing = volume.clone();
+        missing
+            .pointer_mut(pointer)
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        assert!(!schema.errors("Volume", &missing).is_empty(), "{field}");
+        assert!(roundtrip("Volume", &missing).unwrap().is_err(), "{field}");
+    }
+    let mut counters = list["volumes"][0]["storage_path"]["health"]["counters"].clone();
+    counters.as_object_mut().unwrap().remove("wear_percent");
+    assert!(!schema.errors("StorageCounters", &counters).is_empty());
+    assert!(roundtrip("StorageCounters", &counters).unwrap().is_err());
+}
+
+#[test]
 fn reclaim_sizes_are_required_nullable_and_requests_are_bounded() {
     let mut schema = Schema::load();
     let plan = read(&contracts().join("examples/commands/reclaim.plan.result.json"));

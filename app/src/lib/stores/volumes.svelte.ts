@@ -22,7 +22,12 @@ class Volumes {
 
   changed(items: Volume[]): void {
     this.ticket++;
-    this.items = items;
+    // volumes.changed rows never carry storage_path (LW-137): keep what the last volumes.list observed.
+    const before = this.items;
+    this.items = items.map((v) => {
+      const kept = before?.find((o) => o.volume_id === v.volume_id)?.storage_path;
+      return v.storage_path || !kept ? v : { ...v, storage_path: kept };
+    });
     this.error = '';
   }
 }
