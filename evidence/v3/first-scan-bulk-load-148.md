@@ -132,7 +132,7 @@ receipt was recorded and no speedup is claimed.
 
 Shared-host pilots, excluded from any comparison: two lab pairs gave main 2.816/2.653 s against
 branch 1.576/1.675 s, with writer COMMIT 1.294/1.403 s against 0.464/0.564 s; one 1M P4 bench
-gave branch 4.65 s through the build plus 6.62 s EndRun (88,349 rows/s through EndRun), with the
+gave branch 4.65 s through the build plus 6.62 s EndRun (1,001,001 entries in 11.27 s, about 88.8k rows/s through EndRun; an earlier figure of 88,349 rows/s does not reconcile with these rounded times), with the
 swap's copy and four index builds about 2.7 s of that EndRun. A same-time main 1M run took
 31.9 s on that overloaded host and is not a comparable baseline.
 
