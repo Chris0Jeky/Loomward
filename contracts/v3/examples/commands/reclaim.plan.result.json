@@ -56,7 +56,7 @@
     }
   ],
   "unaccounted_bytes": "69990",
-  "rules_version": 3,
+  "rules_version": 4,
   "partial": false,
   "truncated": false,
   "budget_hit": false
