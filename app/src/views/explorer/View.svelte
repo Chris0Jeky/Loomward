@@ -381,8 +381,9 @@
       }
       void reload().then(() => {
         if (!trail.length && starts[0]) trail = [starts[0]]; // so Clear search has a folder to go back to
+        // A link may carry no generation (Reclaim candidates, #1069): inspect without the stale-check then.
         const node = params.get('node'), observed = params.get('generation');
-        if (current && node && observed) void inspect(node, observed);
+        if (current && node) void inspect(node, observed ?? undefined);
       });
     });
     return () => { current = false; inspection++; inspectAbort?.abort(); };

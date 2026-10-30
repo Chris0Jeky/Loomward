@@ -14,7 +14,11 @@ def run(ctx) -> dict:
         main = page.locator('main')
         expect(main.get_by_role('button')).to_have_text(['Look again', 'Observe hard links', 'Observe selection', 'Clear selection', 'Record before', 'Check now'])
         expect(main.get_by_role('combobox')).to_have_count(1)
-        expect(main.locator('a, form, [role="button"]')).to_have_count(0)
+        expect(main.locator('form, [role="button"]')).to_have_count(0)
+        # The only links are in-app navigation to Explorer's inspector (#1069), one per candidate with a node.
+        links = main.locator('a')
+        check(links.count() >= 1 and all(h.startswith('#/explorer?node=') for h in links.evaluate_all('els => els.map(e => e.getAttribute("href"))')),
+              'reclaim: every link only opens a candidate in Explorer')
         expect(main.locator('input:not([type="checkbox"]):not([inputmode="numeric"])')).to_have_count(0)
 
     page.goto(f'{base}/?transport=mock#/reclaim')
@@ -131,7 +135,8 @@ def run(ctx) -> dict:
         expect(cleanup).not_to_contain_text('0 B')
         expect(cleanup).to_contain_text(candidate['name'])
         expect(cleanup).to_contain_text(candidate['owner_step'])
-        expect(cleanup.locator('img, a')).to_have_count(0)
+        # A hostile name creates no element; the one link is the Explorer inspect link (#1069).
+        expect(cleanup.locator('img, a:not([href^="#/explorer?node="])')).to_have_count(0)
         expect(page.get_by_text('The search ran out of budget.', exact=True)).to_be_visible()
         expect(page.get_by_text('This volume is not fully known.', exact=True)).to_be_visible()
         expect(page.get_by_text('More candidates exist than are shown.', exact=False)).to_be_visible()

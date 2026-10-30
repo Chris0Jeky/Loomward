@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import { ScriptTarget, transpileModule } from 'typescript';
 import type { ReclaimPlan, ReclaimSelection, Volume } from '../../src/lib/contracts.gen';
 import { observationAge } from '../../src/lib/format/time';
-import { defaultVolume, GROUP_HEADINGS, selectionComparison, targetBytes, unaccountedText } from '../../src/views/reclaim/model';
+import { defaultVolume, GROUP_HEADINGS, inspectHref, selectionComparison, targetBytes, unaccountedText } from '../../src/views/reclaim/model';
 
 describe('mock reclaim transport', () => {
   it('serves the contract example for the selected listed volume, with unknown relief intact', async () => {
@@ -101,7 +101,9 @@ describe('reclaim view', () => {
     expect(source.match(/<input\b/g)).toHaveLength(2);
     expect(source).toContain('type="checkbox"');
     expect(source).toContain('inputmode="numeric"');
-    expect(source).not.toMatch(/<a\b|<form\b|{@html|clipboard|exec\(|invoke\(/);
+    // The one link is in-app navigation to Explorer's inspector (#1069); no other anchor may appear.
+    expect(source.match(/<a\b[^>]*>/g)).toEqual(['<a href={inspectHref(candidate.node_id)}>']);
+    expect(source).not.toMatch(/<form\b|{@html|clipboard|exec\(|invoke\(/);
     expect([...source.matchAll(/c.call\('([^']+)'/g)].map((m) => m[1])).toEqual(['reclaim.plan', 'volumes.list', 'reclaim.sample']);
   });
 
@@ -142,5 +144,17 @@ describe('reclaim view', () => {
     expect(calls).toBe(0);
     await view.read('missing');
     expect(view.state()).toEqual({ report: null, loading: false, error: 'Error: plan refused' });
+  });
+});
+
+describe('Inspect in Explorer (#1069)', () => {
+  it('links a candidate to Explorer by node, encoded and without a generation', () => {
+    expect(inspectHref('nd_synthetic')).toBe('#/explorer?node=nd_synthetic');
+    expect(inspectHref('nd a&b=c')).toBe('#/explorer?node=nd%20a%26b%3Dc');
+    expect(new URLSearchParams(inspectHref('nd a&b=c').split('?')[1]).get('node')).toBe('nd a&b=c');
+  });
+  it('renders the link only for candidates that have a node', () => {
+    const view = readFileSync(new URL('../../src/views/reclaim/View.svelte', import.meta.url), 'utf8');
+    expect(view).toMatch(/\{#if candidate\.node_id\}<p><a href=\{inspectHref\(candidate\.node_id\)\}>/);
   });
 });

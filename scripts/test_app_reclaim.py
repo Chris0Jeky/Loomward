@@ -52,6 +52,13 @@ def live_reclaim(browser, exe, dist, check, live_call):
             plan = live_call(page, token, 'reclaim.plan', {'volume_id': volume, 'limit': 50})['result']
             candidates = [c for group in plan['groups'] for c in group['candidates']]
             check(len(candidates) == 2 and all(c['reclaimable_bytes'] is None for c in candidates), 'native selection: each candidate individually has an external link')
+            # #1069: a candidate opens in Explorer's inspector, with no generation on the link.
+            first = candidates[0]
+            page.get_by_role('link', name=f"Inspect {first['name']} in Explorer", exact=True).first.click()
+            expect(page.get_by_role('region', name='Node inspector')).to_contain_text(first['name'])
+            check(page.evaluate('location.hash').startswith('#/explorer?node='), 'native reclaim: Inspect in Explorer opens the candidate')
+            page.evaluate("location.hash = '#/reclaim'")
+            expect(page.get_by_role('checkbox')).to_have_count(2)
             for checkbox in page.get_by_role('checkbox').all():
                 checkbox.focus()
                 page.keyboard.press('Space')

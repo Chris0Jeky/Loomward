@@ -136,3 +136,8 @@ export function reliefSummary(relief: ReclaimRelief): { headline: string; estima
   const caveat = spansCapacity + 'This is the whole volume\'s change between the samples, not proof of what a cleanup freed: other writes, an unemptied Recycle Bin, hard links elsewhere and restore points all affect it.';
   return { headline, estimate, bin, caveat };
 }
+
+/** Explorer opens and inspects this candidate. `reclaim.plan` carries no generation, so the link has none (#1069). */
+export function inspectHref(nodeId: string): string {
+  return `#/explorer?node=${encodeURIComponent(nodeId)}`;
+}
