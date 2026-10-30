@@ -24,6 +24,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub(crate) mod nested;
 mod relief;
 mod selection;
 
@@ -291,7 +292,10 @@ impl Inner {
             }
         }
         let relief = relief::relief(&input.conn, &self.instance, volume_row)?;
+        let nodes = nested::references(&planner);
         let mut plan = reclaim::plan(planner)?;
+        // A candidate inside another candidate is listed once, under the outer one (#1076).
+        nested::dedupe(&input.conn, &mut plan, &nodes)?;
         plan.budget_hit |= budget_hit;
         plan.partial |= budget_hit || bin_unknown;
         let bytes = |b: Option<u64>| b.map(Bytes);

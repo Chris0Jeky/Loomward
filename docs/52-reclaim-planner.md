@@ -101,6 +101,20 @@ Each candidate renders as facts, never as a verdict (docs/49 section 3): "Cargo 
 been approved." The plan's footer always says how much of the volume the plan **does not** explain
 (volume used minus the sum of covered roots), shown as "unaccounted", not hidden.
 
+**A candidate inside another candidate is listed once (#1076).** The engine plan removes only identical nodes; the
+service then removes, from every group, each candidate with a strict ancestor directory that is itself a listed
+candidate (a developer-clutter `node_modules` under a machine-store candidate, for example). The outermost candidate
+stays and carries one evidence line, "Contains N other recognised candidates, counted once here.", and its own sizes
+already include the nested bytes, so a sum over a group counts them once. The ancestry pass is the one
+`reclaim.observe` selection uses (a bounded walk of `main.dir` parents, 511 deep), run once per candidate under the
+read's deadline and a 100,000-row total budget. If a candidate's chain cannot be read to the root (depth cap, missing
+parent row, budget spent) it is **kept** and the plan is marked `partial`: dropping it would hide bytes, and keeping it
+silently would claim a dedupe that did not happen. `truncated` is left as the engine set it: the dedupe runs after
+each group is ranked and cut at `limit`, so a nested candidate whose outer candidate was cut stays listed (its outer is
+not in the plan, so nothing is counted twice). Candidates without a catalogue node (the Windows-reported Recycle Bin)
+are never touched. Candidates can still share bytes without nesting (hard links, for example a pnpm store linked from
+projects), so sizes across different candidates remain estimates, not an additive total.
+
 ### Proposed contract (view service, read-only)
 
 `reclaim.plan { volume_id, limit (1..200) } -> ReclaimPlan` with: `volume` (label, bus type, capacity, free,
