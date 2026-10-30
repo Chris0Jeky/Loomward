@@ -133,6 +133,19 @@ describe('covers store', () => {
     await client.call('roots.revoke', { root_id: 'rt_mock_11', purge_catalog: false });
     await expect(client.call('coverage.result', { job_id: id })).rejects.toMatchObject({ code: 'not_found' });
   });
+  it('clears a cached report on resync once a folder grant has ended', async () => {
+    const { client, store } = await mock();
+    await store.start('rt_mock_10', 'rt_mock_11');
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(store.report?.not_covered.length).toBeGreaterThan(0);
+    await store.sync();
+    expect(store.report).not.toBeNull(); // still granted: the report stands
+    await client.call('roots.revoke', { root_id: 'rt_mock_11', purge_catalog: false });
+    expect(store.report).not.toBeNull(); // nothing has asked the service yet
+    await store.sync();
+    expect(store.report).toBeNull();
+    expect(store.job).toBeNull();
+  });
   it('ignores stale snapshots and other kinds, and forgets everything when the engine restarts', async () => {
     const { store } = await mock();
     store.apply(job({ rev: 3, state: 'cancelled' }));

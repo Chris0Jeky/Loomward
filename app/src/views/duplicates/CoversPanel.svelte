@@ -37,6 +37,7 @@
   $effect(() => session.listen((event) => covers.onEvent(event)));
   $effect(() => {
     void session.epoch;
+    void roots; // the folder list is read again when a grant changes
     if (session.client) void covers.sync();
   });
   $effect(() => {

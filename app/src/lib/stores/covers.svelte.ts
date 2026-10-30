@@ -65,7 +65,21 @@ export class Covers {
       const newest = result.jobs[0];
       if (newest && !this.job) this.apply(newest);
       this.problem = '';
+      await this.revalidate(current);
     } catch (e) { const message = session.handle(e); if (current()) this.problem = message; }
+  }
+  /** A cached report is only as good as the service's copy: revoking or forgetting either folder deletes it there, so ask again and drop what the service no longer holds (names of files must not outlive the grant). */
+  private async revalidate(current: () => boolean): Promise<void> {
+    const c = session.client, cached = this.report;
+    if (!c || !cached) return;
+    try {
+      const { result } = await c.call('coverage.result', { job_id: cached.job_id });
+      if (current() && this.report?.job_id === cached.job_id) this.report = result;
+    } catch (e) {
+      if (!current() || this.report?.job_id !== cached.job_id) return;
+      if (e instanceof LoomwardError && e.code === 'not_found') { this.report = null; this.job = null; this.fetched = null; return; }
+      throw e;
+    }
   }
   async refresh(): Promise<void> {
     const c = session.client, job = this.job;
