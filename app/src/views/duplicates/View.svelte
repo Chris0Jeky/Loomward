@@ -200,7 +200,7 @@
     <button class="btn primary" disabled={loading || !canStart || active || duplicates.pending} onclick={() => duplicates.start(selected)}>Start inspection</button>
     <button class="btn" disabled={!active || job?.state === 'cancel_requested' || duplicates.pending} onclick={() => duplicates.cancel(selected)}>Cancel inspection</button>
   </div>
-  {#if !loading && !roots.length}<p class="empty">No granted roots are available.</p>
+  {#if !loading && !roots.length}<p class="empty">No granted roots are available. <a href="#/health">Add a folder in Grants &amp; health</a>.</p>
   {:else if root && !canStart}<p class="empty">This root is unavailable for inspection. Use {session.datasetClass === 'personal' ? 'an active folder you granted' : 'an active registered synthetic lab root'}.</p>{/if}
   <p class="live" class:has={!!status} role="status" aria-live="polite">{status}</p>
 </section>

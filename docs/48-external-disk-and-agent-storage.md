@@ -172,6 +172,13 @@ The plan is JSON the agent shows to the owner. It writes nothing: no draft in `s
   section 4).
 - Budgets: `--max-entries` (at most 200,000, the verifier's cap), `--budget-bytes`, `--budget-secs`. Exit 0 equal,
   1 differences (listed), 2 unknown (budget, cap, refusal or an unsupported class), which never counts as equal.
+- `--only LIST` (#1009) compares a selected set: LIST is a UTF-8 file (other encodings are refused) with one path per
+  line, relative to SOURCE, as the approved plan names them (a listed folder covers everything under it). Source entries not listed are ignored; every
+  destination entry still counts, so anything unplanned in the copy is a difference. Listed files keep every check;
+  the folders that only contain them are compared for kind and listing, not for their own times and attributes,
+  because the source folder also holds what the plan left behind. A listed path the source does not hold, an empty
+  list, or a path that is absolute or uses `..` is never equal. Unlisted source files are still read today (the
+  budget must cover the whole source folder); only the comparison is limited.
 - Its result is **observation-time evidence** (docs/47 section 11, C1): it says the two trees matched when read. It
   is not a durable read-back receipt and not by itself permission to retire a source (section 6).
 
@@ -218,7 +225,9 @@ the owner approves each plan.
     uniquely named subfolder, copied and verified as its own pair; two items with the same leaf name get distinct
     subfolder names. A robocopy exit
   code of 8 or more is a failed plan. A failed or interrupted run is never patched up: its folder is left and reported
-  to the owner, and a retry copies into another new folder. Then `verify-tree` must exit 0.
+  to the owner, and a retry copies into another new folder. Then `verify-tree` must exit 0; when the item copies only some
+  of a folder's files, the run uses `--only` with the plan's file list (section 4.5), never a hand-written rule over
+  a whole-folder report.
 - **Removing originals.** The removal re-checks the plan's own nodes by identity (volume and file ID), never paths an
   agent supplies. The owner's answer to `loomward-archive-originals` decides who removes them. Under every
   option, removal of a plan's originals needs a **second** `verify-tree` run that exits 0 after the owner safely

@@ -40,15 +40,21 @@ pub(super) fn prepare(
             ));
         }
     }
-    let mut planner = gathered.planner.clone();
-    planner.limit = 200;
-    let candidates: HashSet<_> = reclaim::plan(planner)?
-        .groups
-        .into_iter()
-        .flat_map(|g| g.candidates)
-        .filter_map(|c| c.node_id)
+    // Every gathered detector candidate, before the plan ranks and truncates per group: ranking
+    // depends on stored relief, so a displayed candidate need not be in an unranked top 200 (#1003).
+    let planner = &gathered.planner;
+    let candidates: HashSet<NodeKey> = planner
+        .developer
+        .iter()
+        .flat_map(|r| r.candidates.iter().map(|c| c.directory))
+        .chain(
+            planner
+                .machine
+                .iter()
+                .flat_map(|r| r.candidates.iter().map(|c| c.node)),
+        )
         .collect();
-    if nodes.iter().any(|n| !candidates.contains(&n.reference())) {
+    if nodes.iter().any(|n| !candidates.contains(n)) {
         return Err(fail(
             ErrorCode::InvalidRequest,
             "Select current candidates on this volume.",

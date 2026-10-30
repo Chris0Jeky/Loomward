@@ -218,6 +218,14 @@ describe('mock tiers and placement', () => {
     expect(whatif.assumptions.join(' ')).toContain('what-if');
   });
 
+  it('treats an absent overrides list as empty, both when simulating and when saving', async () => {
+    const plain = await sim(client(), { overrides: undefined as never });
+    expect(plain.result.proposals).toEqual([]);
+    const { result: saved } = await sim(client(), { save: true, overrides: undefined as never });
+    expect(saved.proposal_id).not.toBeNull();
+    expect(saved.proposals).toEqual([]);
+  });
+
   it('rejects malformed requests', async () => {
     await expect(sim(client(), { source_volume_id: 'vo_nope' })).rejects.toBeInstanceOf(LoomwardError);
     await expect(sim(client(), { heat_policy: 'bogus' as never })).rejects.toMatchObject({ code: 'invalid_request' });
