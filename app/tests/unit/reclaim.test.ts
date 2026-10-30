@@ -5,7 +5,8 @@ import { createMockTransport } from '../../src/lib/transport/mock';
 import { readFileSync } from 'node:fs';
 import { ScriptTarget, transpileModule } from 'typescript';
 import type { ReclaimPlan, ReclaimSelection, Volume } from '../../src/lib/contracts.gen';
-import { defaultVolume, GROUP_HEADINGS, observationAge, selectionComparison, targetBytes, unaccountedText } from '../../src/views/reclaim/model';
+import { observationAge } from '../../src/lib/format/time';
+import { defaultVolume, GROUP_HEADINGS, selectionComparison, targetBytes, unaccountedText } from '../../src/views/reclaim/model';
 
 describe('mock reclaim transport', () => {
   it('serves the contract example for the selected listed volume, with unknown relief intact', async () => {

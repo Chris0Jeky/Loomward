@@ -107,6 +107,9 @@ pub struct CandidateGroup {
     pub estimated_relief_bytes: Option<Bytes>,
     /// verified_unique_allocation: every entry has a native ID, every object's names are inside this group and link counts were observed; default stream only.
     pub relief_basis: CandidateGroupReliefBasis,
+    /// When the stored link-count verdict behind estimated_relief_bytes was observed. null unless that figure came from a stored verdict (not a live link-count pass, not unknown). Hard links made since then are not reflected (#1029).
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub relief_observed_at: Option<Timestamp>,
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub heat: Option<Fraction>,
     pub heat_basis: HeatBasis,

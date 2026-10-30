@@ -1,4 +1,5 @@
 import type { PlacementPlan } from '../../lib/contracts.gen';
+import { observationAge } from '../../lib/format/time';
 
 export type Outcome = { plan: PlacementPlan } | { error: string };
 
@@ -36,4 +37,12 @@ export function firstTrusted(outcomes: Record<string, Outcome> | null): Placemen
   if (!outcomes) return null;
   for (const o of Object.values(outcomes)) if (isObj(o) && 'plan' in o && isSound(o.plan)) return o.plan;
   return null;
+}
+
+/**
+ * The age of a stored link-count verdict behind a group's relief figure (#1029), or null when the figure
+ * did not come from one (live pass, or unknown). Bindings track the catalogue, not the filesystem.
+ */
+export function reliefAgeText(at: string | null, now: number): string | null {
+  return at === null ? null : `verified ${observationAge(at, now)} \u00b7 hard links made since then are not reflected`;
 }

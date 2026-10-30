@@ -998,7 +998,7 @@ impl PlacementInput for Input<'_> {
         subtree: &Subtree,
         _: &[RootGeneration],
         deadline: Instant,
-    ) -> EngineResult<Option<u64>> {
+    ) -> EngineResult<Option<StoredRelief>> {
         check(deadline)?;
         let dir: i64 = subtree
             .group_id
@@ -1020,7 +1020,10 @@ impl PlacementInput for Input<'_> {
             return Ok(None);
         };
         check(deadline)?;
-        Ok(stored.first().map(|&(_, bytes, _)| bytes))
+        Ok(stored.first().map(|&(_, bytes, at)| StoredRelief {
+            bytes,
+            observed_at: ts_ns(at),
+        }))
     }
 }
 

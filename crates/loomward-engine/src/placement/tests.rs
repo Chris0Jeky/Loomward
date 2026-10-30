@@ -213,7 +213,11 @@ fn placement_relief_maps_entry_200_to_unique_100_and_planner_accepts() {
 }
 
 /// `MemoryInput` plus a stored verdict per group, as the service reads from a reclaim row.
-struct StoredInput(MemoryInput, BTreeMap<String, u64>);
+struct StoredInput(MemoryInput, BTreeMap<String, u64>, Timestamp);
+
+fn stored_at() -> Timestamp {
+    Timestamp::new("2026-10-09T08:00:00Z").unwrap()
+}
 impl PlacementInput for StoredInput {
     fn snapshot(&self, source: Option<&VolumeId>, deadline: Instant) -> EngineResult<Snapshot> {
         self.0.snapshot(source, deadline)
@@ -231,8 +235,14 @@ impl PlacementInput for StoredInput {
         subtree: &Subtree,
         _: &[RootGeneration],
         _: Instant,
-    ) -> EngineResult<Option<u64>> {
-        Ok(self.1.get(subtree.group_id.as_str()).copied())
+    ) -> EngineResult<Option<StoredRelief>> {
+        Ok(self
+            .1
+            .get(subtree.group_id.as_str())
+            .map(|&bytes| StoredRelief {
+                bytes,
+                observed_at: self.2.clone(),
+            }))
     }
 }
 
@@ -244,7 +254,7 @@ fn unobserved_stored(stored: Option<u64>, mutate: impl FnOnce(&mut MemoryInput))
     }
     mutate(&mut memory);
     let stored = stored.map(|bytes| BTreeMap::from([("cg_one".to_string(), bytes)]));
-    let input = StoredInput(memory, stored.unwrap_or_default());
+    let input = StoredInput(memory, stored.unwrap_or_default(), stored_at());
     build_scenario(&input, &request(), deadline())
         .unwrap()
         .candidates
@@ -257,6 +267,8 @@ fn unobserved_stored(stored: Option<u64>, mutate: impl FnOnce(&mut MemoryInput))
 fn placement_stored_relief_is_verified_only_for_a_complete_covered_subtree() {
     let known = unobserved_stored(Some(100), |_| {});
     assert_eq!(known.estimated_relief_bytes, Some(Bytes(100)));
+    // #1029: a stored verdict's observation time reaches the group.
+    assert_eq!(known.relief_observed_at, Some(stored_at()));
     assert_eq!(
         known.relief_basis,
         CandidateGroupReliefBasis::VerifiedUniqueAllocation
@@ -265,11 +277,11 @@ fn placement_stored_relief_is_verified_only_for_a_complete_covered_subtree() {
     let missing = unobserved_stored(None, |_| {});
     assert_eq!(missing.estimated_relief_bytes, None);
     assert_eq!(missing.relief_basis, CandidateGroupReliefBasis::Unknown);
+    assert_eq!(missing.relief_observed_at, None);
     // More relief than the subtree allocates cannot be true.
-    assert_eq!(
-        unobserved_stored(Some(201), |_| {}).estimated_relief_bytes,
-        None
-    );
+    let overstated = unobserved_stored(Some(201), |_| {});
+    assert_eq!(overstated.estimated_relief_bytes, None);
+    assert_eq!(overstated.relief_observed_at, None);
     // Names that do not cover the totals leave a stored verdict unused.
     let uncovered = unobserved_stored(Some(100), |m| {
         m.files.get_mut("cg_one").unwrap().pop();
@@ -280,6 +292,30 @@ fn placement_stored_relief_is_verified_only_for_a_complete_covered_subtree() {
         m.snapshot.subtrees[0].totals.complete = false;
     });
     assert_eq!(partial.estimated_relief_bytes, None);
+    assert_eq!(partial.relief_observed_at, None);
+}
+
+#[test]
+fn placement_live_link_tally_relief_carries_no_observation_time() {
+    // Names that carry link observations are verified live; a stored verdict is never consulted,
+    // so there is no age to report (#1029).
+    let live = StoredInput(
+        input(),
+        BTreeMap::from([("cg_one".to_string(), 7)]),
+        stored_at(),
+    );
+    let group = build_scenario(&live, &request(), deadline())
+        .unwrap()
+        .candidates
+        .groups
+        .to_vec()
+        .remove(0);
+    assert_eq!(
+        group.relief_basis,
+        CandidateGroupReliefBasis::VerifiedUniqueAllocation
+    );
+    assert_ne!(group.estimated_relief_bytes, Some(Bytes(7)));
+    assert_eq!(group.relief_observed_at, None);
 }
 
 #[test]
@@ -1372,4 +1408,33 @@ fn placement_model_source_eligibility_matches_source_refusals() {
             "mode {mode}"
         );
     }
+}
+
+#[test]
+fn placement_saved_digest_ignores_the_stored_verdict_observation_time() {
+    // The age annotates a figure; it never enters the plan, so two saves of one scenario that
+    // differ only in when the verdict was observed are the same proposal (#1029).
+    let digest_at = |at: &str| {
+        let mut memory = input();
+        for f in memory.files.get_mut("cg_one").unwrap() {
+            f.link_observation = None;
+        }
+        let stored = StoredInput(
+            memory,
+            BTreeMap::from([("cg_one".to_string(), 100)]),
+            Timestamp::new(at).unwrap(),
+        );
+        let mut req = request();
+        req.save = true;
+        let store = MemoryStore::default();
+        engine()
+            .placement_simulate(&stored, &req, deadline(), Some(&store))
+            .unwrap();
+        let digest = store.0.lock().unwrap()[0].inputs_digest.clone();
+        digest
+    };
+    assert_eq!(
+        digest_at("2026-10-09T08:00:00Z"),
+        digest_at("2026-10-10T09:30:00Z")
+    );
 }

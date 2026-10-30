@@ -10,7 +10,8 @@
   import { session } from '../../lib/stores/session.svelte';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
   import { COVERAGE_WORDS } from '../clutter/model';
-  import { defaultVolume, GROUP_HEADINGS, OBSERVE_EXPLAINER, observationAge, observeLines, RELIEF_EXPLAINER, reliefEstimate, reliefSummary, sampleRefusal, selectionComparison, targetBytes, unaccountedText } from './model';
+  import { observationAge } from '../../lib/format/time';
+  import { defaultVolume, GROUP_HEADINGS, OBSERVE_EXPLAINER, observeLines, RELIEF_EXPLAINER, reliefEstimate, reliefSummary, sampleRefusal, selectionComparison, targetBytes, unaccountedText } from './model';
 
   let volumes = $state<Volume[]>([]);
   let selected = $state('');
