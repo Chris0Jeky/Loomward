@@ -28,6 +28,7 @@
           "allocated_bytes": "8000",
           "reclaimable_bytes": null,
           "reclaimable_reason": "hard links outside the candidate, or not observed",
+          "observed_at": null,
           "coverage": "complete",
           "owner_step": "Use cargo clean in the owning project after review; preview it with cargo clean --dry-run.",
           "relocation": {

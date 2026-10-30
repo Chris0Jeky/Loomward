@@ -807,6 +807,16 @@ mod live {
             assert_eq!(plan["space"]["fits"], true);
             assert_eq!(plan["execution"], "owner_approval_required");
             assert_eq!(plan["shape"], "new folder only");
+            for custody in [&plan["items"][0], &plan["total"]] {
+                assert_eq!(custody["copies_after_plan"], 1, "{plan}");
+                assert!(custody["last_content_verified_at"].is_null(), "{plan}");
+            }
+            assert!(plan["warnings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|w| w["code"] == "sole_copy_after_retirement"
+                    && w["references"] == json!([plan["items"][0]["reference"].clone()])));
             assert_eq!(plan["items"][0].get("modified_range").is_some(), modified);
             assert_eq!(plan["total"].get("modified_range").is_some(), modified);
             assert_eq!(
@@ -1196,6 +1206,7 @@ mod live {
             json!([
                 {"reference":reference,"code":"offline_source","message":"Source volume is offline; the catalogue is a stored observation."},
                 {"reference":reference,"code":"same_volume","message":"Destination is on the same volume as this source: not a backup."},
+                {"reference":null,"references":[reference],"code":"sole_copy_after_retirement","message":"Only one archive copy is planned for the items listed in references, and no second copy is planned or known to Loomward. If the originals were later retired, it would be the only copy. This plan retires nothing and does not authorise retiring originals; content has not been verified."},
                 {"reference":null,"code":"offline_destination","message":"Destination volume is offline; its free space is a stored observation."}
             ])
         );
@@ -1237,7 +1248,7 @@ mod live {
         assert_eq!(plan["total"]["modified_range"], *range);
         assert_eq!(item["attribute_assessment_complete"], true);
         assert_eq!(item["files"], 28);
-        assert_eq!(codes(&plan), ["same_volume"]);
+        assert_eq!(codes(&plan), ["same_volume", "sole_copy_after_retirement"]);
         drop(server);
         // Fault injection, catalogue only: a placeholder one folder down, under target/, is
         // reachable only through the descendant walk.
@@ -1260,7 +1271,14 @@ mod live {
             .find(|w| w["code"] == "cloud_placeholder")
             .unwrap_or_else(|| panic!("{plan}"));
         assert_eq!(warning["reference"], plan["items"][0]["reference"]);
-        assert_eq!(codes(&plan), ["same_volume", "cloud_placeholder"]);
+        assert_eq!(
+            codes(&plan),
+            [
+                "same_volume",
+                "cloud_placeholder",
+                "sole_copy_after_retirement"
+            ]
+        );
         assert_eq!(plan["items"][0]["modified_range"], *range);
     }
 
@@ -1290,7 +1308,10 @@ mod live {
         );
         let mut server = Server::start_client(&f.state, true, "attributes", &[]);
         let plan = plan_root(&mut server, &f.state);
-        assert_eq!(codes(&plan), ["same_volume", "reparse_point"]);
+        assert_eq!(
+            codes(&plan),
+            ["same_volume", "reparse_point", "sole_copy_after_retirement"]
+        );
     }
 
     #[test]
@@ -1312,7 +1333,7 @@ mod live {
         );
         let mut server = Server::start_client(&f.state, true, "all", &[]);
         let plan = plan_root(&mut server, &f.state);
-        assert_eq!(codes(&plan), ["same_volume"]);
+        assert_eq!(codes(&plan), ["same_volume", "sole_copy_after_retirement"]);
         assert_eq!(
             plan["items"][0]["modified_range"]["complete"], false,
             "{plan}"
@@ -1353,7 +1374,14 @@ mod live {
         );
         let mut server = Server::start_client(&f.state, true, "all", &[]);
         let plan = plan_root(&mut server, &f.state);
-        assert_eq!(codes(&plan), ["same_volume", "cloud_placeholder"]);
+        assert_eq!(
+            codes(&plan),
+            [
+                "same_volume",
+                "cloud_placeholder",
+                "sole_copy_after_retirement"
+            ]
+        );
         assert_eq!(
             plan["warnings"][1]["reference"],
             plan["items"][0]["reference"]

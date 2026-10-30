@@ -1105,6 +1105,10 @@ unknown. `job.reclaim` carries counts only (`candidates_total`, `candidates_done
 candidate directory's subtree revision and the catalogue instance match, the root is complete with no
 scan in flight, and it is not stale; any rescan or catalogue write under the candidate therefore
 returns it to "not observed". Revoking, forgetting or losing a root's identity deletes its verdicts.
+Those bindings follow the catalogue, not the filesystem (a hard link made later changes neither), so
+every candidate whose `reclaimable_bytes` comes from a stored verdict carries `observed_at`, the time
+of the pass (a required nullable timestamp, null wherever the bytes are unknown). There is no maximum
+age after which a verdict is hidden. Placement's stored-relief use of the same rows carries no age.
 
 The pass opens names through verbatim (`\\?\`) paths and first checks every directory from below the
 root through the candidate is still the catalogued, non-reparse directory; otherwise the candidate is

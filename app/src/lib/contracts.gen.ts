@@ -2402,6 +2402,7 @@ export interface ReclaimCandidate {
   allocated_bytes: NullableBytes;
   reclaimable_bytes: NullableBytes;
   reclaimable_reason: string | null;
+  observed_at: NullableTimestamp;
   coverage: CoverageState;
   owner_step: string;
   relocation: Relocation | null;
