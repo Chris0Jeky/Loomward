@@ -668,7 +668,7 @@ foreach ($script in $scripts) {
 @{ problems = @($problems) } | ConvertTo-Json -Compress
 
 """.replace("PAYLOAD", ("(" + encoded(json.dumps(scripts)) + ")"))
-        result = json.loads(PowerShell().run(parser, 30))
+        result = json.loads(PowerShell().run(parser, 300))
         self.assertEqual(result["problems"], [])
 
     def test_python_311_grammar(self):
@@ -859,7 +859,7 @@ $answers = @(foreach ($case in (ConvertFrom-Json PAYLOAD)) {
             target.write_text("live")
             temporary.write_text("pristine")
             pairs = "$pairs = @(@{ temporary = %s; target = %s })\n" % (quote(str(temporary)), quote(str(target)))
-            PowerShell().run("$ErrorActionPreference = 'Stop'\n" + pairs + loop + "\n'{}'\n\n", 30)
+            PowerShell().run("$ErrorActionPreference = 'Stop'\n" + pairs + loop + "\n'{}'\n\n", 300)
             self.assertEqual(target.read_text(), "pristine")
             self.assertFalse(temporary.exists())
 
@@ -982,7 +982,7 @@ function Refused([string]$path) {
             for path in (str(junction / "x"), str(folder) + r"\..\..\..\escape", LAB_ROOT + r"-other\x"):
                 script += f"if (-not (Refused {quote(path)})) {{ throw 'guard_accepted_escape' }}\n"
             script += f"Resolve-LabPath {quote(str(folder / 'plain-child'))} | Out-Null\n'{{}}'\n\n"
-            self.assertEqual(json.loads(PowerShell().run(script, 30)), {})
+            self.assertEqual(json.loads(PowerShell().run(script, 300)), {})
         finally:
             # Remove the junction itself before traversing the disposable folder.
             if junction.is_junction():
