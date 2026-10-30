@@ -197,7 +197,7 @@ fn candidate(row: query::Raw, rule: &str, scanning: bool) -> Result<MachineStore
         "ollama" => ("model_store", "ollama", "Review the host's models before using ollama rm in the owning tool.", Some("OLLAMA_MODELS"),
             "Recorded models directory with blobs and manifests children.",
             "Model contents, unique local models, availability and active leases are unknown. This is advice, never a disposability claim."),
-        "comfyui" => ("model_store", "comfyui", "Review this model folder in ComfyUI's model manager or by hand; custom checkpoints and trained LoRAs may be unique.", Some("extra_model_paths.yaml"),
+        "comfyui" => ("model_store", "comfyui", "Review this model folder by hand or in a model manager you use with ComfyUI; custom checkpoints and trained LoRAs may be unique.", Some("extra_model_paths.yaml"),
             "Recorded child of a models directory whose parent holds comfy and custom_nodes directories.",
             "Custom checkpoints and trained LoRAs may be unique and not re-downloadable; contents, links and active workflows are unverified. This is advice, never a disposability claim."),
         "a1111" => ("model_store", "a1111", "Review models in the web UI by hand; custom checkpoints and trained LoRAs may be unique.", Some("--ckpt-dir / --lora-dir launch arguments"),

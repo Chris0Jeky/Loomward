@@ -441,6 +441,10 @@ fn creative_ai_and_game_library_decoys_are_not_candidates() {
     lab.directory(half, "comfy", 0);
     let half_models = lab.directory(half, "models", 1);
     lab.directory(half_models, "loras", 1);
+    let half_nodes = lab.directory(lab.dir, "half-nodes", 0);
+    lab.directory(half_nodes, "custom_nodes", 0);
+    let half_nodes_models = lab.directory(half_nodes, "models", 1);
+    lab.directory(half_nodes_models, "vae", 1);
     // A models directory not directly beside comfy and custom_nodes.
     let (outer, _) = comfy_install(&lab, lab.dir, "outer");
     let deep = lab.directory(outer, "deeper", 0);
