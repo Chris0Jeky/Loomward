@@ -1,16 +1,234 @@
 //! Root response assembly, shared by listing and grant/change notices.
-use super::{catalog_error, db, encode, scan_view, ts_ns, Inner};
+use super::{catalog_error, db, encode, scan_view, ts_ns, Inner, RootPresence};
 use loomward_catalog::{NodeKey, Reader};
 use loomward_protocol::{ErrorBody, RootId};
 use serde_json::{json, Value};
+use std::time::{Duration, Instant};
+
+pub(crate) type RootPresences = std::collections::HashMap<i64, RootPresence>;
+pub(crate) type RootPresenceCache = std::collections::HashMap<i64, (Option<Instant>, RootPresence)>;
+const PRESENCE_TTL: Duration = Duration::from_secs(3);
+
+pub(crate) const OFFLINE_SPACE_NOTE: &str =
+    "Offline. Last-seen capacity and free space are observations, not current availability.";
+/// #888 item 5: say plainly why a disk reads offline while its letter is in use.
+pub(crate) const OTHER_VOLUME_MESSAGE: &str =
+    "A different disk is on this root's drive letter; the granted disk is offline until it is plugged back in.";
+const OTHER_VOLUME_SPACE_NOTE: &str = "Offline: a different disk is on this disk's drive letter. Last-seen capacity and free space are observations, not current availability.";
+
+/// The note for an offline volume: names a different disk on the letter when one was observed.
+pub(crate) fn offline_space_note(
+    volume: &db::VolumeRow,
+    roots: &[db::RootRow],
+    presence: &RootPresences,
+) -> &'static str {
+    if roots.iter().any(|r| {
+        r.volume == Some(volume.id)
+            && r.grant_state == "active"
+            && presence.get(&r.grant) == Some(&RootPresence::OtherVolume)
+    }) {
+        OTHER_VOLUME_SPACE_NOTE
+    } else {
+        OFFLINE_SPACE_NOTE
+    }
+}
+
+pub(crate) fn volume_online(
+    volume: &db::VolumeRow,
+    roots: &[db::RootRow],
+    presence: &RootPresences,
+) -> bool {
+    let mut online = None;
+    for root in roots
+        .iter()
+        .filter(|r| r.volume == Some(volume.id) && r.grant_state == "active")
+    {
+        match presence.get(&root.grant) {
+            Some(RootPresence::Online) => return true,
+            Some(_) => online = Some(false),
+            None => {}
+        }
+    }
+    online.unwrap_or(volume.online)
+}
+
+fn missing_path(code: i32) -> bool {
+    matches!(code as u32, 2 | 3 | 0xC000_000F | 0xC000_0034 | 0xC000_003A)
+}
 
 impl Inner {
+    pub(crate) fn remember_root_presence(&self, grant: i64, presence: RootPresence) {
+        self.root_presence_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(grant, (Some(Instant::now()), presence));
+    }
+
+    /// Mutation notices use short-lived display hints, never synchronous device I/O.
+    /// An expired or invalidated hint is not an observation (#913, invariant 4): it is left out,
+    /// so the root keeps its stored scan state and coverage instead of a guessed offline.
+    pub(crate) fn cached_root_presence(&self) -> RootPresences {
+        let now = Instant::now();
+        self.root_presence_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|(_, (at, _))| {
+                at.is_some_and(|at| now.saturating_duration_since(at) < PRESENCE_TTL)
+            })
+            .map(|(&grant, &(_, presence))| (grant, presence))
+            .collect()
+    }
+
+    pub(crate) fn invalidate_root_presence(&self) {
+        for (at, _) in self
+            .root_presence_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values_mut()
+        {
+            *at = None;
+        }
+    }
+
+    pub(crate) fn forget_root_presence(&self, grant: i64) {
+        self.root_presence_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&grant);
+    }
+
+    /// Probe before taking the mutation lock; the results are display observations, never grants.
+    pub(crate) fn observe_root_presence(&self) -> Result<RootPresences, ErrorBody> {
+        let rows = db::roots(&self.db(), None).map_err(crate::sql_error)?;
+        Ok(rows
+            .iter()
+            .filter(|r| r.grant_state == "active")
+            .filter_map(|r| self.root_presence(r).map(|p| (r.grant, p)))
+            .collect())
+    }
+
+    /// Metadata-only presence of a native grant. A different volume is never online for this root.
+    /// Fixtures and legacy grants without a pinned volume GUID keep their existing path.
+    pub(crate) fn root_presence(&self, r: &db::RootRow) -> Option<RootPresence> {
+        #[cfg(test)]
+        assert!(
+            !self
+                .hooks
+                .forbid_presence_probe
+                .load(std::sync::atomic::Ordering::SeqCst),
+            "mutation notice attempted a synchronous presence probe"
+        );
+        // Admission and placement always probe afresh; the cache is only for mutation notices.
+        let presence = self.probe_root_presence(r);
+        if let Some(presence) = presence {
+            self.remember_root_presence(r.grant, presence);
+        }
+        presence
+    }
+
+    fn probe_root_presence(&self, r: &db::RootRow) -> Option<RootPresence> {
+        if !matches!(r.origin.as_str(), "owner_granted" | "lab_generated") {
+            return None;
+        }
+        let (key, file, guid): (String, Vec<u8>, Option<String>) = self
+            .db()
+            .query_row(
+                "SELECT volume_key,root_file_id,volume_guid FROM st.root_grant WHERE id=?1",
+                [r.grant],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .ok()?;
+        let guid = guid?;
+        #[cfg(test)]
+        if self
+            .hooks
+            .check_presence_unlocked
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            assert!(
+                self.mutation.try_lock().is_ok(),
+                "presence probe holds the mutation lock"
+            );
+        }
+        match self.open_observation(std::path::Path::new(&r.display_path)) {
+            Ok((_, identity)) => Some(match Self::identity_triple(&identity) {
+                Err(_) => RootPresence::Offline,
+                Ok(seen) => {
+                    if seen.2 != guid {
+                        // Another volume holds the path (a stick on a detached disk's letter): the root
+                        // is away, not replaced. identity_changed is terminal and redacts learning, so it
+                        // is kept for the same volume with a different folder (#869 deep review).
+                        RootPresence::OtherVolume
+                    } else if seen == (key, file, guid) {
+                        RootPresence::Online
+                    } else {
+                        RootPresence::IdentityChanged
+                    }
+                }
+            }),
+            Err(loomward_windows::enumerate::SourceError::Io(code)) if missing_path(code) => {
+                // Only a matching volume on an accessible ancestor proves "folder gone". A missing
+                // mount or a foreign volume's parent must keep the detached root offline.
+                for ancestor in std::path::Path::new(&r.display_path).ancestors().skip(1) {
+                    match self.open_observation(ancestor) {
+                        Ok((_, identity)) => {
+                            return Some(
+                                if identity.volume_guid.map(|g| format!("{g:032x}")) == Some(guid) {
+                                    RootPresence::RootMissing
+                                } else if ancestor.parent().is_none() {
+                                    // The letter's own root is another volume: a different disk.
+                                    // A folder mount point's host volume is not, so it stays plain.
+                                    RootPresence::OtherVolume
+                                } else {
+                                    RootPresence::Offline
+                                },
+                            );
+                        }
+                        Err(loomward_windows::enumerate::SourceError::Io(code))
+                            if missing_path(code) => {}
+                        Err(_) => break,
+                    }
+                }
+                Some(RootPresence::Offline)
+            }
+            // Device not ready or disconnected. Other errors prove no absence.
+            Err(loomward_windows::enumerate::SourceError::Io(code))
+                if matches!(
+                    code as u32,
+                    15 | 21 | 55 | 1167 | 0xC000_000E | 0xC000_009D | 0xC000_00A3
+                ) =>
+            {
+                Some(RootPresence::Offline)
+            }
+            Err(loomward_windows::enumerate::SourceError::IdentityUnverified) => {
+                Some(RootPresence::Offline)
+            }
+            Err(_) => None,
+        }
+    }
+
     pub(super) fn root_json(
         &self,
         r: &db::RootRow,
         reader: Option<&mut Reader>,
+        presence: Option<RootPresence>,
     ) -> Result<Value, ErrorBody> {
-        let (state, mut coverage) = scan_view(r);
+        let (mut state, mut coverage) = scan_view(r);
+        if r.grant_state == "active"
+            && matches!(
+                presence,
+                Some(
+                    RootPresence::Offline
+                        | RootPresence::OtherVolume
+                        | RootPresence::RootMissing
+                        | RootPresence::IdentityChanged
+                )
+            )
+        {
+            state = "stale";
+            coverage = "stale";
+        }
         let active = r.grant_state == "active";
         let totals = match (reader, r.dir, active && r.state != "never_scanned") {
             (Some(reader), Some(dir), true) => match reader.inspect(NodeKey::Dir(dir)) {
@@ -158,7 +376,10 @@ mod tests {
     fn clean_root_and_totals_agree_on_complete_coverage() {
         let (_tmp, service, _connection, row) = fixture();
         let mut reader = service.inner.catalog.reader().unwrap();
-        let result = service.inner.root_json(&row, Some(&mut reader)).unwrap();
+        let result = service
+            .inner
+            .root_json(&row, Some(&mut reader), None)
+            .unwrap();
         assert_eq!(result["scan"]["coverage"], "complete");
         assert_eq!(result["totals"]["complete"], true);
     }
@@ -170,7 +391,10 @@ mod tests {
         let (_tmp, service, _connection, row) = fixture();
         let mut reader = service.inner.catalog.reader().unwrap();
         reader.unique_totals_steps = 1;
-        let result = service.inner.root_json(&row, Some(&mut reader)).unwrap();
+        let result = service
+            .inner
+            .root_json(&row, Some(&mut reader), None)
+            .unwrap();
         let totals = &result["totals"];
         assert_eq!(totals["files"], 0);
         assert_eq!(totals["complete"], true);
@@ -189,7 +413,10 @@ mod tests {
         let (_tmp, service, connection, row) = fixture();
         dirty(&connection, &row);
         let mut reader = service.inner.catalog.reader().unwrap();
-        let result = service.inner.root_json(&row, Some(&mut reader)).unwrap();
+        let result = service
+            .inner
+            .root_json(&row, Some(&mut reader), None)
+            .unwrap();
         // The real reader repairs the inactive dirty root using rollup(clean=false).
         assert_eq!(result["totals"]["complete"], false);
         assert_eq!(result["scan"]["state"], "complete");
@@ -220,7 +447,10 @@ mod tests {
             reader.inspect(NodeKey::Dir(row.dir.unwrap())),
             Err(loomward_catalog::Error::RepairRequired)
         ));
-        let result = service.inner.root_json(&row, Some(&mut reader)).unwrap();
+        let result = service
+            .inner
+            .root_json(&row, Some(&mut reader), None)
+            .unwrap();
         service
             .inner
             .catalog
@@ -233,6 +463,37 @@ mod tests {
             .unwrap();
         assert!(result["totals"].is_null());
         assert_eq!(result["scan"]["coverage"], "partial");
+    }
+
+    /// #913: a notice built from an expired or invalidated presence hint keeps the stored scan
+    /// state; only a fresh offline observation marks the retained scan stale.
+    #[test]
+    fn expired_presence_hints_keep_the_stored_scan_state_in_notices() {
+        let (_tmp, service, _connection, row) = fixture();
+        let inner = &service.inner;
+        let notice = || {
+            inner
+                .root_json(
+                    &row,
+                    None,
+                    inner.cached_root_presence().get(&row.grant).copied(),
+                )
+                .unwrap()
+        };
+        inner.remember_root_presence(row.grant, RootPresence::Online);
+        inner
+            .root_presence_cache
+            .lock()
+            .unwrap()
+            .get_mut(&row.grant)
+            .unwrap()
+            .0 = Some(Instant::now() - Duration::from_secs(4));
+        assert_eq!(notice()["scan"]["state"], "complete", "expired hint");
+        inner.remember_root_presence(row.grant, RootPresence::Online);
+        inner.invalidate_root_presence();
+        assert_eq!(notice()["scan"]["state"], "complete", "invalidated hint");
+        inner.remember_root_presence(row.grant, RootPresence::OtherVolume);
+        assert_eq!(notice()["scan"]["state"], "stale", "fresh offline hint");
     }
 
     #[test]
@@ -251,7 +512,7 @@ mod tests {
             .unwrap()
             .pop()
             .unwrap();
-        let result = service.inner.root_json(&revoked, None).unwrap();
+        let result = service.inner.root_json(&revoked, None, None).unwrap();
         assert_eq!(result["grant_state"], "revoked");
         assert_eq!(result["scan"]["state"], "stale");
         assert_eq!(result["scan"]["coverage"], "stale");

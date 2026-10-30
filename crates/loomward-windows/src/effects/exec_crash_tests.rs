@@ -44,7 +44,7 @@ fn full() -> bool {
 
 /// Hosted runners are elevated and the copy primitives refuse elevation: prove the refusal, then skip.
 fn lab() -> Option<Lab> {
-    if enumerate::running_elevated() {
+    if enumerate::skip_elevated_test() {
         let temp = tempfile::tempdir().unwrap();
         assert!(
             identity::observe(temp.path()).is_err(),
@@ -163,7 +163,7 @@ struct Case {
     tree: Option<u64>,
 }
 
-fn pattern(size: usize, salt: u64) -> Vec<u8> {
+pub(super) fn pattern(size: usize, salt: u64) -> Vec<u8> {
     (0..size)
         .map(|i| ((i as u64).wrapping_mul(31).wrapping_add(salt) % 251) as u8)
         .collect()
@@ -171,7 +171,7 @@ fn pattern(size: usize, salt: u64) -> Vec<u8> {
 
 /// The matrix tree: a 3 MiB + 1 file (writes at four chunk offsets), sector and odd sizes, an empty
 /// file, a named stream, read-only and hidden files, a nested folder and an empty folder.
-fn fixed_tree(top: &Path) {
+pub(super) fn fixed_tree(top: &Path) {
     fs::create_dir(top).unwrap();
     for (name, size) in [
         ("big.bin", 3 * 1024 * 1024 + 1),
@@ -252,9 +252,9 @@ fn random_tree(top: &Path, seed: u64) {
 // ---- one prepared operation and its oracle ---------------------------------------------------------
 
 /// Relative path under the destination parent to file ID: what was on disk at one moment.
-type Snap = BTreeMap<String, [u8; 16]>;
+pub(super) type Snap = BTreeMap<String, [u8; 16]>;
 
-fn dest_snapshot(root: &Path) -> Snap {
+pub(super) fn dest_snapshot(root: &Path) -> Snap {
     let mut out = Snap::new();
     let mut pending = vec![(root.to_path_buf(), String::new())];
     while let Some((dir, prefix)) = pending.pop() {
@@ -279,7 +279,124 @@ fn dest_snapshot(root: &Path) -> Snap {
     out
 }
 
-const EXISTING: &str = "existing.txt";
+pub(super) const EXISTING: &str = "existing.txt";
+
+/// File IDs the journal ever recorded as Loomward's: the staging folder and every created item.
+fn journaled(lab: &Lab, op: u64) -> BTreeSet<[u8; 16]> {
+    let rows = lab.store.lock().unwrap().rows(op).unwrap();
+    let mut ids = BTreeSet::new();
+    for row in rows {
+        match serde_json::from_str::<Entry>(&row.body).unwrap().record {
+            Record::StagingCreated { id } => {
+                ids.insert(id.file_id);
+            }
+            Record::Identities { items } => ids.extend(items.iter().map(|(_, id)| id.file_id)),
+            _ => {}
+        }
+    }
+    ids
+}
+
+/// Q1: with removal off nothing that existed is gone; with it on, only journaled identities.
+fn removals(lab: &Lab, op: u64, removal: bool, ctx: &str, from: &Snap, to: &Snap) {
+    let journaled = journaled(lab, op);
+    for (path, id) in from {
+        if to.get(path) == Some(id) {
+            continue;
+        }
+        assert!(
+            removal,
+            "{ctx}: removal off, yet {path} is gone or replaced"
+        );
+        assert!(
+            journaled.contains(id),
+            "{ctx}: {path} removed without a journaled identity"
+        );
+    }
+}
+
+/// C6 checks 1 and 4-6, shared with the reboot oracle's post-boot baseline.
+pub(super) fn destination_oracle(
+    lab: &Lab,
+    op: u64,
+    removal: bool,
+    final_name: &str,
+    ctx: &str,
+    at_crash: &Snap,
+    outcome: &Outcome,
+) -> Snap {
+    let r = replay(&lab.store, op).unwrap_or_else(|e| panic!("{ctx}: {e:?}"));
+    assert_eq!(
+        r.state, outcome.state,
+        "{ctx}: receipt and journal disagree"
+    );
+    let now = dest_snapshot(&lab.dest());
+    for (path, id) in &now {
+        assert_eq!(
+            at_crash.get(path),
+            Some(id),
+            "{ctx}: {path} appeared after the kill"
+        );
+    }
+    removals(lab, op, removal, ctx, at_crash, &now);
+    for name in now.keys().filter(|p| !p.contains('/')) {
+        assert!(
+            name == EXISTING || name == final_name || r.staging_tokens.contains(name),
+            "{ctx}: unexpected {name} in the destination parent"
+        );
+    }
+    now
+}
+
+/// Abandon an open operation and enforce C6's terminal-state rule.
+pub(super) fn abandon(
+    lab: &Lab,
+    op: u64,
+    control: &Control,
+    ctx: &str,
+    recovered: &Outcome,
+) -> Outcome {
+    let abandoned = if recovered.state.is_terminal() {
+        recovered.clone()
+    } else {
+        cancel(&lab.store, op, &lab.plan(op), control)
+            .unwrap_or_else(|e| panic!("{ctx}: abandon {e:?}"))
+    };
+    assert!(
+        abandoned.state.is_terminal() || abandoned.state == OpState::NeedsAttention,
+        "{ctx}: abandon left {abandoned:?}"
+    );
+    abandoned
+}
+
+/// C6 check 7: reported staging leftovers are the only entries allowed after cancellation.
+pub(super) fn cancelled_oracle(
+    lab: &Lab,
+    op: u64,
+    removal: bool,
+    ctx: &str,
+    abandoned: &Outcome,
+    after: &Snap,
+) {
+    if abandoned.state == OpState::Cancelled {
+        // Abandon leaves the parent as before, except a staging folder left for the owner (Q1
+        // off) and reported leftovers that were never journaled.
+        let mut allowed: BTreeSet<&str> = BTreeSet::from([EXISTING]);
+        allowed.extend(abandoned.staging_left.as_deref());
+        allowed.extend(abandoned.leftover_staging.iter().map(String::as_str));
+        for name in after.keys().filter(|p| !p.contains('/')) {
+            assert!(
+                allowed.contains(name.as_str()),
+                "{ctx}: {name} after abandon"
+            );
+        }
+        assert_eq!(
+            abandoned.staging_left.is_some(),
+            !removal && replay(&lab.store, op).unwrap().staging.is_some(),
+            "{ctx}: {abandoned:?}"
+        );
+    }
+}
 
 struct Prepared {
     lab: Lab,
@@ -293,6 +410,10 @@ struct Prepared {
 }
 
 impl Prepared {
+    fn removals(&self, ctx: &str, from: &Snap, to: &Snap) {
+        removals(&self.lab, self.op, self.case.removal, ctx, from, to);
+    }
+
     /// Tree, approval, start and the phase-1 stop for the scenario; None when elevated (skipped).
     fn new(case: Case) -> Option<Prepared> {
         let lab = lab()?;
@@ -403,40 +524,6 @@ impl Prepared {
         (code, labels)
     }
 
-    /// File IDs the journal ever recorded as Loomward's: the staging folder and every created item.
-    fn journaled(&self) -> BTreeSet<[u8; 16]> {
-        let rows = self.lab.store.lock().unwrap().rows(self.op).unwrap();
-        let mut ids = BTreeSet::new();
-        for row in rows {
-            match serde_json::from_str::<Entry>(&row.body).unwrap().record {
-                Record::StagingCreated { id } => {
-                    ids.insert(id.file_id);
-                }
-                Record::Identities { items } => ids.extend(items.iter().map(|(_, id)| id.file_id)),
-                _ => {}
-            }
-        }
-        ids
-    }
-
-    /// Q1: with removal off nothing that existed is gone; with it on, only journaled identities.
-    fn removals(&self, ctx: &str, from: &Snap, to: &Snap) {
-        let journaled = self.journaled();
-        for (path, id) in from {
-            if to.get(path) == Some(id) {
-                continue;
-            }
-            assert!(
-                self.case.removal,
-                "{ctx}: removal off, yet {path} is gone or replaced"
-            );
-            assert!(
-                journaled.contains(id),
-                "{ctx}: {path} removed without a journaled identity"
-            );
-        }
-    }
-
     /// The oracle after recovery or abandon, against the disk as the kill left it.
     fn oracle(&self, ctx: &str, at_crash: &Snap, outcome: &Outcome) -> Snap {
         let r = replay(&self.lab.store, self.op).unwrap_or_else(|e| panic!("{ctx}: {e:?}"));
@@ -461,21 +548,15 @@ impl Prepared {
             fs::read(self.lab.dest().join(EXISTING)).unwrap(),
             b"pre-existing"
         );
-        let now = dest_snapshot(&self.lab.dest());
-        for (path, id) in &now {
-            assert_eq!(
-                at_crash.get(path),
-                Some(id),
-                "{ctx}: {path} appeared after the kill"
-            );
-        }
-        self.removals(ctx, at_crash, &now);
-        for name in now.keys().filter(|p| !p.contains('/')) {
-            assert!(
-                name == EXISTING || *name == self.final_name || r.staging_tokens.contains(name),
-                "{ctx}: unexpected {name} in the destination parent"
-            );
-        }
+        let now = destination_oracle(
+            &self.lab,
+            self.op,
+            self.case.removal,
+            &self.final_name,
+            ctx,
+            at_crash,
+            outcome,
+        );
         if outcome.state == OpState::Committed {
             let copy = c1(&self.lab.dest().join(&self.final_name));
             let report = tree::compare(&self.before_c1, &copy);
@@ -493,44 +574,68 @@ impl Prepared {
         let recovered = recover(&self.lab.store, self.op, &control)
             .unwrap_or_else(|e| panic!("{ctx}: recovery {e:?}"));
         let after_recovery = self.oracle(&format!("{ctx} recover"), at_crash, &recovered);
-        let abandoned = if recovered.state.is_terminal() {
-            recovered.clone()
-        } else {
-            cancel(&self.lab.store, self.op, &self.lab.plan(self.op), &control)
-                .unwrap_or_else(|e| panic!("{ctx}: abandon {e:?}"))
-        };
-        assert!(
-            abandoned.state.is_terminal() || abandoned.state == OpState::NeedsAttention,
-            "{ctx}: abandon left {abandoned:?}"
-        );
+        let abandoned = abandon(&self.lab, self.op, &control, ctx, &recovered);
         let after = self.oracle(&format!("{ctx} abandon"), &after_recovery, &abandoned);
-        if abandoned.state == OpState::Cancelled {
-            // Abandon leaves the parent as before, except a staging folder left for the owner (Q1
-            // off) and reported leftovers that were never journaled.
-            let mut allowed: BTreeSet<&str> = BTreeSet::from([EXISTING]);
-            allowed.extend(abandoned.staging_left.as_deref());
-            allowed.extend(abandoned.leftover_staging.iter().map(String::as_str));
-            for name in after.keys().filter(|p| !p.contains('/')) {
-                assert!(
-                    allowed.contains(name.as_str()),
-                    "{ctx}: {name} after abandon"
-                );
-            }
-            assert_eq!(
-                abandoned.staging_left.is_some(),
-                !self.case.removal && replay(&self.lab.store, self.op).unwrap().staging.is_some(),
-                "{ctx}: {abandoned:?}"
-            );
-        }
+        cancelled_oracle(
+            &self.lab,
+            self.op,
+            self.case.removal,
+            ctx,
+            &abandoned,
+            &after,
+        );
         (recovered.state, abandoned.state)
     }
 }
 
 // ---- crash-point classes --------------------------------------------------------------------------
 
+#[test]
+fn disposition_is_durable_before_every_cleanup_crash_boundary() {
+    let case = Case {
+        scenario: Scenario::AbandonVerified,
+        removal: true,
+        tree: None,
+    };
+    let Some(clean) = Prepared::new(case) else {
+        return;
+    };
+    let (code, labels) = clean.child(None);
+    assert_eq!(code, 0);
+    let before = labels
+        .iter()
+        .position(|l| l == "before staging_disposition")
+        .expect("explain before cleanup");
+    let after = labels
+        .iter()
+        .position(|l| l == "after staging_disposition")
+        .unwrap();
+    let first_removal = labels
+        .iter()
+        .position(|l| l == "before cleanup removal")
+        .unwrap();
+    assert!(before < after && after < first_removal);
+    for (n, label) in labels.iter().enumerate().skip(before) {
+        let mut p = Prepared::new(case).unwrap();
+        let snapshot = dest_snapshot(&p.lab.dest());
+        let (code, _) = p.child(Some(n as u64 + 1));
+        assert_eq!(code, crash::EXIT as i32);
+        p.lab.reopen();
+        let rows = p.lab.store.lock().unwrap().rows(p.op).unwrap();
+        let recorded = rows.iter().any(|r| r.body.contains("staging_disposition"));
+        if n == before {
+            assert!(!recorded);
+            assert_eq!(dest_snapshot(&p.lab.dest()), snapshot);
+        } else {
+            assert!(recorded, "{label}");
+        }
+        p.recover_then_abandon(label, &snapshot);
+    }
+}
+
 /// docs/47 section 10's CP-01 to CP-15 (every section 5 journal boundary, mid-write at four offsets,
 /// mid-verify, mid-abandon), extended with section 12's lane C2 items and the C5 records as CP-16 to
-/// CP-22. CP-F marks refusal records reached by the fault scenarios; CP-Fence covers the pending
+/// CP-23 (explain-first disposition). CP-F marks refusal records reached by the fault scenarios; CP-Fence covers the pending
 /// annotation before commit (#751). An unknown label fails the matrix.
 fn class(label: &str) -> &'static str {
     match label {
@@ -565,9 +670,12 @@ fn class(label: &str) -> &'static str {
         "before publish_withdrawn" | "after publish_withdrawn" => "CP-17",
         "confirm item" => "CP-18",
         "before item_removed"
+        | "before cleanup removal"
+        | "after cleanup removal"
         | "after item_removed"
         | "before staging_removed"
         | "after staging_removed" => "CP-19",
+        "before staging_disposition" | "after staging_disposition" => "CP-23",
         "before planned" | "after planned" => "CP-20",
         "before staging_left" | "after staging_left" => "CP-21",
         "before transition:refused" | "after transition:refused" => "CP-22",

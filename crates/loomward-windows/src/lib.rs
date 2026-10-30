@@ -9,12 +9,17 @@ pub mod enumerate;
 pub mod identity;
 pub mod jobs;
 pub mod linkcount;
+pub mod recycle_bin;
+pub mod storage_path;
 pub mod usn;
 pub mod volumes;
 pub mod watch;
 
 #[cfg(any(test, feature = "fixtures"))]
 pub mod fixtures;
+
+#[cfg(all(windows, any(feature = "content-read", test)))]
+mod noncached;
 
 #[cfg(windows)]
 mod win;

@@ -55,8 +55,9 @@ CREATE TABLE file (
   attrs INTEGER NOT NULL, reparse_tag INTEGER, flags INTEGER NOT NULL DEFAULT 0,
   link_count INTEGER,                                               -- NULL until an accounting pass observes it
   born_run INTEGER NOT NULL, seen_run INTEGER NOT NULL) STRICT;
-CREATE INDEX file_by_logical   ON file(dir_id, logical DESC, id);
-CREATE INDEX file_by_allocated ON file(dir_id, allocated DESC, id);  -- NULLs sort last under DESC
+-- The implicit rowid already supplies the id ASC tie-breaker; spelling it out stores it twice.
+CREATE INDEX file_by_logical   ON file(dir_id, logical DESC);
+CREATE INDEX file_by_allocated ON file(dir_id, allocated DESC);  -- NULLs sort last under DESC
 CREATE INDEX file_identity     ON file(file_id) WHERE file_id IS NOT NULL;
 CREATE INDEX file_by_ext       ON file(ext_id, logical DESC);        -- first index to drop if P14 fails
 CREATE TABLE multilink (                  -- objects with more than one observed name, rebuilt at finalise

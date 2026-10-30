@@ -3,6 +3,11 @@
 use super::*;
 use loomward_catalog::{DirListing, Observation, WriteCommand, WriteReply};
 
+#[path = "projects_tests.rs"]
+mod projects_tests;
+#[path = "reclaim_tests.rs"]
+mod reclaim_tests;
+
 struct Node {
     name: &'static str,
     files: Vec<(&'static str, u64, Option<u64>)>,
@@ -183,19 +188,22 @@ fn candidates_carry_anchor_kind_and_recorded_sizes_ranked_largest_first() {
         }
     }
     // What no provider supplies is named, not valued.
-    let topics: Vec<_> = r["not_assessed"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|n| n["topic"].as_str().unwrap())
-        .collect();
     assert_eq!(
-        topics,
-        [
-            "regeneration_cost",
-            "model_host_lifecycle",
-            "stale_worktrees"
-        ]
+        r["not_assessed"],
+        json!([
+            {
+                "topic": "regeneration_cost",
+                "note": "Rebuild cost and time are not measured yet (LW-087)."
+            },
+            {
+                "topic": "model_host_lifecycle",
+                "note": "Model files and model-host state are not assessed yet (LW-086)."
+            },
+            {
+                "topic": "stale_worktrees",
+                "note": "Stale worktrees need lease and dirty-state evidence, which is not collected yet (LW-076)."
+            }
+        ])
     );
     // The sealed anchor opens as the recorded manifest.
     let (anchor, _) = ok(
@@ -240,6 +248,102 @@ fn a_limit_truncates_and_an_unknown_allocation_stays_unknown() {
     assert_eq!(one["candidates"].as_array().unwrap().len(), 1);
     assert_eq!(one["truncated"], true);
     assert_eq!(one["candidates"][0]["name"], "target");
+}
+
+#[cfg(windows)]
+#[test]
+fn stale_watcher_hides_sizes_and_retains_recorded_size_order_even_when_limited() {
+    use loomward_windows::watch::Change;
+
+    let Some(lab) = lab() else { return };
+    std::fs::write(lab.path.join("Cargo.toml"), b"synthetic manifest").unwrap();
+    std::fs::write(lab.path.join("package.json"), b"{}").unwrap();
+    // Larger under the name that sorts later, so size order differs from name/id order.
+    for (name, bytes) in [("target", 8000), ("node_modules", 1000)] {
+        std::fs::create_dir(lab.path.join(name)).unwrap();
+        std::fs::write(lab.path.join(name).join("synthetic.bin"), vec![0u8; bytes]).unwrap();
+    }
+    settle(&lab.svc, &start(&lab.svc, &lab.root, "full"));
+    f3_wait_live(&lab.svc);
+    lab.svc.inner.freshness.pause_pump();
+    let before = clutter(&lab.svc, &lab.root, 50);
+    assert_eq!(before["partial"], false);
+    assert_eq!(before["candidates"][0]["name"], "target");
+    assert_eq!(before["candidates"][0]["logical_bytes"], "8000");
+    assert_eq!(before["candidates"][1]["logical_bytes"], "1000");
+    let row = lab.svc.inner.root_row(&lab.root).unwrap();
+    lab.svc.inner.freshness.record(row, vec![Change::RootDirty]);
+    assert!(lab.svc.inner.freshness.stale(row));
+
+    let stale = clutter(&lab.svc, &lab.root, 50);
+    assert_eq!(stale["partial"], true);
+    assert_eq!(stale["budget_hit"], false);
+    let candidates = stale["candidates"].as_array().unwrap();
+    assert_eq!(candidates.len(), 2);
+    for (i, c) in candidates.iter().enumerate() {
+        assert_eq!(c["node_id"], before["candidates"][i]["node_id"]);
+        assert_eq!(c["coverage"], "stale");
+        assert!(c["logical_bytes"].is_null());
+        assert!(c["allocated_bytes"].is_null());
+    }
+    let limited = clutter(&lab.svc, &lab.root, 1);
+    assert_eq!(limited["partial"], true);
+    assert_eq!(limited["truncated"], true);
+    assert_eq!(limited["candidates"].as_array().unwrap().len(), 1);
+    assert_eq!(limited["candidates"][0], candidates[0]);
+}
+
+#[test]
+fn cross_provider_candidates_never_supply_a_grand_total() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let root = scanned(&svc, 1, &projects());
+    let report = clutter(&svc, &root, 50);
+    let keys: Vec<_> = report
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        keys,
+        [
+            "budget_hit",
+            "budget_note",
+            "candidates",
+            "generation",
+            "not_assessed",
+            "partial",
+            "root_id",
+            "rules_version",
+            "truncated",
+        ]
+    );
+    let rows = report["candidates"].as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_ne!(rows[0]["provider"], rows[1]["provider"]);
+    for row in rows {
+        let sizes: Vec<_> = row
+            .as_object()
+            .unwrap()
+            .keys()
+            .filter(|key| key.contains("bytes") || key.contains("total"))
+            .map(String::as_str)
+            .collect();
+        assert_eq!(sizes, ["allocated_bytes", "logical_bytes"]);
+    }
+    // A combined size cannot silently become part of the wire contract either.
+    serde_json::from_value::<DeveloperClutterReport>(report.clone()).unwrap();
+    for key in [
+        "total_bytes",
+        "total_logical_bytes",
+        "total_allocated_bytes",
+        "grand_total",
+    ] {
+        let mut with_total = report.clone();
+        with_total[key] = json!("9000");
+        assert!(serde_json::from_value::<DeveloperClutterReport>(with_total).is_err());
+    }
 }
 
 #[test]

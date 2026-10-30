@@ -8,15 +8,20 @@ use std::time::Instant;
 pub(super) struct Phase {
     calls: AtomicU64,
     nanos: AtomicU64,
+    /// A native-only phase: it holds no callback, so its time counts against the per-operation
+    /// budget of the thread's I/O registration (#924).
+    bounded: bool,
 }
 impl Phase {
-    const fn new() -> Self {
+    const fn new(bounded: bool) -> Self {
         Self {
             calls: AtomicU64::new(0),
             nanos: AtomicU64::new(0),
+            bounded,
         }
     }
     pub(super) fn start(&'static self) -> Timer {
+        let busy = self.bounded.then(super::native::busy);
         // Read once per process, deliberately: start() runs per directory entry (CALLBACK) and per open,
         // so a live env read here is a per-file cost on the scan hot path. Consequence: a profile flag set
         // after this process's first call is not seen by these counters (the engine-side sites read live).
@@ -25,13 +30,19 @@ impl Phase {
             self,
             (*ENABLED.get_or_init(|| std::env::var_os("LOOMWARD_SCAN_PROFILE").is_some()))
                 .then(Instant::now),
+            busy,
         )
     }
     fn value(&self) -> serde_json::Value {
         serde_json::json!({"calls": self.calls.load(Ordering::Relaxed), "seconds": self.nanos.load(Ordering::Relaxed) as f64 / 1e9})
     }
 }
-pub(super) struct Timer(&'static Phase, Option<Instant>);
+/// The third field is held only for its drop, which ends the busy mark.
+pub(super) struct Timer(
+    &'static Phase,
+    Option<Instant>,
+    #[allow(dead_code)] Option<super::native::Busy>,
+);
 impl Drop for Timer {
     fn drop(&mut self) {
         if let Some(start) = self.1 {
@@ -43,14 +54,14 @@ impl Drop for Timer {
         }
     }
 }
-pub(super) static LIST: Phase = Phase::new();
-pub(super) static CALLBACK: Phase = Phase::new();
-pub(super) static OPEN: Phase = Phase::new();
-pub(super) static IDENTITY: Phase = Phase::new();
-pub(super) static ATTRIBUTES: Phase = Phase::new();
-pub(super) static CONTAINMENT: Phase = Phase::new();
-pub(super) static PATH_QUERY: Phase = Phase::new();
-pub(super) static ENUM_QUERY: Phase = Phase::new();
+pub(super) static LIST: Phase = Phase::new(false);
+pub(super) static CALLBACK: Phase = Phase::new(false);
+pub(super) static OPEN: Phase = Phase::new(true);
+pub(super) static IDENTITY: Phase = Phase::new(true);
+pub(super) static ATTRIBUTES: Phase = Phase::new(true);
+pub(super) static CONTAINMENT: Phase = Phase::new(true);
+pub(super) static PATH_QUERY: Phase = Phase::new(true);
+pub(super) static ENUM_QUERY: Phase = Phase::new(true);
 
 /// Process-cumulative counters for a fresh-process scan benchmark; nested times overlap.
 pub fn scan_profile() -> serde_json::Value {

@@ -11,20 +11,32 @@
 // Test builds only: the hang watchdog's thread report signals threads through libc (#495).
 #![cfg_attr(test, deny(unsafe_code))]
 use std::path::Path;
+mod cloud;
 mod crashpoint;
+pub use cloud::{cloud_state, CloudBytes, CloudState, CloudSummary};
 mod developer_clutter;
+mod projects;
+pub use projects::{ProjectCandidate, ProjectPage};
+mod evidence_facts;
 #[cfg(feature = "test-hooks")]
 pub use crashpoint::CRASH_EXIT;
 /// Crash points for the stores other crates write (q-39); no-ops without `test-hooks`.
 #[doc(hidden)]
 pub use crashpoint::{arm_external as crash_arm, hit as crash_hit};
 pub use developer_clutter::{DeveloperClutter, DeveloperClutterCandidate};
+pub use evidence_facts::{
+    EvidenceExtension, EvidenceFacts, EvidenceFamily, EvidenceMedia, EvidenceTime,
+};
 mod db;
 #[cfg(feature = "test-hooks")]
 pub use db::take_integrity_checks;
 mod duplicates;
+mod family;
 pub use duplicates::{DuplicateCandidate, DuplicateCandidates};
+pub use family::extension_family;
+mod machine_stores;
 mod model;
+pub use machine_stores::{MachineStoreCandidate, MachineStores};
 mod query;
 mod search;
 mod slice;

@@ -1,0 +1,9 @@
+{
+  "def": "ProjectsRequest",
+  "reason": "Discovery takes one granted root and a bounded page, never a path.",
+  "value": {
+    "root_id": "rt_1",
+    "limit": 201,
+    "cursor": null
+  }
+}

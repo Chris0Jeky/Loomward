@@ -18,6 +18,7 @@ class Forget {
   private flight: Flight | null = null;
   private promptIdentity: Flight | null = null;
   private attempted = false;
+  private key: { mintedAt: number; identity: Flight; expectedStateRev?: string } | null = null;
 
   /** Reconnects invalidate replies, but cannot establish whether a dispatched forget completed. */
   resume(): void {
@@ -83,21 +84,53 @@ class Forget {
     this.working = true;
     this.attempted = true;
     this.problem = ''; this.done = ''; this.stopped = false;
-    p.requestId ??= c.nextRequestId();
     let checkingRecord = false;
+    const readRecord = async () => {
+      const { result, meta } = await c.call('grants.list', {});
+      return { record: result.grants.find(g => g.kind === 'metadata_root' && g.root_id === p.id), meta };
+    };
     try {
       let result;
-      try {
-        ({ result } = await c.call('roots.forget', { root_id: p.id }, { deadlineMs: 60000, requestId: p.requestId }));
-      } catch (e) {
-        if (!current()) return;
-        if (!this.unknown || !(e instanceof LoomwardError) || e.code !== 'not_found') throw e;
+      let expectedStateRev: string | undefined;
+      if (p.requestId && (!this.key || Date.now() - this.key.mintedAt >= 600_000 || !sameIdentity(this.key.identity))) {
         checkingRecord = true;
-        const { result: records } = await c.call('grants.list', {});
+        const { record, meta } = await readRecord();
         if (!current()) return;
-        const record = records.grants.find(g => g.kind === 'metadata_root' && g.root_id === p.id);
-        if (!record || record.kind !== 'metadata_root' || !record.forgotten_at) throw e;
-        result = { root_id: p.id, forgotten_at: record.forgotten_at };
+        // Missing/bounded history or a later owner choice cannot authorise replay (semantics §3).
+        if (!record || record.kind !== 'metadata_root') {
+          this.problem = 'Loomward cannot tell whether this folder was forgotten: its record is no longer in the grant history. Nothing was sent again. Check Grants & health before trying again.';
+          return;
+        }
+        if (record.forgotten_at) result = { root_id: p.id, forgotten_at: record.forgotten_at };
+        else {
+          if (!record.revoked_at || meta.state_rev == null) {
+            this.problem = "This folder's access changed after the forget was sent, so it was not sent again. Review the folder before forgetting it.";
+            return;
+          }
+          expectedStateRev = meta.state_rev;
+          p.requestId = undefined;
+        }
+      }
+      if (!result) {
+        checkingRecord = false;
+        if (!p.requestId) {
+          p.requestId = c.nextRequestId();
+          this.key = { mintedAt: Date.now(), identity: f, expectedStateRev };
+        }
+        try {
+          ({ result } = await c.call('roots.forget', { root_id: p.id }, {
+            deadlineMs: 60000, requestId: p.requestId,
+            ...(this.key?.expectedStateRev !== undefined ? { expectedStateRev: this.key.expectedStateRev } : {}),
+          }));
+        } catch (e) {
+          if (!current()) return;
+          if (!this.unknown || !(e instanceof LoomwardError) || e.code !== 'not_found') throw e;
+          checkingRecord = true;
+          const { record } = await readRecord();
+          if (!current()) return;
+          if (!record || record.kind !== 'metadata_root' || !record.forgotten_at) throw e;
+          result = { root_id: p.id, forgotten_at: record.forgotten_at };
+        }
       }
       if (!current()) return;
       this.done = `Forgotten at ${formatTime(result.forgotten_at)}. ${checkingRecord ? "Its name and catalogue were removed from Loomward's database. Backup cleanup is unverified after the service receipt was lost." : "Its name and catalogue were removed from Loomward's database and its own backup copies; traces may remain in unused disk space until it is overwritten."} No scanned file was touched.`;
@@ -108,9 +141,12 @@ class Forget {
     } catch (e) {
       if (!current()) return;
       this.unknown = checkingRecord || e instanceof TransportError || e instanceof LoomwardError && e.code === 'deadline_exceeded';
+      if (e instanceof TransportError) session.handle(e);
       if (!this.unknown) {
-        // Definite answers are cached: a new attempt needs a new key (#736).
-        p.requestId = undefined;
+        // Definite answers are cached: a new attempt needs a new key (#736). A send bound to a state
+        // read keeps its key, expired, so the next attempt reads state again first (semantics §3).
+        if (this.key?.expectedStateRev !== undefined) this.key.mintedAt = -Infinity;
+        else p.requestId = undefined;
         this.problem = session.handle(e);
       }
     } finally {

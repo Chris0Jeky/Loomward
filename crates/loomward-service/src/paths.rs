@@ -9,6 +9,70 @@
 use loomward_protocol::RootGrantResultRefusal as Refusal;
 use std::path::{Path, PathBuf};
 
+/// Exclusive OS lock on `state_dir/lock`, held until the returned handle drops. A crashed host
+/// leaves no stale lock. Hosts must drop their service before dropping this handle.
+/// Shared by the desktop and MCP hosts.
+pub fn lock_state_dir(state_dir: &Path) -> Result<std::fs::File, String> {
+    use std::fs::{File, TryLockError};
+
+    let dir = prospective_dir(state_dir)?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("cannot create {}: {e}", state_dir.display()))?;
+    let file = File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(dir.join("lock"))
+        .map_err(|e| format!("cannot open the state lock in {}: {e}", state_dir.display()))?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(TryLockError::WouldBlock) => Err(
+            "busy: Loomward's data is in use by another Loomward process, for example an agent's Loomward tools. Stop that agent, or try again in a moment.".into()
+        ),
+        Err(TryLockError::Error(e)) => Err(format!(
+            "cannot lock the state in {}: {e}",
+            state_dir.display()
+        )),
+    }
+}
+
+/// How long a "wants the lock" marker counts, judged by its mtime: twice the desktop's retry.
+pub const LOCK_WANTED_FRESH: std::time::Duration = std::time::Duration::from_secs(30);
+
+fn lock_wanted_path(state_dir: &Path) -> Result<PathBuf, String> {
+    Ok(prospective_dir(state_dir)?.join("lock.wanted"))
+}
+
+/// The desktop's "wants the lock" marker beside `lock` (#886), never in a database. It carries no
+/// authority: the only reaction to it is a lock holder releasing early. Best effort.
+pub fn want_lock(state_dir: &Path) -> Result<(), String> {
+    let file = std::fs::File::options()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(lock_wanted_path(state_dir)?)
+        .map_err(|e| e.to_string())?;
+    file.set_modified(std::time::SystemTime::now())
+        .map_err(|e| e.to_string())
+}
+
+pub fn unwant_lock(state_dir: &Path) {
+    if let Ok(path) = lock_wanted_path(state_dir) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// A fresh marker. A stale one (older than [`LOCK_WANTED_FRESH`], or dated in the future) is ignored.
+pub fn lock_wanted(state_dir: &Path) -> bool {
+    lock_wanted_path(state_dir)
+        .and_then(|path| std::fs::symlink_metadata(path).map_err(|e| e.to_string()))
+        .ok()
+        .filter(std::fs::Metadata::is_file)
+        .and_then(|meta| meta.modified().ok()?.elapsed().ok())
+        .is_some_and(|age| age <= LOCK_WANTED_FRESH)
+}
+
 /// Resolve a local destination before creating it; reject unsafe existing ancestors.
 pub fn prospective_dir(path: &Path) -> Result<PathBuf, String> {
     if network_path(path) {
@@ -217,7 +281,7 @@ pub(crate) fn check_new_root(root: &Path, state: &Path) -> Result<PathBuf, Strin
         .ancestors()
         .find(|p| p.is_dir())
         .ok_or("root parent unavailable")?;
-    if loomward_windows::volumes::is_removable(ancestor).map_err(|_| "identity_unavailable")? {
+    if loomward_windows::volumes::unsupported_root(ancestor).map_err(|_| "identity_unavailable")? {
         return Err("network_or_removable_unsupported".into());
     }
     if root.starts_with(state) || state.starts_with(&root) {
@@ -311,7 +375,7 @@ pub(crate) fn check_root_with(
         return Err(Refusal::VolumeRoot);
     }
     check_profile(&canonical)?;
-    if loomward_windows::volumes::is_removable(&canonical)
+    if loomward_windows::volumes::unsupported_root(&canonical)
         .map_err(|_| Refusal::IdentityUnavailable)?
     {
         return Err(Refusal::NetworkOrRemovableUnsupported);
@@ -422,6 +486,58 @@ pub(crate) fn cloud_placeholder(_: &std::fs::Metadata) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn state_lock_is_exclusive_and_released_without_removing_the_file() {
+        let tmp = tempfile::tempdir_in(test_roots_base()).unwrap();
+        let state = tmp.path().join("state");
+        let lock = lock_state_dir(&state).unwrap();
+        assert!(state.join("lock").is_file());
+        assert_eq!(lock_state_dir(&state).unwrap_err(), "busy: Loomward's data is in use by another Loomward process, for example an agent's Loomward tools. Stop that agent, or try again in a moment.");
+        drop(lock);
+        assert!(lock_state_dir(&state).is_ok());
+    }
+
+    #[test]
+    fn lock_wanted_marker_is_fresh_by_mtime_and_removable() {
+        let tmp = tempfile::tempdir_in(test_roots_base()).unwrap();
+        let state = tmp.path().join("state");
+        drop(lock_state_dir(&state).unwrap());
+        assert!(!lock_wanted(&state));
+        want_lock(&state).unwrap();
+        assert!(state.join("lock.wanted").is_file() && lock_wanted(&state));
+        let marker = std::fs::File::options()
+            .write(true)
+            .open(state.join("lock.wanted"))
+            .unwrap();
+        let now = std::time::SystemTime::now();
+        for (mtime, fresh) in [
+            (
+                now - LOCK_WANTED_FRESH - std::time::Duration::from_secs(5),
+                false,
+            ),
+            (now + std::time::Duration::from_secs(60), false),
+            (now, true),
+        ] {
+            marker.set_modified(mtime).unwrap();
+            assert_eq!(lock_wanted(&state), fresh);
+        }
+        drop(marker);
+        // Rewriting a stale marker makes it fresh again.
+        want_lock(&state).unwrap();
+        assert!(lock_wanted(&state));
+        unwant_lock(&state);
+        assert!(!state.join("lock.wanted").exists() && !lock_wanted(&state));
+        unwant_lock(&state);
+    }
+
+    #[test]
+    fn state_lock_uses_the_prospective_directory_fence() {
+        assert_eq!(
+            lock_state_dir(Path::new(r"\\?\GLOBALROOT\Device\fixture\state")).unwrap_err(),
+            "network_or_removable_unsupported"
+        );
+    }
 
     #[cfg(windows)]
     #[test]
@@ -608,7 +724,7 @@ mod tests {
     fn elevated() -> bool {
         #[cfg(windows)]
         {
-            loomward_windows::enumerate::running_elevated()
+            loomward_windows::enumerate::skip_elevated_test()
         }
         #[cfg(not(windows))]
         {

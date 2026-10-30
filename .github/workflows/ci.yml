@@ -50,7 +50,8 @@ jobs:
       - name: Scan publication cancellation receipts
         if: runner.os == 'Linux'
         run: cargo +stable test --locked -p loomward-engine publication_tests
-      - if: runner.os == 'Linux'
+      - name: Workspace tests (Linux)
+        if: runner.os != 'Windows'
         run: cargo +stable test --workspace
       - name: Windows fixture lab Clippy with all features
         if: runner.os == 'Windows'

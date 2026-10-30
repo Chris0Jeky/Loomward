@@ -19,6 +19,8 @@ mod alerts;
 mod apps;
 mod ask;
 mod backups;
+mod client_commands;
+mod client_refs;
 mod clients;
 mod clutter;
 mod collections;
@@ -30,6 +32,8 @@ mod diagnostics;
 mod duplicates;
 mod freshness;
 mod handlers;
+#[cfg(feature = "test-support")]
+pub mod hostile;
 mod idem;
 mod ids;
 mod inventory;
@@ -38,10 +42,13 @@ mod learning;
 mod meaning;
 pub mod paths;
 mod placement;
+mod projects;
+mod reclaim;
 mod sink;
 #[cfg(test)]
 mod tests;
 
+pub use client_refs::{ClientReference, ClientReferenceIds};
 pub use clients::CLIENT_FIELDS;
 use loomward_catalog::{
     Catalog, CatalogOptions, NodeKey, RootObservation, WriteCommand, WriteReply,
@@ -86,6 +93,15 @@ pub struct Service {
     peer: bool,
 }
 
+/// An in-process client's reference lifetime witness. Never sent to a model or persisted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientViewStamp {
+    epoch: i64,
+    catalog_rev: i64,
+    roots: Vec<i64>,
+    instance: String,
+}
+
 /// Shared borrows stay unchanged; shutdown can take and atomically reclaim the owning Arc.
 struct OwnedInner(Option<Arc<Inner>>);
 
@@ -110,6 +126,7 @@ pub(crate) struct Inner {
     db: Mutex<rusqlite::Connection>,
     instance: String,
     ids: ids::NodeIds,
+    client_open: Option<(client_refs::OpenWitness, client_refs::OpenWitness)>,
     cursors: cursors::Cursors,
     idem: idem::Idempotency,
     /// Pending root/volume replies in adapters; no root identifiers or generation history.
@@ -135,6 +152,8 @@ pub(crate) struct Inner {
     metadata_cursors: cursors::Cursors,
     /// LW-118: the latest Ask turn and the provider factory.
     pub(crate) ask: ask::Asks,
+    /// Three-second display hints only; native admission never trusts this cache.
+    root_presence_cache: Mutex<handlers::RootPresenceCache>,
     #[cfg(test)]
     pub(crate) hooks: Arc<tests::Hooks>,
 }
@@ -180,9 +199,36 @@ impl Service {
         Self::open_with(config, idem::TTL, true)
     }
 
+    /// Records explicit owner grants for one-shot verification without watchers, automatic scans,
+    /// telemetry, copy recovery or backup cleanup. Store initialization/migrations still run.
+    pub fn open_for_verification(config: Config) -> Result<Service, String> {
+        Self::open_stores(config, idem::TTL, false, None, None, true)
+    }
+
+    /// Opens client views without watchers, automatic scans, telemetry or backup cleanup.
+    /// Store initialization/migrations still run. The adapter must use `CallContext::client`.
+    pub fn open_client(config: Config) -> Result<Service, String> {
+        if !config.grant_roots.is_empty() {
+            return Err("a client host cannot grant roots".into());
+        }
+        Self::open_stores(config, idem::TTL, false, None, None, true)
+    }
+
+    /// Recheck before and after resolving an adapter's in-memory reference, alongside the normal
+    /// client call. A re-grant or catalogue change invalidates the adapter's previous references.
+    pub fn client_view_stamp(&self, client: &str) -> Result<ClientViewStamp, ErrorBody> {
+        let grant = self.inner.client_grant(client)?;
+        Ok(ClientViewStamp {
+            epoch: grant.epoch,
+            catalog_rev: self.inner.revisions()?.0,
+            roots: grant.roots,
+            instance: self.inner.instance.clone(),
+        })
+    }
+
     /// Refuses static overlap with stored and proposed grants before recording any new grant.
     pub fn open_with_static(config: Config, static_dir: Option<&Path>) -> Result<Service, String> {
-        Self::open_stores(config, idem::TTL, true, static_dir, None)
+        Self::open_stores(config, idem::TTL, true, static_dir, None, false)
     }
 
     /// `scan_writer: false` leaves the engine without a catalogue scan writer (tests that install
@@ -192,7 +238,7 @@ impl Service {
         ttl: Duration,
         scan_writer: bool,
     ) -> Result<Service, String> {
-        Self::open_stores(config, ttl, scan_writer, None, None)
+        Self::open_stores(config, ttl, scan_writer, None, None, false)
     }
 
     fn open_stores(
@@ -201,6 +247,7 @@ impl Service {
         scan_writer: bool,
         static_dir: Option<&Path>,
         metadata: Option<Arc<dyn inventory::Provider>>,
+        client_only: bool,
     ) -> Result<Service, String> {
         if config.dataset == DatasetClass::Personal && !config.allow_personal {
             return Err("a personal session requires --allow-personal".into());
@@ -273,6 +320,9 @@ impl Service {
             .state_dir
             .canonicalize()
             .map_err(|_| "cannot resolve the state directory".to_string())?;
+        let client_before = client_only
+            .then(|| client_refs::OpenWitness::read(&sqlite_destination))
+            .flatten();
         // The ranked token index exists only where ranked search is served (#520).
         let catalog = stores
             .open(&CatalogOptions {
@@ -303,6 +353,10 @@ impl Service {
         }
         let instance = db::instance(&conn).map_err(|e| format!("state store: {e}"))?;
         let lookups = db::open(&state_dir).map_err(|e| format!("state store: {e}"))?;
+        let client_after = client_only
+            .then(|| client_refs::OpenWitness::read(&sqlite_destination))
+            .flatten();
+        let client_open = client_before.zip(client_after);
         let inner = Arc::new_cyclic(|weak| Inner {
             weak: weak.clone(),
             freshness: Default::default(),
@@ -315,6 +369,7 @@ impl Service {
             db: Mutex::new(conn),
             instance,
             ids: ids::NodeIds::session(),
+            client_open,
             cursors: cursors::Cursors::new(4096),
             idem: idem::Idempotency::new(ttl),
             reply_delivery: loomward_protocol::ResponseDeliveryPolicy::default(),
@@ -323,17 +378,18 @@ impl Service {
             dialog: Mutex::new(()),
             picker_last: Mutex::new(None),
             preview: Mutex::new(None),
-            copies: copy::Copies::open(&config.state_dir, config.dataset),
+            copies: copy::Copies::open(&config.state_dir, config.dataset, !client_only),
             reads: Mutex::new(0),
             metadata: metadata
                 .clone()
                 .unwrap_or_else(|| inventory::provider(config.dataset)),
             metadata_cursors: cursors::Cursors::new(16),
             ask: Default::default(),
+            root_presence_cache: Default::default(),
             #[cfg(test)]
             hooks: Default::default(),
         });
-        if forgotten {
+        if forgotten && !client_only {
             let _ = inner.scrub_backups(None); // Pending cleanup is exposed by health.get, not fatal.
         }
         if scan_writer {
@@ -345,23 +401,15 @@ impl Service {
         for (i, root) in roots.iter().enumerate() {
             inner
                 .grant(root, "cli_flag", config.allow_identity_unverified)
-                .map_err(|r| {
-                let rule = match r {
-                    Refused::Rule(r) => refusal_name(r),
-                    Refused::RootLimit => "root_limit_reached".into(),
-                    Refused::IdentityUnverified => {
-                        "identity_unverified (pass --allow-identity-unverified to list it read-only)"
-                            .into()
-                    }
-                };
-                format!("grant root #{} refused: {rule}", i + 1)
-            })?;
+                .map_err(|r| grant_refusal(i + 1, &r, !client_only))?;
         }
         if scan_writer {
             freshness::start(&inner);
         }
-        spawn_telemetry_pump(Arc::downgrade(&inner));
-        spawn_backup_scrub_retry(Arc::downgrade(&inner));
+        if !client_only {
+            spawn_telemetry_pump(Arc::downgrade(&inner));
+            spawn_backup_scrub_retry(Arc::downgrade(&inner));
+        }
         Ok(Service {
             inner: OwnedInner(Some(inner)),
             peer: false,
@@ -371,6 +419,21 @@ impl Service {
     pub fn dataset(&self) -> DatasetClass {
         self.inner.dataset
     }
+}
+
+/// `flag_offered`: the host has `--allow-identity-unverified`. Client-only hosts, including the
+/// one-shot verification open, have none, so the text must not send their users to it (#903).
+pub(crate) fn grant_refusal(number: usize, refused: &Refused, flag_offered: bool) -> String {
+    let rule = match refused {
+        Refused::Rule(r) => refusal_name(*r),
+        Refused::RootLimit => "root_limit_reached".into(),
+        Refused::IdentityUnverified if flag_offered => {
+            "identity_unverified (pass --allow-identity-unverified to list it read-only)".into()
+        }
+        Refused::IdentityUnverified => "identity_unverified (a FAT, exFAT or unknown filesystem cannot prove file identity, so this command reads no content there; no option or state directory changes that)"
+            .into(),
+    };
+    format!("grant root #{number} refused: {rule}")
 }
 
 pub(crate) fn class_name(class: DatasetClass) -> &'static str {
@@ -418,6 +481,7 @@ pub(crate) fn is_mutation(c: Command) -> bool {
             | JobsCancel
             | DuplicatesInspect
             | DuplicatesCancel
+            | ReclaimObserve
             | FeedbackRecord
             | LearningRefit
             | CollectionsCreate
@@ -441,6 +505,8 @@ pub(crate) fn is_mutation(c: Command) -> bool {
             | CopyAbandon
             | AskConfigure
             | AskGrant
+            | ClientsGrant
+            | ClientsRevoke
             | AskRevoke
             | AskTurn
     )
@@ -450,6 +516,14 @@ pub(crate) fn is_mutation(c: Command) -> bool {
 pub(crate) const MAX_PENDING: u64 = 64;
 
 const MAX_READS: usize = 8;
+
+fn guarded_observation(request: &RequestEnvelope, command: Command) -> bool {
+    request.expected_generation.is_some()
+        && matches!(
+            command,
+            Command::NodeInspect | Command::StatsBreakdown | Command::TreeChildren
+        )
+}
 
 struct ReadPermit(Arc<Inner>);
 impl ReadPermit {
@@ -472,10 +546,14 @@ impl Drop for ReadPermit {
 pub(crate) struct ReadWork {
     deadline: Instant,
     interrupt: Mutex<Option<rusqlite::InterruptHandle>>,
+    repair_on_read: bool,
 }
 impl ReadWork {
     fn reader(&self, catalog: &Catalog) -> Result<loomward_catalog::Reader, ErrorBody> {
         let mut reader = catalog.reader().map_err(catalog_error)?;
+        if !self.repair_on_read {
+            reader = reader.without_repairs();
+        }
         let mut handle = self.interrupt.lock().unwrap_or_else(|e| e.into_inner());
         if Instant::now() >= self.deadline {
             return Err(fail(
@@ -500,7 +578,7 @@ pub(crate) struct Queue {
 fn is_revocation(c: Command) -> bool {
     matches!(
         c,
-        Command::RootsRevoke | Command::GrantsRevoke | Command::AskRevoke
+        Command::RootsRevoke | Command::GrantsRevoke | Command::AskRevoke | Command::ClientsRevoke
     )
 }
 
@@ -526,11 +604,19 @@ fn default_deadline(c: Command) -> u64 {
 }
 
 /// `retryable` per `semantics.md` section 8 and #144: a timed-out mutation is never blindly
-/// retryable; `internal_error` at most once, never for `teacher.run`.
+/// retryable; `internal_error` at most once, never for `teacher.run`. The hard root cap
+/// requires an owner revocation rather than a retry.
 pub(crate) fn retry_flag(command: Command, mut body: ErrorBody) -> ErrorBody {
     use ErrorCode::*;
     body.retryable = match body.code {
-        StaleGeneration | DeviceOffline | PartialCoverage | ResourceBudget | Busy => true,
+        ResourceBudget => {
+            body.detail
+                .as_ref()
+                .and_then(|d| d.get("reason"))
+                .and_then(Value::as_str)
+                != Some("root_limit_reached")
+        }
+        StaleGeneration | DeviceOffline | PartialCoverage | Busy => true,
         DeadlineExceeded => command == Command::PlacementSimulate || !is_mutation(command),
         InternalError => command != Command::TeacherRun,
         _ => false,
@@ -579,8 +665,25 @@ pub(crate) fn catalog_error(e: loomward_catalog::Error) -> ErrorBody {
     }
 }
 
-pub(crate) fn sql_error(_: rusqlite::Error) -> ErrorBody {
-    fail(ErrorCode::InternalError, "state store error")
+/// #924: the SQLite result codes ride in `detail` (never SQL text, a path or a row), and the full
+/// error goes to stderr, so a bare "state store error" is diagnosable after the fact.
+pub(crate) fn sql_error(e: rusqlite::Error) -> ErrorBody {
+    eprintln!("loomward-service: state store error: {e}");
+    let mut body = fail(ErrorCode::InternalError, "state store error");
+    if let Some(sqlite) = e.sqlite_error() {
+        body.detail = Detail::new(BTreeMap::from([
+            (
+                "sqlite_code".to_string(),
+                json!(format!("{:?}", sqlite.code)),
+            ),
+            (
+                "sqlite_extended_code".to_string(),
+                json!(sqlite.extended_code),
+            ),
+        ]))
+        .ok();
+    }
+    body
 }
 
 /// What a handler produced: the result object and the revisions it was read or committed at.
@@ -703,6 +806,9 @@ impl ViewService for Service {
                     | Command::AskStatus
                     | Command::AskConfigure
                     | Command::AskGrant
+                    | Command::ClientsGrant
+                    | Command::ClientsList
+                    | Command::ClientsRevoke
                     | Command::AskRevoke
                     | Command::AskTurn
                     | Command::AskResult
@@ -750,6 +856,8 @@ impl ViewService for Service {
             let work = Arc::new(ReadWork {
                 deadline,
                 interrupt: Mutex::new(None),
+                repair_on_read: matches!(&ctx.principal, Principal::Owner)
+                    && !guarded_observation(&request, command),
             });
             let worker_work = work.clone();
             let metadata_cursor = Arc::new(Mutex::new(None));
@@ -939,6 +1047,7 @@ impl Service {
                             let work = ReadWork {
                                 deadline,
                                 interrupt: Mutex::new(None),
+                                repair_on_read: true,
                             };
                             // Owner scans and hashing can wait for automatic work to drain.
                             let bounded = matches!(
@@ -1057,6 +1166,19 @@ impl Inner {
             None => self.handle(request, command, ctx, work, metadata_cursor),
             Some(g) => self.client_handle(request, command, g, work),
         };
+        let out = out.and_then(|out| {
+            if grant.is_none() && guarded_observation(request, command) {
+                // Composed observations must not carry pre-read revisions across a concurrent commit.
+                let (catalog, state) = self.revisions()?;
+                if out.catalog_rev != Some(catalog) || out.state_rev != Some(state) {
+                    return Err(fail(
+                        ErrorCode::StaleGeneration,
+                        "Project observations or access changed; read again.",
+                    ));
+                }
+            }
+            Ok(out)
+        });
         let out = out.and_then(|out| match out.result {
             Value::Object(ref map) => command.validate_result(map).map(|_| out).map_err(|_| {
                 fail(
@@ -1157,6 +1279,9 @@ impl Inner {
         state_rev: Option<i64>,
     ) {
         if let Value::Object(map) = data {
+            if event == EventName::VolumesChanged {
+                self.invalidate_root_presence();
+            }
             let _ = self.engine.publish_event(
                 event,
                 map,
@@ -1214,12 +1339,16 @@ impl Inner {
         }
     }
 
-    /// Whether a renamed unverified grant's old path is definitely not this folder: it is not
-    /// there (ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND or their NT statuses), or it opens with
-    /// another identity. Any other failure (access denied, not ready, cancelled) proves nothing,
-    /// so the grant stays active and a later re-grant can retire it.
+    /// Whether a renamed unverified grant's old path is definitely not this folder: a missing
+    /// path, a non-directory component (Win32 error or NT status), a plain file (not a link or other
+    /// reparse point) where the folder was, or an
+    /// opened folder with another identity. Other failures, including attribute or policy
+    /// refusals, prove nothing, so the grant stays active and a later re-grant can retire it.
     fn old_path_is_another_folder(&self, old: &Path, identity: &(String, Vec<u8>, String)) -> bool {
         use loomward_windows::enumerate::SourceError;
+        #[cfg(test)]
+        self.hooks
+            .gate(Command::RootsRequestGrant, "old_path_probe");
         #[cfg(test)]
         let injected = *self.hooks.probe_error.lock().unwrap();
         #[cfg(not(test))]
@@ -1227,8 +1356,24 @@ impl Inner {
         match injected.map_or_else(|| self.open_observation(old), Err) {
             Ok((_, seen)) => Self::identity_triple(&seen).is_ok_and(|seen| seen != *identity),
             Err(SourceError::Io(code)) => {
-                matches!(code as u32, 2 | 3 | 0xC000_000F | 0xC000_0034 | 0xC000_003A)
+                matches!(
+                    code as u32,
+                    2 | 3 | 267 | 0xC000_000F | 0xC000_0034 | 0xC000_003A | 0xC000_0103
+                )
             }
+            // The native open refuses any non-directory (and reparse points) without saying which;
+            // only a plain file, never a link or other reparse point, proves the old path is another
+            // object. Everything else stays inconclusive.
+            Err(SourceError::Refused) => std::fs::symlink_metadata(old).is_ok_and(|m| {
+                #[cfg(windows)]
+                let reparse = {
+                    use std::os::windows::fs::MetadataExt;
+                    m.file_attributes() & 0x400 != 0
+                };
+                #[cfg(not(windows))]
+                let reparse = m.file_type().is_symlink();
+                m.is_file() && !reparse
+            }),
             Err(_) => false,
         }
     }
@@ -1270,25 +1415,39 @@ impl Inner {
         let unverified = !loomward_windows::enumerate::verifies_identity(&filesystem);
         let text = root.to_string_lossy();
         let display_path = text.strip_prefix(r"\\?\").unwrap_or(&text).to_string();
-        let _m = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
-        let conn = self.db();
         // A grant is consent for one path (docs/41 section 16): a moved root is granted afresh,
         // and the grant still naming its old path ends identity_changed.
+        let candidates = {
+            let _m = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
+            let conn = self.db();
+            db::renamed_grants(&conn, &volume_key, &file_id, &display_path, &volume_guid)
+                .map_err(|_| Refusal::IdentityUnavailable)?
+        };
+        // An identity-unverified ID is weak and recyclable, so its grant retires only once the old
+        // path is definitely another folder. Slow native observations hold neither service lock.
+        let observed: Vec<_> = candidates
+            .into_iter()
+            .filter(|(_, unverified, old)| {
+                !*unverified
+                    || self.old_path_is_another_folder(
+                        Path::new(old),
+                        &(volume_key.clone(), file_id.clone(), volume_guid.clone()),
+                    )
+            })
+            .collect();
+        let presence = self.cached_root_presence();
+        let mutation = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.db();
+        // Recheck consent and candidate identity, state, mode and path after the unlocked probes.
+        // ponytail: no refresh stamp; a rename-back/re-grant during the unlocked probe can still
+        // retire the refreshed grant. This fails closed; the owner must re-grant.
         let existing = db::active_grant(&conn, &volume_key, &file_id, &display_path, &volume_guid)
             .map_err(|_| Refusal::IdentityUnavailable)?;
-        // An identity-unverified ID is weak and recyclable, so its grant retires only once the old
-        // path is definitely another folder; a verified one retires on the ID alone.
         let renamed: Vec<i64> =
             db::renamed_grants(&conn, &volume_key, &file_id, &display_path, &volume_guid)
                 .map_err(|_| Refusal::IdentityUnavailable)?
                 .into_iter()
-                .filter(|(_, unverified, old)| {
-                    !*unverified
-                        || self.old_path_is_another_folder(
-                            Path::new(old),
-                            &(volume_key.clone(), file_id.clone(), volume_guid.clone()),
-                        )
-                })
+                .filter(|row| observed.contains(row))
                 .map(|(id, ..)| id)
                 .collect();
         if unverified
@@ -1352,25 +1511,33 @@ impl Inner {
             },
             None => WriteCommand::RegisterRoot(observation),
         };
+        // #843: retire the grants naming the old path before the new grant exists, under the same
+        // mutation guard. A failure answers before anything is registered, so every retry path
+        // (the desktop picker included, which refuses an already-granted path) finds the same
+        // renamed grants again, and two grants for one folder are never both active.
+        for grant in renamed {
+            let id = db::root_for_grant(&self.db(), grant)
+                .ok()
+                .flatten()
+                .and_then(|row| loomward_protocol::RootId::new(self.root_id(row)).ok());
+            if !id.is_some_and(|id| {
+                self.identity_changed_locked(grant, &id, true, &mutation, &presence)
+            }) {
+                return Err(Refusal::IdentityUnavailable.into());
+            }
+        }
         let reply = self
             .catalog
             .writer()
             .call(command)
             .map_err(|_| Refusal::IdentityUnavailable)?;
-        let WriteReply::Root { root_id, .. } = reply else {
+        let WriteReply::Root {
+            grant_id, root_id, ..
+        } = reply
+        else {
             return Err(Refusal::IdentityUnavailable.into());
         };
-        // identity_changed takes the mutation lock itself.
-        drop(_m);
-        for grant in renamed {
-            // Release the connection guard first: identity_changed reads it again.
-            let row = db::root_for_grant(&self.db(), grant);
-            if let Ok(Some(row)) = row {
-                if let Ok(id) = loomward_protocol::RootId::new(self.root_id(row)) {
-                    self.identity_changed(grant, &id, true);
-                }
-            }
-        }
+        self.remember_root_presence(grant_id, handlers::RootPresence::Online);
         Ok((root_id, fresh))
     }
 

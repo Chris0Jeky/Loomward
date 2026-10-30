@@ -8,6 +8,7 @@
   import { formatBytes } from '../../lib/format/bytes';
   import { escapedName } from '../../lib/format/names';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
+  import ProjectDiscovery from './ProjectDiscovery.svelte';
   import type { Collection, CollectionMember, Cursor } from '../../lib/contracts.gen';
 
   let collections = $state<Collection[]>([]);
@@ -94,7 +95,7 @@
 <p class="lede">Your virtual groupings.</p>
 <p class="note">Membership is a preference, never permission to act. Files stay where they are.</p>
 <p class="live muted" class:has={!!notice} role="status" aria-label="Collection result">{notice}</p>
-<p class="live bad" class:has={!!error} role="alert">{error}</p>
+<p class="live bad" class:has={!!error} role="alert" aria-label="Collection error">{error}</p>
 
 <section class="panel" aria-labelledby="collection-make">
   <h2 id="collection-make">Make a collection</h2>
@@ -136,6 +137,7 @@
     {#if next}<button class="btn" type="button" bind:this={more} aria-disabled={loading} onclick={() => { if (!loading) void load(true); }}>Load more members</button>{/if}
   </div>
 </section>
+<ProjectDiscovery collectionListKey={collections.map((c) => c.collection_id).join(',')} onAdded={() => void load()} />
 <style>
   .pick { margin-top: 0; }
   input, select { max-width: 100%; }

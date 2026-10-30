@@ -13,6 +13,7 @@
   import { session } from '../../lib/stores/session.svelte';
   import { Say } from '../../lib/ui/say.svelte';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
+  import VolumeStatus from '../../lib/ui/VolumeStatus.svelte';
   import Diagnostics from './Diagnostics.svelte';
   import type { GrantList, Health, Root, RootList } from '../../lib/contracts.gen';
   import type { ScanView } from '../../lib/scan/model';
@@ -295,14 +296,14 @@
           {#each roots.roots as r (r.root_id)}
             <tr>
               <th scope="row"><VisibleName name={r.display_path.text} />{#if r.display_path.truncated} <span class="tag warn">truncated</span>{/if}<div class="muted small">{r.origin.replaceAll('_', ' ')} · {r.dataset_class}</div></th>
-              <td class="num">{r.volume_id ?? 'unknown'}</td>
+              <td class="num">{r.volume_id ?? 'unknown'} <VolumeStatus id={r.volume_id} /></td>
               <td>{r.granted_via.replaceAll('_', ' ')}</td>
               <td><span class="tag" class:warn={!rootActive(r)}>{r.grant_state.replaceAll('_', ' ')}</span></td>
               <td>{r.scan.state.replaceAll('_', ' ')} <span class="tag">{r.scan.coverage}</span></td>
               <td class="r num">{formatCount(r.totals?.files)}</td>
               <td class="r num">{formatBytes(r.totals?.logical_bytes)}</td>
               <td class="r num">{formatBytes(r.totals?.allocated_bytes)}</td>
-              <td><button class="btn" type="button" disabled={!rootActive(r)} aria-label={`Revoke… ${escapedName(r.display_path.text)}`} onclick={() => void ask({ kind: 'root', id: r.root_id, label: r.display_path.text })}>Revoke…</button>
+              <td><button class="btn" type="button" disabled={r.grant_state !== 'active' && r.grant_state !== 'identity_changed'} aria-label={`Revoke… ${escapedName(r.display_path.text)}`} onclick={() => void ask({ kind: 'root', id: r.root_id, label: r.display_path.text })}>Revoke…</button>
                 {#if r.grant_state === 'revoked'}
                   <button class="btn small" type="button" aria-label={`Forget… ${escapedName(r.display_path.text)}`} onclick={() => void ask({ kind: 'forget', id: r.root_id, label: r.display_path.text })}>Forget…</button>
                 {/if}</td>

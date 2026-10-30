@@ -5,6 +5,27 @@
 mod common;
 
 use common::registry::roundtrip;
+
+#[test]
+fn project_generation_precondition_requires_one_add_and_no_removals() {
+    let base = serde_json::json!({"protocol":"loomward/3","request_id":"projects_guard",
+        "command":"collections.update_members","expected_generation":"12","expected_state_rev":"3",
+        "payload":{"collection_id":"co_1","add":["nd_1"],"remove":[]}});
+    let valid: RequestEnvelope = serde_json::from_value(base.clone()).unwrap();
+    assert!(valid.validate().is_ok());
+    for payload in [
+        serde_json::json!({"collection_id":"co_1","add":["nd_1","nd_2"],"remove":[]}),
+        serde_json::json!({"collection_id":"co_1","add":["nd_1"],"remove":["nd_2"]}),
+        serde_json::json!({"collection_id":"co_1","add":["nd_1"],"remove":[],"remove_members":["om_2"]}),
+    ] {
+        let mut invalid = base.clone();
+        invalid["payload"] = payload;
+        assert!(serde_json::from_value::<RequestEnvelope>(invalid)
+            .unwrap()
+            .validate()
+            .is_err());
+    }
+}
 use jsonschema::Validator;
 use loomward_protocol::{
     decode_exact, Command, EventEnvelope, EventName, RequestEnvelope, ResponseEnvelope,
@@ -35,6 +56,109 @@ fn sampled_system_cpu_count_is_required_but_nullable() {
     value["cpu"].as_object_mut().unwrap().remove("logical_cpus");
     assert!(!schema.errors("SystemSample", &value).is_empty());
     assert!(serde_json::from_value::<loomward_protocol::SystemSample>(value).is_err());
+}
+
+#[test]
+fn reclaim_sizes_are_required_nullable_and_requests_are_bounded() {
+    let mut schema = Schema::load();
+    let plan = read(&contracts().join("examples/commands/reclaim.plan.result.json"));
+    for (def, value, fields) in [
+        (
+            "ReclaimVolume",
+            &plan["volume"],
+            &["capacity_bytes", "free_bytes", "reserve_bytes"][..],
+        ),
+        (
+            "CoveredRoot",
+            &plan["covered_roots"][0],
+            &["allocated_bytes"][..],
+        ),
+        (
+            "ReclaimCandidate",
+            &plan["groups"][0]["candidates"][0],
+            &["logical_bytes", "allocated_bytes", "reclaimable_bytes"][..],
+        ),
+        ("ReclaimPlan", &plan, &["unaccounted_bytes"][..]),
+    ] {
+        for field in fields {
+            let mut unknown = value.clone();
+            unknown[field] = Value::Null;
+            assert!(schema.errors(def, &unknown).is_empty());
+            assert_eq!(roundtrip(def, &unknown).unwrap().unwrap(), unknown);
+            unknown.as_object_mut().unwrap().remove(*field);
+            assert!(!schema.errors(def, &unknown).is_empty());
+            assert!(roundtrip(def, &unknown).unwrap().is_err());
+        }
+        let mut extra = value.clone();
+        extra["execute"] = json!(true);
+        assert!(!schema.errors(def, &extra).is_empty());
+        assert!(roundtrip(def, &extra).unwrap().is_err());
+    }
+    for limit in [0, 201] {
+        let value = json!({"volume_id":"vo_lab1", "limit":limit});
+        assert!(!schema.errors("ReclaimPlanRequest", &value).is_empty());
+        assert!(roundtrip("ReclaimPlanRequest", &value).unwrap().is_err());
+    }
+    let request = json!({"volume_id": "vo_lab1", "limit": 50});
+    assert!(schema.errors("ReclaimPlanRequest", &request).is_empty());
+    assert_eq!(
+        roundtrip("ReclaimPlanRequest", &request).unwrap().unwrap(),
+        request
+    );
+    for volume_id in ["", "synthetic_volume", "rt_lab1"] {
+        let invalid = json!({"volume_id": volume_id, "limit": 50});
+        assert!(!schema.errors("ReclaimPlanRequest", &invalid).is_empty());
+        assert!(roundtrip("ReclaimPlanRequest", &invalid).unwrap().is_err());
+        let mut invalid_volume = plan["volume"].clone();
+        invalid_volume["volume_id"] = json!(volume_id);
+        assert!(!schema.errors("ReclaimVolume", &invalid_volume).is_empty());
+        assert!(roundtrip("ReclaimVolume", &invalid_volume)
+            .unwrap()
+            .is_err());
+    }
+    let legacy = json!({"volume_key": "synthetic_volume", "limit": 50});
+    assert!(!schema.errors("ReclaimPlanRequest", &legacy).is_empty());
+    assert!(roundtrip("ReclaimPlanRequest", &legacy).unwrap().is_err());
+    assert_eq!(plan["volume"]["volume_id"], "vo_lab1");
+    assert_eq!(Command::ReclaimPlan.client_result_def(), None);
+}
+
+#[test]
+fn reclaim_selection_is_additive_bounded_and_preserves_exact_bytes() {
+    let mut schema = Schema::load();
+    for (def, mut request) in [
+        (
+            "ReclaimPlanRequest",
+            json!({"volume_id":"vo_lab1", "limit":50}),
+        ),
+        ("ReclaimObserveRequest", json!({"volume_id":"vo_lab1"})),
+    ] {
+        assert_eq!(roundtrip(def, &request).unwrap().unwrap(), request);
+        for length in [0, 1, 12, 13] {
+            request["selection"] = json!((0..length)
+                .map(|i| format!("nd_case{i}"))
+                .collect::<Vec<_>>());
+            let valid = (1..=12).contains(&length);
+            assert_eq!(schema.errors(def, &request).is_empty(), valid);
+            assert_eq!(roundtrip(def, &request).unwrap().is_ok(), valid);
+        }
+        request["selection"] = Value::Null;
+        assert!(!schema.errors(def, &request).is_empty());
+        assert!(roundtrip(def, &request).unwrap().is_err());
+    }
+    let value = json!({"members":["nd_a","nd_b"], "status":"recorded",
+        "observed_at":"2026-10-29T00:00:00Z", "reclaimable_bytes":"18446744073709551615", "reason":null});
+    assert!(schema.errors("ReclaimSelection", &value).is_empty());
+    assert_eq!(
+        roundtrip("ReclaimSelection", &value).unwrap().unwrap(),
+        value
+    );
+    for field in ["observed_at", "reclaimable_bytes", "reason"] {
+        let mut missing = value.clone();
+        missing.as_object_mut().unwrap().remove(field);
+        assert!(!schema.errors("ReclaimSelection", &missing).is_empty());
+        assert!(roundtrip("ReclaimSelection", &missing).unwrap().is_err());
+    }
 }
 
 #[test]
@@ -157,6 +281,25 @@ fn client_projection_contracts_preserve_omitted_and_unknown_fields() {
     assert!(Command::HealthGet
         .validate_client_result(&Default::default())
         .is_err());
+}
+
+#[test]
+fn client_grant_contract_accepts_all_five_disclosures_including_volumes() {
+    let mut schema = Schema::load();
+    let value = json!({"roots": ["rt_synthetic"], "fields": ["path", "size", "modified", "attributes", "volumes"]});
+    assert!(schema.errors("AskGrantRequest", &value).is_empty());
+    assert_eq!(
+        roundtrip("AskGrantRequest", &value).unwrap().unwrap(),
+        value
+    );
+    let grant = json!({"roots": value["roots"], "fields": value["fields"], "granted_at": "2026-10-25T00:00:00.000Z"});
+    assert!(schema.errors("AskGrant", &grant).is_empty());
+    assert_eq!(roundtrip("AskGrant", &grant).unwrap().unwrap(), grant);
+    for fields in [json!(["volumes", "volumes"]), json!(["execute"])] {
+        let invalid = json!({"roots": ["rt_synthetic"], "fields": fields});
+        assert!(!schema.errors("AskGrantRequest", &invalid).is_empty());
+        assert!(roundtrip("AskGrantRequest", &invalid).unwrap().is_err());
+    }
 }
 
 impl Schema {
@@ -290,9 +433,17 @@ fn example_directories_hold_exactly_the_expected_files() {
     assert_eq!(
         have,
         BTreeSet::from([
+            "ClientField.json".to_string(),
+            "McpClient.json".to_string(),
+            "copy-disposition.json".to_string(),
+            "copy-receipt.json".to_string(),
+            "copy-receipt-published-unverified.json".to_string(),
             "disclosure-summary.json".to_string(),
             "duplicates-result.json".to_string(),
             "identity-observation-unverified.json".to_string(),
+            "reclaim-observe-running.json".to_string(),
+            "reclaim-selection-request.json".to_string(),
+            "reclaim-selection-recorded.json".to_string(),
             "search-freshness-restarting.json".to_string(),
             "search-page-federated.json".to_string(),
             "search-request-federated.json".to_string()

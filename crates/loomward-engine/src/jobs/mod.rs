@@ -48,25 +48,19 @@ pub struct JobContext {
 impl JobContext {
     /// Store and publish exact final scan counters. A missing wire strategy stays unknown.
     pub fn set_scan_report(&self, report: &crate::scan::ScanReport) -> EngineResult<()> {
-        let strategy = match report.strategy {
-            crate::scan::source::Strategy::Extended => {
-                loomward_protocol::EnumerationStrategy::FileIdExtdDirectoryInfo
-            }
-            crate::scan::source::Strategy::Find => {
-                loomward_protocol::EnumerationStrategy::FindFirstFileExLargeFetch
-            }
-            crate::scan::source::Strategy::Portable => {
-                loomward_protocol::EnumerationStrategy::StdReadDir
-            }
-            crate::scan::source::Strategy::Both => {
-                loomward_protocol::EnumerationStrategy::FileIdBothDirectoryInfo
-            }
-        };
+        let strategy = scan_strategy(report.strategy);
         let mut progress = serde_json::json!({"phase":"done","strategy":strategy,"examined":report.examined,"indexed_files":report.totals.files,"indexed_dirs":report.totals.dirs,"skipped":report.skipped,"failed":report.failed,"logical_bytes":report.totals.logical.to_string(),"allocated_bytes":report.totals.allocated.map(|n|n.to_string()),"pending_dirs":0,"writer_queue_depth":0,"entries_per_second":report.examined as f64/report.elapsed_seconds.max(0.000001),"elapsed_ms":(report.elapsed_seconds*1000.) as u64,"limit_hit":report.limit_hit});
         if let Some(reason) = report.limit_reason {
             progress["limit_reason"] = serde_json::to_value(reason).expect("scan limit reason");
         }
         let progress = serde_json::from_value(progress).expect("bounded scan progress");
+        self.set_scan_progress(progress)
+    }
+    /// Publish observations without changing coverage or admitting final publication.
+    pub(crate) fn set_scan_progress(
+        &self,
+        progress: loomward_protocol::ScanProgress,
+    ) -> EngineResult<()> {
         if let Some(registry) = self.registry.upgrade() {
             if let Some(r) = registry.records.lock().unwrap().get_mut(&self.job_id) {
                 if r.job.progress.as_ref() == Some(&progress) {
@@ -92,11 +86,28 @@ impl JobContext {
             }
         }
     }
+    /// Publish `reclaim.observe` counts (#939) with a job revision; repeated counts are silent.
+    pub fn set_reclaim_progress(
+        &self,
+        progress: loomward_protocol::ReclaimObserveProgress,
+    ) -> EngineResult<()> {
+        if let Some(registry) = self.registry.upgrade() {
+            if let Some(r) = registry.records.lock().unwrap().get_mut(&self.job_id) {
+                if r.terminal.is_some() || r.job.reclaim.as_ref() == Some(&progress) {
+                    return Ok(());
+                }
+                revise(&mut r.job)?;
+                r.job.reclaim = Some(progress);
+                emit(&self.events, &r.job);
+            }
+        }
+        Ok(())
+    }
     /// Whether the caller requested cancellation.
     pub fn is_cancelled(&self) -> bool {
         self.cancel.load(Ordering::Acquire)
     }
-    /// Serialize a durable commit with cancellation; after commit the runner must complete.
+    /// Serialize a durable commit with ordinary cancellation; root revocation may still cancel scans.
     pub(crate) fn commit_if_not_cancelled(
         &self,
         commit: impl FnOnce() -> EngineResult<()>,
@@ -121,6 +132,24 @@ impl JobContext {
         Ok(true)
     }
 }
+pub(crate) fn scan_strategy(
+    strategy: crate::scan::source::Strategy,
+) -> loomward_protocol::EnumerationStrategy {
+    match strategy {
+        crate::scan::source::Strategy::Extended => {
+            loomward_protocol::EnumerationStrategy::FileIdExtdDirectoryInfo
+        }
+        crate::scan::source::Strategy::Find => {
+            loomward_protocol::EnumerationStrategy::FindFirstFileExLargeFetch
+        }
+        crate::scan::source::Strategy::Portable => {
+            loomward_protocol::EnumerationStrategy::StdReadDir
+        }
+        crate::scan::source::Strategy::Both => {
+            loomward_protocol::EnumerationStrategy::FileIdBothDirectoryInfo
+        }
+    }
+}
 /// Engine-owned runner registered by the lane responsible for this job kind.
 pub type JobRunner = Arc<dyn Fn(JobContext, JobSpec) -> EngineResult<CoverageState> + Send + Sync>;
 struct Record {
@@ -142,18 +171,19 @@ pub(crate) struct Registry {
     last_scan: Mutex<HashMap<RootId, JobId>>,
 }
 impl Registry {
-    /// One live scan or duplicates job per root and one live refit overall: `busy` with
-    /// `detail.job_id`.
+    /// One live scan or duplicates job per root and one live refit or reclaim observation
+    /// overall: `busy` with `detail.job_id`.
     fn conflict(records: &HashMap<JobId, Record>, spec: &JobSpec) -> EngineResult<()> {
         if !matches!(
             spec.kind,
-            JobKind::Scan | JobKind::Duplicates | JobKind::Refit
+            JobKind::Scan | JobKind::Duplicates | JobKind::Refit | JobKind::Reclaim
         ) {
             return Ok(());
         }
         let Some(r) = records.values().find(|r| {
             r.job.kind == spec.kind
-                && (spec.kind == JobKind::Refit || r.job.root_id == spec.root_id)
+                && (matches!(spec.kind, JobKind::Refit | JobKind::Reclaim)
+                    || r.job.root_id == spec.root_id)
                 && r.terminal.is_none()
         }) else {
             return Ok(());
@@ -162,6 +192,7 @@ impl Registry {
             message: match spec.kind {
                 JobKind::Duplicates => "root already inspecting duplicates",
                 JobKind::Refit => "refit already running",
+                JobKind::Reclaim => "reclaim observation already running",
                 _ => "root already scanning",
             }
             .into(),
@@ -281,6 +312,7 @@ impl Registry {
             coverage: None,
             error: None,
             duplicates: None,
+            reclaim: None,
         };
         let cancel = Arc::new(AtomicBool::new(false));
         {
@@ -474,7 +506,11 @@ impl Registry {
                     emit(events, &r.job);
                 }
             }
-            if r.terminal.is_some() || r.committed || r.job.state == JobState::CancelRequested {
+            // Root revocation withdraws a running scan's coverage even after publication admission.
+            if r.terminal.is_some()
+                || (r.committed && !(revoked && r.job.kind == JobKind::Scan))
+                || r.job.state == JobState::CancelRequested
+            {
                 return Ok(r.job.clone());
             }
             revise(&mut r.job)?;
@@ -553,6 +589,12 @@ impl Engine {
             .get(&spec.kind)
             .cloned()
             .ok_or_else(|| EngineError::unavailable(Component::Jobs))?;
+        self.jobs.submit(spec, runner, self.events.clone(), None)
+    }
+    /// Run a caller-built runner under this registry's lifecycle: one-per-kind conflicts, events,
+    /// cancellation and retention. Used by `reclaim.observe` (#939), whose runner the service owns
+    /// because its reads and its result table are the service's.
+    pub fn job_submit_runner(&self, spec: JobSpec, runner: JobRunner) -> EngineResult<Job> {
         self.jobs.submit(spec, runner, self.events.clone(), None)
     }
     /// Acknowledge cancellation; an in-progress durable commit takes precedence.

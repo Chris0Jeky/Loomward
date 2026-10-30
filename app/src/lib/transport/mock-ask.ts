@@ -1,7 +1,7 @@
 import type { AskField, AskStatus, AskToolUse, AskTurnRecord, ErrorCode, RootList, SearchPage, SearchRequest } from '../contracts.gen';
 import askStatusFixture from '../../../../contracts/v3/examples/commands/ask.status.result.json';
 
-const FIELDS: AskField[] = ['path', 'size', 'modified', 'attributes'];
+const FIELDS: AskField[] = ['path', 'size', 'modified', 'attributes', 'volumes'];
 const STOP = new Set(['where', 'which', 'what', 'files', 'file', 'folder', 'folders', 'show', 'find', 'delete', 'move', 'the', 'and', 'please', 'guess', 'largest', 'biggest', 'are', 'my', 'any', 'can', 'you']);
 
 /**

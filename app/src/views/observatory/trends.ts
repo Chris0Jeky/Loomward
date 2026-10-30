@@ -65,7 +65,7 @@ export function trendAge(series: TrendSeries, sampleAt: string): string | null {
   const sample = Date.parse(sampleAt);
   if (!last || !Number.isFinite(sample)) return null;
   const lag = sample - Date.parse(last.observed_at);
-  if (!Number.isFinite(lag)) return 'The age of the last point is unknown';
+  if (!Number.isFinite(lag) || lag < 0) return 'The age of the last point is unknown';
   if (lag < cadenceMs(series) + SLACK_MS) return null;
   const s = Math.floor(lag / 1000);
   return `Last point observed ${s < 60 ? `${s} s` : s < 3600 ? `${Math.floor(s / 60)} min` : `${Math.floor(s / 3600)} h`} before this sample`;

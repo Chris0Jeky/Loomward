@@ -154,7 +154,7 @@ fn duplicate_grant_returns_evidence(class: DatasetClass) {
         enumerate::{DirSource, NativeSource},
         identity,
     };
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         assert_eq!(
             NativeSource::default()
                 .open_root(std::path::Path::new("synthetic"))
@@ -1629,9 +1629,9 @@ fn root_identity_mismatch_never_enters_writer() {
             panic!("a mismatched grant must not list the opened root")
         }
     }
-    let mut changed_guid = identity(1);
-    changed_guid.volume_guid = Some(1);
-    for expected in [identity(999), changed_guid] {
+    // The fixture source opens the root with no volume GUID, so a GUID-less expectation is the
+    // same volume (#912: a foreign GUID is offline, see the next test).
+    let scan = |expected| {
         let mut root = root();
         root.expected = Some(expected);
         let sink = Arc::new(MemorySink::default());
@@ -1645,13 +1645,86 @@ fn root_identity_mismatch_never_enters_writer() {
             ScanOptions::default(),
         )
         .unwrap_err();
-        assert_eq!(error.to_body().message.as_str(), "root_identity_changed");
+        assert!(sink.totals(root.root_id()).is_none());
+        (error, sink.identity_changed(root.root_id()))
+    };
+    let (error, told) = scan(identity(999));
+    assert_eq!(error.to_body().message.as_str(), "root_identity_changed");
+    assert!(
+        told,
+        "the writer is told, so it can record the transition (#206)"
+    );
+    struct Foreign(Option<u128>);
+    impl DirSource for Foreign {
+        type Dir = u64;
+        fn strategy(&self) -> Strategy {
+            Strategy::Portable
+        }
+        fn open_root(&self, path: &std::path::Path) -> Result<(u64, OpenedIdentity), SourceError> {
+            let (dir, mut identity) = Tree.open_root(path)?;
+            identity.volume_guid = self.0;
+            Ok((dir, identity))
+        }
+        fn open_child(
+            &self,
+            _: &u64,
+            _: &RawEntry<'_>,
+        ) -> Result<(u64, OpenedIdentity), SourceError> {
+            panic!("a foreign volume must not open children")
+        }
+        fn list(&self, _: &u64, _: &mut dyn FnMut(RawEntry<'_>) -> Flow) -> ListOutcome {
+            panic!("a foreign volume must not be listed")
+        }
+    }
+    // #912, docs/48 section 2: between admission and the job's root open another volume took
+    // the path (a different disk on a USB root's letter). The root is away, not replaced: the
+    // scan is refused offline and the sink, which would retire the grant, is never told.
+    for observed in [Some(2), None] {
+        let mut expected = identity(1);
+        expected.volume_guid = Some(1);
+        let mut root = root();
+        root.expected = Some(expected);
+        let sink = Arc::new(MemorySink::default());
+        let error = run_scan(
+            &Foreign(observed),
+            &root,
+            1,
+            sink.clone(),
+            Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES)),
+            Arc::new(AtomicBool::new(false)),
+            ScanOptions::default(),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, EngineError::DeviceOffline { .. }),
+            "{observed:?}: {error:?}"
+        );
         assert!(sink.totals(root.root_id()).is_none());
         assert!(
-            sink.identity_changed(root.root_id()),
-            "the writer is told, so it can record the transition (#206)"
+            !sink.identity_changed(root.root_id()),
+            "a foreign volume never retires the grant ({observed:?})"
         );
     }
+    // #935: the grant's own volume (same GUID) with another root file ID is a replaced root:
+    // identity_changed, never offline.
+    let mut expected = identity(999);
+    expected.volume_guid = Some(1);
+    let mut root = root();
+    root.expected = Some(expected);
+    let sink = Arc::new(MemorySink::default());
+    let error = run_scan(
+        &Foreign(Some(1)),
+        &root,
+        1,
+        sink.clone(),
+        Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES)),
+        Arc::new(AtomicBool::new(false)),
+        ScanOptions::default(),
+    )
+    .unwrap_err();
+    assert_eq!(error.to_body().message.as_str(), "root_identity_changed");
+    assert!(sink.identity_changed(root.root_id()));
+    assert!(sink.totals(root.root_id()).is_none());
 }
 
 struct BlockingSource {
@@ -2522,7 +2595,7 @@ fn explain(path: &std::path::Path) -> String {
 /// (AGENTS.md invariant 2). There, pin the refusal and skip; elsewhere run the native test.
 #[cfg(windows)]
 pub(super) fn skip_elevated() -> bool {
-    if !loomward_windows::enumerate::running_elevated() {
+    if !loomward_windows::enumerate::skip_elevated_test() {
         return false;
     }
     let temp = canonical_tempdir();
@@ -2541,7 +2614,7 @@ pub(super) fn skip_elevated() -> bool {
 /// row's path, identity and dataset class; a mismatched class is refused at start and refresh.
 #[cfg(windows)]
 #[test]
-fn grant_rejects_same_serial_and_file_id_with_a_different_volume_guid() {
+fn grant_with_same_serial_and_file_id_on_a_different_volume_guid_reads_offline() {
     if skip_elevated() {
         return;
     }
@@ -2574,9 +2647,9 @@ fn grant_rejects_same_serial_and_file_id_with_a_different_volume_guid() {
     assert!(
         matches!(
             engine.granted_root(grant.root_id().clone(), 1, &CatalogRootIdentity { row: 1, instance: "fixture-instance".into() }),
-            Err(EngineError::PermissionDenied { message }) if message == "root_identity_changed"
+            Err(EngineError::DeviceOffline { .. })
         ),
-        "same serial and file ID must not authorise a different volume GUID"
+        "same serial and file ID must not authorise a different volume GUID; #912: another volume at the path is the grant's volume away (offline), never identity_changed"
     );
 }
 
@@ -2711,10 +2784,8 @@ fn migrated_legacy_grant_adopts_guid_only_after_matching_identity() {
         rusqlite::params![other_guid, grant_id],
     )
     .unwrap();
-    assert_eq!(
-        admit().unwrap_err().to_body().message.as_str(),
-        "root_identity_changed"
-    );
+    // #912: once pinned, another GUID at the path is that volume away, not a replacement.
+    assert!(matches!(admit(), Err(EngineError::DeviceOffline { .. })));
     assert_eq!(
         stored_guid(),
         Some(other_guid),
@@ -3091,7 +3162,7 @@ fn stale_child_prepare_relists_the_parent() {
 #[test]
 fn followup_grant_gate_cancels_and_fences_every_wire_alias() {
     use loomward_windows::enumerate::{DirSource, NativeSource};
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         assert_eq!(
             NativeSource::default()
                 .open_root(std::path::Path::new("synthetic"))
@@ -3559,4 +3630,100 @@ fn unidentifiable_state_exclusion_refuses_the_scan() {
         },
     );
     assert!(report.unwrap().complete);
+}
+
+/// #903: a volume whose sector geometry cannot be read is named by the owner's own path with the
+/// reason and the side, never by a GUID; other reasons keep their plain wire names.
+#[test]
+fn tree_geometry_refusal_names_the_volume_and_the_reason() {
+    use loomward_windows::duplicate_reader::Reason;
+    let message = tree_refusal(
+        Reason::GeometryUnavailable,
+        "destination",
+        std::path::Path::new(r"\\?\H:\synthetic-folder"),
+    );
+    assert!(
+        message.starts_with("sector_geometry_unavailable: "),
+        "{message}"
+    );
+    assert!(
+        message.contains(r"destination root (H:\synthetic-folder)"),
+        "{message}"
+    );
+    assert!(
+        message.contains("does not report its sector size"),
+        "{message}"
+    );
+    assert!(!message.contains("{"), "{message}");
+    let other = tree_refusal(Reason::Io, "source", std::path::Path::new(r"H:\x"));
+    assert_eq!(other, "io");
+}
+
+/// #924: a subtree whose open never returns costs that directory, not the root: the scan ends
+/// promptly with honest partial coverage, and a cancel (flag plus native interrupt, as the scan
+/// job wires it) stops it within seconds.
+#[cfg(windows)]
+#[test]
+fn a_stuck_subtree_is_partial_and_cancellable_instead_of_hanging_the_root() {
+    use loomward_windows::enumerate::{DirSource, IoCancellation, NativeSource};
+    use std::time::{Duration, Instant};
+    if skip_elevated() {
+        return;
+    }
+    let temp = canonical_tempdir();
+    std::fs::create_dir_all(temp.path().join("fine").join("inner")).unwrap();
+    std::fs::create_dir(temp.path().join("stuck")).unwrap();
+    std::fs::write(
+        temp.path().join("fine").join("inner").join("file"),
+        b"synthetic",
+    )
+    .unwrap();
+    let grant = GrantedRoot::new(
+        RootId::new("rt_stuck_subtree").unwrap(),
+        temp.path().into(),
+        DatasetClass::Synthetic,
+        NativeSource::default().open_root(temp.path()).unwrap().1,
+    );
+    let scan = |source: &NativeSource, run, cancel| {
+        run_scan(
+            source,
+            &grant,
+            run,
+            Arc::new(MemorySink::default()),
+            Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES)),
+            cancel,
+            ScanOptions::default(),
+        )
+    };
+    let source = NativeSource::new(IoCancellation::with_budget(Duration::from_millis(200)))
+        .with_blocked_child("stuck");
+    let started = Instant::now();
+    let report = scan(&source, 1, Arc::new(AtomicBool::new(false))).unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(!report.complete);
+    assert_eq!(report.failed, 1);
+    assert_eq!(report.totals.files, 1);
+
+    let io = IoCancellation::default();
+    let source = NativeSource::new(io.clone()).with_blocked_child("stuck");
+    let cancel = Arc::new(AtomicBool::new(false));
+    let flag = cancel.clone();
+    let canceller = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(200));
+        flag.store(true, Ordering::Release);
+        io.cancel();
+    });
+    let started = Instant::now();
+    let result = scan(&source, 2, cancel);
+    canceller.join().unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(result.map_or(true, |r| !r.complete));
 }

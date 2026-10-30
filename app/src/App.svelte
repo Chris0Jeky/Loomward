@@ -1,9 +1,19 @@
 <script lang="ts">
-  import { tick } from 'svelte';
+  import { tick, untrack } from 'svelte';
   import { session } from './lib/stores/session.svelte';
   import { route } from './lib/stores/route.svelte';
   import { theme, THEMES, type Theme } from './lib/stores/theme.svelte';
   import { views } from './views';
+  import { volumes } from './lib/stores/volumes.svelte';
+  import type { VolumeList } from './lib/contracts.gen';
+
+  $effect(() => {
+    void session.epoch;
+    if (session.state === 'connected') untrack(() => void volumes.refresh());
+  });
+  $effect(() => session.listen((ev) => {
+    if (ev.event === 'volumes.changed') volumes.changed((ev.data as unknown as VolumeList).volumes);
+  }));
 
   const themeLabel: Record<Theme, string> = { 'woven-atlas': 'Woven atlas', observatory: 'Observatory' };
   const modeLabel = { mock: 'Mock transport (invented data)', http: 'Browser · loopback HTTP', tauri: 'Desktop · Tauri', none: 'No transport' };

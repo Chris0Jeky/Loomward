@@ -16,6 +16,19 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 mod root_view;
+pub(crate) use root_view::{
+    offline_space_note, volume_online, RootPresenceCache, RootPresences, OTHER_VOLUME_MESSAGE,
+};
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RootPresence {
+    Online,
+    Offline,
+    /// Offline because a different volume now holds the root's drive letter (#888 item 5).
+    OtherVolume,
+    RootMissing,
+    IdentityChanged,
+}
 
 type Handled = Result<Out, ErrorBody>;
 
@@ -337,6 +350,10 @@ fn stale(message: &str, reason: &str) -> ErrorBody {
     with_reason(fail(ErrorCode::StaleGeneration, message), reason)
 }
 
+/// Unique totals a post-mutation `roots.changed` listing may spend across all roots; no reader
+/// deadline is set, so the listing itself always completes (#843).
+const POST_MUTATION_TOTALS: std::time::Duration = std::time::Duration::from_secs(2);
+
 impl Inner {
     pub(crate) fn backup_scrub_pending(&self) -> Result<Option<String>, ErrorBody> {
         self.db()
@@ -428,6 +445,9 @@ impl Inner {
             AskStatus => self.ask_status(),
             AskConfigure => self.ask_configure(req.decode_payload()?),
             AskGrant => self.ask_grant(req.decode_payload()?),
+            ClientsGrant => self.clients_grant(req.decode_payload()?),
+            ClientsList => self.clients_list(),
+            ClientsRevoke => self.clients_revoke(req.decode_payload()?),
             AskRevoke => self.ask_revoke(),
             AskTurn => self.ask_turn(req.decode_payload()?),
             AskResult => self.ask_result(req.decode_payload()?),
@@ -484,7 +504,7 @@ impl Inner {
             LearningRefit => self.learning_refit(),
             ThreadsMeaning => self.meaning(req.decode_payload()?, work),
             TreeSlice => self.tree_slice(req, work),
-            TreeChildren => self.tree_children(req, work),
+            TreeChildren => self.tree_children(req, work, None),
             TreePath => self.node_read(req, work, |reader, key| {
                 reader.path(key).map(|p| encode(&p))
             }),
@@ -494,6 +514,9 @@ impl Inner {
             SearchQuery => self.search(req, work, None),
             StatsBreakdown => self.breakdown(req, work),
             ClutterDeveloper => self.clutter_developer(req, work),
+            ProjectsFind => self.projects_find(req, work),
+            ReclaimPlan => self.reclaim_plan(req, work),
+            ReclaimObserve => self.reclaim_observe(req),
             TiersModel | PlacementCandidates | PlacementSimulate | ProposalsList | ProposalsGet => {
                 self.placement_command(req, command, work)
             }
@@ -533,7 +556,12 @@ impl Inner {
                 "the root's grant is not active",
             ));
         }
-        self.session_root_gate(&root)?;
+        self.session_root_gate(&root)
+            .map_err(|e| self.root_admission_error(&root, e))?;
+        #[cfg(test)]
+        if let Some(hook) = self.hooks.after_root_gate.lock().unwrap().take() {
+            hook();
+        }
         let dir = root
             .dir
             .ok_or_else(|| fail(ErrorCode::InternalError, "root has no directory row"))?;
@@ -634,10 +662,8 @@ impl Inner {
         Ok(out(encode(&JobResult { job })?, None))
     }
 
-    /// The root a session may scan or read (scan.start, duplicates.inspect): a synthetic session
-    /// its registered lab roots, a personal session its own owner grants that still pass today's
-    /// fences. Runs before any engine call or filesystem access.
-    pub(crate) fn session_root_gate(&self, root: &db::RootRow) -> Result<(), ErrorBody> {
+    /// Provenance only: cached candidate selection can run without opening the native root.
+    pub(crate) fn session_root_origin_gate(&self, root: &db::RootRow) -> Result<(), ErrorBody> {
         let (origin, message, reason) = match self.dataset {
             DatasetClass::Synthetic => (
                 "lab_generated",
@@ -668,6 +694,39 @@ impl Inner {
                 reason,
             ));
         }
+        Ok(())
+    }
+
+    /// Native admission checks pinned liveness and current fences before any scan or content job.
+    pub(crate) fn session_root_gate(&self, root: &db::RootRow) -> Result<(), ErrorBody> {
+        self.session_root_origin_gate(root)?;
+        match self.root_presence(root) {
+            Some(RootPresence::RootMissing) => {
+                return Err(with_reason(
+                    fail(
+                        ErrorCode::NotFound,
+                        "the root folder is missing on its attached volume",
+                    ),
+                    "root_folder_missing",
+                ))
+            }
+            Some(RootPresence::Offline) => {
+                return Err(with_reason(
+                    fail(ErrorCode::DeviceOffline, "the granted root is offline"),
+                    "volume_offline",
+                ))
+            }
+            Some(RootPresence::OtherVolume) => {
+                return Err(with_reason(
+                    fail(ErrorCode::DeviceOffline, OTHER_VOLUME_MESSAGE),
+                    "volume_offline",
+                ))
+            }
+            Some(RootPresence::IdentityChanged) => {
+                return Err(fail(ErrorCode::PermissionDenied, "root_identity_changed"))
+            }
+            _ => {}
+        }
         if self.dataset == DatasetClass::Personal {
             self.stored_grant_fence(root).map_err(|r| {
                 with_reason(
@@ -680,6 +739,16 @@ impl Inner {
             })?;
         }
         Ok(())
+    }
+
+    /// Admission retires a proven replacement through the same path as the engine's check.
+    pub(crate) fn root_admission_error(&self, root: &db::RootRow, error: ErrorBody) -> ErrorBody {
+        if error.message.as_str() == "root_identity_changed" {
+            if let Ok(id) = RootId::new(self.root_id(root.root)) {
+                self.identity_changed(root.grant, &id, true);
+            }
+        }
+        error
     }
 
     /// #312: a stored grant may predate today's fences (#253, #284, #286), so the path rules run
@@ -830,29 +899,86 @@ impl Inner {
         self.root_list_sharing(work, 75)
     }
 
+    /// The listing a mutation publishes as `roots.changed`, while it holds the mutation lock: its
+    /// unique totals get [`POST_MUTATION_TOTALS`] in all, past which they read unknown (#843).
+    pub(crate) fn root_list_observed(&self, presence: &RootPresences) -> Result<Value, ErrorBody> {
+        self.root_list_scoped(None, 75, None, Some(presence))
+    }
+
     /// `share_percent` of the time left to the deadline goes to the roots' unique totals.
     pub(crate) fn root_list_sharing(
         &self,
         work: Option<&crate::ReadWork>,
         share_percent: u32,
     ) -> Result<Value, ErrorBody> {
-        let rows = db::roots(&self.db(), None).map_err(sql_error)?;
+        self.root_list_scoped(work, share_percent, None, None)
+    }
+
+    pub(crate) fn client_roots(
+        &self,
+        work: Option<&crate::ReadWork>,
+        grant: &crate::clients::ClientGrant,
+    ) -> Handled {
+        let revs = self.revisions()?;
+        Ok(out(
+            self.root_list_scoped(work, 75, Some(&grant.roots), None)?,
+            Some(revs),
+        ))
+    }
+
+    fn root_list_scoped(
+        &self,
+        work: Option<&crate::ReadWork>,
+        share_percent: u32,
+        scope: Option<&[i64]>,
+        presence: Option<&RootPresences>,
+    ) -> Result<Value, ErrorBody> {
+        // Select roots before reading any aggregates; an ungranted root consumes no read budget.
+        let rows = match scope {
+            None => db::roots(&self.db(), None).map_err(sql_error)?,
+            Some(roots) => {
+                let conn = self.db();
+                let mut rows = Vec::new();
+                for root in roots {
+                    rows.extend(
+                        db::roots(&conn, Some(*root))
+                            .map_err(sql_error)?
+                            .into_iter()
+                            .filter(|r| r.grant_state == "active"),
+                    );
+                }
+                rows
+            }
+        };
         let mut reader = self.read_reader(work)?;
         // Unique totals share the request's budget (#722): keep the rest of it (a quarter) for the
         // response, split the remainder over the roots still to measure, and let time a small
         // root leaves flow to the next. A root past its share reports unknown totals, not a
         // failed list.
-        let budget_end = work.map(|w| {
-            let now = std::time::Instant::now();
-            now + w.deadline.saturating_duration_since(now) * share_percent / 100
-        });
+        let budget_end = work
+            .map(|w| {
+                let now = std::time::Instant::now();
+                now + w.deadline.saturating_duration_since(now) * share_percent / 100
+            })
+            .or_else(|| {
+                #[cfg(test)]
+                let window = self
+                    .hooks
+                    .post_mutation_totals
+                    .lock()
+                    .unwrap()
+                    .unwrap_or(POST_MUTATION_TOTALS);
+                #[cfg(not(test))]
+                let window = POST_MUTATION_TOTALS;
+                presence.map(|_| std::time::Instant::now() + window)
+            });
         let measured = |r: &db::RootRow| {
             r.dir.is_some() && r.grant_state == "active" && r.state != "never_scanned"
         };
         let mut left = rows.iter().filter(|r| measured(r)).count();
         let roots = rows
             .iter()
-            .map(|r| {
+            .map(|r| -> Result<Value, ErrorBody> {
                 if let Some(end) = budget_end {
                     let now = std::time::Instant::now();
                     reader.unique_totals_cut =
@@ -861,7 +987,26 @@ impl Inner {
                         left -= 1;
                     }
                 }
-                self.root_json(r, Some(&mut reader))
+                let observed = match presence {
+                    Some(p) => p.get(&r.grant).copied(),
+                    None if r.grant_state == "active" => self.root_presence(r),
+                    None => None,
+                };
+                let mut root = self.root_json(r, Some(&mut reader), observed)?;
+                if scope.is_some() {
+                    let path = r.dir
+                        .map(|dir| reader.path(NodeKey::Dir(dir)))
+                        .transpose()
+                        .map_err(catalog_error)?;
+                    let text = path.as_ref().map(|p| {
+                        p.ancestors.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join("\\")
+                    }).unwrap_or_default();
+                    root["display_path"] = json!({
+                        "text": text.chars().take(1024).collect::<String>(),
+                        "truncated": path.is_some_and(|p| p.truncated) || text.chars().count() > 1024,
+                    });
+                }
+                Ok(root)
             })
             .collect::<Result<Vec<_>, _>>()?;
         Ok(json!({"roots": roots}))
@@ -885,6 +1030,7 @@ impl Inner {
     /// the grant), then cancel the engine's jobs for the root, then fence the engine's writer, and
     /// only then publish `roots.changed`. Monotone: a revoked grant returns its original time.
     pub(crate) fn revoke(&self, grant: i64) -> Result<(Timestamp, (i64, i64)), ErrorBody> {
+        let presence = self.cached_root_presence();
         let _m = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
         let (state, revoked_at): (String, Option<i64>) = self
             .db()
@@ -896,6 +1042,7 @@ impl Inner {
             .optional()
             .map_err(sql_error)?
             .ok_or_else(|| fail(ErrorCode::NotFound, "unknown grant"))?;
+        self.forget_root_presence(grant);
         if state != "active" && state != "identity_changed" {
             // A prior revoke may have committed its grant but failed feature cleanup.
             self.engine
@@ -920,6 +1067,7 @@ impl Inner {
             .map_err(catalog_error)?;
         // Copies using the grant are fenced next (docs/47 section 5): no effect step starts after.
         let copy_fence = self.copies_fence(grant);
+        let relief = self.drop_reclaim_relief(grant);
         let root = db::root_for_grant(&self.db(), grant).map_err(sql_error)?;
         if let Some(root) = root {
             self.freshness.remove(root);
@@ -938,11 +1086,12 @@ impl Inner {
             .learning_redact_revoked()
             .map_err(ErrorBody::from);
         let revs = self.revisions()?;
-        if let Ok(list) = self.root_list(None) {
+        if let Ok(list) = self.root_list_observed(&presence) {
             self.publish(EventName::RootsChanged, list, Some(revs.0), Some(revs.1));
         }
         copy_fence?;
         redaction?;
+        relief?;
         Ok((ts_ns(at), revs))
     }
 
@@ -953,6 +1102,7 @@ impl Inner {
     fn roots_forget(&self, req: &RequestEnvelope) -> Handled {
         let r: RootForgetRequest = req.decode_payload()?;
         let root = self.root_row(&r.root_id)?;
+        let presence = self.cached_root_presence();
         // Declare before the mutation guard: on every return or unwind it wakes adapters only
         // after the service lock releases. It is initialized only once forget can reach a write.
         let reply_delivery;
@@ -1033,9 +1183,11 @@ impl Inner {
         self.db()
             .execute("DELETE FROM st.root_freshness WHERE grant_id=?1", [grant])
             .map_err(sql_error)?;
+        self.drop_reclaim_relief(grant)?;
+        self.forget_root_presence(grant);
         let backups = self.scrub_backups(Some(&path));
         let revs = self.revisions()?;
-        if let Ok(list) = self.root_list(None) {
+        if let Ok(list) = self.root_list_observed(&presence) {
             self.publish(EventName::RootsChanged, list, Some(revs.0), Some(revs.1));
         }
         // The live forget is committed and announced; only a kept migration copy may still hold the name.
@@ -1062,15 +1214,38 @@ impl Inner {
     /// advertising the dead grant.
     /// `cancel` is false when the failing scan job itself reports it (nothing else runs).
     pub(crate) fn identity_changed(&self, grant: i64, id: &RootId, cancel: bool) {
-        let _m = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
+        let presence = self.cached_root_presence();
+        let mutation = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = self.identity_changed_locked(grant, id, cancel, &mutation, &presence);
+    }
+
+    /// False when the grant could not be retired; nothing else is done then.
+    pub(crate) fn identity_changed_locked(
+        &self,
+        grant: i64,
+        id: &RootId,
+        cancel: bool,
+        _mutation: &std::sync::MutexGuard<'_, ()>,
+        presence: &RootPresences,
+    ) -> bool {
+        #[cfg(test)]
+        if self
+            .hooks
+            .fail_identity_retire
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+        {
+            return false;
+        }
         let changed = self
             .catalog
             .writer()
             .call(WriteCommand::GrantIdentityChanged { grant_id: grant });
         if changed.is_err() {
-            return;
+            return false;
         }
+        self.forget_root_presence(grant);
         let _ = self.copies_fence(grant);
+        let _ = self.drop_reclaim_relief(grant);
         let row = db::root_for_grant(&self.db(), grant);
         if let Ok(Some(row)) = row {
             self.freshness.remove(row);
@@ -1089,9 +1264,10 @@ impl Inner {
                 "learning redaction failed after root identity changed; advice reads will retry"
             );
         }
-        if let (Ok(revs), Ok(list)) = (self.revisions(), self.root_list(None)) {
+        if let (Ok(revs), Ok(list)) = (self.revisions(), self.root_list_observed(presence)) {
             self.publish(EventName::RootsChanged, list, Some(revs.0), Some(revs.1));
         }
+        true
     }
 
     fn grants_list(&self) -> Handled {
@@ -1228,6 +1404,7 @@ impl Inner {
 
     /// The post-picker grant response and its root-list event use the same snapshot.
     pub(crate) fn granted_root_reply(&self, root: i64) -> Handled {
+        let presence = self.cached_root_presence();
         // The picker is outside the mutation FIFO, and grant() released this lock before returning.
         // Keep the snapshot and its publication in one turn so a forget cannot fall between them.
         let _mutation = self
@@ -1239,8 +1416,8 @@ impl Inner {
         let row = rows
             .first()
             .ok_or_else(|| fail(ErrorCode::InternalError, "grant vanished"))?;
-        let root_json = self.root_json(row, None)?;
-        if let Ok(list) = self.root_list(None) {
+        let root_json = self.root_json(row, None, presence.get(&row.grant).copied())?;
+        if let Ok(list) = self.root_list_observed(&presence) {
             #[cfg(test)]
             self.hooks
                 .gate(Command::RootsRequestGrant, "grant_snapshot");
@@ -1252,38 +1429,49 @@ impl Inner {
         ))
     }
 
-    fn volumes(&self, only: Option<i64>) -> Result<Vec<Value>, ErrorBody> {
-        let rows = db::volumes(&self.db(), only).map_err(sql_error)?;
+    fn volumes(
+        &self,
+        only: Option<i64>,
+        presence: &RootPresences,
+    ) -> Result<Vec<Value>, ErrorBody> {
+        let conn = self.db();
+        let rows = db::volumes(&conn, only).map_err(sql_error)?;
+        let roots = db::roots(&conn, None).map_err(sql_error)?;
         // db::volumes reads one row past the bound so volumes.list can refuse; a change notice keeps 64.
-        Ok(rows
+        rows
             .iter()
             .take(64)
-            .map(|v| {
+            .map(|v| -> Result<Value, ErrorBody> {
                 let declared = v.declared.flatten();
-                json!({
+                let online = volume_online(v, &roots, presence);
+                let stored: String = conn.query_row("SELECT capabilities_json FROM main.volume WHERE id=?1", [v.id], |r| r.get(0)).map_err(sql_error)?;
+                let stored: Value = serde_json::from_str(&stored).unwrap_or(Value::Null);
+                let space = &stored["space"];
+                let bytes = |key: &str| space.get(key).and_then(Value::as_str).and_then(|s| s.parse::<u64>().ok()).map(|n| n.to_string());
+                Ok(json!({
                     "volume_id": self.volume_id(v.id),
                     "display_name": v.display_name.chars().take(64).collect::<String>(),
                     "mount_points": [],
                     "filesystem": v.filesystem.as_ref().map(|f| f.chars().take(32).collect::<String>()),
                     "label": null,
-                    "online": v.online,
-                    "read_only": null,
+                    "online": online,
+                    "read_only": space.get("read_only").and_then(Value::as_bool),
                     "removable": null,
-                    "capacity_bytes": null,
-                    "free_bytes": null,
+                    "capacity_bytes": bytes("capacity_bytes"),
+                    "free_bytes": bytes("free_bytes"),
                     "device": {"bus_type": "unknown", "seek_penalty": null, "multiple_disks": null, "basis": "unavailable"},
                     "tier": {
                         "tier": declared,
                         "basis": if declared.is_some() { "declared" } else { "unknown" },
                         "declared_tier": declared,
                         "hint_tier": null,
-                        "note": if declared.is_some() { "Declared by the owner." } else { "No declaration and no device hint yet." },
+                        "note": if !online { offline_space_note(v, &roots, presence) } else if declared.is_some() { "Declared by the owner." } else { "No declaration and no device hint yet." },
                     },
                     "features": {"file_ids_128": null, "hard_links": null, "sparse_files": null, "compression": null, "reparse_points": null, "usn_journal": null},
                     "observed_at": ts_ns(v.observed_at_ns),
-                })
+                }))
             })
-            .collect())
+            .collect()
     }
 
     /// Append-only owner preference under the optional `expected_state_rev` precondition
@@ -1291,6 +1479,7 @@ impl Inner {
     /// `state_rev_changed`.
     fn declare_tier(&self, r: DeclareTierRequest, expected: Option<Generation>) -> Handled {
         let volume = self.volume_row(&r.volume_id)?;
+        let presence = self.observe_root_presence()?;
         let _m = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
         #[cfg(test)]
         self.hooks.gate(Command::VolumesDeclareTier, "locked");
@@ -1316,10 +1505,10 @@ impl Inner {
         })?;
         let catalog_rev = self.revisions()?.0;
         let volume_json = self
-            .volumes(Some(volume))?
+            .volumes(Some(volume), &presence)?
             .pop()
             .ok_or_else(|| fail(ErrorCode::NotFound, "unknown volume"))?;
-        let all = self.volumes(None)?;
+        let all = self.volumes(None, &presence)?;
         self.publish(
             EventName::VolumesChanged,
             json!({"volumes": all}),
@@ -1414,7 +1603,12 @@ impl Inner {
         self.sealed(encode(&slice)?, revs)
     }
 
-    fn tree_children(&self, req: &RequestEnvelope, work: Option<&crate::ReadWork>) -> Handled {
+    pub(crate) fn tree_children(
+        &self,
+        req: &RequestEnvelope,
+        work: Option<&crate::ReadWork>,
+        client: Option<&crate::clients::ClientGrant>,
+    ) -> Handled {
         let r: TreeChildrenRequest = req.decode_payload()?;
         let revs = self.revisions()?;
         let mut reader = self.read_reader(work)?;
@@ -1426,7 +1620,10 @@ impl Inner {
             ));
         };
         self.check_generation(req.expected_generation, key, &mut reader)?;
-        let bind = binding(req);
+        let bind = match client {
+            Some(g) => format!("{}:{}:{}", binding(req), g.client, g.epoch),
+            None => binding(req),
+        };
         let cursor = match &r.cursor {
             None => None,
             Some(handle) => match self
@@ -1616,7 +1813,11 @@ impl Inner {
         self.sealed(value, revs)
     }
 
-    fn breakdown(&self, req: &RequestEnvelope, work: Option<&crate::ReadWork>) -> Handled {
+    pub(crate) fn breakdown(
+        &self,
+        req: &RequestEnvelope,
+        work: Option<&crate::ReadWork>,
+    ) -> Handled {
         let r: BreakdownRequest = req.decode_payload()?;
         let revs = self.revisions()?;
         let mut reader = self.read_reader(work)?;
@@ -1642,7 +1843,10 @@ impl Inner {
     pub(crate) fn read_reader(&self, work: Option<&crate::ReadWork>) -> Result<Reader, ErrorBody> {
         #[cfg(test)]
         if let (Some(work), Some(now)) = (work, *self.hooks.read_clock.lock().unwrap()) {
-            let reader = self.catalog.reader().map_err(catalog_error)?;
+            let mut reader = self.catalog.reader().map_err(catalog_error)?;
+            if !work.repair_on_read {
+                reader = reader.without_repairs();
+            }
             let mut handle = work.interrupt.lock().unwrap();
             if now >= work.deadline {
                 return Err(fail(

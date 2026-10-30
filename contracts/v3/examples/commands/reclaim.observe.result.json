@@ -1,0 +1,16 @@
+{
+  "job": {
+    "job_id": "jb_0021",
+    "seq": 4,
+    "rev": 0,
+    "kind": "reclaim",
+    "state": "queued",
+    "root_id": null,
+    "created_at": "2026-10-27T09:00:00Z",
+    "started_at": null,
+    "finished_at": null,
+    "progress": null,
+    "coverage": null,
+    "error": null
+  }
+}

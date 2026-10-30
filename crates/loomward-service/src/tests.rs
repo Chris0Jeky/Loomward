@@ -38,12 +38,21 @@ fn hello_reports_duplicate_content_reads_separately_from_effects() {
 /// holding `Inner::mutation`; `"after"`: any command after its handler returned, locks released).
 #[derive(Default)]
 pub(crate) struct Hooks {
+    /// Replaces the post-mutation listing's unique-totals window (#843).
+    pub post_mutation_totals: Mutex<Option<Duration>>,
+    /// One-shot: the next grant retirement (`identity_changed_locked`) fails (#843).
+    pub fail_identity_retire: std::sync::atomic::AtomicBool,
+    pub check_presence_unlocked: std::sync::atomic::AtomicBool,
+    pub forbid_presence_probe: std::sync::atomic::AtomicBool,
     pub delay: Mutex<Option<(Command, Duration)>>,
     pub runs: Mutex<HashMap<Command, usize>>,
     pub order: Mutex<Vec<Command>>,
     pub fail_spawn: std::sync::atomic::AtomicBool,
     pub fail_job_list: std::sync::atomic::AtomicBool,
     pub before_generation_read: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    /// #912: one-shot, runs after a scan or inspection passed the root gate, before the engine
+    /// mints the root (a volume swap in that window).
+    pub after_root_gate: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     pub closed: Mutex<Vec<(Command, &'static str)>>,
     pub arrived: Mutex<Vec<(Command, &'static str)>>,
     pub opened: std::sync::Condvar,
@@ -82,6 +91,17 @@ pub(crate) struct Hooks {
     pub busy_freshness_checkpoint: std::sync::atomic::AtomicBool,
     #[cfg(windows)]
     pub before_freshness_finish: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    /// #939: `reclaim.observe` answers as if the process held an elevated token.
+    pub reclaim_elevated: std::sync::atomic::AtomicBool,
+    /// #954: refuse the next reclaim root inspection without consuming detector budgets.
+    pub reclaim_inspect_budget: std::sync::atomic::AtomicBool,
+    /// #939: the observation's wall-clock budget instead of ten minutes.
+    pub reclaim_budget: Mutex<Option<Duration>>,
+    pub reclaim_selection_limit: std::sync::atomic::AtomicUsize,
+    /// #970: names the observation has handed to the link-count pass.
+    pub reclaim_names_opened: std::sync::atomic::AtomicUsize,
+    /// #970: one-shot, the next candidate's catalogue read fails.
+    pub reclaim_fail_candidate: std::sync::atomic::AtomicBool,
 }
 
 /// What a personal space read answers in tests: wait on an explicit gate, or report fixed space.
@@ -337,6 +357,7 @@ fn an_injected_read_clock_expires_the_receiver_and_catalogue_open() {
     let work = crate::ReadWork {
         deadline,
         interrupt: Mutex::new(None),
+        repair_on_read: true,
     };
     assert_eq!(
         svc.inner.read_reader(Some(&work)).err().unwrap().code,
@@ -655,8 +676,43 @@ fn roots_list_degrades_slow_roots_to_unknown_totals_inside_the_deadline() {
     let tmp = temp_root();
     let svc = open(tmp.path(), DatasetClass::Synthetic);
     let sizes = [200u64, 70_000, 70_000, 70_000];
+    seed_measured_roots(&svc, &sizes);
+    // A 5% share of a one-second budget (about 50 ms for all four roots) is far below what the
+    // big roots need on any host, so they are cut deterministically while the small one is not.
+    let work = crate::ReadWork {
+        deadline: Instant::now() + Duration::from_secs(1),
+        interrupt: Mutex::new(None),
+        repair_on_read: true,
+    };
+    let started = Instant::now();
+    let roots = svc.inner.root_list_sharing(Some(&work), 5).unwrap();
+    assert!(started.elapsed() < Duration::from_secs(1));
+    let roots = roots["roots"].as_array().unwrap();
+    assert_eq!(roots.len(), sizes.len());
+    let mut cut = 0;
+    for (root, files) in roots.iter().zip(sizes) {
+        let totals = &root["totals"];
+        assert_eq!(totals["files"], files, "stored aggregates stay exact");
+        match totals["unique_objects"].as_u64() {
+            Some(n) => assert_eq!(n, files),
+            None => {
+                cut += 1;
+                assert!(totals["unique_allocated_bytes"].is_null());
+            }
+        }
+    }
+    assert!(cut >= 1, "at least one large root must exceed its share");
+    assert_eq!(
+        roots[0]["totals"]["unique_objects"], 200,
+        "the small root is exact"
+    );
+}
+
+/// One registered root per size, scanned with that many files carrying file IDs, so unique totals
+/// are measurable.
+fn seed_measured_roots(svc: &Service, sizes: &[u64]) {
     for (i, &files) in sizes.iter().enumerate() {
-        let (root, grant) = register(&svc, i as u8 + 1);
+        let (root, grant) = register(svc, i as u8 + 1);
         let dir: i64 = svc
             .inner
             .db()
@@ -734,34 +790,23 @@ fn roots_list_degrades_slow_roots_to_unknown_totals_inside_the_deadline() {
         })
         .unwrap();
     }
-    // A 5% share of a one-second budget (about 50 ms for all four roots) is far below what the
-    // big roots need on any host, so they are cut deterministically while the small one is not.
-    let work = crate::ReadWork {
-        deadline: Instant::now() + Duration::from_secs(1),
-        interrupt: Mutex::new(None),
-    };
-    let started = Instant::now();
-    let roots = svc.inner.root_list_sharing(Some(&work), 5).unwrap();
-    assert!(started.elapsed() < Duration::from_secs(1));
-    let roots = roots["roots"].as_array().unwrap();
-    assert_eq!(roots.len(), sizes.len());
-    let mut cut = 0;
-    for (root, files) in roots.iter().zip(sizes) {
-        let totals = &root["totals"];
-        assert_eq!(totals["files"], files, "stored aggregates stay exact");
-        match totals["unique_objects"].as_u64() {
-            Some(n) => assert_eq!(n, files),
-            None => {
-                cut += 1;
-                assert!(totals["unique_allocated_bytes"].is_null());
-            }
-        }
-    }
-    assert!(cut >= 1, "at least one large root must exceed its share");
-    assert_eq!(
-        roots[0]["totals"]["unique_objects"], 200,
-        "the small root is exact"
-    );
+}
+
+/// #843: the listing a mutation publishes bounds the roots' unique totals with its own window and
+/// no request deadline: past it they read unknown, and the listing still completes.
+#[test]
+fn post_mutation_listing_bounds_unique_totals_and_completes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    seed_measured_roots(&svc, &[200]);
+    let presence = svc.inner.cached_root_presence();
+    let listed = svc.inner.root_list_observed(&presence).unwrap();
+    assert_eq!(listed["roots"][0]["totals"]["unique_objects"], 200);
+    *svc.inner.hooks.post_mutation_totals.lock().unwrap() = Some(Duration::ZERO);
+    let listed = svc.inner.root_list_observed(&presence).unwrap();
+    let totals = &listed["roots"][0]["totals"];
+    assert_eq!(totals["files"], 200, "stored aggregates stay exact");
+    assert!(totals["unique_objects"].is_null(), "{totals}");
 }
 
 fn placement_fixture(svc: &Service) -> (i64, i64, String) {
@@ -1035,7 +1080,7 @@ fn placement_lab_space_timestamp_is_fresh() {
 /// can change it; the caller keeps `tmp` alive for the grant's lifetime.
 #[cfg(windows)]
 fn personal_grant_session(tmp: &tempfile::TempDir) -> Option<(Service, std::path::PathBuf)> {
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         eprintln!("skipped: elevated token; the native space read refuses elevation (invariant 2)");
         return None;
     }
@@ -1188,8 +1233,8 @@ fn a_stalled_personal_volume_shares_one_reader_across_distinct_grant_roots() {
     let Some((svc, _folder)) = personal_grant_session(&tmp) else {
         return;
     };
-    // The grants below name folders whose native identity differs from the stored one; automatic
-    // watch setup would rightly retire them as identity_changed (#669), so it stays off here.
+    // This fixture repoints a grant between verified folders while one injected volume read
+    // stalls. Keep automatic watches off: the catalogue itself is not being refreshed here.
     svc.inner.freshness.stop();
     // The stalled volume gets a key of its own, so its injected stall cannot hold up other tests
     // that read the real volume of this disk.
@@ -1259,9 +1304,11 @@ fn a_stalled_personal_volume_shares_one_reader_across_distinct_grant_roots() {
     for round in 0..10 {
         let root = tmp.path().join(format!("replacement-folder-{round}"));
         std::fs::create_dir_all(&root).unwrap();
+        let (_, identity) = svc.inner.root_observation(&root).unwrap();
+        let (_, file_id, _) = crate::Inner::identity_triple(&identity).unwrap();
         svc.inner.db().execute(
-            "UPDATE st.root_grant SET display_path=?1 WHERE id=(SELECT r.grant_id FROM main.root r JOIN main.volume v ON v.id=r.volume_id WHERE v.volume_key='vsn_stalled')",
-            [root.display().to_string()],
+            "UPDATE st.root_grant SET display_path=?1,root_file_id=?2 WHERE id=(SELECT r.grant_id FROM main.root r JOIN main.volume v ON v.id=r.volume_id WHERE v.volume_key='vsn_stalled')",
+            rusqlite::params![root.display().to_string(), file_id],
         ).unwrap();
         let (volumes, _) = ok("volumes.list", call(&svc, "volumes.list", json!({})));
         let rows = volumes["volumes"].as_array().unwrap();
@@ -1306,9 +1353,11 @@ fn a_stalled_personal_volume_shares_one_reader_across_distinct_grant_roots() {
     // A replacement root shares the stall, but can retry once the volume's reader finishes.
     let replacement = tmp.path().join("replacement-folder");
     std::fs::create_dir_all(&replacement).unwrap();
+    let (_, identity) = svc.inner.root_observation(&replacement).unwrap();
+    let (_, file_id, _) = crate::Inner::identity_triple(&identity).unwrap();
     svc.inner.db().execute(
-        "UPDATE st.root_grant SET display_path=?1 WHERE id=(SELECT r.grant_id FROM main.root r JOIN main.volume v ON v.id=r.volume_id WHERE v.volume_key='vsn_stalled')",
-        [replacement.display().to_string()],
+        "UPDATE st.root_grant SET display_path=?1,root_file_id=?2 WHERE id=(SELECT r.grant_id FROM main.root r JOIN main.volume v ON v.id=r.volume_id WHERE v.volume_key='vsn_stalled')",
+        rusqlite::params![replacement.display().to_string(), file_id],
     ).unwrap();
     svc.inner.hooks.space.lock().unwrap()[0].1 = SpaceFake::Fixed {
         capacity: 4096,
@@ -1774,7 +1823,7 @@ fn placement_save_refuses_same_generation_changes_and_unknown_overlap() {
 #[cfg(windows)]
 #[test]
 fn placement_registered_lab_simulation_preserves_every_file_and_mtime() {
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         let tmp = temp_root();
         let refusal = crate::lab::register(
             &tmp.path().join("state"),
@@ -2156,6 +2205,7 @@ fn hardening_expired_sql_reads_do_not_start_or_resume() {
     let work = crate::ReadWork {
         deadline: Instant::now() + Duration::from_secs(10),
         interrupt: Mutex::new(None),
+        repair_on_read: true,
     };
     let mut reader = work.reader(&svc.inner.catalog).unwrap();
     reader.set_deadline(Instant::now());
@@ -2198,6 +2248,7 @@ fn hardening_expired_sql_reads_do_not_start_or_resume() {
     let expired = crate::ReadWork {
         deadline: Instant::now(),
         interrupt: Mutex::new(None),
+        repair_on_read: true,
     };
     assert!(
         matches!(expired.reader(&svc.inner.catalog), Err(e) if e.code == ErrorCode::DeadlineExceeded)
@@ -3928,10 +3979,49 @@ fn grants_list_caps_retained_and_forgotten_rows_without_negative_limit() {
     );
 }
 
+/// #198: the hard root cap requires owner action; narrower transient budgets can be retried.
+#[test]
+fn root_limit_requires_owner_action_but_transient_budgets_are_retryable() {
+    for command in [Command::RootsRequestGrant, Command::RootsList] {
+        for (reason, retryable) in [
+            (Some("root_limit_reached"), false),
+            (Some("sort_requires_index"), true),
+            (None, true),
+        ] {
+            let body = crate::fail(ErrorCode::ResourceBudget, "budget exhausted");
+            let body = if let Some(reason) = reason {
+                crate::with_reason(body, reason)
+            } else {
+                body
+            };
+            let error = crate::retry_flag(command, body);
+            assert_eq!(error.code, ErrorCode::ResourceBudget);
+            assert_eq!(error.retryable, retryable, "{command:?}: {reason:?}");
+            assert_eq!(
+                error
+                    .detail
+                    .as_ref()
+                    .and_then(|d| d.get("reason"))
+                    .and_then(Value::as_str),
+                reason
+            );
+        }
+    }
+}
+
 /// #185 item 3: the contract lists at most 64 roots, so a 65th active grant is refused by name;
 /// re-granting an active root and granting after a revocation still work.
 #[test]
 fn grants_past_64_active_roots_are_refused_by_rule() {
+    struct Pick(std::path::PathBuf);
+    impl NativeDialogs for Pick {
+        fn pick_folder(&self) -> Option<std::path::PathBuf> {
+            Some(self.0.clone())
+        }
+        fn confirm_disclosure(&self, _: &DisclosureSummary) -> Result<bool, ErrorBody> {
+            Ok(false)
+        }
+    }
     let tmp = temp_root();
     let state = tmp.path().join("state");
     let svc = open(&state, DatasetClass::Personal);
@@ -3955,6 +4045,15 @@ fn grants_past_64_active_roots_are_refused_by_rule() {
         svc.inner.grant(&dirs[64], "cli_flag", false),
         Err(crate::Refused::RootLimit)
     );
+    let error = err(svc.call(
+        request("roots.request_grant", json!({"purpose": "metadata_scan"})),
+        &CallContext::tauri(Arc::new(Pick(dirs[64].clone()))),
+    ));
+    assert_eq!(
+        (error.code, error.retryable),
+        (ErrorCode::ResourceBudget, false)
+    );
+    assert_eq!(reason(&error), Some("root_limit_reached"));
     assert_eq!(
         svc.inner.grant(&dirs[0], "cli_flag", false),
         Ok((granted[0], false))
@@ -4011,7 +4110,7 @@ fn publish_clamps_negative_revision_to_unknown() {
 
 pub(crate) fn native_identity_available() -> bool {
     #[cfg(windows)]
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         assert!(
             matches!(loomward_windows::identity::observe(Path::new("synthetic")),
             Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied)
@@ -4108,7 +4207,7 @@ pub(crate) fn lab() -> Option<Lab> {
 
 #[cfg(windows)]
 pub(crate) fn lab_in(tmp: tempfile::TempDir) -> Option<Lab> {
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         eprintln!("skipped: elevated token; the native scan refuses elevation (invariant 2)");
         return None;
     }
@@ -4476,8 +4575,32 @@ fn child_named(slice: &Payload, name: &str) -> Option<String> {
 fn scan_start_publishes_a_lab_tree_matching_an_independent_walk_with_live_events() {
     let Some(lab) = lab() else { return };
     let svc = &lab.svc;
+    // Automatic refreshes can replace roots.list's last_job_id while we inspect this scan.
+    svc.inner.freshness.pause_pump();
     let mut events = svc.subscribe(None);
-    let job = start(svc, &lab.root, "full");
+    const PUBLISHED: (Command, &str) = (Command::ScanStart, "full_catalogue_published");
+    struct Release<'a>(&'a Hooks);
+    impl Drop for Release<'_> {
+        fn drop(&mut self) {
+            self.0.open(PUBLISHED.0, PUBLISHED.1);
+        }
+    }
+    svc.inner.hooks.closed.lock().unwrap().push(PUBLISHED);
+    let job = {
+        let _release = Release(&svc.inner.hooks);
+        let job = start(svc, &lab.root, "full");
+        svc.inner
+            .hooks
+            .until("catalogue committed before job completion", |h| {
+                h.arrived.lock().unwrap().contains(&PUBLISHED)
+            });
+        let (during, _) = ok("jobs.get", call(svc, "jobs.get", json!({"job_id": job})));
+        assert_eq!(
+            during["job"]["state"], "running",
+            "completion overtook publication"
+        );
+        job
+    };
     let done = settle(svc, &job);
     assert_eq!(done["state"], "completed", "initial scan state: {done:?}");
     assert_eq!(done["coverage"], "complete", "initial scan coverage");
@@ -4550,6 +4673,101 @@ fn scan_start_publishes_a_lab_tree_matching_an_independent_walk_with_live_events
         (5, 3, 165),
         "refreshed catalogue totals versus fixture"
     );
+}
+
+/// #719: progress is observable before the writer finishes, and final counters remain exact.
+#[cfg(windows)]
+#[test]
+fn scan_jobs_get_reports_progress_while_a_lab_scan_is_running() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    svc.inner.freshness.pause_pump();
+    svc.inner.scan.gate.arm();
+    let id = start(svc, &lab.root, "full");
+    svc.inner.scan.gate.wait_reached();
+    let (during, _) = ok("jobs.get", call(svc, "jobs.get", json!({"job_id":id})));
+    let (roots, _) = ok("roots.list", call(svc, "roots.list", json!({})));
+    // Release before assertions so even the red test leaves no blocked worker.
+    svc.inner.scan.gate.release();
+    let done = settle(svc, &id);
+    assert_eq!(during["job"]["state"], "running");
+    assert_eq!(during["job"]["progress"]["phase"], "enumerating");
+    assert_eq!(roots["roots"][0]["scan"]["last_job_id"], id);
+    assert_eq!(done["progress"]["phase"], "done");
+    assert_eq!(done["progress"]["indexed_files"], 5);
+    assert_eq!(done["progress"]["indexed_dirs"], 3);
+    assert_eq!(done["progress"]["logical_bytes"], "165");
+}
+
+/// #908: a native scan classifies by extension, so `ext_family` is not one big `other` bucket.
+#[cfg(windows)]
+#[test]
+fn scan_classifies_extensions_into_families_for_the_ext_family_breakdown() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    for (name, size) in [
+        ("synthetic-photo.jpg", 11),
+        ("synthetic-RAW.CR3", 12),
+        ("synthetic-clip.mp4", 13),
+        ("synthetic-notes.pdf", 14),
+        ("synthetic-noext", 15),
+    ] {
+        std::fs::write(lab.path.join(name), vec![0u8; size]).unwrap();
+    }
+    let done = settle(svc, &start(svc, &lab.root, "full"));
+    assert_eq!(done["state"], "completed", "{done:?}");
+    let anchor = lab_slice(svc, &lab.root)["anchor_node_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (b, _) = ok(
+        "stats.breakdown",
+        call(
+            svc,
+            "stats.breakdown",
+            json!({"node_id": anchor, "by": "ext_family", "basis": "logical", "limit": 8}),
+        ),
+    );
+    let files = |key: &str| {
+        b["buckets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|k| k["key"] == key)
+            .map(|k| k["files"].as_u64().unwrap())
+    };
+    assert_eq!(files("image"), Some(2), "{b:?}");
+    assert_eq!(files("video"), Some(1), "{b:?}");
+    assert_eq!(files("document"), Some(1), "{b:?}");
+    assert_eq!(files("none"), Some(1), "{b:?}");
+    assert_eq!(files("other"), Some(5), "the .bin fixture files: {b:?}");
+}
+
+/// #719/#808: a directory-budget stop remains a named, finished partial scan at the service boundary.
+#[cfg(windows)]
+#[test]
+fn scan_directory_cap_reports_a_named_limit_and_partial_history() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    svc.inner.freshness.pause_pump();
+    let (started, _) = ok(
+        "scan.start",
+        call(
+            svc,
+            "scan.start",
+            json!({"root_id":lab.root,"mode":"full","budget":{"max_dirs":1,"threads":1}}),
+        ),
+    );
+    let id = started["job"]["job_id"].as_str().unwrap();
+    let done = settle(svc, id);
+    assert_eq!(done["state"], "completed");
+    assert_eq!(done["coverage"], "partial");
+    assert_eq!(done["progress"]["limit_hit"], true);
+    assert_eq!(done["progress"]["limit_reason"], "directory_limit");
+    let (roots, _) = ok("roots.list", call(svc, "roots.list", json!({})));
+    assert_eq!(roots["roots"][0]["scan"]["last_job_id"], id);
+    assert_eq!(roots["roots"][0]["scan"]["coverage"], "partial");
+    assert!(!roots["roots"][0]["scan"]["finished_at"].is_null());
 }
 
 #[cfg(windows)]
@@ -4965,6 +5183,9 @@ fn f3_completed_partial_full_scan_is_current_without_claiming_complete_coverage(
     let (roots, _) = ok("roots.list", call(svc, "roots.list", json!({})));
     assert_eq!(roots["roots"][0]["scan"]["coverage"], "partial");
     assert_eq!(roots["roots"][0]["totals"]["complete"], false);
+    assert_eq!(job["progress"]["indexed_dirs"], 1);
+    assert_eq!(roots["roots"][0]["totals"]["dirs"], 2);
+    assert_eq!(job["progress"]["failed"], 1);
 }
 
 /// #774: a full scan that ran to the end around a denied folder is a finished (partial) run, not a
@@ -5587,7 +5808,7 @@ fn f3_issue617_completed_catchup_retries_its_checkpoint() {
 #[cfg(windows)]
 #[test]
 fn issue776_default_scan_shares_workers_with_an_owner_scan_and_freshness() {
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         eprintln!("skipped: elevated token; native scans refuse elevation");
         return;
     }
@@ -5695,7 +5916,7 @@ fn issue776_default_scan_shares_workers_with_an_owner_scan_and_freshness() {
 #[cfg(windows)]
 #[test]
 fn f3_issue617_explicit_scan_preempts_another_roots_pool() {
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         return;
     }
     let tmp = temp_root();
@@ -6749,6 +6970,403 @@ fn a_junction_replacing_a_directory_stays_visible_as_excluded() {
     assert_eq!(slice_totals(&again), (5, 2, 165));
 }
 
+/// E0: detaching a granted volume retains the catalogue, but cannot start a scan or content read.
+#[cfg(windows)]
+#[test]
+fn detachable_root_offline_retains_last_seen_sizes_and_reconnects_by_identity() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    let job = start(svc, &lab.root, "full");
+    assert_eq!(settle(svc, &job)["state"], "completed");
+    let (before, _) = ok("roots.list", call(svc, "roots.list", json!({})));
+    assert_eq!(before["roots"][0]["totals"]["logical_bytes"], "165");
+    let (volumes, _) = ok("volumes.list", call(svc, "volumes.list", json!({})));
+    let classification = loomward_windows::volumes::classify(&lab.path).unwrap();
+    assert_eq!(
+        volumes["volumes"][0]["device"]["bus_type"],
+        crate::placement::wire_bus_type(&classification.bus_type),
+        "a native bus outside the protocol's names reads other (#888 item 6)"
+    );
+    assert_eq!(
+        volumes["volumes"][0]["device"]["basis"],
+        "ioctl_storage_query_property"
+    );
+    let moved = lab.path.with_file_name("detached-lab");
+    std::fs::rename(&lab.path, &moved).unwrap();
+    let (roots, _) = ok("roots.list", call(svc, "roots.list", json!({})));
+    assert_eq!(roots["roots"][0]["grant_state"], "active");
+    assert_eq!(roots["roots"][0]["scan"]["state"], "stale");
+    assert_eq!(roots["roots"][0]["totals"], before["roots"][0]["totals"]);
+    assert_eq!(slice_totals(&lab_slice(svc, &lab.root)), (5, 3, 165));
+    let volume_key = crate::db::volumes(&svc.inner.db(), None).unwrap()[0]
+        .key
+        .clone();
+    svc.inner.hooks.space.lock().unwrap().push((
+        volume_key,
+        SpaceFake::Fixed {
+            capacity: 1024,
+            free: 512,
+        },
+    ));
+    let (volumes, _) = ok("volumes.list", call(svc, "volumes.list", json!({})));
+    assert_eq!(volumes["volumes"][0]["online"], false);
+    assert!(volumes["volumes"][0]["capacity_bytes"].is_null());
+    assert!(volumes["volumes"][0]["free_bytes"].is_null());
+    svc.inner.hooks.space.lock().unwrap().clear();
+    for (command, payload) in [
+        ("scan.start", json!({"root_id": lab.root, "mode": "full"})),
+        (
+            "duplicates.inspect",
+            json!({"root_id": lab.root, "budget": {"max_candidates": 20, "max_bytes": "1024", "max_ms": 1000}}),
+        ),
+    ] {
+        let error = err(call(svc, command, payload));
+        assert_eq!(error.code, ErrorCode::NotFound, "{error:?}");
+        assert_eq!(error.detail.unwrap()["reason"], "root_folder_missing");
+    }
+    assert_eq!(slice_totals(&lab_slice(svc, &lab.root)), (5, 3, 165));
+    std::fs::rename(&moved, &lab.path).unwrap();
+    let (volumes, _) = ok("volumes.list", call(svc, "volumes.list", json!({})));
+    assert_eq!(volumes["volumes"][0]["online"], true);
+    let job = start(svc, &lab.root, "full");
+    assert_eq!(settle(svc, &job)["state"], "completed");
+    assert_eq!(slice_totals(&lab_slice(svc, &lab.root)), (5, 3, 165));
+}
+
+/// E0: another volume GUID at the root's path is never read, and the grant is not retired: it
+/// reads offline until its own volume returns (a stick on a detached disk's letter).
+#[cfg(windows)]
+#[test]
+fn detachable_root_replacement_guid_reads_offline_and_keeps_the_grant() {
+    for command in ["scan.start", "duplicates.inspect"] {
+        let Some(lab) = lab() else { return };
+        let svc = &lab.svc;
+        let job = start(svc, &lab.root, "full");
+        assert_eq!(settle(svc, &job)["state"], "completed");
+        // Simulate a different volume at the same mount point without USB hardware.
+        svc.inner
+            .db()
+            .execute_batch(
+                "UPDATE st.root_grant SET volume_guid='00000000000000000000000000000001';
+             UPDATE st.lab_root SET volume_guid='00000000000000000000000000000001';",
+            )
+            .unwrap();
+        let row = crate::db::roots(&svc.inner.db(), None)
+            .unwrap()
+            .pop()
+            .unwrap();
+        let refused = svc.inner.session_root_gate(&row).unwrap_err();
+        assert_eq!(refused.code, ErrorCode::DeviceOffline);
+        // #888 item 5: the refusal says plainly that a different disk holds the letter.
+        assert_eq!(
+            refused.message.as_str(),
+            crate::handlers::OTHER_VOLUME_MESSAGE
+        );
+        assert_eq!(refused.detail.unwrap()["reason"], "volume_offline");
+        let payload = if command == "scan.start" {
+            json!({"root_id": lab.root, "mode": "full"})
+        } else {
+            json!({"root_id": lab.root, "budget": {"max_candidates": 20, "max_bytes": "1024", "max_ms": 1000}})
+        };
+        let e = err(call(svc, command, payload));
+        assert_eq!(e.code, ErrorCode::DeviceOffline);
+        let state: String = svc
+            .inner
+            .db()
+            .query_row("SELECT state FROM st.root_grant", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(state, "active", "a foreign volume never retires the grant");
+        let count: i64 = svc
+            .inner
+            .db()
+            .query_row("SELECT count(*) FROM main.file", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            count, 5,
+            "retained observations are never replaced with the new volume"
+        );
+        for command in ["volumes.list", "tiers.model"] {
+            let (result, _) = ok(command, call(svc, command, json!({})));
+            assert_eq!(result["volumes"][0]["online"], false, "{command}");
+        }
+        // #888 item 5: the volume list says plainly that another disk holds the letter.
+        let (volumes, _) = ok("volumes.list", call(svc, "volumes.list", json!({})));
+        assert!(
+            volumes["volumes"][0]["tier"]["note"]
+                .as_str()
+                .unwrap()
+                .contains("a different disk is on this disk's drive letter"),
+            "{volumes:?}"
+        );
+        // A missing folder on a foreign volume must not be misreported as a missing folder on
+        // the grant's own attached volume.
+        std::fs::rename(
+            &lab.path,
+            lab.path.with_file_name("foreign-volume-missing-root"),
+        )
+        .unwrap();
+        let refused = svc.inner.session_root_gate(&row).unwrap_err();
+        assert_eq!(refused.code, ErrorCode::DeviceOffline);
+        assert_eq!(refused.detail.unwrap()["reason"], "volume_offline");
+    }
+}
+
+/// #912: a different volume takes the root's path after the service gate passed and before the
+/// engine mints the root. The engine reads it offline too, so no path retires the grant.
+#[cfg(windows)]
+#[test]
+fn detachable_root_swapped_after_the_gate_reads_offline_and_keeps_the_grant() {
+    for command in ["scan.start", "duplicates.inspect"] {
+        let Some(lab) = lab() else { return };
+        let svc = &lab.svc;
+        let job = start(svc, &lab.root, "full");
+        assert_eq!(settle(svc, &job)["state"], "completed");
+        let state = loomward_catalog::sqlite_dir(&svc.inner.state_dir).join("state.db");
+        // The grant now pins another volume: the path's volume is foreign to it.
+        *svc.inner.hooks.after_root_gate.lock().unwrap() = Some(Box::new(move || {
+            rusqlite::Connection::open(state)
+                .unwrap()
+                .execute(
+                    "UPDATE root_grant SET volume_guid='00000000000000000000000000000001'",
+                    [],
+                )
+                .unwrap();
+        }));
+        let payload = if command == "scan.start" {
+            json!({"root_id": lab.root, "mode": "full"})
+        } else {
+            json!({"root_id": lab.root, "budget": {"max_candidates": 20, "max_bytes": "1024", "max_ms": 1000}})
+        };
+        let e = err(call(svc, command, payload));
+        assert!(svc.inner.hooks.after_root_gate.lock().unwrap().is_none());
+        assert_eq!(e.code, ErrorCode::DeviceOffline, "{command}: {e:?}");
+        let state: String = svc
+            .inner
+            .db()
+            .query_row("SELECT state FROM st.root_grant", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            state, "active",
+            "{command}: a foreign volume never retires the grant"
+        );
+    }
+}
+
+#[test]
+fn detach_grant_reply_probes_presence_without_the_mutation_lock() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let (root, _) = fixture(&svc, 1);
+    svc.inner.db().execute_batch("UPDATE st.root_grant SET origin='lab_generated',volume_guid='00000000000000000000000000000001'").unwrap();
+    svc.inner
+        .hooks
+        .check_presence_unlocked
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    svc.inner
+        .hooks
+        .forbid_presence_probe
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    svc.inner.granted_root_reply(root).unwrap();
+}
+
+#[test]
+fn detach_presence_hints_expire_and_volume_notices_invalidate_them() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let (_, grant, volume) = placement_fixture(&svc);
+    use crate::handlers::RootPresence;
+    svc.inner
+        .remember_root_presence(grant, RootPresence::Online);
+    assert!(matches!(
+        svc.inner.cached_root_presence().get(&grant),
+        Some(RootPresence::Online)
+    ));
+    svc.inner
+        .root_presence_cache
+        .lock()
+        .unwrap()
+        .get_mut(&grant)
+        .unwrap()
+        .0 = Some(Instant::now() - Duration::from_secs(4));
+    // #913: an expired hint is not an observation, never a guessed offline.
+    assert!(!svc.inner.cached_root_presence().contains_key(&grant));
+    svc.inner
+        .remember_root_presence(grant, RootPresence::Online);
+    ok(
+        "volumes.declare_tier",
+        call(
+            &svc,
+            "volumes.declare_tier",
+            json!({"volume_id":volume,"tier":1}),
+        ),
+    );
+    assert!(!svc.inner.cached_root_presence().contains_key(&grant));
+    assert!(svc.inner.root_presence_cache.lock().unwrap()[&grant]
+        .0
+        .is_none());
+}
+
+#[test]
+fn detach_alert_configuration_probes_presence_without_the_mutation_lock() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    fixture(&svc, 1);
+    svc.inner.db().execute_batch("UPDATE st.root_grant SET origin='lab_generated',volume_guid='00000000000000000000000000000001'").unwrap();
+    svc.inner
+        .hooks
+        .check_presence_unlocked
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    svc.inner
+        .alerts_configure(loomward_engine::alerts::default_settings())
+        .unwrap();
+}
+
+#[test]
+fn detach_identity_and_revoke_notices_probe_other_roots_without_the_mutation_lock() {
+    for retire_identity in [true, false] {
+        let tmp = temp_root();
+        let svc = open(tmp.path(), DatasetClass::Synthetic);
+        let (root, grant) = fixture(&svc, 1);
+        svc.inner
+            .catalog
+            .writer()
+            .call(WriteCommand::RegisterRoot(RootObservation {
+                volume_guid: Some("00000000000000000000000000000001".into()),
+                volume_key: "other-fixture".into(),
+                display_name: "Other synthetic root".into(),
+                display_path: "Other synthetic root".into(),
+                root_file_id: Some(vec![2; 16]),
+                filesystem: Some("NTFS".into()),
+                origin: "fixture".into(),
+                granted_via: "fixture".into(),
+                observed_at_ns: 0,
+            }))
+            .unwrap();
+        svc.inner
+            .db()
+            .execute(
+                "UPDATE st.root_grant SET origin='lab_generated' WHERE volume_key='other-fixture'",
+                [],
+            )
+            .unwrap();
+        svc.inner
+            .hooks
+            .check_presence_unlocked
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        svc.inner
+            .hooks
+            .forbid_presence_probe
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        if retire_identity {
+            svc.inner
+                .identity_changed(grant, &RootId::new(svc.inner.root_id(root)).unwrap(), true);
+        } else {
+            svc.inner.revoke(grant).unwrap();
+        }
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn detach_missing_folder_has_its_own_reason_and_preserves_the_grant() {
+    let Some(lab) = lab() else { return };
+    std::fs::rename(&lab.path, lab.path.with_file_name("missing-folder")).unwrap();
+    let row = crate::db::roots(&lab.svc.inner.db(), None)
+        .unwrap()
+        .pop()
+        .unwrap();
+    let error = lab.svc.inner.session_root_gate(&row).unwrap_err();
+    assert_eq!(error.code, ErrorCode::NotFound);
+    assert_eq!(error.detail.unwrap()["reason"], "root_folder_missing");
+    assert_eq!(
+        crate::db::roots(&lab.svc.inner.db(), None).unwrap()[0].grant_state,
+        "active"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn detach_placement_and_volume_notices_share_live_presence() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    let target = crate::db::volumes(&svc.inner.db(), None).unwrap()[0].id;
+    let target_id = svc.inner.volume_id(target);
+    let (_, _, source) = placement_fixture(svc);
+    svc.inner.db().execute("UPDATE main.volume SET capabilities_json=?1", [json!({"space":{"capacity_bytes":"1048576","free_bytes":"524288","read_only":false}}).to_string()]).unwrap();
+    ok(
+        "volumes.declare_tier",
+        call(
+            svc,
+            "volumes.declare_tier",
+            json!({"volume_id":target_id,"tier":1}),
+        ),
+    );
+    let (online, _) = ok(
+        "placement.simulate",
+        call(svc, "placement.simulate", placement_request(&source, false)),
+    );
+    assert!(online["projected_free_bytes"].get(&target_id).is_some());
+    std::fs::rename(&lab.path, lab.path.with_file_name("offline-target")).unwrap();
+    let mut events = svc.subscribe(None);
+    let (declared, _) = ok(
+        "volumes.declare_tier",
+        call(
+            svc,
+            "volumes.declare_tier",
+            json!({"volume_id":target_id,"tier":1}),
+        ),
+    );
+    let event = loop {
+        match events.recv_timeout(Duration::from_secs(2)) {
+            RecvOutcome::Event(e) if e.event == EventName::VolumesChanged => break e,
+            RecvOutcome::Event(_) => continue,
+            other => panic!("{other:?}"),
+        }
+    };
+    let (listed, _) = ok("volumes.list", call(svc, "volumes.list", json!({})));
+    let listed = listed["volumes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["volume_id"] == target_id)
+        .unwrap();
+    assert_eq!(listed["online"], false);
+    assert_eq!(listed["free_bytes"], "524288");
+    assert_eq!(declared["volume"]["online"], false);
+    assert!(listed["tier"]["note"]
+        .as_str()
+        .unwrap()
+        .contains("Last-seen"));
+    assert_eq!(declared["volume"]["free_bytes"], listed["free_bytes"]);
+    let noticed = event.data["volumes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["volume_id"] == target_id)
+        .unwrap();
+    assert_eq!(noticed, &declared["volume"]);
+    for (command, payload) in [
+        ("placement.simulate", placement_request(&source, false)),
+        (
+            "placement.candidates",
+            json!({"source_volume_id":source,"basis":"largest_dirs","max_groups":50,"min_bytes":"0"}),
+        ),
+    ] {
+        let (result, _) = ok(command, call(svc, command, payload));
+        assert!(
+            result["excluded_volumes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v["volume_id"] == target_id && v["reason"] == "offline"),
+            "{command}: {result:?}"
+        );
+        if command == "placement.simulate" {
+            assert!(result["projected_free_bytes"].get(&target_id).is_none());
+        }
+    }
+}
+
 /// #206: a granted folder replaced at its path fails the identity check at scan start; the
 /// grant is recorded `identity_changed` in `state.db` and `roots.changed` says so, so the UI
 /// stops advertising a dead grant. Nothing is scanned and the grant is never active again.
@@ -6859,12 +7477,47 @@ fn regranting_a_renamed_root_mints_a_grant_for_its_new_path() {
     );
 }
 
+/// #843: when the old grant of a renamed root cannot be retired, the re-grant answers failure
+/// before minting the new grant, so no folder ever has two active grants; a retry succeeds.
+#[cfg(windows)]
+#[test]
+fn regrant_of_a_renamed_root_fails_until_the_old_grant_retires() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    let moved = lab.path.with_file_name("lab-renamed");
+    std::fs::rename(&lab.path, &moved).unwrap();
+    let moved = moved.canonicalize().unwrap();
+    let states = || -> Vec<String> {
+        svc.inner
+            .db()
+            .prepare("SELECT state FROM st.root_grant ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    svc.inner
+        .hooks
+        .fail_identity_retire
+        .store(true, std::sync::atomic::Ordering::Release);
+    assert!(svc.inner.grant(&moved, "cli_flag", false).is_err());
+    assert_eq!(
+        states(),
+        ["active"],
+        "nothing is minted while the old grant stands"
+    );
+    let (_, fresh) = svc.inner.grant(&moved, "cli_flag", false).unwrap();
+    assert!(fresh);
+    assert_eq!(states(), ["identity_changed", "active"]);
+}
+
 /// Retro review (w12): an identity-unverified grant whose folder was renamed ends
 /// `identity_changed` too, once its old path no longer answers; the weak ID alone retires nothing.
 #[cfg(windows)]
 #[test]
 fn regranting_a_renamed_unverified_root_retires_the_grant_naming_the_old_path() {
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         return;
     }
     let tmp = temp_root();
@@ -6898,14 +7551,15 @@ fn regranting_a_renamed_unverified_root_retires_the_grant_naming_the_old_path() 
     );
 }
 
-/// Renames an unverified grant's folder (optionally recreating another folder at the old path),
-/// re-grants it at the new path with the probe error injected, and returns the two grants' states.
+/// Renames an unverified grant's folder, lets `old_path` put something at the old path (given the
+/// old and new paths), re-grants it at the new path with the probe error injected, and returns
+/// the two grants' states.
 #[cfg(windows)]
 fn regrant_renamed_unverified(
     probe_error: Option<loomward_windows::enumerate::SourceError>,
-    replace_old: bool,
+    old_path: impl FnOnce(&std::path::Path, &std::path::Path),
 ) -> Option<(String, String)> {
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         return None;
     }
     let tmp = temp_root();
@@ -6917,9 +7571,7 @@ fn regrant_renamed_unverified(
     svc.inner.grant(&folder, "cli_flag", true).unwrap();
     let moved = tmp.path().join("fat-folder-renamed");
     std::fs::rename(&folder, &moved).unwrap();
-    if replace_old {
-        std::fs::create_dir(&folder).unwrap();
-    }
+    old_path(&folder, &moved);
     let moved = moved.canonicalize().unwrap();
     *svc.inner.hooks.probe_error.lock().unwrap() = probe_error;
     svc.inner.grant(&moved, "cli_flag", true).unwrap();
@@ -6935,7 +7587,223 @@ fn regrant_renamed_unverified(
     Some((states[0].clone(), states[1].clone()))
 }
 
-/// An old path whose probe fails for any reason but "not found" proves nothing about the folder:
+/// A file at the old path cannot be the previously granted folder.
+#[cfg(windows)]
+#[test]
+fn a_definitely_non_directory_old_path_retires_the_unverified_grant() {
+    use loomward_windows::enumerate::SourceError;
+    for code in [267, 0xC000_0103_u32 as i32] {
+        if let Some(states) = regrant_renamed_unverified(Some(SourceError::Io(code)), |_, _| {}) {
+            assert_eq!(
+                states,
+                ("identity_changed".into(), "active".into()),
+                "{code:#x}"
+            );
+        }
+    }
+}
+
+/// A real file at the old path retires the grant through native attribute validation, not an
+/// injected error; fresh consent for the renamed folder remains active.
+#[cfg(windows)]
+#[test]
+fn a_real_file_at_the_old_path_retires_the_unverified_grant() {
+    if loomward_windows::enumerate::skip_elevated_test() {
+        return;
+    }
+    let tmp = temp_root();
+    let folder = tmp.path().join("fat-folder");
+    std::fs::create_dir(&folder).unwrap();
+    let folder = folder.canonicalize().unwrap();
+    let svc = open(&tmp.path().join("state"), DatasetClass::Personal);
+    *svc.inner.hooks.filesystem.lock().unwrap() = Some("exFAT");
+    let (old, _) = svc.inner.grant(&folder, "cli_flag", true).unwrap();
+    let moved = tmp.path().join("fat-folder-renamed");
+    std::fs::rename(&folder, &moved).unwrap();
+    std::fs::write(&folder, b"synthetic replacement file").unwrap();
+    let moved = moved.canonicalize().unwrap();
+    let (new, fresh) = svc.inner.grant(&moved, "cli_flag", true).unwrap();
+    assert!(fresh && new != old);
+    let states: Vec<(String, String)> = svc
+        .inner
+        .db()
+        .prepare("SELECT identity_mode,state FROM st.root_grant ORDER BY id")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        states,
+        [
+            ("unverified".into(), "identity_changed".into()),
+            ("unverified".into(), "active".into())
+        ]
+    );
+}
+
+/// Holds an old-path observation while the caller exercises concurrent owner state changes.
+#[cfg(windows)]
+fn with_stalled_old_path_probe(test: impl FnOnce(&Service, i64, &Path)) -> Option<String> {
+    if loomward_windows::enumerate::skip_elevated_test() {
+        return None;
+    }
+    let tmp = temp_root();
+    let folder = tmp.path().join("fat-folder");
+    std::fs::create_dir(&folder).unwrap();
+    let folder = folder.canonicalize().unwrap();
+    let state = tmp.path().join("state");
+    let svc = open(&state, DatasetClass::Personal);
+    *svc.inner.hooks.filesystem.lock().unwrap() = Some("exFAT");
+    let (old, _) = svc.inner.grant(&folder, "cli_flag", true).unwrap();
+    let grant: i64 = svc
+        .inner
+        .db()
+        .query_row("SELECT grant_id FROM main.root WHERE id=?1", [old], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let moved = tmp.path().join("fat-folder-renamed");
+    std::fs::rename(&folder, &moved).unwrap();
+    let moved = moved.canonicalize().unwrap();
+    *svc.inner.hooks.probe_error.lock().unwrap() =
+        Some(loomward_windows::enumerate::SourceError::Io(3));
+    svc.inner
+        .hooks
+        .closed
+        .lock()
+        .unwrap()
+        .push((Command::RootsRequestGrant, "old_path_probe"));
+    let peer = svc.inner.clone();
+    let regrant = std::thread::spawn(move || peer.grant(&moved, "cli_flag", true));
+    svc.inner.hooks.until("old path probe", |h| {
+        h.arrived
+            .lock()
+            .unwrap()
+            .contains(&(Command::RootsRequestGrant, "old_path_probe"))
+    });
+    // Always release the worker, including when the regression assertion fails.
+    let result =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| test(&svc, grant, &state)));
+    svc.inner
+        .hooks
+        .open(Command::RootsRequestGrant, "old_path_probe");
+    let regranted = regrant.join().unwrap().unwrap();
+    if let Err(panic) = result {
+        std::panic::resume_unwind(panic);
+    }
+    assert!(regranted.1 && regranted.0 != old);
+    let new_state: String = svc
+        .inner
+        .db()
+        .query_row(
+            "SELECT g.state FROM st.root_grant g JOIN main.root r ON r.grant_id=g.id WHERE r.id=?1",
+            [regranted.0],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(new_state, "active");
+    let old_state = svc
+        .inner
+        .db()
+        .query_row(
+            "SELECT state FROM st.root_grant WHERE id=?1",
+            [grant],
+            |r| r.get(0),
+        )
+        .unwrap();
+    Some(old_state)
+}
+
+#[cfg(windows)]
+#[test]
+fn a_stalled_old_path_probe_does_not_block_an_unrelated_mutation() {
+    let state = with_stalled_old_path_probe(|svc, _, _| {
+        // Revocation of an unrelated grant needs both service locks.
+        let obs = RootObservation {
+            volume_key: "synthetic-other-volume".into(),
+            volume_guid: None,
+            display_name: "synthetic-other-root".into(),
+            display_path: "synthetic-other-root".into(),
+            root_file_id: Some(vec![42; 16]),
+            filesystem: Some("exFAT".into()),
+            origin: "owner_granted".into(),
+            granted_via: "cli_flag".into(),
+            observed_at_ns: crate::now_ns(),
+        };
+        let WriteReply::Root { grant_id, .. } = svc
+            .inner
+            .catalog
+            .writer()
+            .call(WriteCommand::RegisterRoot(obs))
+            .unwrap()
+        else {
+            panic!("root reply")
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        let peer = svc.inner.clone();
+        let mutation = std::thread::spawn(move || tx.send(peer.revoke(grant_id)).unwrap());
+        let completed = rx.recv_timeout(Duration::from_secs(3));
+        svc.inner
+            .hooks
+            .open(Command::RootsRequestGrant, "old_path_probe");
+        mutation.join().unwrap();
+        assert!(
+            completed.is_ok(),
+            "unrelated mutation waited for filesystem probing"
+        );
+        completed.unwrap().unwrap();
+        let state: String = svc
+            .inner
+            .db()
+            .query_row(
+                "SELECT state FROM st.root_grant WHERE id=?1",
+                [grant_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(state, "revoked");
+    });
+    if let Some(state) = state {
+        assert_eq!(state, "identity_changed");
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn an_old_path_probe_does_not_retire_a_changed_candidate() {
+    // An independent SQLite connection injects changes while the service has dropped its locks.
+    for change in [
+        "display_path=display_path || '-changed'",
+        "root_file_id=X'01010101010101010101010101010101'",
+        "volume_key='synthetic-changed-volume'",
+        "volume_guid='synthetic-changed-guid'",
+        "identity_mode='verified'",
+        "state='revoked'",
+    ] {
+        let state = with_stalled_old_path_probe(|_, grant, state| {
+            let conn = rusqlite::Connection::open(state.join("state.db")).unwrap();
+            conn.execute(
+                &format!("UPDATE root_grant SET {change} WHERE id=?1"),
+                [grant],
+            )
+            .unwrap();
+        });
+        if let Some(state) = state {
+            assert_eq!(
+                state,
+                if change == "state='revoked'" {
+                    "revoked"
+                } else {
+                    "active"
+                },
+                "{change}"
+            );
+        }
+    }
+}
+
+/// An old path whose probe fails inconclusively proves nothing about the folder:
 /// access denied, a not-ready volume or a cancelled open must keep the healthy grant active.
 #[cfg(windows)]
 #[test]
@@ -6947,8 +7815,47 @@ fn an_inconclusive_old_path_probe_never_retires_an_unverified_grant() {
         SourceError::Io(995),
         SourceError::Refused,
     ] {
-        if let Some(states) = regrant_renamed_unverified(Some(error), false) {
+        if let Some(states) = regrant_renamed_unverified(Some(error), |_, _| {}) {
             assert_eq!(states, ("active".into(), "active".into()), "{error:?}");
+        }
+    }
+}
+
+/// #838: the native open refuses any non-directory and any reparse point without saying which, so a
+/// `Refused` probe retires the grant only for a plain file. A directory, a junction or a directory
+/// symlink at the old path keeps the grant active: wrongly retiring a valid grant is the dangerous
+/// direction.
+#[cfg(windows)]
+#[test]
+fn a_refused_probe_over_a_folder_or_link_never_retires_the_unverified_grant() {
+    use loomward_windows::enumerate::SourceError;
+    type Make = fn(&std::path::Path, &std::path::Path) -> bool;
+    let cases: [(&str, Make); 3] = [
+        ("directory", |old, _| std::fs::create_dir(old).is_ok()),
+        ("junction", |old, target| {
+            std::process::Command::new("cmd")
+                .arg("/C")
+                .arg("mklink")
+                .arg("/J")
+                .arg(old)
+                .arg(target)
+                .output()
+                .is_ok_and(|o| o.status.success())
+        }),
+        // Needs Developer Mode or the symlink privilege; skipped where the host refuses it.
+        ("symlink", |old, target| {
+            std::os::windows::fs::symlink_dir(target, old).is_ok()
+        }),
+    ];
+    for (name, make) in cases {
+        let mut made = false;
+        let states = regrant_renamed_unverified(Some(SourceError::Refused), |old, new| {
+            made = make(old, new);
+        });
+        if let Some(states) = states.filter(|_| made) {
+            assert_eq!(states, ("active".into(), "active".into()), "{name}");
+        } else {
+            eprintln!("skipped {name}: the host could not create it");
         }
     }
 }
@@ -6957,7 +7864,9 @@ fn an_inconclusive_old_path_probe_never_retires_an_unverified_grant() {
 #[cfg(windows)]
 #[test]
 fn an_old_path_answering_another_identity_retires_the_unverified_grant() {
-    if let Some(states) = regrant_renamed_unverified(None, true) {
+    if let Some(states) =
+        regrant_renamed_unverified(None, |old, _| std::fs::create_dir(old).unwrap())
+    {
         assert_eq!(states, ("identity_changed".into(), "active".into()));
     }
 }
@@ -6966,7 +7875,7 @@ fn an_old_path_answering_another_identity_retires_the_unverified_grant() {
 #[cfg(windows)]
 #[test]
 fn an_old_path_still_answering_the_same_identity_keeps_the_unverified_grant() {
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         return;
     }
     let tmp = temp_root();
@@ -7403,7 +8312,7 @@ fn personal_session_scans_a_granted_folder_metadata_only() {
         allow_identity_unverified: false,
         grant_roots: vec![path.clone()],
     });
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         // Hosted CI: an elevated token cannot open native identity, so the grant is refused.
         let e = opened.err().expect("an elevated grant is refused");
         assert!(e.contains("identity_unavailable"), "{e}");
@@ -7424,6 +8333,162 @@ fn personal_session_scans_a_granted_folder_metadata_only() {
         before,
         "a metadata scan never writes the files it lists"
     );
+}
+
+const QUEUED: usize = 40;
+
+/// #934: holds the writer on a run's first chunk, queues `queued` more steps behind it, then
+/// ends the run unsettled (`finish_run(false)`), cancelled first when `cancel`. Returns the
+/// commands the writer executed from then on and the catalogue after that end; the root's next
+/// run must publish as usual.
+fn held_unsettled_end(queued: usize, cancel: bool) -> (u64, Vec<String>) {
+    use loomward_engine::scan::source::{IdBasis, ListOutcome, OpenedIdentity};
+    let identity = OpenedIdentity {
+        id: None,
+        basis: IdBasis::None,
+        volume_guid: None,
+        volume_serial: None,
+        attributes: 0x10,
+        reparse_tag: None,
+    };
+    let fingerprint = |svc: &Service| -> Vec<String> {
+        let conn = svc.inner.db();
+        [
+            "SELECT json_array(id,parent_id,name,listing_state,listing_outcome,born_run,seen_run,listing_rev,subtree_rev,dirty_rev,dirty_run,agg_valid_rev,own_files,own_logical,sub_files,sub_dirs,sub_logical,sub_complete) FROM main.dir ORDER BY id",
+            "SELECT json_array(id,dir_id,name,logical,seen_run) FROM main.file ORDER BY id",
+            "SELECT json_array(id,state,counters_json,error_json) FROM main.scan_run ORDER BY id",
+            "SELECT json_array(id,generation,active_run,state) FROM main.root ORDER BY id",
+            "SELECT json_array((SELECT count(*) FROM main.stage_entry),(SELECT count(*) FROM main.bulk_dir),(SELECT count(*) FROM main.bulk_file))",
+        ]
+        .iter()
+        .flat_map(|sql| {
+            let mut s = conn.prepare(sql).unwrap();
+            let rows = s.query_map([], |r| r.get::<_, String>(0)).unwrap();
+            rows.map(Result::unwrap).collect::<Vec<_>>()
+        })
+        .collect()
+    };
+    {
+        let tmp = temp_root();
+        let svc = open(tmp.path(), DatasetClass::Synthetic);
+        let (root, grant) = register(&svc, 7);
+        let dir = crate::db::active_root_dir(&svc.inner.db(), root)
+            .unwrap()
+            .unwrap();
+        let id = RootId::new(svc.inner.root_id(root)).unwrap();
+        let sink = &svc.inner.scan;
+        sink.bind(&id, grant, dir);
+        sink.begin_run(&id, 41, &RunScope::FullRoot).unwrap();
+        let ticket = sink.prepare_listing(&id, 41, None, &[], identity).unwrap();
+        let chunk = |n: usize| ScanMessage::DirListing {
+            run: 41,
+            ticket,
+            entries: vec![entry(&format!("{n}.bin"), 1, false)],
+        };
+        let writer = svc.inner.catalog.writer();
+        writer.publication_window().arm();
+        sink.consume(&id, chunk(0)).unwrap();
+        writer.publication_window().wait_paused();
+        let before = writer.timings().commands;
+        for n in 1..=queued {
+            sink.consume(&id, chunk(n)).unwrap();
+        }
+        if queued > 0 {
+            sink.consume(
+                &id,
+                ScanMessage::ListingDone {
+                    run: 41,
+                    ticket,
+                    outcome: ListOutcome::Complete,
+                },
+            )
+            .unwrap();
+        }
+        if cancel {
+            // What the engine does for a cancelled run before finishing it.
+            sink.cancel_queued(&id, 41);
+        }
+        std::thread::scope(|s| {
+            let finish = s.spawn(|| sink.finish_run(&id, 41, &RunScope::FullRoot, false));
+            // The writer resumes only once the sink is waiting on the queued receipts.
+            let deadline = Instant::now() + Duration::from_secs(60);
+            while sink.unsettled(&id) > 0 {
+                assert!(Instant::now() < deadline, "the cancel never settled");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            writer.publication_window().release();
+            finish.join().unwrap().unwrap();
+        });
+        let executed = writer.timings().commands - before;
+        // Captured before the next run queues anything (Codex on #961).
+        let cancelled = fingerprint(&svc);
+        // The next run of the root publishes as usual.
+        sink.begin_run(&id, 42, &RunScope::FullRoot).unwrap();
+        let next = sink.prepare_listing(&id, 42, None, &[], identity).unwrap();
+        sink.consume(
+            &id,
+            ScanMessage::DirListing {
+                run: 42,
+                ticket: next,
+                entries: vec![entry("next.bin", 3, false)],
+            },
+        )
+        .unwrap();
+        sink.consume(
+            &id,
+            ScanMessage::ListingDone {
+                run: 42,
+                ticket: next,
+                outcome: ListOutcome::Complete,
+            },
+        )
+        .unwrap();
+        sink.finish_run(&id, 42, &RunScope::FullRoot, true).unwrap();
+        let names: Vec<String> = svc
+            .inner
+            .db()
+            .prepare("SELECT name FROM main.file")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(names, vec!["next.bin".to_string()]);
+        (executed, cancelled)
+    }
+}
+
+/// #934: a cancelled run ends without executing the listing steps still queued behind a busy
+/// writer, so its end does not scale with the queue. The catalogue then equals that of a run
+/// cancelled right after the step the writer already held: nothing queued publishes, no
+/// aggregate claims completeness, and the next run of the root is unaffected.
+#[test]
+fn a_cancelled_run_drops_its_queued_listing_steps() {
+    let (baseline_executed, baseline) = held_unsettled_end(0, true);
+    let (executed, catalogue) = held_unsettled_end(QUEUED, true);
+    assert_eq!(
+        executed, baseline_executed,
+        "no queued step of a cancelled run reaches the database"
+    );
+    assert_eq!(catalogue, baseline);
+}
+
+/// #934 review: an unsettled run that was NOT cancelled (duplicate identities, unreconciled
+/// relists, a targeted run with a denied child) still commits every step it sent before its end.
+#[test]
+fn an_unsettled_uncancelled_run_commits_its_queued_listing_steps() {
+    let (baseline_executed, _) = held_unsettled_end(0, false);
+    let (executed, catalogue) = held_unsettled_end(QUEUED, false);
+    assert_eq!(
+        executed,
+        baseline_executed + QUEUED as u64 + 1,
+        "every queued chunk and the publication execute"
+    );
+    let published = catalogue
+        .iter()
+        .filter(|row| row.contains(".bin\""))
+        .count();
+    assert_eq!(published, QUEUED + 1, "{catalogue:?}");
 }
 
 fn entry(name: &str, bytes: u64, dir: bool) -> loomward_engine::scan::Entry {
@@ -7935,10 +9000,12 @@ fn followup_all_catalogue_reads_observe_deadlines() {
     let expired = crate::ReadWork {
         deadline: Instant::now(),
         interrupt: Mutex::new(None),
+        repair_on_read: true,
     };
     let active = crate::ReadWork {
         deadline: Instant::now() + Duration::from_secs(10),
         interrupt: Mutex::new(None),
+        repair_on_read: true,
     };
     for (command, payload) in [
         ("health.get", json!({})),
@@ -8065,7 +9132,7 @@ fn a_stale_stored_grant_still_blocks_a_picked_parent() {
     );
     assert_eq!(result["outcome"], "refused");
     #[cfg(windows)]
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         // Native identity refuses elevation (invariant 2, #217) before any overlap check runs.
         assert_eq!(result["refusal"], "identity_unavailable");
         return;
@@ -8162,7 +9229,7 @@ fn grant_identity(svc: &Service, root: i64) -> (String, u32, Option<Vec<u8>>) {
 #[cfg(windows)]
 #[test]
 fn identity_unverified_cli_grants_need_explicit_confirmation() {
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         return;
     }
     let tmp = temp_root();
@@ -8215,7 +9282,7 @@ fn identity_unverified_cli_grants_need_explicit_confirmation() {
 #[cfg(windows)]
 #[test]
 fn regrant_backfills_a_legacy_null_filesystem_without_replacing_the_grant() {
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         eprintln!("skipped: elevated token; native identity reads refuse elevation (invariant 2)");
         return;
     }
@@ -8256,7 +9323,7 @@ fn regrant_backfills_a_legacy_null_filesystem_without_replacing_the_grant() {
 #[cfg(windows)]
 #[test]
 fn stored_unverified_grant_needs_no_second_cli_confirmation_after_restart() {
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         eprintln!("skipped: elevated token; native identity reads refuse elevation (invariant 2)");
         return;
     }
@@ -8330,7 +9397,7 @@ fn stored_unverified_grant_needs_no_second_cli_confirmation_after_restart() {
 #[cfg(windows)]
 #[test]
 fn revocation_between_regrant_lookup_and_write_cannot_reuse_confirmation() {
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         eprintln!("skipped: elevated token; native identity reads refuse elevation (invariant 2)");
         return;
     }
@@ -8402,7 +9469,7 @@ fn picker_confirms_identity_unverified_volumes_explicitly() {
             self.1
         }
     }
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         return;
     }
     let tmp = temp_root();
@@ -8706,7 +9773,7 @@ fn open_stores_the_canonical_spelling_of_a_non_canonical_root() {
         allow_identity_unverified: false,
         grant_roots: vec![spelled],
     });
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         // Native identity refuses elevated tokens (invariant 2), including hosted Windows CI.
         let error = opened.err().expect("an elevated grant is refused");
         assert!(error.contains("identity_unavailable"), "{error}");
@@ -9009,4 +10076,16 @@ fn an_unsettled_deferred_refusal_cannot_finish_a_limited_sample() {
         )
         .unwrap();
     assert_eq!((state.as_str(), complete), ("cancelled", None));
+}
+
+/// #924: a state store failure names its SQLite codes instead of a bare message.
+#[test]
+fn state_store_error_carries_its_sqlite_codes() {
+    let busy = rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(517), None);
+    let body = serde_json::to_value(crate::sql_error(busy)).unwrap();
+    assert_eq!(body["message"], "state store error");
+    assert_eq!(body["detail"]["sqlite_code"], "DatabaseBusy");
+    assert_eq!(body["detail"]["sqlite_extended_code"], 517);
+    let other = serde_json::to_value(crate::sql_error(rusqlite::Error::InvalidQuery)).unwrap();
+    assert!(other["detail"].is_null());
 }

@@ -688,3 +688,29 @@ roots into a new folder the owner picked in the native dialog, after the owner a
 through MCP; it never deletes, moves, renames or overwrites a source or an existing destination entry, and the only
 removal is of Loomward's own unpublished staging, matched by recorded identity. Moving, source retirement, overwrite
 and every other effect stay gated."
+
+
+## ADR-V3-26: Receipt labels name evidence and qualify a storage path (research R1)
+
+**Status:** accepted for LW-132; implements docs/51 section 4.1's R1 vocabulary, without opening a gate.
+
+**Decision.** Receipts state the highest evidence-supported label: `read_back` for the run's
+passing non-cached checks, `crash_qualified` for C6 plus G5, `power_loss_qualified` for LW-134
+on the same fully known LW-137 tuple, and `archive_verified` at the date of a later independent
+manifest scrub (LW-136). G5 remains unearned (docs/53); LW-134 is deferred and LW-136 evidence
+is unavailable. Production therefore emits only `read_back` or no label today.
+
+Publication without completed confirmation is named `published_unverified`; an intent alone
+is insufficient. Earlier journal checks do not certify the currently published tree. A changed
+or unknown path downgrades power-loss qualification using `StoragePath::proves_same_path`;
+observation equality cannot prove an unchanged enclosure. Receipts say "not power-loss tested
+on this disk" without LW-134 evidence and never use the persistence adjective prohibited by R1.
+
+**Consequences.** The service supplies one additive receipt and explanation to the app, CLI and
+agent consumers. The old `items_verified` count remains deprecated for loomward/3 compatibility.
+The journal state machine, refusal codes, copy gate, removal setting and effects are unchanged.
+`Zone.Identifier` is part of the existing synthetic full-fidelity copy fixture. No archive scrub,
+crash qualification campaign, physical power-loss campaign or copying capability is added.
+
+**Revisit.** Wire in actual qualification evidence only with LW-133/LW-134/LW-136, preserving
+storage-path identity and the distinction between copy-engine and physical-path qualification.

@@ -74,6 +74,8 @@ pub struct Request<'a> {
     pub destination: &'a Path,
     pub destination_grant: u64,
     pub grants_active: bool,
+    /// Only synthetic sessions on registered lab roots may use fixed USB destinations.
+    pub synthetic_lab: bool,
     /// Loomward's state directory or a scan fence contains the destination.
     pub protected: bool,
     pub date: &'a str,
@@ -94,6 +96,15 @@ fn within(dest: &Destination, root: (u64, [u8; 16]), guid: Option<u128>) -> io::
         }
     }
     Ok(false)
+}
+
+/// docs/48 E0: a detachable destination is lab-only until C8 opens; anything but a synthetic lab
+/// session is treated as personal.
+fn destination_unsupported(
+    volume: &crate::volumes::Classification,
+    synthetic_lab: bool,
+) -> io::Result<bool> {
+    volume.unsupported_copy_destination(!synthetic_lab)
 }
 
 fn invalid(message: &str) -> io::Error {
@@ -259,7 +270,10 @@ fn prepare_with_limit(
         ancestors,
         verified_volume: enumerate::verifies_identity(&filesystem(request.destination)?),
         cloud_synced: dest.cloud_synced()?,
-        unsupported_volume: crate::volumes::is_removable(request.destination)?,
+        unsupported_volume: destination_unsupported(
+            &crate::volumes::classify(request.destination)?,
+            request.synthetic_lab,
+        )?,
         protected: request.protected,
         case_sensitive: dest.case_sensitive()?,
         existing_names,
@@ -598,6 +612,8 @@ pub struct Outcome {
     pub staging_left: Option<String>,
     pub items_total: u32,
     pub items_verified: u32,
+    pub receipt: loomward_operations::CopyReceipt,
+    pub disposition: Option<loomward_operations::StagingDisposition>,
     /// Staging tokens intended but never identity-committed: a folder under such a name may exist,
     /// empty and unjournaled. Never adopted or removed; reported for the owner.
     pub leftover_staging: Vec<String>,
@@ -974,6 +990,25 @@ fn status_observing(store: &Mutex<Store>, op: u64, idle: bool) -> Result<Outcome
             _ => {}
         }
     }
+    let checked = r.items.iter().filter(|i| i.verified).count() as u32;
+    // A publish intent alone is not publication. Observe the journaled identity without effects.
+    // Only the observed publish counts: ChangedAfterVerification is also journaled before publish.
+    let published = state != OpState::Committed
+        && r.publish.as_ref().zip(r.staging).is_some_and(|(name, id)| {
+            // Bind the plan first so the store lock is released before any filesystem read.
+            let plan = store
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .plan(op)
+                .ok()
+                .flatten();
+            plan.and_then(|p| serde_json::from_str::<Plan>(&p).ok())
+                .is_some_and(|plan| {
+                    PathDisk::new(&plan, &r)
+                        .in_parent(name)
+                        .is_some_and(|observed| id.matches(&observed, r.staging_planned))
+                })
+        });
     Ok(Outcome {
         state,
         refusal,
@@ -982,7 +1017,14 @@ fn status_observing(store: &Mutex<Store>, op: u64, idle: bool) -> Result<Outcome
             .then(|| r.staging_tokens.last().cloned())
             .flatten(),
         items_total: r.items.len() as u32,
-        items_verified: r.items.iter().filter(|i| i.verified).count() as u32,
+        items_verified: checked,
+        receipt: loomward_operations::CopyReceipt::from_copy(
+            state,
+            r.items.len() as u32,
+            checked,
+            published,
+        ),
+        disposition: r.disposition.clone(),
         leftover_staging: match r.staging {
             Some(_) => r.staging_tokens[..r.staging_tokens.len() - 1].to_vec(),
             None => r.staging_tokens.clone(),
@@ -2118,6 +2160,10 @@ fn clean(store: &Mutex<Store>, op: u64, plan: &Plan, control: &Control) -> Resul
         attention(&log)?;
         return status(store, op);
     };
+    if !within(&dest, plan.destination_root, plan.destination_root_guid).unwrap_or(false) {
+        attention(&log)?;
+        return status(store, op);
+    }
     let Ok(staging) = Staging::attach(
         &dest,
         &token,
@@ -2164,6 +2210,21 @@ fn clean(store: &Mutex<Store>, op: u64, plan: &Plan, control: &Control) -> Resul
                 return status(store, op);
             }
         }
+    }
+    // Refuse the whole cleanup before touching even known items if membership is uncertain.
+    let folders = resolved
+        .iter()
+        .filter(|(_, _, is_dir)| *is_dir)
+        .map(|(h, key, _)| (h.name.clone(), key.clone()))
+        .collect();
+    let expected = resolved.iter().map(|(h, _, _)| h.name.clone()).collect();
+    if listing(&staging, &folders).ok().as_ref() != Some(&expected) {
+        attention(&log)?;
+        return status(store, op);
+    }
+    if r.disposition.is_none() {
+        let facts = r.staging_disposition().expect("journaled staging identity");
+        log(Record::StagingDisposition { facts })?;
     }
     let remove = |effect: &mut dyn FnMut() -> bool| removal(&journal, r.state, control, effect);
     for (h, key, is_dir) in resolved.into_iter().rev() {
@@ -2222,7 +2283,10 @@ fn removal(
 ) -> Result<Option<bool>, Fault> {
     match journal.while_in(state, || {
         control.at(Point::CheckedRemoval)?;
-        Ok(effect())
+        hit("before cleanup removal");
+        let removed = effect();
+        hit("after cleanup removal");
+        Ok(removed)
     }) {
         Ok(removed) => Ok(Some(removed)),
         Err(Stop::Superseded) => Ok(None),
@@ -2457,6 +2521,10 @@ fn confirm(
     let confirmed = (|| -> Result<Vec<VerifiedFile>, Unconfirmed> {
         let dest = Destination::open(&plan.destination, &plan.destination_key)
             .map_err(|e| unverifiable(&e))?;
+        check(
+            within(&dest, plan.destination_root, plan.destination_root_guid)
+                .map_err(|e| unverifiable(&e))?,
+        )?;
         let published = Staging::attach_published(
             &dest,
             final_name,
@@ -2578,6 +2646,10 @@ mod tests;
 #[cfg(test)]
 #[path = "exec_crash_tests.rs"]
 mod crash_tests;
+
+#[cfg(test)]
+#[path = "exec_hyperv_tests.rs"]
+mod hyperv_tests;
 
 #[cfg(test)]
 #[path = "exec_pending_fence_tests.rs"]

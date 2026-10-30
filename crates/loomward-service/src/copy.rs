@@ -73,6 +73,16 @@ pub(crate) struct Copies {
     pub(crate) gate: Mutex<Option<Gate>>,
     #[cfg(all(test, windows))]
     pub(crate) hook: Mutex<Option<RunHook>>,
+    #[cfg(all(test, windows))]
+    pub(crate) prepare_probe: Mutex<Option<PrepareProbe>>,
+}
+
+/// Synthetic GUID observations and the request captured before native preparation; test-only.
+#[cfg(all(test, windows))]
+pub(crate) struct PrepareProbe {
+    pub(crate) source_guid: u128,
+    pub(crate) destination_guid: u128,
+    pub(crate) received: Arc<Mutex<Vec<Option<u128>>>>,
 }
 
 /// The run hook's types, for the copy tests (the primitives stay referenced from this module only).
@@ -153,6 +163,72 @@ mod pending_fence_tests {
 
     const OP: u64 = 1;
     const WIRE: &str = "cp_terminal738";
+
+    #[test]
+    fn copy_disposition_status_preserves_pre_removal_facts_and_decodes_as_the_contract() {
+        let fixture = Fixture::publishing();
+        let mut store = fixture.store().lock().unwrap();
+        store.append(OP, 1, Record::PublishWithdrawn).unwrap();
+        let r = store.replay(OP).unwrap().unwrap();
+        let facts = r.staging_disposition().unwrap();
+        store
+            .append(
+                OP,
+                1,
+                Record::StagingDisposition {
+                    facts: facts.clone(),
+                },
+            )
+            .unwrap();
+        store
+            .append(
+                OP,
+                1,
+                Record::ItemRemoved {
+                    item: 0,
+                    id: r.items[0].id.unwrap(),
+                },
+            )
+            .unwrap();
+        store
+            .append(
+                OP,
+                1,
+                Record::StagingRemoved {
+                    id: r.staging.unwrap(),
+                },
+            )
+            .unwrap();
+        store
+            .append(
+                OP,
+                1,
+                Record::Transition {
+                    to: OpState::Cancelled,
+                    code: None,
+                },
+            )
+            .unwrap();
+        drop(store);
+        *fixture.store().lock().unwrap() = Store::open(&fixture.path).unwrap();
+        let value = fixture.status();
+        let status: CopyStatus = serde_json::from_value(Value::Object(value.clone())).unwrap();
+        assert_eq!(
+            status.disposition.unwrap().explanation.as_str(),
+            facts.explanation()
+        );
+        assert_eq!(value["items_verified"], 0);
+        assert_eq!(value["receipt"]["highest_label"], Value::Null);
+        assert_eq!(value["receipt"]["state"], "unverified");
+        assert!(!value["receipt"].to_string().contains("durable"));
+        assert_eq!(value["disposition"]["items_verified"], 1);
+        assert_eq!(
+            value["disposition"]["refusal_codes"],
+            json!(["source_in_use"])
+        );
+        assert_eq!(value["disposition"]["stop_cause"], "cancelled");
+        assert!(value["disposition"].get("staging").is_none());
+    }
 
     struct Fixture {
         service: Service,
@@ -788,13 +864,14 @@ fn fence_pending(code: ErrorCode, message: &str) -> ErrorBody {
 
 impl Copies {
     /// Open the journal for a synthetic session and run recovery (docs/47 section 5): C3's reader
-    /// decides, and only its decisions run, through the C2 primitives. Nothing resumes by itself.
-    pub(crate) fn open(state_dir: &Path, dataset: DatasetClass) -> Copies {
+    /// decides, and only its decisions run, through the C2 primitives. Client-only hosts keep
+    /// `recover` false: even synthetic recovery can write the journal or touch staging.
+    pub(crate) fn open(state_dir: &Path, dataset: DatasetClass, recover: bool) -> Copies {
         let removal = AtomicBool::new(LOOMWARD_COPY_STAGING_REMOVAL);
         let shutdown_wait_ms = AtomicU64::new(30_000);
         #[cfg(windows)]
         {
-            let store = (dataset == DatasetClass::Synthetic)
+            let store = (dataset == DatasetClass::Synthetic && recover)
                 .then(|| {
                     loomward_operations::Store::open(
                         &loomward_catalog::sqlite_dir(state_dir).join("state.db"),
@@ -824,11 +901,13 @@ impl Copies {
                 gate: Mutex::default(),
                 #[cfg(test)]
                 hook: Mutex::default(),
+                #[cfg(test)]
+                prepare_probe: Mutex::default(),
             }
         }
         #[cfg(not(windows))]
         {
-            let _ = (state_dir, dataset);
+            let _ = (state_dir, dataset, recover);
             Copies {
                 pending: Mutex::default(),
                 ops: Mutex::default(),
@@ -1015,7 +1094,8 @@ impl Inner {
             return Err(fail(ErrorCode::PermissionDenied, "grant_not_active"));
         }
         // Synthetic sessions: lab roots only (the same gate the synthetic scan uses).
-        self.session_root_gate(&root)?;
+        self.session_root_gate(&root)
+            .map_err(|e| self.root_admission_error(&root, e))?;
         let granted = self.engine.granted_root(
             RootId::new(self.root_id(row))
                 .map_err(|_| fail(ErrorCode::NotFound, "unknown root"))?,
@@ -1073,12 +1153,20 @@ impl Inner {
         for s in sources {
             resolved.push(self.copy_node(s, &mut reader)?);
         }
-        let dest = self.copy_node(destination, &mut reader)?;
+        #[allow(unused_mut)]
+        let mut dest = self.copy_node(destination, &mut reader)?;
         if !dest.is_dir {
             return Err(fail(
                 ErrorCode::InvalidRequest,
                 "the destination must be a folder",
             ));
+        }
+        #[cfg(test)]
+        let probe = self.copies.prepare_probe.lock().unwrap().take();
+        #[cfg(test)]
+        if let Some(probe) = &probe {
+            resolved[0].root_guid = Some(probe.source_guid);
+            dest.root_guid = Some(probe.destination_guid);
         }
         let first = &resolved[0];
         if resolved.iter().any(|r| r.root.root != first.root.root) {
@@ -1095,19 +1183,29 @@ impl Inner {
             .ok()
             .and_then(|v| v.as_str().map(|s| s[..10].to_string()))
             .unwrap_or_default();
-        let (preview, mut plan) = exec::prepare(&exec::Request {
+        let request = exec::Request {
             source_root: &first.root_path,
             selected: &selected,
             destination: &dest_path,
             destination_grant: dest.root.grant as u64,
             grants_active: true,
+            synthetic_lab: self.dataset == DatasetClass::Synthetic,
             protected: dest_path.starts_with(&state),
             date: &date,
             // The pinned destination must sit under its own grant's verified root (review of #522).
             destination_root: dest.root_id,
             destination_root_guid: dest.root_guid,
-        })
-        .map_err(|e| {
+        };
+        #[cfg(test)]
+        if let Some(probe) = probe {
+            probe
+                .received
+                .lock()
+                .unwrap()
+                .push(request.destination_root_guid);
+            return Err(fail(ErrorCode::PermissionDenied, "preparation intercepted"));
+        }
+        let (preview, mut plan) = exec::prepare(&request).map_err(|e| {
             with_reason(
                 fail(
                     ErrorCode::PermissionDenied,
@@ -1640,33 +1738,47 @@ impl Inner {
                 .and_then(|r| r.ok())
                 .map(|r| r.digest)
                 .unwrap_or_default();
-            Ok(Out {
-                result: json!({
-                    "operation_id": id,
-                    "state": code_name(outcome.state),
-                    "digest": digest_text(digest),
-                    "items_total": outcome.items_total,
-                    "items_verified": outcome.items_verified,
-                    "staging_folder": outcome.staging_left,
-                    "leftover_staging_folders": outcome.leftover_staging.iter().take(64).collect::<Vec<_>>(),
-                    "unjournaled_items": outcome.unjournaled_items.iter().take(64).collect::<Vec<_>>(),
-                    "unjournaled_item_count": outcome.unjournaled_items.len(),
-                    "refusal": outcome.refusal.map(|(code, item)| {
-                        let node = item.and_then(|i| {
-                            let plan: loomward_windows::effects::exec::Plan = store
-                                .lock()
-                                .unwrap()
-                                .plan(op)
-                                .ok()
-                                .flatten()
-                                .and_then(|p| serde_json::from_str(&p).ok())?;
-                            let item = plan.manifest.items.get(i as usize)?;
-                            let (relative, _) = plan.sources.get(i as usize)?;
-                            Some(self.refusal_node(&plan, relative, item.identity.file_id))
-                        });
-                        json!({"code": code_name(code), "node_id": node.unwrap_or(Value::Null)})
-                    }),
+            let mut result = json!({
+                "operation_id": id,
+                "state": code_name(outcome.state),
+                "digest": digest_text(digest),
+                "items_total": outcome.items_total,
+                "items_verified": outcome.items_verified,
+                "receipt": outcome.receipt,
+                "staging_folder": outcome.staging_left,
+                "leftover_staging_folders": outcome.leftover_staging.iter().take(64).collect::<Vec<_>>(),
+                "unjournaled_items": outcome.unjournaled_items.iter().take(64).collect::<Vec<_>>(),
+                "unjournaled_item_count": outcome.unjournaled_items.len(),
+                "refusal": outcome.refusal.map(|(code, item)| {
+                    let node = item.and_then(|i| {
+                        let plan: loomward_windows::effects::exec::Plan = store
+                            .lock()
+                            .unwrap()
+                            .plan(op)
+                            .ok()
+                            .flatten()
+                            .and_then(|p| serde_json::from_str(&p).ok())?;
+                        let item = plan.manifest.items.get(i as usize)?;
+                        let (relative, _) = plan.sources.get(i as usize)?;
+                        Some(self.refusal_node(&plan, relative, item.identity.file_id))
+                    });
+                    json!({"code": code_name(code), "node_id": node.unwrap_or(Value::Null)})
                 }),
+            });
+            if let Some(facts) = outcome.disposition {
+                result["disposition"] = json!({
+                    "explanation": facts.explanation(),
+                    "items_total": facts.items_total,
+                    "items_verified": facts.items_verified,
+                    "items_unverified": facts.items_unverified,
+                    "refusal_codes": facts.refusal_codes,
+                    "stop_cause": facts.stop_cause,
+                    "resumable_before_cancel": facts.resumable_before_cancel,
+                    "resume_possible": facts.resume_possible,
+                });
+            }
+            Ok(Out {
+                result,
                 catalog_rev: None,
                 state_rev: None,
             })

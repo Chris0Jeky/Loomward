@@ -1,0 +1,1125 @@
+[
+  {
+    "schema": "loomward.categoriser-record.v1",
+    "synthetic": true,
+    "record_id": "record-rust-build",
+    "packet": {
+      "schema": "loomward.evidence-packet.v1",
+      "synthetic": true,
+      "packet_id": "packet-rust-build",
+      "group_id": "compiler-project",
+      "observed_at": 1800000000,
+      "subject": {
+        "kind": "folder",
+        "name_tokens": [
+          "old",
+          "compiler",
+          "output"
+        ],
+        "depth": 2
+      },
+      "shape": {
+        "files": 2000,
+        "folders": 12,
+        "logical_bytes": 900000000,
+        "allocated_bytes": 900000000,
+        "max_depth": 6
+      },
+      "families": [
+        {
+          "family": "executable",
+          "share_files": 0.9,
+          "share_bytes": 0.98
+        },
+        {
+          "family": "code",
+          "share_files": 0.1,
+          "share_bytes": 0.02
+        }
+      ],
+      "extensions": [
+        {
+          "ext": "rlib",
+          "files": 2000,
+          "bytes": 900000000
+        }
+      ],
+      "markers": [
+        "cargo_toml",
+        "cargo_target_dir",
+        "git_dir"
+      ],
+      "time": {
+        "newest_content_write": 1700000000,
+        "oldest_content_write": 1600000000,
+        "newest_source_write": 1650000000,
+        "newest_generated_write": 1700000000,
+        "git_last_commit": 1640000000,
+        "git_dirty": false,
+        "last_access": "not_evidence"
+      },
+      "duplicates": {
+        "duplicate_bytes": null,
+        "groups": null
+      },
+      "media": null,
+      "coverage": {
+        "state": "complete",
+        "allocation_known": true,
+        "link_counts_observed": true,
+        "online": true
+      }
+    },
+    "human_labels": [
+      {
+        "axis": "meaning",
+        "label": "generated_build"
+      },
+      {
+        "axis": "lifecycle",
+        "label": "dormant"
+      },
+      {
+        "axis": "recreatability",
+        "label": "generated"
+      }
+    ],
+    "teacher_labels": [],
+    "summary_facts": [
+      "/markers",
+      "/shape/logical_bytes",
+      "/time/newest_content_write"
+    ]
+  },
+  {
+    "schema": "loomward.categoriser-record.v1",
+    "synthetic": true,
+    "record_id": "record-active-source",
+    "packet": {
+      "schema": "loomward.evidence-packet.v1",
+      "synthetic": true,
+      "packet_id": "packet-active-source",
+      "group_id": "compiler-project",
+      "observed_at": 1800000000,
+      "subject": {
+        "kind": "folder",
+        "name_tokens": [
+          "sample",
+          "source",
+          "project"
+        ],
+        "depth": 2
+      },
+      "shape": {
+        "files": 100,
+        "folders": 12,
+        "logical_bytes": 1000000,
+        "allocated_bytes": 1000000,
+        "max_depth": 6
+      },
+      "families": [
+        {
+          "family": "code",
+          "share_files": 1.0,
+          "share_bytes": 1.0
+        }
+      ],
+      "extensions": [
+        {
+          "ext": "rs",
+          "files": 100,
+          "bytes": 1000000
+        }
+      ],
+      "markers": [
+        "cargo_toml",
+        "git_dir"
+      ],
+      "time": {
+        "newest_content_write": 1799999900,
+        "oldest_content_write": 1600000000,
+        "newest_source_write": 1799999900,
+        "newest_generated_write": null,
+        "git_last_commit": 1799990000,
+        "git_dirty": true,
+        "last_access": "not_evidence"
+      },
+      "duplicates": {
+        "duplicate_bytes": null,
+        "groups": null
+      },
+      "media": null,
+      "coverage": {
+        "state": "complete",
+        "allocation_known": true,
+        "link_counts_observed": true,
+        "online": true
+      }
+    },
+    "human_labels": [
+      {
+        "axis": "meaning",
+        "label": "source_project"
+      },
+      {
+        "axis": "lifecycle",
+        "label": "active"
+      },
+      {
+        "axis": "recreatability",
+        "label": "unique"
+      }
+    ],
+    "teacher_labels": [],
+    "summary_facts": [
+      "/markers",
+      "/shape/logical_bytes",
+      "/time/newest_content_write"
+    ]
+  },
+  {
+    "schema": "loomward.categoriser-record.v1",
+    "synthetic": true,
+    "record_id": "record-dependencies",
+    "packet": {
+      "schema": "loomward.evidence-packet.v1",
+      "synthetic": true,
+      "packet_id": "packet-dependencies",
+      "group_id": "web-project",
+      "observed_at": 1800000000,
+      "subject": {
+        "kind": "folder",
+        "name_tokens": [
+          "sample",
+          "dependencies"
+        ],
+        "depth": 2
+      },
+      "shape": {
+        "files": 8000,
+        "folders": 12,
+        "logical_bytes": 300000000,
+        "allocated_bytes": 300000000,
+        "max_depth": 6
+      },
+      "families": [
+        {
+          "family": "code",
+          "share_files": 1.0,
+          "share_bytes": 1.0
+        }
+      ],
+      "extensions": [
+        {
+          "ext": "js",
+          "files": 8000,
+          "bytes": 300000000
+        }
+      ],
+      "markers": [
+        "package_json",
+        "node_modules_dir",
+        "pnpm_lock"
+      ],
+      "time": {
+        "newest_content_write": 1700000000,
+        "oldest_content_write": 1600000000,
+        "newest_source_write": null,
+        "newest_generated_write": null,
+        "git_last_commit": null,
+        "git_dirty": null,
+        "last_access": "not_evidence"
+      },
+      "duplicates": {
+        "duplicate_bytes": null,
+        "groups": null
+      },
+      "media": null,
+      "coverage": {
+        "state": "complete",
+        "allocation_known": true,
+        "link_counts_observed": true,
+        "online": true
+      }
+    },
+    "human_labels": [
+      {
+        "axis": "meaning",
+        "label": "dependency_install"
+      },
+      {
+        "axis": "lifecycle",
+        "label": "active"
+      },
+      {
+        "axis": "recreatability",
+        "label": "redownloadable"
+      }
+    ],
+    "teacher_labels": [],
+    "summary_facts": [
+      "/markers",
+      "/shape/logical_bytes",
+      "/time/newest_content_write"
+    ]
+  },
+  {
+    "schema": "loomward.categoriser-record.v1",
+    "synthetic": true,
+    "record_id": "record-package-cache",
+    "packet": {
+      "schema": "loomward.evidence-packet.v1",
+      "synthetic": true,
+      "packet_id": "packet-package-cache",
+      "group_id": "package-store",
+      "observed_at": 1800000000,
+      "subject": {
+        "kind": "folder",
+        "name_tokens": [
+          "shared",
+          "package",
+          "cache"
+        ],
+        "depth": 2
+      },
+      "shape": {
+        "files": 100,
+        "folders": 12,
+        "logical_bytes": 1000000,
+        "allocated_bytes": 1000000,
+        "max_depth": 6
+      },
+      "families": [
+        {
+          "family": "archive",
+          "share_files": 1.0,
+          "share_bytes": 1.0
+        }
+      ],
+      "extensions": [
+        {
+          "ext": "tgz",
+          "files": 100,
+          "bytes": 1000000
+        }
+      ],
+      "markers": [
+        "cachedir_tag",
+        "archive_files"
+      ],
+      "time": {
+        "newest_content_write": 1700000000,
+        "oldest_content_write": 1600000000,
+        "newest_source_write": null,
+        "newest_generated_write": null,
+        "git_last_commit": null,
+        "git_dirty": null,
+        "last_access": "not_evidence"
+      },
+      "duplicates": {
+        "duplicate_bytes": null,
+        "groups": null
+      },
+      "media": null,
+      "coverage": {
+        "state": "complete",
+        "allocation_known": true,
+        "link_counts_observed": true,
+        "online": true
+      }
+    },
+    "human_labels": [
+      {
+        "axis": "meaning",
+        "label": "package_cache"
+      },
+      {
+        "axis": "lifecycle",
+        "label": "dormant"
+      },
+      {
+        "axis": "recreatability",
+        "label": "redownloadable"
+      }
+    ],
+    "teacher_labels": [],
+    "summary_facts": [
+      "/markers",
+      "/shape/logical_bytes",
+      "/time/newest_content_write"
+    ]
+  },
+  {
+    "schema": "loomward.categoriser-record.v1",
+    "synthetic": true,
+    "record_id": "record-model-store",
+    "packet": {
+      "schema": "loomward.evidence-packet.v1",
+      "synthetic": true,
+      "packet_id": "packet-model-store",
+      "group_id": "model-library",
+      "observed_at": 1800000000,
+      "subject": {
+        "kind": "folder",
+        "name_tokens": [
+          "sample",
+          "model",
+          "store"
+        ],
+        "depth": 2
+      },
+      "shape": {
+        "files": 2,
+        "folders": 12,
+        "logical_bytes": 8000000000,
+        "allocated_bytes": 8000000000,
+        "max_depth": 6
+      },
+      "families": [
+        {
+          "family": "model",
+          "share_files": 1.0,
+          "share_bytes": 1.0
+        }
+      ],
+      "extensions": [
+        {
+          "ext": "gguf",
+          "files": 2,
+          "bytes": 8000000000
+        }
+      ],
+      "markers": [
+        "gguf_file",
+        "lmstudio_models_layout"
+      ],
+      "time": {
+        "newest_content_write": 1700000000,
+        "oldest_content_write": 1600000000,
+        "newest_source_write": null,
+        "newest_generated_write": null,
+        "git_last_commit": null,
+        "git_dirty": null,
+        "last_access": "not_evidence"
+      },
+      "duplicates": {
+        "duplicate_bytes": null,
+        "groups": null
+      },
+      "media": null,
+      "coverage": {
+        "state": "complete",
+        "allocation_known": true,
+        "link_counts_observed": true,
+        "online": true
+      }
+    },
+    "human_labels": [
+      {
+        "axis": "meaning",
+        "label": "model_weights"
+      },
+      {
+        "axis": "lifecycle",
+        "label": "dormant"
+      },
+      {
+        "axis": "recreatability",
+        "label": "redownloadable"
+      }
+    ],
+    "teacher_labels": [
+      {
+        "axis": "meaning",
+        "label": "archive"
+      }
+    ],
+    "summary_facts": [
+      "/markers",
+      "/shape/logical_bytes",
+      "/time/newest_content_write"
+    ]
+  },
+  {
+    "schema": "loomward.categoriser-record.v1",
+    "synthetic": true,
+    "record_id": "record-virtual-disk",
+    "packet": {
+      "schema": "loomward.evidence-packet.v1",
+      "synthetic": true,
+      "packet_id": "packet-virtual-disk",
+      "group_id": "virtual-lab",
+      "observed_at": 1800000000,
+      "subject": {
+        "kind": "file_set",
+        "name_tokens": [
+          "sample",
+          "virtual",
+          "disk"
+        ],
+        "depth": 2
+      },
+      "shape": {
+        "files": 1,
+        "folders": 12,
+        "logical_bytes": 20000000000,
+        "allocated_bytes": 4000000000,
+        "max_depth": 6
+      },
+      "families": [
+        {
+          "family": "system",
+          "share_files": 1.0,
+          "share_bytes": 1.0
+        }
+      ],
+      "extensions": [
+        {
+          "ext": "vhdx",
+          "files": 1,
+          "bytes": 20000000000
+        }
+      ],
+      "markers": [
+        "vhdx_file"
+      ],
+      "time": {
+        "newest_content_write": 1700000000,
+        "oldest_content_write": 1600000000,
+        "newest_source_write": null,
+        "newest_generated_write": null,
+        "git_last_commit": null,
+        "git_dirty": null,
+        "last_access": "not_evidence"
+      },
+      "duplicates": {
+        "duplicate_bytes": null,
+        "groups": null
+      },
+      "media": null,
+      "coverage": {
+        "state": "complete",
+        "allocation_known": true,
+        "link_counts_observed": true,
+        "online": true
+      }
+    },
+    "human_labels": [
+      {
+        "axis": "meaning",
+        "label": "virtual_disk"
+      },
+      {
+        "axis": "lifecycle",
+        "label": "dormant"
+      },
+      {
+        "axis": "recreatability",
+        "label": "mixed"
+      }
+    ],
+    "teacher_labels": [],
+    "summary_facts": [
+      "/markers",
+      "/shape/logical_bytes",
+      "/time/newest_content_write"
+    ]
+  },
+  {
+    "schema": "loomward.categoriser-record.v1",
+    "synthetic": true,
+    "record_id": "record-raw-shoot",
+    "packet": {
+      "schema": "loomward.evidence-packet.v1",
+      "synthetic": true,
+      "packet_id": "packet-raw-shoot",
+      "group_id": "camera-project",
+      "observed_at": 1800000000,
+      "subject": {
+        "kind": "folder",
+        "name_tokens": [
+          "old",
+          "camera",
+          "shoot"
+        ],
+        "depth": 2
+      },
+      "shape": {
+        "files": 240,
+        "folders": 12,
+        "logical_bytes": 3600000000,
+        "allocated_bytes": 3600000000,
+        "max_depth": 6
+      },
+      "families": [
+        {
+          "family": "image",
+          "share_files": 1.0,
+          "share_bytes": 1.0
+        }
+      ],
+      "extensions": [
+        {
+          "ext": "raw",
+          "files": 120,
+          "bytes": 3599880000
+        },
+        {
+          "ext": "xmp",
+          "files": 120,
+          "bytes": 120000
+        }
+      ],
+      "markers": [
+        "dcim_layout",
+        "raw_xmp_pairs"
+      ],
+      "time": {
+        "newest_content_write": 1700000000,
+        "oldest_content_write": 1600000000,
+        "newest_source_write": null,
+        "newest_generated_write": null,
+        "git_last_commit": null,
+        "git_dirty": null,
+        "last_access": "not_evidence"
+      },
+      "duplicates": {
+        "duplicate_bytes": null,
+        "groups": null
+      },
+      "media": {
+        "raw_files": 120,
+        "sidecar_files": 120,
+        "raw_with_sidecar": 120,
+        "capture_start": 1600000100,
+        "capture_end": 1600000900,
+        "camera_models": 1
+      },
+      "coverage": {
+        "state": "complete",
+        "allocation_known": true,
+        "link_counts_observed": true,
+        "online": true
+      }
+    },
+    "human_labels": [
+      {
+        "axis": "meaning",
+        "label": "photo_shoot"
+      },
+      {
+        "axis": "lifecycle",
+        "label": "historical"
+      },
+      {
+        "axis": "recreatability",
+        "label": "unique"
+      }
+    ],
+    "teacher_labels": [],
+    "summary_facts": [
+      "/markers",
+      "/shape/logical_bytes",
+      "/time/newest_content_write"
+    ]
+  },
+  {
+    "schema": "loomward.categoriser-record.v1",
+    "synthetic": true,
+    "record_id": "record-photo-catalogue",
+    "packet": {
+      "schema": "loomward.evidence-packet.v1",
+      "synthetic": true,
+      "packet_id": "packet-photo-catalogue",
+      "group_id": "camera-project",
+      "observed_at": 1800000000,
+      "subject": {
+        "kind": "folder",
+        "name_tokens": [
+          "sample",
+          "photo",
+          "catalogue"
+        ],
+        "depth": 2
+      },
+      "shape": {
+        "files": 100,
+        "folders": 12,
+        "logical_bytes": 1000000,
+        "allocated_bytes": 1000000,
+        "max_depth": 6
+      },
+      "families": [
+        {
+          "family": "data",
+          "share_files": 1.0,
+          "share_bytes": 1.0
+        }
+      ],
+      "extensions": [
+        {
+          "ext": "lrcat",
+          "files": 100,
+          "bytes": 1000000
+        }
+      ],
+      "markers": [
+        "lightroom_catalog",
+        "lightroom_catalog_lock",
+        "lightroom_previews"
+      ],
+      "time": {
+        "newest_content_write": 1700000000,
+        "oldest_content_write": 1600000000,
+        "newest_source_write": null,
+        "newest_generated_write": null,
+        "git_last_commit": null,
+        "git_dirty": null,
+        "last_access": "not_evidence"
+      },
+      "duplicates": {
+        "duplicate_bytes": null,
+        "groups": null
+      },
+      "media": null,
+      "coverage": {
+        "state": "complete",
+        "allocation_known": true,
+        "link_counts_observed": true,
+        "online": true
+      }
+    },
+    "human_labels": [
+      {
+        "axis": "meaning",
+        "label": "photo_catalogue"
+      },
+      {
+        "axis": "lifecycle",
+        "label": "active"
+      },
+      {
+        "axis": "recreatability",
+        "label": "mixed"
+      }
+    ],
+    "teacher_labels": [],
+    "summary_facts": [
+      "/markers",
+      "/shape/logical_bytes",
+      "/time/newest_content_write"
+    ]
+  },
+  {
+    "schema": "loomward.categoriser-record.v1",
+    "synthetic": true,
+    "record_id": "record-catalogue-backup",
+    "packet": {
+      "schema": "loomward.evidence-packet.v1",
+      "synthetic": true,
+      "packet_id": "packet-catalogue-backup",
+      "group_id": "camera-project",
+      "observed_at": 1800000000,
+      "subject": {
+        "kind": "folder",
+        "name_tokens": [
+          "old",
+          "catalogue",
+          "backup"
+        ],
+        "depth": 2
+      },
+      "shape": {
+        "files": 100,
+        "folders": 12,
+        "logical_bytes": 1000000,
+        "allocated_bytes": 1000000,
+        "max_depth": 6
+      },
+      "families": [
+        {
+          "family": "archive",
+          "share_files": 1.0,
+          "share_bytes": 1.0
+        }
+      ],
+      "extensions": [
+        {
+          "ext": "zip",
+          "files": 100,
+          "bytes": 1000000
+        }
+      ],
+      "markers": [
+        "lightroom_backups_dated",
+        "archive_files"
+      ],
+      "time": {
+        "newest_content_write": 1700000000,
+        "oldest_content_write": 1600000000,
+        "newest_source_write": null,
+        "newest_generated_write": null,
+        "git_last_commit": null,
+        "git_dirty": null,
+        "last_access": "not_evidence"
+      },
+      "duplicates": {
+        "duplicate_bytes": null,
+        "groups": null
+      },
+      "media": null,
+      "coverage": {
+        "state": "complete",
+        "allocation_known": true,
+        "link_counts_observed": true,
+        "online": true
+      }
+    },
+    "human_labels": [
+      {
+        "axis": "meaning",
+        "label": "catalogue_backup"
+      },
+      {
+        "axis": "lifecycle",
+        "label": "historical"
+      },
+      {
+        "axis": "recreatability",
+        "label": "unique"
+      }
+    ],
+    "teacher_labels": [],
+    "summary_facts": [
+      "/markers",
+      "/shape/logical_bytes",
+      "/time/newest_content_write"
+    ]
+  },
+  {
+    "schema": "loomward.categoriser-record.v1",
+    "synthetic": true,
+    "record_id": "record-installer-downloads",
+    "packet": {
+      "schema": "loomward.evidence-packet.v1",
+      "synthetic": true,
+      "packet_id": "packet-installer-downloads",
+      "group_id": "download-batch",
+      "observed_at": 1800000000,
+      "subject": {
+        "kind": "folder",
+        "name_tokens": [
+          "sample",
+          "tool",
+          "downloads"
+        ],
+        "depth": 2
+      },
+      "shape": {
+        "files": 100,
+        "folders": 12,
+        "logical_bytes": 1000000,
+        "allocated_bytes": 1000000,
+        "max_depth": 6
+      },
+      "families": [
+        {
+          "family": "executable",
+          "share_files": 1.0,
+          "share_bytes": 1.0
+        }
+      ],
+      "extensions": [
+        {
+          "ext": "msi",
+          "files": 100,
+          "bytes": 1000000
+        }
+      ],
+      "markers": [
+        "installer_files",
+        "archive_files"
+      ],
+      "time": {
+        "newest_content_write": 1700000000,
+        "oldest_content_write": 1600000000,
+        "newest_source_write": null,
+        "newest_generated_write": null,
+        "git_last_commit": null,
+        "git_dirty": null,
+        "last_access": "not_evidence"
+      },
+      "duplicates": {
+        "duplicate_bytes": null,
+        "groups": null
+      },
+      "media": null,
+      "coverage": {
+        "state": "complete",
+        "allocation_known": true,
+        "link_counts_observed": true,
+        "online": true
+      }
+    },
+    "human_labels": [
+      {
+        "axis": "meaning",
+        "label": "installer"
+      },
+      {
+        "axis": "lifecycle",
+        "label": "dormant"
+      },
+      {
+        "axis": "recreatability",
+        "label": "redownloadable"
+      }
+    ],
+    "teacher_labels": [],
+    "summary_facts": [
+      "/markers",
+      "/shape/logical_bytes",
+      "/time/newest_content_write"
+    ]
+  },
+  {
+    "schema": "loomward.categoriser-record.v1",
+    "synthetic": true,
+    "record_id": "record-agent-worktree",
+    "packet": {
+      "schema": "loomward.evidence-packet.v1",
+      "synthetic": true,
+      "packet_id": "packet-agent-worktree",
+      "group_id": "compiler-project",
+      "observed_at": 1800000000,
+      "subject": {
+        "kind": "folder",
+        "name_tokens": [
+          "sample",
+          "agent",
+          "worktree"
+        ],
+        "depth": 2
+      },
+      "shape": {
+        "files": 100,
+        "folders": 12,
+        "logical_bytes": 1000000,
+        "allocated_bytes": 1000000,
+        "max_depth": 6
+      },
+      "families": [
+        {
+          "family": "code",
+          "share_files": 1.0,
+          "share_bytes": 1.0
+        }
+      ],
+      "extensions": [
+        {
+          "ext": "rs",
+          "files": 100,
+          "bytes": 1000000
+        }
+      ],
+      "markers": [
+        "git_file_worktree",
+        "cargo_toml"
+      ],
+      "time": {
+        "newest_content_write": 1799999900,
+        "oldest_content_write": 1600000000,
+        "newest_source_write": 1799999900,
+        "newest_generated_write": null,
+        "git_last_commit": 1799990000,
+        "git_dirty": true,
+        "last_access": "not_evidence"
+      },
+      "duplicates": {
+        "duplicate_bytes": null,
+        "groups": null
+      },
+      "media": null,
+      "coverage": {
+        "state": "complete",
+        "allocation_known": true,
+        "link_counts_observed": true,
+        "online": true
+      }
+    },
+    "human_labels": [
+      {
+        "axis": "meaning",
+        "label": "agent_worktree"
+      },
+      {
+        "axis": "lifecycle",
+        "label": "active"
+      },
+      {
+        "axis": "recreatability",
+        "label": "unique"
+      }
+    ],
+    "teacher_labels": [],
+    "summary_facts": [
+      "/markers",
+      "/shape/logical_bytes",
+      "/time/newest_content_write"
+    ]
+  },
+  {
+    "schema": "loomward.categoriser-record.v1",
+    "synthetic": true,
+    "record_id": "record-partial",
+    "packet": {
+      "schema": "loomward.evidence-packet.v1",
+      "synthetic": true,
+      "packet_id": "packet-partial",
+      "group_id": "incomplete-root",
+      "observed_at": 1800000000,
+      "subject": {
+        "kind": "folder",
+        "name_tokens": [
+          "sample",
+          "incomplete",
+          "set"
+        ],
+        "depth": 2
+      },
+      "shape": {
+        "files": 3,
+        "folders": 12,
+        "logical_bytes": null,
+        "allocated_bytes": null,
+        "max_depth": 6
+      },
+      "families": [
+        {
+          "family": "other",
+          "share_files": 1.0,
+          "share_bytes": null
+        }
+      ],
+      "extensions": [
+        {
+          "ext": "",
+          "files": 3,
+          "bytes": null
+        }
+      ],
+      "markers": [],
+      "time": {
+        "newest_content_write": null,
+        "oldest_content_write": null,
+        "newest_source_write": null,
+        "newest_generated_write": null,
+        "git_last_commit": null,
+        "git_dirty": null,
+        "last_access": "not_evidence"
+      },
+      "duplicates": {
+        "duplicate_bytes": null,
+        "groups": null
+      },
+      "media": null,
+      "coverage": {
+        "state": "partial",
+        "allocation_known": false,
+        "link_counts_observed": false,
+        "online": false
+      }
+    },
+    "human_labels": [
+      {
+        "axis": "meaning",
+        "label": "unknown"
+      },
+      {
+        "axis": "lifecycle",
+        "label": "unknown"
+      },
+      {
+        "axis": "recreatability",
+        "label": "unknown"
+      }
+    ],
+    "teacher_labels": [],
+    "summary_facts": [
+      "/markers",
+      "/shape/logical_bytes",
+      "/time/newest_content_write"
+    ]
+  },
+  {
+    "schema": "loomward.categoriser-record.v1",
+    "synthetic": true,
+    "record_id": "record-denied",
+    "packet": {
+      "schema": "loomward.evidence-packet.v1",
+      "synthetic": true,
+      "packet_id": "packet-denied",
+      "group_id": "incomplete-root",
+      "observed_at": 1800000000,
+      "subject": {
+        "kind": "folder",
+        "name_tokens": [
+          "sample",
+          "incomplete",
+          "set"
+        ],
+        "depth": 2
+      },
+      "shape": {
+        "files": null,
+        "folders": null,
+        "logical_bytes": null,
+        "allocated_bytes": null,
+        "max_depth": null
+      },
+      "families": [],
+      "extensions": [],
+      "markers": [],
+      "time": {
+        "newest_content_write": null,
+        "oldest_content_write": null,
+        "newest_source_write": null,
+        "newest_generated_write": null,
+        "git_last_commit": null,
+        "git_dirty": null,
+        "last_access": "not_evidence"
+      },
+      "duplicates": {
+        "duplicate_bytes": null,
+        "groups": null
+      },
+      "media": null,
+      "coverage": {
+        "state": "denied",
+        "allocation_known": false,
+        "link_counts_observed": false,
+        "online": false
+      }
+    },
+    "human_labels": [
+      {
+        "axis": "meaning",
+        "label": "unknown"
+      },
+      {
+        "axis": "lifecycle",
+        "label": "unknown"
+      },
+      {
+        "axis": "recreatability",
+        "label": "unknown"
+      }
+    ],
+    "teacher_labels": [],
+    "summary_facts": [
+      "/markers",
+      "/shape/logical_bytes",
+      "/time/newest_content_write"
+    ]
+  }
+]

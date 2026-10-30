@@ -129,6 +129,7 @@ impl Inner {
         let json = serde_json::to_string(&s)
             .map_err(|_| fail(ErrorCode::InternalError, "encode alert settings"))?;
         let state_rev = db::set_alert_settings(&mut self.db(), &json).map_err(sql_error)?;
+        drop(_m);
         let (report, revs) = self.alerts_report(None)?;
         self.alerts_out(report, (revs.0, state_rev))
     }

@@ -84,7 +84,7 @@ export class Updates {
 
   /** The one action that makes a request. `previous`: the nightly before the current one. */
   async check(previous = false): Promise<void> {
-    if (!this.status || this.status.unavailable) return;
+    if (!this.status || this.status.unavailable || this.busy) return;
     this.message = previous ? 'Looking for the previous nightly…' : 'Checking for updates…';
     try {
       const s = (await this.send('checking', { action: 'check', previous })) as UpdateStatus | null;
@@ -104,7 +104,7 @@ export class Updates {
   /** Opens the native confirmation; the app closes and restarts if the owner accepts. */
   async install(): Promise<void> {
     const offer = this.status?.offer;
-    if (!offer || offer.previous) return; // rollback needs the matching state copy (LW-122): no in-app install
+    if (!offer || offer.previous || this.busy) return; // rollback needs the matching state copy (LW-122): no in-app install
     this.message = 'Waiting for your answer in the confirmation box…';
     try {
       const r = (await this.send('installing', { action: 'install', version: offer.version })) as { installed: boolean } | null;

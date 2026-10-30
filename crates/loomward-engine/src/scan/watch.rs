@@ -352,6 +352,9 @@ impl ScanSink for RepairSink {
     ) -> EngineResult<()> {
         self.inner.finish_run(root, run, scope, false)
     }
+    fn cancel_queued(&self, root: &RootId, run: u64) {
+        self.inner.cancel_queued(root, run)
+    }
     fn fence_root(&self, root: &RootId) -> EngineResult<()> {
         self.inner.fence_root(root)
     }
@@ -371,6 +374,7 @@ pub(crate) fn run_watched<S: DirSource>(
     cancel: Arc<AtomicBool>,
     options: ScanOptions,
     watch: &RootWatch,
+    progress: Option<&crate::jobs::JobContext>,
 ) -> EngineResult<ScanReport> {
     struct StopOnExit<'a>(&'a RootWatch);
     impl Drop for StopOnExit<'_> {
@@ -385,7 +389,7 @@ pub(crate) fn run_watched<S: DirSource>(
             message: "watch grant revoked".into(),
         });
     }
-    reconcile(
+    reconcile_observed(
         source,
         root,
         run,
@@ -395,11 +399,30 @@ pub(crate) fn run_watched<S: DirSource>(
         options,
         &watch.dirty,
         || watch.checkpoint(),
+        progress,
+    )
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+fn reconcile<S: DirSource>(
+    source: &S,
+    root: &GrantedRoot,
+    run: u64,
+    sink: Arc<dyn ScanSink>,
+    bytes: Arc<ByteBudget>,
+    cancel: Arc<AtomicBool>,
+    options: ScanOptions,
+    dirty: &Mutex<Dirty>,
+    checkpoint: impl Fn() -> bool,
+) -> EngineResult<ScanReport> {
+    reconcile_observed(
+        source, root, run, sink, bytes, cancel, options, dirty, checkpoint, None,
     )
 }
 
 #[allow(clippy::too_many_arguments)]
-fn reconcile<S: DirSource>(
+fn reconcile_observed<S: DirSource>(
     source: &S,
     root: &GrantedRoot,
     run: u64,
@@ -409,6 +432,7 @@ fn reconcile<S: DirSource>(
     mut options: ScanOptions,
     dirty: &Mutex<Dirty>,
     checkpoint: impl Fn() -> bool,
+    progress: Option<&crate::jobs::JobContext>,
 ) -> EngineResult<ScanReport> {
     let start = std::time::Instant::now();
     let drain = || {
@@ -434,7 +458,7 @@ fn reconcile<S: DirSource>(
     options.scope = RunScope::FullRoot;
     drain()?;
     let mut covered = dirty.lock().unwrap().epoch;
-    let mut report = run_scan(
+    let mut report = super::pipeline::run_observed_scan(
         source,
         root,
         run,
@@ -442,6 +466,7 @@ fn reconcile<S: DirSource>(
         bytes.clone(),
         cancel.clone(),
         options.clone(),
+        progress,
     )?;
     let mut valid = *repair.valid.lock().unwrap() && !report.limit_hit;
     // A full pass can also be partial without any listing failure: a directory moved or vanished
@@ -504,7 +529,7 @@ fn reconcile<S: DirSource>(
         let mut pass_options = options.clone();
         pass_options.max_entries -= attempted;
         *repair.valid.lock().unwrap() = true;
-        let next = run_scan(
+        let next = super::pipeline::run_observed_scan(
             source,
             root,
             run,
@@ -512,6 +537,7 @@ fn reconcile<S: DirSource>(
             bytes.clone(),
             cancel.clone(),
             pass_options,
+            progress,
         )?;
         valid = *repair.valid.lock().unwrap() && !next.limit_hit;
         // Targeted coverage is partial by construction, but duplicate evidence and a failed
@@ -1741,6 +1767,7 @@ mod native_tests {
                 Arc::new(AtomicBool::new(outcome == "cancelled")),
                 opts,
                 &watch,
+                None,
             );
             if outcome == "failed" {
                 assert!(result.is_err());
@@ -2381,7 +2408,7 @@ mod native_tests {
     }
     fn grant(path: &Path) -> Option<GrantedRoot> {
         let source = NativeSource::default();
-        if loomward_windows::enumerate::running_elevated() {
+        if loomward_windows::enumerate::skip_elevated_test() {
             assert!(source.open_root(path).is_err());
             assert!(loomward_windows::watch::Watcher::start(path, None, |_| ()).is_err());
             return None;
@@ -2467,6 +2494,7 @@ mod native_tests {
                 Arc::new(AtomicBool::new(false)),
                 options(),
                 &watch,
+                None,
             )
             .unwrap();
             assert!(source.mutated.load(Ordering::Acquire));

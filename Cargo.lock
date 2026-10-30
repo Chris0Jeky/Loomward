@@ -625,10 +625,13 @@ version = "0.1.0"
 dependencies = [
  "loomward-protocol",
  "loomward-service",
+ "loomward-windows",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2",
  "tempfile",
+ "unicode-general-category",
 ]
 
 [[package]]
@@ -668,8 +671,16 @@ dependencies = [
 name = "loomward-cli"
 version = "0.1.0"
 dependencies = [
+ "loomward-catalog",
  "loomward-core",
+ "loomward-engine",
+ "loomward-operations",
+ "loomward-protocol",
+ "loomward-service",
+ "loomward-windows",
+ "rusqlite",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -752,6 +763,21 @@ dependencies = [
  "caseless",
  "serde_json",
  "sha2",
+ "unicode-general-category",
+]
+
+[[package]]
+name = "loomward-mcp"
+version = "0.1.0"
+dependencies = [
+ "loomward-operations",
+ "loomward-protocol",
+ "loomward-service",
+ "loomward-windows",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
  "unicode-general-category",
 ]
 

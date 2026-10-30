@@ -9,6 +9,7 @@ type FinishHook = Box<dyn Fn() -> EngineResult<()> + Send + Sync>;
 struct PublicationSink {
     memory: super::super::MemorySink,
     finishes: Mutex<Vec<(bool, bool, bool)>>,
+    cancelled_runs: Mutex<Vec<(RootId, u64)>>,
     finish: Option<FinishHook>,
 }
 
@@ -75,6 +76,13 @@ impl ScanSink for PublicationSink {
         self.memory.finish_run(root, run, scope, complete)
     }
 
+    fn cancel_queued(&self, root: &RootId, run: u64) {
+        self.cancelled_runs
+            .lock()
+            .unwrap()
+            .push((root.clone(), run));
+    }
+
     fn fence_root(&self, root: &RootId) -> EngineResult<()> {
         self.memory.fence_root(root)
     }
@@ -96,7 +104,120 @@ fn terminal(engine: &Engine, id: &JobId) -> Job {
 }
 
 #[test]
+fn scan_progress_has_observed_counters_before_final_publication() {
+    use super::super::tests::{root, Tree};
+    struct PausedTree {
+        reached: mpsc::Sender<()>,
+        resume: Mutex<mpsc::Receiver<()>>,
+    }
+    impl DirSource for PausedTree {
+        type Dir = u64;
+        fn strategy(&self) -> Strategy {
+            Tree.strategy()
+        }
+        fn open_root(&self, path: &std::path::Path) -> Result<(u64, OpenedIdentity), SourceError> {
+            Tree.open_root(path)
+        }
+        fn open_child(
+            &self,
+            dir: &u64,
+            entry: &RawEntry<'_>,
+        ) -> Result<(u64, OpenedIdentity), SourceError> {
+            Tree.open_child(dir, entry)
+        }
+        fn list(&self, dir: &u64, sink: &mut dyn FnMut(RawEntry<'_>) -> Flow) -> ListOutcome {
+            if *dir != 1 {
+                self.reached.send(()).unwrap();
+                self.resume
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(5))
+                    .unwrap();
+            } else {
+                // Observe a file with unknown allocation before pausing at the child directory.
+                Tree.list(&2, &mut |mut entry| {
+                    entry.name = &[102];
+                    entry.allocation_size = None;
+                    sink(entry)
+                });
+            }
+            Tree.list(dir, sink)
+        }
+    }
+    let state = tempfile::tempdir().unwrap();
+    let engine = Engine::open(EngineConfig::new(
+        state.path().into(),
+        DatasetClass::Synthetic,
+    ))
+    .unwrap();
+    let root = root();
+    let root_id = root.root_id().clone();
+    let (reached, wait) = mpsc::channel();
+    let (release, resume) = mpsc::channel();
+    let source = PausedTree {
+        reached,
+        resume: Mutex::new(resume),
+    };
+    engine.register_job_runner(
+        JobKind::Scan,
+        Arc::new(move |ctx, _| {
+            let report = run_job_scan(
+                &source,
+                &root,
+                1,
+                Arc::new(MemorySink::default()),
+                Arc::new(ByteBudget::new(crate::budgets::SCAN_BYTES)),
+                &ctx,
+                ScanOptions {
+                    workers: 1,
+                    ..ScanOptions::default()
+                },
+            )?;
+            ctx.set_scan_report(&report)?;
+            Ok(CoverageState::Complete)
+        }),
+    );
+    let job = engine
+        .job_submit(JobSpec::new(JobKind::Scan, Some(root_id)))
+        .unwrap();
+    wait.recv_timeout(Duration::from_secs(5)).unwrap();
+    let during = engine.job_status(&job.job_id).unwrap();
+    release.send(()).unwrap();
+    let done = terminal(&engine, &job.job_id);
+    assert_eq!(during.state, JobState::Running);
+    let progress = during.progress.expect("running scan progress");
+    assert_eq!(
+        progress.phase,
+        loomward_protocol::ScanProgressPhase::Enumerating
+    );
+    assert_eq!(progress.examined.get(), 2);
+    assert_eq!(progress.indexed_files.get(), 1);
+    assert_eq!(progress.logical_bytes.to_string(), "123");
+    assert_eq!(progress.allocated_bytes, None);
+    // The last sample was taken before the parent task retired: active parent + queued child.
+    assert_eq!(progress.pending_dirs.get(), 2);
+    let progress = done.progress.unwrap();
+    assert_eq!(progress.phase, loomward_protocol::ScanProgressPhase::Done);
+    assert_eq!(progress.examined.get(), 3);
+    assert_eq!(progress.indexed_files.get(), 2);
+    assert_eq!(progress.indexed_dirs.get(), 1);
+    assert_eq!(progress.logical_bytes.to_string(), "246");
+    assert_eq!(progress.allocated_bytes, None);
+    assert_eq!(progress.pending_dirs.get(), 0);
+    assert_eq!(progress.writer_queue_depth.get(), 0);
+}
+
+#[test]
 fn cancellation_after_the_flag_snapshot_prevents_scan_publication() {
+    cancellation_marks_queued_run("run_scan_finish");
+}
+
+#[test]
+fn user_cancellation_marks_queued_run_once() {
+    cancellation_marks_queued_run("run_scan");
+}
+
+fn cancellation_marks_queued_run(pause: &'static str) {
     use super::super::tests::{root, Tree};
 
     for options in [
@@ -126,7 +247,7 @@ fn cancellation_after_the_flag_snapshot_prevents_scan_publication() {
                 let wait = wait.clone();
                 BEFORE_PUBLISH.with_borrow_mut(|hook| {
                     *hook = Some(Box::new(move |point| {
-                        if point == "run_scan_finish" {
+                        if point == pause {
                             reached.send(()).unwrap();
                             wait.lock()
                                 .unwrap()
@@ -166,7 +287,61 @@ fn cancellation_after_the_flag_snapshot_prevents_scan_publication() {
         assert_eq!(done.coverage, Some(CoverageState::Cancelled));
         assert_eq!(*sink.finishes.lock().unwrap(), vec![(false, false, false)]);
         assert!(!sink.memory.sweep_allowed(&root_id));
+        assert_eq!(*sink.cancelled_runs.lock().unwrap(), vec![(root_id, 1)]);
     }
+}
+
+#[test]
+fn unsettled_uncancelled_run_does_not_cancel_queued() {
+    use super::super::tests::{root, MovingTree};
+
+    let root = root();
+    let sink = Arc::new(PublicationSink::default());
+    let cancel = Arc::new(AtomicBool::new(false));
+    let report = run_scan(
+        &MovingTree {
+            x_listings: Default::default(),
+            unique: true,
+        },
+        &root,
+        7,
+        sink.clone(),
+        Arc::new(ByteBudget::new(crate::budgets::SCAN_BYTES)),
+        cancel.clone(),
+        ScanOptions {
+            workers: 1,
+            ..ScanOptions::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(report.duplicate_identity, 1);
+    assert!(!report.complete);
+    assert!(!cancel.load(Ordering::Acquire));
+    assert_eq!(*sink.finishes.lock().unwrap(), vec![(false, false, false)]);
+    assert_eq!(*sink.cancelled_runs.lock().unwrap(), vec![]);
+}
+
+#[test]
+fn completed_run_does_not_cancel_queued() {
+    use super::super::tests::{root, Tree};
+
+    let root = root();
+    let sink = Arc::new(PublicationSink::default());
+    let report = run_scan(
+        &Tree,
+        &root,
+        8,
+        sink.clone(),
+        Arc::new(ByteBudget::new(crate::budgets::SCAN_BYTES)),
+        Arc::new(AtomicBool::new(false)),
+        ScanOptions::default(),
+    )
+    .unwrap();
+
+    assert!(report.complete);
+    assert_eq!(*sink.finishes.lock().unwrap(), vec![(true, true, false)]);
+    assert_eq!(*sink.cancelled_runs.lock().unwrap(), vec![]);
 }
 
 #[test]
@@ -264,4 +439,82 @@ fn admitted_scan_publication_does_not_block_or_acknowledge_cancellation() {
         assert_eq!(*sink.finishes.lock().unwrap(), vec![(false, false, true)]);
         assert!(!sink.memory.sweep_allowed(&root_id));
     }
+}
+
+#[test]
+fn root_revocation_overrides_admitted_scan_publication() {
+    use super::super::tests::{root, Tree};
+
+    let engine = Arc::new(
+        Engine::open(EngineConfig::new("unused".into(), DatasetClass::Synthetic)).unwrap(),
+    );
+    let root = root();
+    let root_id = root.root_id().clone();
+    let root_key = root.key().clone();
+    let (entered, publishing) = mpsc::channel();
+    let (release, wait) = mpsc::channel();
+    let wait = Mutex::new(wait);
+    let sink = Arc::new(PublicationSink {
+        finish: Some(Box::new(move || {
+            entered.send(()).unwrap();
+            wait.lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap();
+            Ok(())
+        })),
+        ..PublicationSink::default()
+    });
+    engine.set_scan_sink(sink.clone()).unwrap();
+    let worker_sink = sink.clone();
+    engine.register_job_runner(
+        JobKind::Scan,
+        Arc::new(move |ctx, _| {
+            let report = run_job_scan(
+                &Tree,
+                &root,
+                1,
+                worker_sink.clone(),
+                Arc::new(ByteBudget::new(crate::budgets::SCAN_BYTES)),
+                &ctx,
+                ScanOptions::default(),
+            )?;
+            ctx.set_scan_report(&report)?;
+            Ok(if report.coverage_complete() {
+                CoverageState::Complete
+            } else {
+                CoverageState::Partial
+            })
+        }),
+    );
+    let job = engine
+        .job_submit(JobSpec::new(JobKind::Scan, Some(root_id.clone())))
+        .unwrap();
+    publishing.recv_timeout(Duration::from_secs(5)).unwrap();
+    let (revoked, outcome) = mpsc::channel();
+    let requester = engine.clone();
+    let key = root_key.clone();
+    let id = root_id.clone();
+    let revocation = std::thread::spawn(move || {
+        revoked.send(requester.scan_cancel_root(&key, &id)).unwrap();
+    });
+    // Capture the acknowledgement before releasing publication, even if it is incorrectly Running.
+    let early = outcome.recv_timeout(Duration::from_secs(2));
+    release.send(()).unwrap();
+    revocation.join().unwrap();
+    let done = terminal(&engine, &job.job_id);
+    let response = early
+        .expect("root revocation waited for final publication")
+        .unwrap();
+    assert_eq!(response.len(), 1);
+    assert_eq!(response[0].job_id, job.job_id);
+    assert_eq!(response[0].state, JobState::CancelRequested);
+    assert_eq!(done.state, JobState::Cancelled);
+    assert_eq!(done.coverage, Some(CoverageState::Cancelled));
+    assert_eq!(*sink.finishes.lock().unwrap(), vec![(true, true, false)]);
+    engine.scan_writer_fence(&root_key, &root_id).unwrap();
+    assert!(matches!(
+        sink.begin_run(&root_id, 2, &RunScope::FullRoot),
+        Err(EngineError::PermissionDenied { .. })
+    ));
 }

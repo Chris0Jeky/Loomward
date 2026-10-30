@@ -733,7 +733,7 @@ fn windows_shortcut_paths_ignore_user_text_case() {
     let path = parent.join("SyNtHeTiC.LnK");
     std::fs::write(&path, finish(header(0))).unwrap();
     let lowercase = parent.with_file_name("mixedancestor").join("synthetic.lnk");
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         assert!(read(&lowercase).is_err());
         assert_eq!(
             WindowsProbe.metadata(lowercase.to_str().unwrap()),
@@ -762,7 +762,7 @@ fn windows_known_folder_shape_and_disposable_shortcut_read() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("synthetic.lnk");
     std::fs::write(&path, finish(header(0))).unwrap();
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         assert!(read(&path).is_err());
     } else {
         assert_eq!(read(&path).unwrap().flags, 0);
@@ -776,7 +776,7 @@ fn windows_reader_cap_local_metadata_and_sharing_refusal() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("synthetic.lnk");
     std::fs::write(&path, finish(header(0))).unwrap();
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         assert!(read(&path).is_err());
         return;
     }

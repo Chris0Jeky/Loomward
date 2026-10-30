@@ -934,7 +934,7 @@ fn placement_partial_allocation_uses_logical_fallback_and_rejects_whatif() {
 #[test]
 fn placement_native_link_pass_feeds_verified_relief_on_disposable_hardlinks() {
     use loomward_windows::{identity, linkcount};
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         assert_eq!(
             identity::observe(std::path::Path::new("synthetic"))
                 .unwrap_err()
@@ -1117,6 +1117,75 @@ fn placement_unknown_cluster_uses_4kib_lower_bound_with_disclosure() {
             .assumptions
             .iter()
             .any(|s| s.as_str().contains("4 KiB")),
+        "assumptions: {:?}",
+        built.assumptions
+    );
+}
+
+/// #954: children hidden by a parent excluded for zero relief are disclosed like the children of
+/// a pre-rejected parent, never silently dropped.
+#[test]
+fn placement_children_of_a_zero_relief_parent_are_disclosed_not_planned() {
+    let mut inp = input();
+    inp.snapshot.subtrees.clear();
+    inp.files.clear();
+    let mut parent = subtree("aaa_parent");
+    // Zero entry bytes everywhere: the tie goes to the parent's group ID, so the greedy antichain
+    // selects the parent and hides the children.
+    let zero = json!({"files": 2, "dirs": 1, "logical_bytes": "200",
+        "allocated_bytes": "0", "allocation_unknown_files": 0, "skipped": 0,
+        "failed": 0, "complete": true, "stream_coverage": "default_stream_only",
+        "unique_objects": 1, "unique_allocated_bytes": "0", "multi_link_entries": 2
+    });
+    parent.totals = from_value(json!({"files": 2, "dirs": 1, "logical_bytes": "200",
+        "allocated_bytes": "0", "allocation_unknown_files": 0, "skipped": 0,
+        "failed": 0, "complete": true, "stream_coverage": "default_stream_only",
+        "unique_objects": 1, "unique_allocated_bytes": "0", "multi_link_entries": 2
+    }))
+    .unwrap();
+    let parent_node = parent.node_id.clone();
+    let parent_group = parent.group_id.clone();
+    inp.snapshot.subtrees.push(parent);
+    for (id, fid) in [("zzz_child1", [21u8; 16]), ("zzz_child2", [22u8; 16])] {
+        let mut child = subtree(id);
+        child.ancestors = vec![parent_node.clone()];
+        child.root_child = false;
+        child.totals = from_value(zero.clone()).unwrap();
+        inp.snapshot.subtrees.push(child.clone());
+        let mut files = vec![file(&format!("{id}_a")), file(&format!("{id}_b"))];
+        for f in &mut files {
+            f.object.as_mut().unwrap().file_id = fid;
+            f.link_observation.as_mut().unwrap().object = f.object.clone().unwrap();
+            f.allocated_bytes = Some(0);
+            f.link_observation.as_mut().unwrap().allocation = "0".into();
+        }
+        inp.files.insert(child.group_id.as_str().into(), files);
+    }
+    let mut pfiles = vec![file("p_a"), file("p_b")];
+    for f in &mut pfiles {
+        f.object.as_mut().unwrap().file_id = [20; 16];
+        f.link_observation.as_mut().unwrap().object = f.object.clone().unwrap();
+        f.allocated_bytes = Some(0);
+        f.link_observation.as_mut().unwrap().allocation = "0".into();
+    }
+    inp.files.insert(parent_group.as_str().into(), pfiles);
+    let mut req = request();
+    req.overrides = BoundedVec::new(vec![]).unwrap();
+    let built = build_scenario(&inp, &req, deadline()).unwrap();
+    assert!(built.pre_rejected.is_empty(), "{:?}", built.pre_rejected);
+    assert!(
+        built
+            .assumptions
+            .iter()
+            .any(|s| s.as_str().contains("zero relief") && s.as_str().contains('1')),
+        "assumptions: {:?}",
+        built.assumptions
+    );
+    assert!(
+        built
+            .assumptions
+            .iter()
+            .any(|s| s.as_str().contains("2 descendant group(s)")),
         "assumptions: {:?}",
         built.assumptions
     );

@@ -57,9 +57,34 @@ pub fn space(root: &std::path::Path) -> io::Result<Space> {
     })
 }
 
-/// Drive and bus classification for one path; never enumerates volumes or reads capacity.
+#[derive(Debug, Serialize)]
+pub struct Classification {
+    pub drive_type: u32,
+    pub bus_type: String,
+    pub removable_media: bool,
+    pub filesystem: String,
+}
+impl Classification {
+    pub fn detachable(&self) -> io::Result<bool> {
+        removable_device(self.drive_type, &self.bus_type, self.removable_media)
+    }
+    pub fn unsupported_root(&self) -> io::Result<bool> {
+        let detachable = self.detachable()?;
+        Ok(detachable
+            && !(self.drive_type == 3
+                && self.bus_type == "usb"
+                && !self.removable_media
+                && crate::enumerate::verifies_identity(&self.filesystem)))
+    }
+    pub fn unsupported_copy_destination(&self, personal: bool) -> io::Result<bool> {
+        Ok(self.unsupported_root()? || (personal && self.detachable()?))
+    }
+}
+
+/// Classification for one explicit path; no volume enumeration, capacity or file contents.
 #[cfg(windows)]
-pub fn is_removable(path: &std::path::Path) -> io::Result<bool> {
+pub fn classify(path: &std::path::Path) -> io::Result<Classification> {
+    crate::win::non_elevated()?;
     use windows_sys::Win32::Storage::FileSystem::{GetDriveTypeW, GetVolumePathNameW};
     let path = crate::win::wide(path)?;
     let mut mount = vec![0u16; 32768];
@@ -67,18 +92,37 @@ pub fn is_removable(path: &std::path::Path) -> io::Result<bool> {
         return Err(io::Error::last_os_error());
     }
     let kind = unsafe { GetDriveTypeW(mount.as_ptr()) };
-    if removable_drive_type(kind)? {
-        return Ok(true);
-    }
-    native::removable_bus(&mount, kind)
+    removable_drive_type(kind)?;
+    native::classify(&mount, kind)
 }
 
+#[cfg(not(windows))]
+pub fn classify(_: &std::path::Path) -> io::Result<Classification> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "Windows volume classification unavailable",
+    ))
+}
+
+/// Detachability is a device fact, not the scan/grant root fence.
+#[cfg(windows)]
+pub fn is_removable(path: &std::path::Path) -> io::Result<bool> {
+    classify(path)?.detachable()
+}
 #[cfg(not(windows))]
 pub fn is_removable(_: &std::path::Path) -> io::Result<bool> {
     Ok(false)
 }
 
-#[cfg(any(windows, test))]
+#[cfg(windows)]
+pub fn unsupported_root(path: &std::path::Path) -> io::Result<bool> {
+    classify(path)?.unsupported_root()
+}
+#[cfg(not(windows))]
+pub fn unsupported_root(_: &std::path::Path) -> io::Result<bool> {
+    Ok(false)
+}
+
 fn removable_drive_type(kind: u32) -> io::Result<bool> {
     match kind {
         2 => Ok(true),
@@ -183,6 +227,13 @@ pub fn enumerate() -> io::Result<Vec<Volume>> {
 }
 
 #[cfg(windows)]
+pub(crate) fn storage_query(
+    path: &std::path::Path,
+) -> io::Result<crate::storage_path::StorageObservation> {
+    native::storage_query(path)
+}
+
+#[cfg(windows)]
 mod native {
     use super::*;
     use crate::win::{open, wide, Handle};
@@ -193,7 +244,122 @@ mod native {
         System::{Ioctl::*, SystemServices::*, WindowsProgramming::*, IO::DeviceIoControl},
     };
 
-    pub(super) fn removable_bus(mount: &[u16], kind: u32) -> io::Result<bool> {
+    pub(super) fn storage_query(
+        path: &Path,
+    ) -> io::Result<crate::storage_path::StorageObservation> {
+        use crate::storage_path::*;
+        crate::win::non_elevated()?;
+        let path = wide(path)?;
+        let mut mount = vec![0u16; 32768];
+        if unsafe { GetVolumePathNameW(path.as_ptr(), mount.as_mut_ptr(), mount.len() as u32) } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        let mut volume = vec![0u16; 1024];
+        if unsafe {
+            GetVolumeNameForVolumeMountPointW(
+                mount.as_ptr(),
+                volume.as_mut_ptr(),
+                volume.len() as u32,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        let len = volume
+            .iter()
+            .position(|c| *c == 0)
+            .ok_or_else(|| io::Error::other("invalid volume name"))?;
+        let guid = String::from_utf16(&volume[..len])
+            .map_err(|_| io::Error::other("invalid volume name"))?;
+        let handle = open(
+            Path::new(guid.trim_end_matches('\\')),
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        )?;
+        let unknown = || Fact::Unknown {
+            reason: "not queried by the IOCTL storage provider".into(),
+        };
+        let bus_type = Fact::from_result(
+            property::<STORAGE_DEVICE_DESCRIPTOR>(&handle, StorageDeviceProperty).and_then(|d| {
+                if d.BusType == BusTypeUnknown {
+                    Err(io::Error::other("device reports unknown bus type"))
+                } else {
+                    Ok(bus_name(d.BusType))
+                }
+            }),
+        );
+        let geometry = property::<STORAGE_ACCESS_ALIGNMENT_DESCRIPTOR>(
+            &handle,
+            StorageAccessAlignmentProperty,
+        )
+        .and_then(|d| {
+            sector_alignment(d.BytesPerLogicalSector, d.BytesPerPhysicalSector)?;
+            Ok((d.BytesPerLogicalSector, d.BytesPerPhysicalSector))
+        });
+        let (logical_sector_bytes, physical_sector_bytes) = match geometry {
+            Ok((logical, physical)) => (
+                Fact::Known { value: logical },
+                Fact::Known { value: physical },
+            ),
+            Err(error) => (
+                Fact::Unknown {
+                    reason: error.to_string(),
+                },
+                Fact::Unknown {
+                    reason: error.to_string(),
+                },
+            ),
+        };
+        let write_cache_enabled = Fact::from_result(
+            property::<STORAGE_WRITE_CACHE_PROPERTY>(&handle, StorageDeviceWriteCacheProperty)
+                .and_then(|d| {
+                    if d.WriteCacheEnabled == WriteCacheEnabled {
+                        Ok(true)
+                    } else if d.WriteCacheEnabled == WriteCacheDisabled {
+                        Ok(false)
+                    } else {
+                        Err(io::Error::other("device reports unknown write-cache state"))
+                    }
+                }),
+        );
+        Ok(StorageObservation {
+            storage_path: StoragePath {
+                volume_guid: guid,
+                disk_model: unknown(),
+                firmware: unknown(),
+                bus_type,
+                usb_vid: Fact::Unknown {
+                    reason: "USB/PnP discovery not implemented".into(),
+                },
+                usb_pid: Fact::Unknown {
+                    reason: "USB/PnP discovery not implemented".into(),
+                },
+                bridge: unknown(),
+                usb_transport: Fact::Unknown {
+                    reason: "BOT/UAS discovery not implemented".into(),
+                },
+                logical_sector_bytes,
+                physical_sector_bytes,
+                // RemovableMedia is not the PnP removal policy and must not stand in for it.
+                removal_policy: Fact::Unknown {
+                    reason: "PnP removal policy not queried".into(),
+                },
+                write_cache_enabled,
+                windows_build: Fact::Unknown {
+                    reason: "Windows build not queried".into(),
+                },
+            },
+            mount_paths: Fact::from_result(mounts(&volume[..=len])),
+            // shortcut: no WMI/COM provider yet; add MSFT_StorageReliabilityCounter when that provider lands.
+            health: HealthObservation::UnsupportedOrHidden {
+                reason: "MSFT_StorageReliabilityCounter not queried; USB SMART may be hidden"
+                    .into(),
+            },
+        })
+    }
+
+    pub(super) fn classify(mount: &[u16], kind: u32) -> io::Result<Classification> {
         let mut volume = vec![0u16; 32768];
         if unsafe {
             GetVolumeNameForVolumeMountPointW(
@@ -217,11 +383,14 @@ mod native {
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         )?;
         let descriptor = property::<STORAGE_DEVICE_DESCRIPTOR>(&handle, StorageDeviceProperty)?;
-        removable_device(
-            kind,
-            &bus_name(descriptor.BusType),
-            descriptor.RemovableMedia,
-        )
+        let classification = Classification {
+            drive_type: kind,
+            bus_type: bus_name(descriptor.BusType),
+            removable_media: descriptor.RemovableMedia,
+            filesystem: filesystem(mount)?.name,
+        };
+        classification.detachable()?;
+        Ok(classification)
     }
 
     struct Search(HANDLE);
@@ -568,13 +737,13 @@ mod settle_tests {
     }
 }
 
-#[cfg(any(windows, test))]
 fn removable_device(kind: u32, bus: &str, removable_media: bool) -> io::Result<bool> {
-    if removable_drive_type(kind)? || removable_media || matches!(bus, "usb" | "sd") {
-        return Ok(true);
-    }
+    let removable = removable_drive_type(kind)?;
     match bus {
-        "scsi" | "atapi" | "ata" | "raid" | "sas" | "sata" | "spaces" | "nvme" => Ok(false),
+        "usb" | "sd" => Ok(true),
+        "scsi" | "atapi" | "ata" | "raid" | "sas" | "sata" | "spaces" | "nvme" => {
+            Ok(removable || removable_media)
+        }
         _ => Err(io::Error::other("local bus type unavailable")),
     }
 }
@@ -611,7 +780,7 @@ mod followup_tests {
     }
 
     #[test]
-    fn followup_usb_and_sd_are_removable_even_on_fixed_drives() {
+    fn fixed_usb_roots_require_verified_identity_but_remain_detachable() {
         for bus in ["usb", "sd"] {
             assert!(super::removable_device(3, bus, false).unwrap());
         }
@@ -619,5 +788,39 @@ mod followup_tests {
         assert!(!super::removable_device(3, "sata", false).unwrap());
         assert!(super::removable_device(2, "sata", false).unwrap());
         assert!(super::removable_device(3, "unknown", false).is_err());
+        for (kind, media) in [(3, false), (3, true), (2, false)] {
+            let unknown = super::Classification {
+                drive_type: kind,
+                bus_type: "unknown".into(),
+                removable_media: media,
+                filesystem: "NTFS".into(),
+            };
+            assert!(unknown.unsupported_root().is_err());
+            assert!(unknown.unsupported_copy_destination(false).is_err());
+        }
+        for (kind, bus, media, fs, refused) in [
+            (3, "usb", false, "NTFS", false),
+            (3, "usb", false, "ReFS", false),
+            (3, "usb", true, "NTFS", true),
+            (3, "sd", false, "NTFS", true),
+            (2, "usb", false, "NTFS", true),
+            (3, "sata", false, "NTFS", false),
+            (3, "sata", false, "FAT32", false),
+            (3, "usb", false, "FAT32", true),
+            (3, "usb", false, "exFAT", true),
+        ] {
+            let volume = super::Classification {
+                drive_type: kind,
+                bus_type: bus.into(),
+                removable_media: media,
+                filesystem: fs.into(),
+            };
+            assert_eq!(volume.unsupported_root().unwrap(), refused, "{volume:?}");
+            assert_eq!(volume.unsupported_copy_destination(false).unwrap(), refused);
+            assert_eq!(
+                volume.unsupported_copy_destination(true).unwrap(),
+                refused || bus == "usb"
+            );
+        }
     }
 }

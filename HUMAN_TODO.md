@@ -406,12 +406,14 @@ Copy-and-verify lanes C1 to C5 and C7 landed on 2026-10-17 (lab-only), so Q1 to 
 inbox in agent-hq#461, and Ask Q3 (local-model preview) and Q4 (conversation retention) were added there the same day;
 they reach the cockpit when that PR merges. Answer there or in chat. Still not asked: the elevated helper's launch model
 (docs/46 Q1), Everything results outside the grants (docs/46 Q2) and the Store item below.
-- [ ] **loomward-copy-staging-removal** (Q1): may cancel and abandon delete Loomward's own unpublished staging files,
+- [x] **loomward-copy-staging-removal** (Q1): may cancel and abandon delete Loomward's own unpublished staging files,
   matched by recorded identity inside its own staging folder? Recommended: allow. Until answered, cancel and abandon
   leave the staging folder in place and report it (`LOOMWARD_COPY_STAGING_REMOVAL = false`, #522).
-- [ ] **loomward-copy-power-cut-method** (Q2): a Hyper-V VM hard-stopped during lab copies (desktop only; KRASPYON is
+  ANSWERED 2026-10-25 in chat (Other): "this is nuanced; allow but it should assess whether there is something that can be done and help the user understand what happened and index or give more info if needed before deleting". Implementation: docs/49 section 4.
+- [x] **loomward-copy-power-cut-method** (Q2): a Hyper-V VM hard-stopped during lab copies (desktop only; KRASPYON is
   Windows 11 Home, without Hyper-V), a power pull on a disposable machine, or neither yet (copy stays lab-only).
   Recommended: Hyper-V. Gate G5 stays shut until one is done.
+  ANSWERED 2026-10-25 in chat: (a) Hyper-V VM. Hyper-V was already enabled on the desktop (measured: vmms running); the test VM and image live on E: (owner, same chat). G5 lane follows.
 - [ ] **loomward-copy-destination-shape** (Q3): v1 new folder only (recommended, built), or also into an existing
   folder with new names only. Defaults to new folder only on 2026-10-24 if unanswered (reversible).
 - [ ] **loomward-ask-local-preview** (docs/46 Q3, posed 2026-10-17 in agent-hq#461): for a model on this machine, is
@@ -423,3 +425,54 @@ they reach the cockpit when that PR merges. Answer there or in chat. Still not a
   - the elevated helper's launch model;
   - Everything results outside the grants (hidden is recommended).
 - Microsoft Store: a short privacy policy page is required before a Store submission (packaging/store/README.md).
+
+### q-48 — External archive disk (H:) and the first cleanup — POSED and ANSWERED 2026-10-25
+
+The owner attached a WD Elements USB disk (`H:`) for backup and archive and asked for safe archiving, agent tooling and
+a supervised cleanup. Design: [docs/48](docs/48-external-disk-and-agent-storage.md). Copying personal files still waits
+on the copy gate (q-47 Q1 and Q2 above); these two decide the cleanup around it:
+- [x] **loomward-first-cleanup-copier**: before Loomward's own copier passes its gate, (a) wait, (b) agents copy with
+  robocopy per approved plan and Loomward's read-only verifier (non-cached reads) must find each copy equal (recommended), or (c)
+  you copy in Explorer and the verifier compares it. Removing any original also needs a second equal comparison after
+  the disk was safely removed and plugged in again (docs/48 section 6).
+  ANSWERED 2026-10-25 in chat: (b) agent robocopy per approved plan plus Loomward's verifier (docs/48 section 6). Owner, same chat: survey all disks first; mainly C: to E: and H:, G: also a candidate.
+- [x] **loomward-archive-originals**: after a verified copy, (a) you delete originals from Loomward's verified list,
+  (b) Loomward sends them to the Recycle Bin after your per-plan confirmation, behind its own gate (recommended), or
+  (c) permanent delete after confirmation.
+  ANSWERED 2026-10-25 in chat: (b) Recycle Bin after per-plan confirmation, with the owner's note: "BUT it should clearly inform the user of the nature of the things that are being sent to the recycle bin, including some sort of machine learning piece of  software that can give more insights, not just names of files, but actual human readable info at a glance". Design seed: docs/49.
+
+Also answered in the same chat (agent questions, recorded so they bind):
+- USB fixed NTFS/ReFS disks as read-only scan roots: allow (docs/48 section 2, lane E0).
+- Insight model: local first, hosted as fallback with a per-request preview; machine learning before LLMs, smaller local
+  models than Qwen 27B worth evaluating, the categoriser a fairly high priority (docs/49).
+- New direction: browse external disks instantly and pull RAW photos for Lightroom in the background (docs/50); a
+  ChatGPT Pro deep-research prompt is in `docs/research/deep-research-prompt-storage-2026-10.md` for the owner to run.
+- [x] Owner runs the deep-research prompt in ChatGPT Pro and drops the report into `docs/research/`.
+  Done 2026-10-25: `docs/research/deep-research-report-storage-2026-10.md` (#867); reconciled in docs/51.
+
+### q-49 — Research programme (docs/51) — POSED 2026-10-25 (agent-hq inbox, lane `loomward-research`)
+
+The research lane reconciled the deep-research report with the repository ([docs/51](docs/51-research-programme.md),
+section 9). Five questions only you can answer; none blocks the read-only work (reclaim planner, categoriser contract):
+- [x] **loomward-hyperv-lab-setup**: ANSWERED 2026-10-26 (a): "Go ahead with X1, the Hyper-V crash campaign: I've added my account to Hyper-V Administrators; use the evaluation image on E:."
+- [x] **loomward-archive-second-copy**: ANSWERED 2026-10-26 (c): "Accept a single copy for now but in the future I will be getting another disk"
+- [x] **loomward-power-loss-hardware**: ANSWERED 2026-10-26 (a): "Hyper-V only (Recommended)"
+- [x] **loomward-categoriser-model-downloads**: ANSWERED 2026-10-26 (Other): "If space allows it and using the slower disks is not a problem for this, you can research and download all the models you want, there are definitely some interesting ones similar to the ternary bonsai 2 (not sure if that's the best, I'm just naming a type of model that is efficient when it comes to resources used, which is good for this application)"
+
+- [ ] **loomward-model-runtime: How should agents run the downloaded small models for the categoriser screen?**
+  - (a) Agents download the official llama.cpp Windows build to E: and run llama-server on 127.0.0.1 for benchmarks (recommended): Agents fetch llama-b11890-bin-win-vulkan-x64.zip from ggml-org's GitHub releases to E:\loomward-models\runtime, record its hash, and run llama-server bound to 127.0.0.1 only while benchmarking. LM Studio is untouched.
+    + Runs every candidate, including Bonsai 2 and Laya; + Leaves your LM Studio library alone; - Runs a downloaded executable on your machine
+  - (b) Use LM Studio: agents add the models to its library and use its local server: Agents import the downloaded models into LM Studio (links, not copies) and benchmark through its 127.0.0.1 server. Bonsai 2 and Laya wait for an LM Studio update.
+    + No new executable; - Changes your LM Studio library; - Bonsai 2 and Laya cannot run yet
+  - (c) Wait: I will set up the runtime myself: The screen waits; the tooling (PR #918) is ready.
+    + You choose the runtime; - The screen does not run yet
+  - Why: It is the official upstream build, runs all candidates, binds to localhost only, and leaves your own LM Studio setup untouched.
+  - Why an agent may not decide: It downloads and runs an executable, which the owner's model-download answer did not cover.
+  - Source: `decisions/loomward-model-runtime.json`
+
+### q-50 — Disk survey setup — POSED 2026-10-26 (agent-hq inbox, owner action)
+
+The external-disk lane shipped USB scan roots, the read-only `loomward-mcp` server with space tools and `plan_archive`,
+and the Agent access view (docs/48). Only you can grant whole volumes (q-7):
+- [x] **loomward-space-survey-setup**: ANSWERED 2026-10-26 (Other): "Why is this not something you could do yourself from start to end? if possible, do that, unless it's highly inefficient and you'd need to use the computer-use, in which case I'll do it tomorrow". Volume roots stay picker-only in code, so the agent surveys with every top-level folder of each disk granted in separate local state folders on `E:`; files sitting directly on a volume root are measured separately (a plain directory listing of sizes). This answer is the owner's authority for that piecewise whole-disk survey beyond q-4's single-folder grant: metadata only (names, sizes, times), read-only, non-elevated, with its state and survey output on `E:` outside every Git checkout. Installing the nightly and granting volumes in the app stays optional.
+  Done 2026-10-26: all four disks surveyed read-only; the summary with six draft cleanup proposals went to the owner locally (never committed). Each proposal waits for the owner's approval of its plan.

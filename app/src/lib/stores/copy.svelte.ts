@@ -192,3 +192,8 @@ export class CopyFlow {
 
 // Kept for view navigation only; reload never silently resumes an operation.
 export const copy = new CopyFlow();
+
+/** Older counts cannot establish an evidence label. */
+export function receiptText(status: CopyStatus): string {
+  return status.receipt?.explanation ?? 'Unverified: this service supplied no evidence-qualified receipt.';
+}

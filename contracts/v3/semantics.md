@@ -281,8 +281,21 @@ report `personal_metadata_unsupported`. There is no synthetic fallback for perso
 Rules:
 
 - `expected_generation` is accepted only for commands anchored in exactly one root (`tree.*`, `node.inspect`,
-  `stats.breakdown` on a root or node anchor). Elsewhere it is `invalid_request`. If the root's current
+  `projects.find`, `stats.breakdown` on a root or node anchor, and `collections.update_members` with exactly
+  one add and no removals). Elsewhere it is `invalid_request`. If the root's current
   generation differs, the response is `stale_generation`.
+- Owner `node.inspect`, `stats.breakdown` and `tree.children` calls carrying `expected_generation`
+  read recorded observations without aggregate repairs. They refuse with `stale_generation` if the
+  catalogue or state revision changes during the read; stale aggregates remain visibly stale.
+  Unguarded owner reads retain their existing repair behavior.
+- `projects.find` is owner-only, bounded to 1–200 candidates from one active granted root. It reads
+  catalogue metadata without aggregate repairs or source-path access. Exact developer-clutter marker
+  families identify probable folders, including ones without outputs; they establish neither dependency
+  completeness nor movement units. Each folder carries at most 16 markers with explicit truncation.
+  Cursors bind root, catalogue generation, catalogue revision, state revision and service session.
+  Incomplete coverage or a work-budget refusal cannot establish absence. Discovery changes no membership.
+  A collection add carrying `expected_generation` rechecks the active grant, node incarnation, generation,
+  watcher freshness and safe ancestor observations inside its existing state-revision transaction.
 - `expected_state_rev` is accepted only by `volumes.declare_tier`, `collections.update_members` and `roots.forget`; elsewhere it
   is `invalid_request`. A mismatch is `stale_generation` with `detail.reason = "state_rev_changed"` and nothing
   is written (section 3, step 3).
@@ -329,6 +342,25 @@ Rules:
   the event envelope's stream `seq`. Missing `rev` in legacy snapshots may use a null-preserving merge.
   Bare `scan.progress` events have no job revision; revision-aware clients use the progress carried by
   `job.state` snapshots so a late progress event cannot overwrite a newer revision.
+- Scan jobs publish an initial `enumerating` snapshot and sampled observations from finished directory
+  listings through `jobs.get` and events; counters can lag enumeration and are replaced on relisting.
+  Early samples carry the configured `strategy` until a directory listing's actual strategy is observed;
+  subsequent samples retain the least capable strategy observed across the traversal.
+  They count observed work, not a known total or a percentage. Watched reconciliation snapshots describe
+  the current traversal pass and can reset for a new pass; `done` carries the existing combined final report.
+  `pending_dirs` counts queued and active directory tasks; `writer_queue_depth` counts commands waiting
+  for the writer, including sender backpressure and deferred commands. These are sampled independently.
+  A finished-listing sample precedes retirement of its active task, so `pending_dirs` can still include
+  that task alongside its queued children. Snapshots are observations, not a claim that the writer has
+  committed the sampled entries, and do not admit publication or change coverage. Unknown allocation
+  size remains `allocated_bytes: null`; zero means the observed sum is zero. `entries_per_second` is
+  the sampled examined count divided by elapsed time in this traversal pass, not a completion estimate.
+  `indexed_dirs` excludes the root and directories refused on open. The catalogue's `dirs` includes
+  named denied folders, so one denied folder can make that total one greater than `indexed_dirs`.
+  `limit_reason: directory_limit` names the directory arena cap (including its memory reservation);
+  `depth_limit` takes precedence if both occur. The entry budget retains `limit_hit` without a named reason.
+  `scan.last_job_id` names the latest scan submitted for that root in this engine's lifetime and is not
+  persisted across engine restarts, even when catalogue scan history persists.
 - A response to a mutation is sent only after its transaction is committed at the durability level of the file
   it wrote (`state.db` `synchronous=FULL`; `catalog.db` `NORMAL`).
 - An event describing a state change is emitted only after the change is committed; `EventEnvelope.catalog_rev`
@@ -403,7 +435,8 @@ Rules:
 | `not_found` | No; refetch the parent resource (IDs may have expired) |
 | `stale_generation` | Yes, after refetching from the first page or re-reading the root; with `detail.reason = "state_rev_changed"` only after re-reading the state and, for an old owner choice, asking the owner again (section 3) |
 | `busy` | Yes, after the job in `detail.job_id` finishes |
-| `resource_budget`, `deadline_exceeded` (read) | Yes, with a narrower request |
+| `resource_budget` with `detail.reason = "root_limit_reached"` | No; the owner must revoke a root before granting another (64 active roots maximum) |
+| Other `resource_budget`, `deadline_exceeded` (read) | Yes, with a narrower request |
 | `deadline_exceeded` (mutation) | Section 3 only: action key, read, or revision precondition; never a blind resend |
 | `device_offline`, `partial_coverage` | When the condition changes (events) |
 | `cancelled` | No |
@@ -428,9 +461,29 @@ through `commands.json`, so that, for example, an `EventEnvelope` with `event: "
 is not a `JobResult` fails. Implementations MUST enable `format` validation for `date-time` in tests.
 
 `commands.json`'s `result` describes the complete owner reply. For a client principal under an
-LW-067 grant, `search.query` and `node.inspect` use the command's `client_result` instead:
-`ClientSearchPage` and `ClientNodeDetail`. The service validates the owner-shaped result before
-projection and the final client result after projection. Other commands have no client result.
+LW-067 grant, the reads below use the command's `client_result` instead. The service validates the
+owner-shaped result before projection and the final client result after projection. Other commands
+have no client result. The service's `open_to_clients` is the single command allowlist.
+
+| Command | Required disclosure | Scope and client result |
+|---|---|---|
+| `search.query` | Live grant; existing field-filter rules apply | Granted roots only; `ClientSearchPage` |
+| `node.inspect` | Live grant | Node under a granted root; `ClientNodeDetail` |
+| `volumes.list` | `volumes` | Machine-wide `VolumeList`, unchanged rows; this field is the owner's consent, independent of `size` |
+| `roots.list` | Live grant, even with no fields | Granted roots only, all others absent; `ClientRootList` carries root ID, scan state, generation, finished time and coverage, plus `display_path` only with `path` |
+| `tree.children` | `size` | Parent under a granted root; `ClientEntryPage` with each row projected as `ClientEntryRow` |
+| `stats.breakdown` | `size` | Node under a granted root; unchanged `Breakdown` groups aggregate only that subtree |
+| `clutter.developer` | `size` | `root_id` must be a granted root; `DeveloperClutterReport` candidates use the same field projection (the current candidate DTO has no paths) |
+
+For the space reads (docs/48 section 4.2), a missing required field is `permission_denied` with a
+plain message naming the disclosure, such as "this grant does not disclose sizes". No live grant
+keeps the existing `permission_denied` response. Grants are re-read per call; revocation refuses the
+next call. A node outside the grant is `not_found`, "unknown node", before a generation check or
+subtree read; an ungranted clutter root is `not_found`, "unknown root". Roots are selected before
+their totals are read; owner grant metadata, volume IDs, job IDs and subtree totals are removed from
+the client root list. Its optional display path starts at the root's own name, never the owner's
+absolute path. Tree cursors bind the client and grant epoch as search cursors do.
+
 `ClientEntryRow` always carries node reference, kind, name, extension, extension family and
 coverage. Path, size, modified time and attributes are present only when the grant discloses
 them; withheld fields are absent, while disclosed unknown values remain null. Client node
@@ -757,6 +810,52 @@ transition; otherwise status reports the observed attention state without invent
 `unjournaled_items` reports the first 64 staging-relative manifest names observed without journaled
 identities, with the full total in `unjournaled_item_count`. These entries are never adopted or removed.
 
+With staging removal enabled, cleanup first checks the staging identity and complete observed membership,
+then commits `staging_disposition` before its first removal. Its bounded facts contain the staging identity,
+manifest item count, verified/unverified counts, every distinct refusal journaled during the run
+(`refusal_codes`, including ones the run resumed past), the `stop_cause` (the refusal still active, the fence
+that ended the run, `emergency_stop`, or `cancelled` when none was active), whether the journal was blocked
+on a retryable refusal without a fence before cancellation, and `resume_possible: false`.
+`CopyStatus.disposition`, when present, projects those original
+counts and a deterministic `explanation` (at most 2,048 characters); native staging identities remain in
+the journal. The explanation states the stopping cause apart from the refusals journaled during the run, distinguishes retryable refusals from terminal stops, says cancellation ends
+resume, and identifies the evidence retained in `state.db` after removal. Journal resumability describes
+the stopped state, not an available resume command. This snapshot survives item-removal records clearing
+their current verified flags. It is intent and evidence, never a receipt that removal succeeded. A failed
+append, including a lost commit acknowledgement, performs no removal in that call. Older journal decoders
+refuse the new record kind. Facts are computed from the records a journal holds, so a journal begun by an older
+build may understate refusals it never recorded. The service removal default remains off and personal copying remains gated.
+
+### Receipt vocabulary (LW-132, ADR-V3-26)
+
+`CopyStatus.receipt` is additive and absent from older services. `items_verified` remains a
+required, deprecated compatibility count; it is NOT a qualification label, and clients MUST NOT
+infer a completed copy from it. The journal state and refusal codes are unchanged.
+`receipt.items_read_back` counts earlier journaled checks (including directory structure and
+metadata); an unverified receipt does not assert those entries still match now.
+
+`receipt.state` is `read_back` only after a committed, fully checked copy. It is
+`published_unverified` when the journaled folder identity is observed at the publish name but
+confirmation has not committed, including `changed_after_verification`. A publish intent alone
+is `unverified`, as are incomplete, cancelled and refused copies. Unverified states have no
+`highest_label` even when all earlier checks passed.
+
+`highest_label` names the highest supported evidence: `read_back` requires the run's passing
+non-cached file-stream checks; `crash_qualified` requires C6 and G5 campaign evidence;
+`power_loss_qualified` requires LW-134 evidence on the same fully known LW-137 storage tuple;
+`archive_verified` requires a later independent scrub matching the manifest, with its date in
+`archive_verified_at`. Unknown or changed storage fields invalidate path qualification;
+comparison MUST use `StoragePath::proves_same_path`, never observation equality. A downgrade
+retains at most the recorded read-back and never invents crash qualification.
+
+Today's engine produces only `read_back` or no label: G5 is not earned (docs/53), and LW-134
+and LW-136 evidence is unavailable. `archive_verified_at` is therefore null. The explanation
+says "not power-loss tested on this disk" (conservatively also when the bus is unknown).
+Receipt text and serialized field names MUST NOT contain the forbidden persistence adjective
+specified by LW-132. App, CLI and agent consumers display the service's `receipt.explanation`;
+`loomward-native receipt` reads a CopyStatus JSON object from stdin, never initiates copying
+and refuses to infer a receipt from older counts. MCP gains no command or effect.
+
 ## Lazy meaning threads
 
 | Command | Revisions | Retry | Effects |
@@ -885,7 +984,7 @@ Alerts are advice, never an action, and never an approval.
 ## Ask (LW-118, docs/46 section 8)
 
 - **Who may call.** Every `ask.*` command is the owner's. A client principal (`ask:local`, `mcp:<name>`) reaches
-  `search.query` and `node.inspect` only and is refused `permission_denied` on these, whatever its grant says.
+  the grant-scoped search and space reads in section 10 only and is refused `permission_denied` on `ask.*`, whatever its grant says.
 - **Profile.** `ask.configure` exists on the Tauri adapter only (docs/46 section 8.1: profiles are created on the
   desktop); HTTP answers `capability_unavailable`. A profile is `local` only for an `http` loopback endpoint with an
   explicit port and a model name that is not remote (`:cloud`, `-cloud`); anything else is refused,
@@ -893,7 +992,7 @@ Alerts are advice, never an action, and never an approval.
   is no default profile and nothing is discovered: no endpoint is contacted until the owner configured one and asked
   a question. `ask.status` never contacts it.
 - **Grant.** `ask.grant` replaces the standing `ask:local` client grant (LW-067) over active granted roots and the
-  optional fields `path`, `size`, `modified`, `attributes`; `ask.revoke` ends it. The grant is read on every tool
+  optional fields `path`, `size`, `modified`, `attributes`, `volumes`; `ask.revoke` ends it. The grant is read on every tool
   call, so a revocation holds from the next call and the next turn. It does not cancel a question already
   running: that turn finishes with what it already looked up, and its later rounds re-send that conversation
   (rows read before the revocation included) to the same loopback model; it gets nothing new. For the local class there is **no per-round
@@ -917,8 +1016,8 @@ Alerts are advice, never an action, and never an approval.
 recorded aggregates; no live path is read, no manifest is opened). It is advice, never an action and never a claim
 that anything is safe to remove.
 
-- **Who may call.** The owner. A client principal is refused `permission_denied` (it reaches `search.query` and
-  `node.inspect` only). An unknown, revoked or forgotten root is `not_found` or `permission_denied` as for the
+- **Who may call.** The owner, and a client principal whose live grant covers the root and discloses `size`
+  (docs/48 section 4.2; rows projected to the grant's fields). An unknown, revoked or forgotten root is `not_found` or `permission_denied` as for the
   other root reads.
 - **What qualifies.** An exact-case conventional output directory directly beside a recorded manifest: Cargo
   `target`; npm `node_modules`; Python `.venv`, `venv`, `__pycache__`; .NET `bin`, `obj`; Gradle `build`, `.gradle`.
@@ -928,10 +1027,133 @@ that anything is safe to remove.
 - **Sizes.** `logical_bytes` and `allocated_bytes` are what the catalogue observed under the directory, or `null`
   (unknown) when the directory is partial, stale, unscanned or has an unknown allocation: never zero. Observed bytes
   are not reclaimable bytes (a shared store, hard links or unique content change what a removal would free), so the
-  report carries no total. Candidates are ordered by known logical size, largest first, then unknown sizes.
+  report carries no total across providers until a cross-provider identity and deduplication contract exists.
+  Candidates are ordered by known recorded logical size, largest first, then unknown sizes. When unresolved
+  watcher changes make a root stale, both sizes become `null` and coverage becomes `stale`; selection and
+  ordering (including the limit) retain that recorded-size ranking, not a ranking of current sizes.
 - **Honest limits.** `partial` is true when the root is mid-scan, stale or not fully covered, or any listed size is
   not fully known: projects may be missing. `truncated` is true when more than `limit` candidates exist.
   `budget_hit` is true when the detector reached its work budget; `candidates` is then empty and means nothing
   about the root (`budget_note` says so). A deadline expiry is still `deadline_exceeded`.
 - **Not assessed.** `not_assessed` names what no provider supplies yet: regeneration cost (LW-087), model-host
   lifecycle (LW-086) and stale worktrees (LW-076). Each candidate's `regeneration_cost` is `unknown`.
+
+
+## Reclaim plan (LW-131 R1d)
+
+`reclaim.plan { volume_id, limit }` reads advice for a sealed volume ID from `volumes.list`, with
+`limit` from 1 to 200 per group. It is owner-only on Tauri and HTTP in personal and synthetic
+sessions; client principals (including MCP and Ask) are refused even with disclosure grants.
+Unknown or foreign volume IDs are `not_found`; malformed requests are `invalid_request`.
+The response's `volume.volume_id` is the same sealed ID returned by `volumes.list`.
+
+The plan composes developer clutter and machine stores over the volume's active grants, retaining
+only outermost roots so covered allocation is not counted twice. It uses the same volume physics
+as `volumes.list`; reserve remains `null` until a preference is recorded. The four groups always
+appear in order: `tool_owned_cleanup`, `relocate`, `archive_candidates`, `informational`.
+No candidate total is computed because candidates may overlap. `unaccounted_bytes` is volume used
+minus covered-root allocation, or `null` when the coverage or physics is unknown.
+
+Reads never request aggregate repairs. Stale roots make the plan partial and their candidate
+sizes unknown. Work-budget exhaustion sets `budget_hit` and `partial`; an empty group then says
+nothing about what the volume holds. Deadline expiry still returns `deadline_exceeded`.
+The plan itself performs no link-count pass: reclaimable bytes are `null` with a reason, never
+zero, unless `reclaim.observe` (below) stored a verified verdict for the candidate. The Recycle Bin query is metadata-only and made only for a volume-root grant;
+otherwise its size is unknown. `owner_step` and relocation settings are display text only:
+nothing executes them, changes settings or performs file/process effects. MCP access and the app
+view are separate lanes.
+
+## Reclaim relief observation (LW-131 R1g, #939)
+
+`reclaim.observe { volume_id }` starts a `reclaim` job (`JobResult`, `job.state` events, `jobs.get`,
+`jobs.cancel`; `root_id` is `null`) and refuses the same volumes `reclaim.plan` refuses. It is
+owner-only on Tauri and HTTP; client principals are refused. A process with an elevated token is
+refused (`permission_denied`, reason `elevated_token`). One reclaim job runs at a time (`busy`).
+
+The job recomputes the plan's candidates from the catalogue, skips stale roots, unknown sizes,
+virtual disks and system-managed space, and visits the rest largest allocation first. For each it
+lists the catalogue's names (at most 200,000), builds paths under the granted root's verified path
+and runs the metadata-only link-count pass with the listing's identity as expected; a replaced name,
+placeholder or reparse point is unknown. The relief rule is the plan's own. One verdict per
+candidate (unique allocated bytes, or a reason) is stored in `state.db` only while the grant is
+active at the generation the names were read under. Nothing else in `state.db` or the catalogue
+changes, and no content is read.
+
+The job has a ten-minute wall-clock budget. A budget stop completes the job with `coverage: partial`;
+a cancel ends it `cancelled`. Candidates it did not finish store nothing, so their relief stays
+unknown. `job.reclaim` carries counts only (`candidates_total`, `candidates_done`, `names_checked`).
+
+`reclaim.plan` shows a stored verdict only while the root's generation, the node's incarnation, the
+candidate directory's subtree revision and the catalogue instance match, the root is complete with no
+scan in flight, and it is not stale; any rescan or catalogue write under the candidate therefore
+returns it to "not observed". Revoking, forgetting or losing a root's identity deletes its verdicts.
+
+The pass opens names through verbatim (`\\?\`) paths and first checks every directory from below the
+root through the candidate is still the catalogued, non-reparse directory; otherwise the candidate is
+unknown and nothing beneath it is opened. It re-checks the grant and cancellation every 1,000 names.
+A root that fails admission is skipped (job `partial`), and the job never changes a grant's state.
+
+### Selected reclaim sets (#1002)
+
+Both owner commands additionally accept `selection: [NodeId, ...]` (1–12 sealed IDs).
+Omitting it preserves the existing per-candidate behavior and result shape. The service resolves
+IDs against the current volume's candidates, refuses repeated IDs, wrong-volume or non-candidate
+nodes, and rejects ancestor/descendant pairs. The request never takes a filesystem path or an
+execution instruction. The target is an exact decimal byte string compared in the view; it is
+not an effect, a stored permission or an automatic subset search.
+
+With a selection, `reclaim.observe` performs one union observation with a shared ten-minute,
+200,000-name and 200,000-directory budget. Distinct catalogue names are counted once; shared
+objects use the existing identity-matched hard-link closure rule. Each member must have complete
+size coverage, and every link of every object must be in the selected union. Missing identity,
+an outside link, recall/reparse risk, cancellation or incomplete work gives an unknown aggregate,
+never a partial known sum. Cancellation and active grants are checked between chunks of at most
+1,000 metadata opens; SQL walks also check cancellation and the deadline. A blocked OS metadata
+call cannot be preempted. The existing path-based directory-check/open race remains; observations
+are never effect authority.
+
+Only the latest selection aggregate per volume is retained in `state.db`, together with its
+catalogue instance, member node incarnations, roots, active grants, generations, subtree revisions
+and observation time. No name/object graph is retained. Publication checks all bindings in the
+same SQL statement that writes the aggregate. Revoking or forgetting any member's root removes
+the result. A changed binding or stale root prevents a known result from being read.
+
+`reclaim.plan` with a selection adds `selection: { members, status, observed_at,
+reclaimable_bytes, reason }`. Status is `unobserved`, `recorded` or `expired`; timestamps and
+bytes are required nullable fields. A recorded attempt may have unknown bytes with a reason.
+Different selections never borrow the last selection's estimate. The UI clears the result on
+selection changes, shows its age, and compares only recorded known bytes with the target using
+integer arithmetic. The estimate does not approve deletion or guarantee physical space recovery;
+Recycle Bin moves and same-volume renames do not immediately free this allocation.
+
+## Owner MCP client grants (docs/48 E6)
+
+`clients.grant`, `clients.list` and `clients.revoke` accept the owner principal only, on the desktop
+Tauri adapter, in personal and synthetic sessions. HTTP answers `capability_unavailable`. A client principal is refused before dispatch, even
+with its own live grant. These are disclosure controls, with no file or process effect. They
+never manage `ask:` (use `ask.grant`/`ask.revoke`) or the teacher's `grants.*` controls.
+
+- `client` is the full principal `mcp:<name>`. The name is 1-64 ASCII letters, digits, dots,
+  underscores or hyphens, matching `valid_client`. The app accepts the name and adds `mcp:`.
+- `clients.grant {client, roots, fields, expires_at?}` wraps `grant_client`. Every root must
+  currently be granted to the owner. It replaces any unrevoked grant atomically and returns a
+  fresh `grant_id` (the new epoch); earlier cursors cannot cross that epoch. Empty fields are
+  allowed. Allowed fields come from the service's `CLIENT_FIELDS`, returned as `available_fields`
+  by `clients.list`; `ClientField` includes the space-read lane's `volumes` field. A known
+  contract field that the running service does not yet support is refused, never silently added.
+- Optional expiry is a UTC timestamp representable as nonnegative signed Unix nanoseconds
+  (1970 through April 2262). Out-of-range values refuse before replacement. Past expiry is allowed
+  and confers no current access. Returned timestamps follow the existing millisecond display
+  precision; admission compares the stored nanoseconds.
+- `clients.list {}` returns all MCP grant epochs in creation order, including revoked and
+  expired records, with roots, fields, creation, expiry and revocation timestamps. Ask grants are
+  excluded. Roots are current session IDs resolved from durable owner root grants, including
+  revoked roots retained in the catalogue. Forgotten roots and legacy unproven mappings are
+  omitted; an empty historical root list does not mean the grant originally had no roots.
+- `clients.revoke {client}` wraps `revoke_client` and returns whether it revoked an unrevoked
+  grant. It is idempotent, bypasses the mutation FIFO like `ask.revoke`, and stops client reads
+  from their next call. History remains visible.
+
+Before creating a grant that includes `path`, the Agent access panel displays: "The agent's host
+may send what it reads to its model provider. Loomward cannot see or control that."
+The connection command is `claude mcp add loomward -- "%LOCALAPPDATA%\Loomward\loomward-mcp.exe" --client <name>`.

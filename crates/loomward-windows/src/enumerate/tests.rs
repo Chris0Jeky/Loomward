@@ -106,6 +106,31 @@ fn placeholders_and_reparse_attributes_are_refused() {
     assert!(!refused_attributes(0x10));
 }
 
+/// Provider stub: decode the bytes supplied by directory enumeration, without a file handle.
+/// Recall flags cannot be fabricated with SetFileAttributes on an ordinary synthetic file.
+/// A real no-hydration proof needs a provider-backed placeholder fixture (#821).
+#[test]
+fn placeholder_listing_preserves_metadata_without_opening_entries() {
+    for strategy in [Strategy::Extended, Strategy::Both] {
+        for attrs in [0x400000u32, 0x40000, 0x1000, 0x480000, 0x100080] {
+            let mut b = record(strategy, &[120]);
+            b[40..48].copy_from_slice(&900i64.to_le_bytes());
+            b[48..56].copy_from_slice(&16i64.to_le_bytes());
+            b[56..60].copy_from_slice(&attrs.to_le_bytes());
+            let mut seen = 0;
+            decode_buffer(&b, strategy, &mut |entry| {
+                seen += 1;
+                assert_eq!(entry.attributes, attrs);
+                assert_eq!(entry.end_of_file, 900);
+                assert_eq!(entry.allocation_size, Some(16));
+                Flow::Continue
+            })
+            .unwrap();
+            assert_eq!(seen, 1);
+        }
+    }
+}
+
 #[cfg(windows)]
 #[test]
 fn reopen_follows_identity_after_rename_and_rejects_changed_volume_or_root() {
@@ -445,7 +470,7 @@ pub(super) fn canonical_tempdir() -> tempfile::TempDir {
 /// (AGENTS.md invariant 2). There, pin the refusal and skip; elsewhere run the native test.
 #[cfg(windows)]
 fn skip_elevated() -> bool {
-    if !crate::enumerate::running_elevated() {
+    if !crate::enumerate::skip_elevated_test() {
         return false;
     }
     let temp = canonical_tempdir();
@@ -458,6 +483,32 @@ fn skip_elevated() -> bool {
     );
     eprintln!("skipped: elevated token; the native scan refuses elevation (invariant 2)");
     true
+}
+
+#[cfg(windows)]
+#[test]
+fn elevated_fixture_skip_is_visible_in_success_output() {
+    const CHILD: &str = "LOOMWARD_ELEVATION_REPORT_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        let _reset = crate::enumerate::force_elevation_for_test();
+        assert!(skip_elevated());
+        return;
+    }
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "enumerate::tests::elevated_fixture_skip_is_visible_in_success_output",
+            "--show-output",
+        ])
+        .env(CHILD, "1")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.contains("SKIPPED (elevated): enumerate::tests::elevated_fixture_skip_is_visible_in_success_output"),
+        "successful native fixture skips must be visible: {stdout}"
+    );
 }
 
 #[test]

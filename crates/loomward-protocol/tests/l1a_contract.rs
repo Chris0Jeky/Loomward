@@ -17,7 +17,7 @@ fn commands_json() -> Value {
 fn command_table_equals_commands_json() {
     let doc = commands_json();
     let commands = doc["commands"].as_object().unwrap();
-    assert_eq!(commands.len(), 71);
+    assert_eq!(commands.len(), 77);
     assert_eq!(Command::ALL.len(), commands.len());
     for c in Command::ALL {
         let row = &commands[c.as_str()];
@@ -470,6 +470,10 @@ fn expected_generation_is_only_for_single_root_anchored_commands() {
     let root_slice = json!({"anchor":{"kind":"root","root_id":"rt_a"},"depth":2,"max_nodes":100,"min_share":0.0,"basis":"logical","include_files":false});
     let atlas_slice = json!({"anchor":{"kind":"atlas"},"depth":2,"max_nodes":100,"min_share":0.0,"basis":"logical","include_files":false});
     let ok_cases = [
+        (
+            Command::ProjectsFind,
+            json!({"root_id":"rt_a","limit":10,"cursor":null}),
+        ),
         (Command::TreeSlice, root_slice.clone()),
         (
             Command::TreeChildren,
@@ -504,6 +508,7 @@ fn expected_generation_is_only_for_single_root_anchored_commands() {
                 | Command::TreePath
                 | Command::NodeInspect
                 | Command::StatsBreakdown
+                | Command::ProjectsFind
         ) {
             continue;
         }

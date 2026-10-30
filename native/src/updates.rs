@@ -116,26 +116,23 @@ pub fn save_prefs(dir: &Path, prefs: &Prefs) -> Result<(), String> {
         .map_err(|e| format!("could not save the update settings: {e}"))
 }
 
-/// Unicode `Bidi_Control` characters: they reorder the text around them.
-fn bidi_control(c: char) -> bool {
-    matches!(
-        c,
-        '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
-    )
-}
-
-/// Release notes are text from the network. Line breaks and tabs become spaces, so they cannot
-/// start a line that looks like part of the confirmation; other control characters and bidi
-/// controls are dropped; the result is cut to [`NOTES_IN_BOX`] characters.
+/// Release notes are network text: line breaks become spaces, the text is cut to
+/// [`NOTES_IN_BOX`] characters before escaping (so no escape is split), and hidden characters are
+/// escaped as in the grant confirmation while letters stay readable (review of #978).
 pub fn release_notes_text(notes: &str) -> String {
-    let cleaned: String = notes
+    let flat: String = notes
         .chars()
-        .filter(|&c| c != '\r' && !bidi_control(c))
-        .map(|c| if matches!(c, '\n' | '\t') { ' ' } else { c })
-        .filter(|c| !c.is_control())
+        .map(|c| {
+            if matches!(c, '\n' | '\r' | '\t') {
+                ' '
+            } else {
+                c
+            }
+        })
         .collect();
-    let mut shown: String = cleaned.chars().take(NOTES_IN_BOX).collect();
-    if cleaned.chars().count() > NOTES_IN_BOX {
+    let cut: String = flat.chars().take(NOTES_IN_BOX).collect();
+    let mut shown = crate::dialogs::readable(&cut);
+    if flat.chars().count() > NOTES_IN_BOX {
         shown.push_str(" [...]");
     }
     shown
@@ -731,8 +728,8 @@ mod tests {
         assert!(text.contains("Cancel (the default) changes nothing"));
     }
 
-    /// The notes come from the network: a bidi override, a control byte or a line break in them
-    /// cannot reshape the box, a line break cannot start a fake line of the confirmation, and the
+    /// The notes come from the network: a bidi override or a control byte in them cannot reshape the
+    /// box, a line break reads as a space so it cannot start a fake line of the confirmation, and the
     /// block says it is the release's own text.
     #[test]
     fn release_notes_are_inert_labelled_text_in_the_confirmation() {
@@ -740,7 +737,7 @@ mod tests {
             version: "0.3.0".into(),
             channel: Channel::Preview,
             notes:
-                "Fixed \u{202E}evil\u{202C}\r\nOK installs. Cancel\u{7}\u{0}\u{2066}x\u{2069}\tdone"
+                "Fixed \u{202E}evil\u{202C}\u{3164}\r\nOK installs. Cancel\u{7}\u{0}\u{2066}x\u{2069}\tdone"
                     .into(),
             date: None,
             previous: false,
@@ -749,7 +746,7 @@ mod tests {
         assert!(
             text.contains(
                 "Release notes (text from the release, not checked by Loomward):\n\
-                 Fixed evil OK installs. Cancelx done\n\nLoomward closes"
+                 Fixed \\u{202E}evil\\u{202C}\\u{3164}  OK installs. Cancel\\u{0007}\\u{0000}\\u{2066}x\\u{2069} done\n\nLoomward closes"
             ),
             "{text}"
         );
@@ -760,13 +757,34 @@ mod tests {
         assert!(confirm_text(&empty, "0.2.0").contains("Release notes: none published."));
     }
 
-    /// The cap counts what is shown, after the characters that are dropped are gone.
+    /// The cap applies to the raw notes before escaping, so an escape is never cut in half.
     #[test]
-    fn release_notes_cap_applies_after_cleaning() {
+    fn release_notes_cap_never_splits_an_escape() {
         let noisy = format!("\u{202E}{}", "n\u{7}".repeat(NOTES_IN_BOX + 5));
         let shown = release_notes_text(&noisy);
-        assert_eq!(shown, format!("{} [...]", "n".repeat(NOTES_IN_BOX)));
-        assert!(!shown.chars().any(|c| c.is_control() || bidi_control(c)));
+        let cut: String = noisy.chars().take(NOTES_IN_BOX).collect();
+        assert_eq!(shown, format!("{} [...]", crate::dialogs::readable(&cut)));
+        assert!(shown.chars().all(|c| matches!(c, ' '..='~')));
+        assert!(!shown.trim_end_matches(" [...]").ends_with(r"\u{"));
+    }
+
+    /// Line breaks read as spaces and letters of any script stay readable (review of #978).
+    #[test]
+    fn release_notes_stay_readable() {
+        assert_eq!(
+            release_notes_text("Fixes:\n- café scan\r\n- naïve\tbug"),
+            "Fixes: - café scan  - naïve bug"
+        );
+    }
+
+    #[test]
+    fn release_notes_distinguish_literal_escapes_from_hidden_characters() {
+        let notes = "normal text \\u{202E} \u{202E}\u{3164}\u{2800}";
+        assert_eq!(
+            release_notes_text(notes),
+            r"normal text \\u{202E} \u{202E}\u{3164}\u{2800}"
+        );
+        assert_eq!(release_notes_text("normal text"), "normal text");
     }
 
     #[test]

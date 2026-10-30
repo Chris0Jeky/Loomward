@@ -5,6 +5,195 @@ use super::*;
 use loomward_operations::{approve, tree, Code};
 use std::{fs, sync::atomic::AtomicU32};
 
+fn disposition_row(lab: &Lab, op: u64) -> serde_json::Value {
+    lab.store
+        .lock()
+        .unwrap()
+        .rows(op)
+        .unwrap()
+        .iter()
+        .map(|r| serde_json::from_str::<serde_json::Value>(&r.body).unwrap())
+        .find(|r| r["kind"] == "staging_disposition")
+        .expect("LW-146: disposition must precede removal")
+}
+
+#[test]
+fn disposition_distinguishes_resumable_and_terminal_refusals_and_keeps_verified_counts() {
+    for code in [Refusal::SourceInUse, Refusal::SourceChanged] {
+        let Some(lab) = Lab::new() else { return };
+        fs::write(lab.src().join("f"), b"payload").unwrap();
+        let op = lab.start(&["f"]);
+        let crash = Control::new(true).with_hook(|p, _| {
+            if p == Point::Verified(0) {
+                Flow::Crash
+            } else {
+                Flow::Continue
+            }
+        });
+        assert!(matches!(run(&lab.store, op, &crash), Err(Fault::Crashed)));
+        let r = replay(&lab.store, op).unwrap();
+        lab.store
+            .lock()
+            .unwrap()
+            .append(
+                op,
+                r.epoch,
+                Record::Transition {
+                    to: if code.resumable() {
+                        OpState::Blocked
+                    } else {
+                        OpState::NeedsAttention
+                    },
+                    code: Some(code),
+                },
+            )
+            .unwrap();
+        cancel(&lab.store, op, &lab.plan(op), &Control::new(true)).unwrap();
+        let row = disposition_row(&lab, op);
+        assert_eq!(row["facts"]["items_verified"], 1);
+        assert_eq!(row["facts"]["items_unverified"], 0);
+        assert_eq!(row["facts"]["resumable_before_cancel"], code.resumable());
+        assert_eq!(row["facts"]["resume_possible"], false);
+        assert!(lab.dest_names().is_empty());
+    }
+}
+
+#[test]
+fn disposition_append_failure_preserves_all_staging_even_after_a_lost_ack() {
+    use loomward_operations::store::fault::{Kind, Stage};
+    for stage in [Stage::Row, Stage::Head, Stage::Ack] {
+        let Some(lab) = Lab::new() else { return };
+        fs::write(lab.src().join("f"), b"payload").unwrap();
+        let op = lab.start(&["f"]);
+        let crash = Control::new(true).with_hook(|p, _| {
+            if p == Point::Verified(0) {
+                Flow::Crash
+            } else {
+                Flow::Continue
+            }
+        });
+        assert!(matches!(run(&lab.store, op, &crash), Err(Fault::Crashed)));
+        let staging = lab.dest().join(&staging_dirs(&lab)[0]);
+        lab.store
+            .lock()
+            .unwrap()
+            .set_fault(Some(Box::new(move |record, at| {
+                (serde_json::to_value(record).unwrap()["kind"] == "staging_disposition"
+                    && at == stage)
+                    .then_some(Kind::Full)
+            })));
+        assert!(
+            matches!(
+                cancel(&lab.store, op, &lab.plan(op), &Control::new(true)),
+                Err(Fault::Journal(_))
+            ),
+            "{stage:?}"
+        );
+        assert_eq!(fs::read(staging.join("f")).unwrap(), b"payload");
+        lab.store.lock().unwrap().set_fault(None);
+        cancel(&lab.store, op, &lab.plan(op), &Control::new(true)).unwrap();
+        assert!(!staging.exists());
+        disposition_row(&lab, op);
+    }
+}
+
+#[test]
+fn uncertain_membership_or_staging_identity_preserves_every_item() {
+    for replace in [false, true] {
+        let Some(lab) = Lab::new() else { return };
+        fs::write(lab.src().join("f"), b"payload").unwrap();
+        let op = lab.start(&["f"]);
+        let crash = Control::new(true).with_hook(|p, _| {
+            if p == Point::Verified(0) {
+                Flow::Crash
+            } else {
+                Flow::Continue
+            }
+        });
+        assert!(matches!(run(&lab.store, op, &crash), Err(Fault::Crashed)));
+        let staging = lab.dest().join(&staging_dirs(&lab)[0]);
+        if replace {
+            fs::rename(&staging, lab.dest().join("displaced")).unwrap();
+            fs::create_dir(&staging).unwrap();
+            fs::write(staging.join("f"), b"replacement").unwrap();
+        } else {
+            fs::write(staging.join("extra"), b"keep").unwrap();
+        }
+        let out = cancel(&lab.store, op, &lab.plan(op), &Control::new(true)).unwrap();
+        assert_eq!(out.state, OpState::NeedsAttention);
+        assert!(
+            lab.store
+                .lock()
+                .unwrap()
+                .rows(op)
+                .unwrap()
+                .iter()
+                .all(|r| !r.body.contains("staging_disposition")),
+            "a refused removal journals no disposition"
+        );
+        assert_eq!(
+            fs::read(staging.join("f")).unwrap(),
+            if replace {
+                &b"replacement"[..]
+            } else {
+                &b"payload"[..]
+            }
+        );
+    }
+}
+
+#[test]
+fn published_copy_never_gets_a_removal_disposition() {
+    let Some(lab) = Lab::new() else { return };
+    fs::write(lab.src().join("f"), b"payload").unwrap();
+    let op = lab.start(&["f"]);
+    let control = Control::new(true).with_hook(|p, _| {
+        if p == Point::AfterPublish {
+            Flow::Crash
+        } else {
+            Flow::Continue
+        }
+    });
+    assert!(matches!(run(&lab.store, op, &control), Err(Fault::Crashed)));
+    cancel(&lab.store, op, &lab.plan(op), &Control::new(true)).unwrap();
+    assert_eq!(
+        fs::read(
+            lab.dest()
+                .join(lab.plan(op).manifest.destination.folder_name)
+                .join("f")
+        )
+        .unwrap(),
+        b"payload"
+    );
+    assert!(lab
+        .store
+        .lock()
+        .unwrap()
+        .rows(op)
+        .unwrap()
+        .iter()
+        .all(|r| !r.body.contains("staging_disposition")));
+}
+
+/// #888 item 6: the lab flag reaches the fence negated. A fixed NTFS USB disk is a copy
+/// destination only in a synthetic lab session; any other session is refused.
+#[test]
+fn detachable_destination_is_refused_outside_a_synthetic_lab() {
+    let usb = crate::volumes::Classification {
+        drive_type: 3,
+        bus_type: "usb".into(),
+        removable_media: false,
+        filesystem: "NTFS".into(),
+    };
+    assert!(!destination_unsupported(&usb, true).unwrap());
+    assert!(destination_unsupported(&usb, false).unwrap());
+    let internal = crate::volumes::Classification {
+        bus_type: "nvme".into(),
+        ..usb
+    };
+    assert!(!destination_unsupported(&internal, false).unwrap());
+}
+
 #[test]
 fn copy_fence_append_failure_still_stops_admission() {
     use loomward_operations::store::fault::{Kind, Stage};
@@ -312,22 +501,57 @@ fn assert_incomplete_listing(folder: &Path) {
     );
 }
 
+pub(super) struct LabDir {
+    _temp: Option<tempfile::TempDir>,
+    path: PathBuf,
+}
+
+impl LabDir {
+    pub(super) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn close(self) -> io::Result<()> {
+        self._temp.map_or(Ok(()), tempfile::TempDir::close)
+    }
+}
+
 pub(super) struct Lab {
-    pub(super) tmp: tempfile::TempDir,
+    pub(super) tmp: LabDir,
     pub(super) store: Mutex<Store>,
 }
 
 impl Lab {
     pub(super) fn new() -> Option<Lab> {
-        if enumerate::running_elevated() {
+        if enumerate::skip_elevated_test() {
             eprintln!("skipped: elevated token (invariant 2)");
             return None;
         }
-        let tmp = tempfile::tempdir().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let tmp = LabDir {
+            path: temp.path().to_path_buf(),
+            _temp: Some(temp),
+        };
         for d in ["src", "dest", "state"] {
             fs::create_dir(tmp.path().join(d)).unwrap();
         }
         let store = Mutex::new(Store::open(&tmp.path().join("state/state.db")).unwrap());
+        Some(Lab { tmp, store })
+    }
+    /// A caller-owned synthetic lab survives both this handle and a guest reboot.
+    pub(super) fn at(dir: &Path) -> Option<Lab> {
+        if enumerate::skip_elevated_test() {
+            eprintln!("skipped: elevated token (invariant 2)");
+            return None;
+        }
+        for d in ["src", "dest", "state"] {
+            fs::create_dir_all(dir.join(d)).unwrap();
+        }
+        let tmp = LabDir {
+            _temp: None,
+            path: dir.to_path_buf(),
+        };
+        let store = Mutex::new(Store::open(&dir.join("state/state.db")).unwrap());
         Some(Lab { tmp, store })
     }
     pub(super) fn src(&self) -> PathBuf {
@@ -343,6 +567,7 @@ impl Lab {
             destination: dest,
             destination_grant: 2,
             grants_active: true,
+            synthetic_lab: true,
             protected: false,
             date: DATE,
             destination_root: self.grant(),
@@ -422,7 +647,11 @@ fn tree_fixture(root: &Path) {
         .unwrap();
     }
     fs::write(top.join("streamed.txt"), b"default stream").unwrap();
-    fs::write(top.join("streamed.txt:note"), b"zone mark survives").unwrap();
+    fs::write(
+        top.join("streamed.txt:Zone.Identifier"),
+        b"[ZoneTransfer]\r\nZoneId=3\r\n",
+    )
+    .unwrap();
     fs::write(top.join("readonly.txt"), b"read only").unwrap();
     let mut p = fs::metadata(top.join("readonly.txt"))
         .unwrap()
@@ -497,6 +726,14 @@ fn lab_tree_is_copied_verified_published_and_c1_agrees() {
     assert_eq!(outcome.state, OpState::Committed, "{outcome:?}");
     assert_eq!(outcome.refusal, None);
     assert_eq!(outcome.items_verified, outcome.items_total);
+    assert_eq!(
+        outcome.receipt.highest_label,
+        Some(loomward_operations::ReceiptLabel::ReadBack)
+    );
+    assert_eq!(
+        fs::read(lab.dest().join("top/streamed.txt:Zone.Identifier")).unwrap(),
+        b"[ZoneTransfer]\r\nZoneId=3\r\n"
+    );
     // One new folder under the source folder's name, nothing else in the parent.
     assert_eq!(lab.dest_names(), ["top"]);
     // The receipt agrees with the independent C1 verifier: content and every section 6 class.
@@ -1055,6 +1292,95 @@ fn a_destination_grant_on_another_volume_guid_is_refused_before_any_write() {
         assert_eq!(outcome.state, OpState::Refused, "{outcome:?}");
         assert_eq!(outcome.refusal, Some((Refusal::DestinationChanged, None)));
         assert!(lab.dest_names().is_empty());
+    }
+}
+
+/// #690: recovery must bind cleanup to the destination grant's GUID even when all object IDs match.
+#[test]
+fn recovery_clean_checks_the_destination_volume_guid() {
+    for binding in [0, 1, 2] {
+        let Some(mut lab) = Lab::new() else { return };
+        fs::write(lab.src().join("f"), b"payload").unwrap();
+        let op = lab.start(&["f"]);
+        let crash = Control::new(true).with_hook(|p, _| {
+            if p == Point::Verified(0) {
+                Flow::Crash
+            } else {
+                Flow::Continue
+            }
+        });
+        assert!(matches!(run(&lab.store, op, &crash), Err(Fault::Crashed)));
+        let staging = lab.dest().join(&staging_dirs(&lab)[0]);
+        lab.reopen();
+        let mut plan = lab.plan(op);
+        plan.destination_root_guid = match binding {
+            0 => plan.destination_root_guid,
+            1 => plan.destination_root_guid.map(|g| g ^ 1),
+            _ => None,
+        };
+        let outcome = cancel(&lab.store, op, &plan, &Control::new(true)).unwrap();
+        let r = replay(&lab.store, op).unwrap();
+        if binding == 0 {
+            assert_eq!(outcome.state, OpState::Cancelled, "{outcome:?}");
+            assert!(r.staging_removed);
+            assert!(!staging.exists());
+        } else {
+            assert_eq!(outcome.state, OpState::NeedsAttention, "{outcome:?}");
+            assert!(!r.staging_removed);
+            assert_eq!(r.held().count(), 1);
+            assert_eq!(fs::read(staging.join("f")).unwrap(), b"payload");
+        }
+        assert_eq!(fs::read(lab.src().join("f")).unwrap(), b"payload");
+    }
+}
+
+/// #690: a byte-identical published tree on a different (or unbound) volume cannot be committed.
+#[test]
+fn recovery_confirm_checks_the_destination_volume_guid() {
+    for settle in [false, true] {
+        for binding in [0, 1, 2] {
+            let Some(mut lab) = Lab::new() else { return };
+            fs::create_dir(lab.src().join("top")).unwrap();
+            fs::write(lab.src().join("top/f"), b"payload").unwrap();
+            let op = lab.start(&["top"]);
+            let crash = Control::new(false).with_hook(|p, _| {
+                if p == Point::AfterPublish {
+                    Flow::Crash
+                } else {
+                    Flow::Continue
+                }
+            });
+            assert!(matches!(run(&lab.store, op, &crash), Err(Fault::Crashed)));
+            lab.reopen();
+            let mut plan = lab.plan(op);
+            plan.destination_root_guid = match binding {
+                0 => plan.destination_root_guid,
+                1 => plan.destination_root_guid.map(|g| g ^ 1),
+                _ => None,
+            };
+            let r = replay(&lab.store, op).unwrap();
+            let outcome = confirm(
+                &lab.store,
+                op,
+                &plan,
+                &r,
+                r.staging.unwrap(),
+                &plan.manifest.destination.folder_name,
+                settle,
+            )
+            .unwrap();
+            if binding == 0 {
+                assert_eq!(outcome.state, OpState::Committed, "{outcome:?}");
+            } else {
+                assert_eq!(outcome.state, OpState::NeedsAttention, "{outcome:?}");
+                assert_eq!(
+                    outcome.refusal,
+                    Some((Refusal::ChangedAfterVerification, None))
+                );
+            }
+            assert_eq!(fs::read(lab.dest().join("top/f")).unwrap(), b"payload");
+            assert_eq!(fs::read(lab.src().join("top/f")).unwrap(), b"payload");
+        }
     }
 }
 
@@ -2043,6 +2369,11 @@ fn destination_aces_prevent_commit(recovery: bool) {
                 outcome.refusal,
                 Some((Refusal::ChangedAfterVerification, None))
             );
+            assert_eq!(
+                outcome.receipt.state,
+                loomward_operations::ReceiptState::PublishedUnverified
+            );
+            assert_eq!(outcome.receipt.highest_label, None);
             assert_eq!(fs::read(published.join("sub/f")).unwrap(), b"payload");
             assert_eq!(source_snapshot(&lab.src()), before);
         }
@@ -2431,7 +2762,7 @@ fn another_store_committing_a_pending_rename_keeps_the_annotation() {
 fn a_process_dying_with_a_pending_fence_reopens_without_effects() {
     const CHILD: &str = "LOOMWARD_PENDING_FENCE_CHILD";
     if let Some(dir) = std::env::var_os(CHILD) {
-        assert!(!enumerate::running_elevated());
+        assert!(!enumerate::skip_elevated_test());
         let store = std::sync::Arc::new(Mutex::new(
             Store::open(&PathBuf::from(dir).join("state/state.db")).unwrap(),
         ));
@@ -2734,6 +3065,14 @@ fn a_stream_planted_on_a_staged_folder_is_never_committed() {
             outcome.refusal,
             Some((Refusal::ChangedAfterVerification, None))
         );
+        // LW-132: a copy refused before its rename never claims publication.
+        let expected = if after_rename {
+            loomward_operations::ReceiptState::PublishedUnverified
+        } else {
+            loomward_operations::ReceiptState::Unverified
+        };
+        assert_eq!(outcome.receipt.state, expected, "{after_rename}");
+        assert_eq!(outcome.receipt.highest_label, None);
     }
 }
 

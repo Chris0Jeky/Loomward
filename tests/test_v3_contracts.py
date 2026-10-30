@@ -18,6 +18,26 @@ class V3ContractTests(unittest.TestCase):
         self.defs = self.schema['$defs']
         self.commands = load('commands.json')
 
+    def test_project_discovery_is_explicit_bounded_and_read_only(self):
+        self.assertTrue('projects.find' in self.commands['commands'],
+                        'An explicit catalogue-only project discovery command is missing')
+        command = self.commands['commands']['projects.find']
+        self.assertEqual(command['effects'], 'none')
+        self.assertEqual(command['adapters'], ['tauri', 'http'])
+        self.assertNotIn('client_result', command)
+        try:
+            import jsonschema
+        except ImportError:
+            self.skipTest('jsonschema not installed')
+        validator = jsonschema.Draft202012Validator({
+            '$defs': self.defs, '$ref': '#/$defs/' + command['request']})
+        request = {'root_id': 'rt_1', 'limit': 50, 'cursor': None}
+        validator.validate(request)
+        for limit in (0, 201):
+            self.assertFalse(validator.is_valid(dict(request, limit=limit)))
+        self.assertFalse(validator.is_valid(dict(request, path='Synthetic project')))
+        self.assertFalse(validator.is_valid({'limit': 50, 'cursor': None}))
+
     def test_schema_is_valid_json_schema(self):
         try:
             import jsonschema
@@ -54,6 +74,40 @@ class V3ContractTests(unittest.TestCase):
                 for key in ('request', 'result', 'data'):
                     if isinstance(spec, dict) and isinstance(spec.get(key), str):
                         self.assertIn(spec[key], self.defs, f'{kind} {name}.{key}')
+
+    def test_copy_receipt_vocabulary_is_additive_and_truthful(self):
+        receipt = load('examples/commands/copy.status.result.json')['receipt']
+        self.assertIsNone(receipt['highest_label'])
+        self.assertEqual(receipt['state'], 'unverified')
+        self.assertIn('not power-loss tested on this disk', receipt['explanation'])
+        self.assertNotIn('durable', json.dumps(receipt).lower())
+        self.assertNotIn('receipt', self.defs['CopyStatus']['required'])
+        self.assertTrue(self.defs['CopyStatus']['properties']['items_verified']['deprecated'])
+
+    def test_copy_status_accepts_bounded_disposition_without_native_identity(self):
+        try:
+            import jsonschema
+        except ImportError:
+            self.skipTest('jsonschema not installed')
+        status = load('examples/commands/copy.status.result.json')
+        status['disposition'] = {
+            'explanation': 'Cancelled after source_in_use. Journal evidence remains.',
+            'items_total': 3, 'items_verified': 2, 'items_unverified': 1,
+            'refusal_codes': ['source_in_use'], 'stop_cause': 'source_in_use',
+            'resumable_before_cancel': True,
+            'resume_possible': False,
+        }
+        validator = jsonschema.Draft202012Validator({
+            '$defs': self.defs, '$ref': '#/$defs/CopyStatus'})
+        validator.validate(status)
+        for field, value in [('explanation', 'x' * 2049),
+                             ('refusal_codes', ['source_in_use'] * 33)]:
+            changed = dict(status, disposition=dict(status['disposition'], **{field: value}))
+            self.assertFalse(validator.is_valid(changed))
+        for cause in ('emergency_stop', 'cancelled', 'grant_revoked'):
+            validator.validate(dict(status, disposition=dict(status['disposition'], stop_cause=cause)))
+        self.assertFalse(validator.is_valid(
+            dict(status, disposition=dict(status['disposition'], stop_cause='journaled'))))
 
     def test_cold_learning_queue_has_required_null_model_ids(self):
         try:

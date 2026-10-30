@@ -88,7 +88,14 @@ impl RequestEnvelope {
             Command::TreeChildren
             | Command::TreePath
             | Command::NodeInspect
-            | Command::StatsBreakdown => true,
+            | Command::StatsBreakdown
+            | Command::ProjectsFind => true,
+            Command::CollectionsUpdateMembers => {
+                let r: crate::dto::CollectionMembersUpdate = self.decode_payload()?;
+                r.add.len() == 1
+                    && r.remove.is_empty()
+                    && r.remove_members.as_ref().is_none_or(|ids| ids.is_empty())
+            }
             Command::TreeSlice => {
                 let slice: TreeSliceRequest = self.decode_payload()?;
                 !matches!(slice.anchor, Anchor::Atlas {})

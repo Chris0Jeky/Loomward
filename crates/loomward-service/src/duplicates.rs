@@ -9,8 +9,8 @@ impl Inner {
         req: &RequestEnvelope,
         work: Option<&crate::ReadWork>,
     ) -> Result<Out, ErrorBody> {
-        // Personal content reads are open for owner grants (q-10); the session's root gate (origin,
-        // today's fences) runs before any engine call, metadata open or catalogue query.
+        // Personal roots keep today's fences before cached queries. Synthetic lab roots select
+        // cached candidates before native admission; both admit before content access (q-10).
         let request: DuplicatesInspectRequest = req.decode_payload()?;
         let row = self.root_row(&request.root_id)?;
         let root = db::roots(&self.db(), Some(row))
@@ -21,7 +21,12 @@ impl Inner {
         if root.grant_state != "active" {
             return Err(fail(ErrorCode::PermissionDenied, "grant_not_active"));
         }
-        self.session_root_gate(&root)?;
+        if self.dataset == DatasetClass::Personal {
+            self.session_root_gate(&root)
+                .map_err(|e| self.root_admission_error(&root, e))?;
+        } else {
+            self.session_root_origin_gate(&root)?;
+        }
         let deadline = work.map_or_else(|| Instant::now() + Duration::from_secs(5), |w| w.deadline);
         // #568: fence automatic starts through candidate selection and submission.
         let claim = self.freshness.explicit(row);
@@ -40,6 +45,14 @@ impl Inner {
         #[cfg(test)]
         self.hooks
             .gate(Command::DuplicatesInspect, "candidates_ready");
+        if self.dataset == DatasetClass::Synthetic {
+            self.session_root_gate(&root)
+                .map_err(|e| self.root_admission_error(&root, e))?;
+        }
+        #[cfg(test)]
+        if let Some(hook) = self.hooks.after_root_gate.lock().unwrap().take() {
+            hook();
+        }
         let granted = self.engine.granted_root(
             request.root_id.clone(),
             root.grant,

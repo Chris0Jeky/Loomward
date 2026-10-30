@@ -5,8 +5,12 @@
 
 use std::fmt;
 
+pub mod ablation;
 pub mod evaluation;
 pub mod features;
+pub mod labelling;
+pub mod linear;
+pub mod packet;
 pub mod student;
 
 /// A `ValueError`-style rejection. The message is the Python reference's message, byte for byte.

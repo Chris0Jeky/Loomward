@@ -90,10 +90,12 @@ It builds, self-tests, installs and uninstalls exactly as a preview does (both u
 [`.github/actions/desktop-installer`](.github/actions/desktop-installer/action.yml)).
 
 The shared action first runs `python scripts/build_broker.py --release`, then builds the desktop
-with `--locked`. The helper builds the Ask broker into the desktop's Cargo target directory and
-stages it in ignored `native/binaries/` with Tauri's required host-triple suffix.
-[`bundle.externalBin`](https://v2.tauri.app/develop/sidecar/) installs it as `loomward-broker.exe`
-beside `loomward-desktop.exe`; the install smoke test checks its hash and offline protocol reply.
+with `--locked`. The helper builds the Ask broker and MCP server into the desktop's Cargo target
+directory and stages them in ignored `native/binaries/` with Tauri's required host-triple suffix.
+[`bundle.externalBin`](https://v2.tauri.app/develop/sidecar/) installs `loomward-broker.exe` and
+`loomward-mcp.exe` beside `loomward-desktop.exe` in `%LOCALAPPDATA%\Loomward`. The install smoke
+test checks the broker's hash and offline protocol reply; the desktop self-test also runs the
+bundled MCP server with `--help` (no catalogue or personal state opened).
 For a local build without publishing, run the helper, then from `native/` run
 `node ../app/node_modules/@tauri-apps/cli/tauri.js build --ci --bundles nsis -- --locked`
 after building `app/dist` (see [native/README.md](native/README.md)).
@@ -116,7 +118,11 @@ after building `app/dist` (see [native/README.md](native/README.md)).
      the older build would refuse it. A newer build can change `catalog.db` in ways an older build
      does not refuse but cannot handle: the search index (#438, LW-113) adds triggers on `dir` that a
      build from before it copies onto its own first-scan tables, so that build indexes folders twice
-     and then fails on its next open ("already exists"). A schema bump instead gives `NewerDatabase`.
+     and then fails on its next open ("already exists"). The extension-family migration (#922)
+     rewrites stored `ext` rows from `other` to their family; a build from before it writes `other`
+     for every extension and then refuses each listing that contains one ("conflicting extension
+     family"), so scans of folders holding `.jpg` or `.mp4` files fail until `catalog.db` is moved
+     aside or the newer build returns. A schema bump instead gives `NewerDatabase`.
      `catalog.db` is derived data: the older build creates an empty one.
 
   The cost: the new catalogue has a new `instance_id`, so every object reference in `state.db` is

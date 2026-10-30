@@ -1,8 +1,15 @@
 import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import ts from 'typescript';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { compile } from 'svelte/compiler';
+import type { Component } from 'svelte';
 import { render } from 'svelte/server';
 import View from '../../src/views/health/View.svelte';
+import VisibleName from '../../src/lib/ui/VisibleName.svelte';
+import VolumeStatus from '../../src/lib/ui/VolumeStatus.svelte';
+import { formatBytes } from '../../src/lib/format/bytes';
+import { formatCount } from '../../src/lib/format/time';
 import { session } from '../../src/lib/stores/session.svelte';
 import { grantPicker as picker } from '../../src/lib/stores/grant.svelte';
 import { forget } from '../../src/lib/stores/forget.svelte';
@@ -10,7 +17,7 @@ import { scans } from '../../src/lib/stores/scan.svelte';
 import { Say } from '../../src/lib/ui/say.svelte';
 import { LoomwardError, TransportError, Client } from '../../src/lib/transport/client';
 import type { Transport } from '../../src/lib/transport/transport';
-import type { EventEnvelope, SessionInfo } from '../../src/lib/contracts.gen';
+import type { EventEnvelope, Root, SessionInfo } from '../../src/lib/contracts.gen';
 
 const identity = <T>(value: T) => value;
 
@@ -29,7 +36,7 @@ function mount() {
     }
     return node.getText(file);
   }).join('\n');
-  const compiled = ts.transpileModule(`${code}\nreturn { ask, confirm, cancel, stopWaiting, evaluate: expression => eval(expression) };`, {
+  const compiled = ts.transpileModule(`${code}\nreturn { load, ask, confirm, cancel, stopWaiting, evaluate: expression => eval(expression) };`, {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
   }).outputText;
   let cleanup: (() => void) | undefined;
@@ -42,13 +49,27 @@ function mount() {
     formatTime: identity, escapedName: identity,
   };
   const view = new Function('state', `with (state) { return (() => { ${compiled} })(); }`)(state) as {
-    ask(p: { kind: 'forget'; id: string; label: string }): Promise<void>;
+    load(): Promise<void>;
+    ask(p: { kind: 'root' | 'forget'; id: string; label: string }): Promise<void>;
     confirm(): Promise<void>;
     cancel(): Promise<void>;
     stopWaiting(): Promise<void>;
     evaluate(expression: string): unknown;
   };
   return { ...view, flushEffects: () => { for (const effect of effects) effect(); }, unmount: () => cleanup?.() };
+}
+
+/** Render the real roots table with the instance script's loaded state. */
+function rootsTable(view: ReturnType<typeof mount>) {
+  const source = readFileSync(new URL('../../src/views/health/View.svelte', import.meta.url), 'utf8');
+  const table = source.match(/<table class="tbl">[\s\S]*?<\/table>/)![0];
+  const { js } = compile(`<script>let { roots, rootActive, escapedName, ask, VisibleName, VolumeStatus, formatBytes, formatCount } = $props();</script>${table}`, { generate: 'server' });
+  const code = ts.transpileModule(js.code, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText;
+  const exports = {} as { default: Component<Record<string, unknown>> };
+  new Function('require', 'exports', code)(createRequire(import.meta.url), exports);
+  return render(exports.default, { props: {
+    ...view.evaluate('({ roots, rootActive, escapedName, ask })') as Record<string, unknown>, VisibleName, VolumeStatus, formatBytes, formatCount,
+  } }).body;
 }
 
 function client() {
@@ -65,7 +86,54 @@ const reply = (r: { request_id: string }, result: unknown) => ({ protocol: 'loom
 beforeEach(() => { Object.assign(forget, { pending: null, working: false, unknown: false, done: '', problem: '', stopped: false }); });
 afterEach(() => { session.client = null; session.info = null; vi.restoreAllMocks(); });
 
-it.each(['connection epoch', 'session info', 'client'])('a definite status failure after a new %s retains a usable retry prompt', async change => {
+it.each(['active', 'identity_changed'] as const)('offers revoke then forget for an %s root (#391)', async initialState => {
+  let root: Root | null = {
+    root_id: 'rt_fixture', display_path: { text: 'Synthetic', truncated: false },
+    origin: 'fixture', dataset_class: 'synthetic', volume_id: null,
+    granted_at: '2026-10-18T00:00:00Z', granted_via: 'fixture', grant_state: initialState,
+    scan: { state: 'never_scanned', last_job_id: null, generation: null, finished_at: null, coverage: 'unknown' }, totals: null,
+  };
+  const call = client().mockImplementation(async r => {
+    switch (r.command) {
+      case 'roots.list': return reply(r, { roots: root ? [{ ...root }] : [] });
+      case 'roots.revoke':
+        root = { ...root!, grant_state: 'revoked' };
+        return reply(r, { root_id: 'rt_fixture', revoked_at: completed.forgotten_at, purged: false });
+      case 'roots.forget':
+        expect(root?.grant_state).toBe('revoked');
+        root = null;
+        return reply(r, completed);
+      default: return reply(r, { grants: [], jobs: [] });
+    }
+  });
+  const view = mount();
+  try {
+    await view.load();
+    const before = rootsTable(view);
+    expect(before).toContain('aria-label="Revoke… Synthetic"');
+    expect(before).not.toContain('disabled');
+    expect(before).not.toContain('Forget…');
+    await view.ask({ ...request, kind: 'root' });
+    expect(call.mock.calls.some(([r]) => r.command === 'roots.revoke')).toBe(false);
+    await view.confirm();
+    expect(call.mock.calls.find(([r]) => r.command === 'roots.revoke')![0].payload)
+      .toEqual({ root_id: 'rt_fixture', purge_catalog: false });
+    const revoked = rootsTable(view);
+    expect(revoked).toMatch(/<button[^>]*disabled[^>]*aria-label="Revoke… Synthetic"/);
+    expect(revoked).toContain('aria-label="Forget… Synthetic"');
+    await view.ask(request);
+    expect(call.mock.calls.some(([r]) => r.command === 'roots.forget')).toBe(false);
+    await view.confirm();
+    expect(call.mock.calls.find(([r]) => r.command === 'roots.forget')![0].payload).toEqual({ root_id: 'rt_fixture' });
+    expect(rootsTable(view)).not.toContain('Synthetic');
+    expect(rootsTable(view)).toContain('No roots granted.');
+    expect(view.evaluate('roots.roots')).toEqual([]);
+  } finally {
+    view.unmount();
+  }
+});
+
+it.each(['connection epoch', 'session info', 'client'])('a state-read failure after a new %s retains the unknown outcome for another read', async change => {
   const first = client().mockRejectedValueOnce(unknown);
   forget.ask(request);
   await forget.confirm();
@@ -75,17 +143,20 @@ it.each(['connection epoch', 'session info', 'client'])('a definite status failu
   if (change === 'session info') session.info = { session_started_at: '2026-10-19T03:00:00Z' } as SessionInfo;
   const current = change === 'client' ? client() : first;
   current.mockRejectedValueOnce(new LoomwardError({ code: 'internal_error', message: 'status failed', retryable: true, detail: null }))
-    .mockImplementationOnce(async r => reply(r, completed));
+    .mockImplementation(async r => r.command === 'grants.list'
+      ? { ...reply(r, { grants: [{ kind: 'metadata_root', root_id: request.id, revoked_at: completed.forgotten_at, forgotten_at: null }] }), meta: { state_rev: '42' } }
+      : reply(r, completed));
   forget.resume();
   await forget.confirm();
-  expect(current.mock.calls.at(-1)![0].request_id).toBe(originalKey);
-  expect(forget.unknown).toBe(false);
+  expect(current.mock.calls.at(-1)![0].command).toBe('grants.list');
+  expect(forget.unknown).toBe(true);
   expect(forget.pending?.id).toBe(request.id);
-  expect(forget.pending?.requestId).toBeUndefined();
+  expect(forget.pending?.requestId).toBe(originalKey);
   const attempts = current.mock.calls.length;
   await forget.confirm();
-  expect(current).toHaveBeenCalledTimes(attempts + 1);
+  expect(current).toHaveBeenCalledTimes(attempts + 2);
   expect(current.mock.calls.at(-1)![0].request_id).not.toBe(originalKey);
+  expect(current.mock.calls.at(-1)![0].expected_state_rev).toBe('42');
   expect(forget.pending).toBeNull();
   expect(forget.done).toContain('Forgotten at');
 });
@@ -346,7 +417,8 @@ it.each(['client', 'connection epoch', 'engine hello'] as const)('ignores a late
   b.mockImplementationOnce(() => new Promise((_, reject) => { rejectNew = reject; }));
   const newFlight = forget.confirm();
   const newRequest = b.mock.calls.at(-1)![0];
-  expect(newRequest.request_id).toBe(oldRequest.request_id);
+  expect(newRequest.command).toBe('grants.list');
+  expect(newRequest.request_id).not.toBe(oldRequest.request_id);
   releaseOld(reply(oldRequest, completed));
   await oldFlight;
   expect(forget.working).toBe(true);
@@ -444,6 +516,21 @@ function fake(call: ReturnType<typeof vi.fn>) {
 const result = { result: completed };
 const forgotten = (id: string, at: string) => ({ kind: 'metadata_root', root_id: id, forgotten_at: at });
 
+it('hands an unknown forget transport outcome to the session without losing its action key (#736)', async () => {
+  const call = vi.fn().mockRejectedValueOnce(unknown).mockResolvedValue(result);
+  const { c, handle } = fake(call);
+  forget.ask(request);
+  await forget.confirm();
+  expect(forget.pending?.requestId).toBe('r_forget');
+  expect(forget.unknown).toBe(true);
+  expect(forget.working).toBe(false);
+  expect(forget.problem).toBe('');
+  expect(handle).toHaveBeenCalledExactlyOnceWith(unknown);
+  await forget.confirm();
+  expect(call.mock.calls[1]).toEqual(call.mock.calls[0]);
+  expect(c.nextRequestId).toHaveBeenCalledTimes(1);
+});
+
 it.each([deadline, unknown])('keeps an unknown outcome pending and checks the same request id (#716)', async fault => {
   const call = vi.fn().mockRejectedValueOnce(fault).mockResolvedValue(result);
   const { c, handle } = fake(call);
@@ -453,7 +540,8 @@ it.each([deadline, unknown])('keeps an unknown outcome pending and checks the sa
   expect(forget.pending).not.toBeNull();
   expect(forget.unknown).toBe(true);
   expect(forget.problem).toBe('');
-  expect(handle).not.toHaveBeenCalled();
+  if (fault instanceof TransportError) expect(handle).toHaveBeenCalledExactlyOnceWith(fault);
+  else expect(handle).not.toHaveBeenCalled();
   await forget.confirm();
   expect(call.mock.calls[1]).toEqual(call.mock.calls[0]);
   expect(c.nextRequestId).toHaveBeenCalledTimes(1);

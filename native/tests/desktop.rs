@@ -19,9 +19,16 @@ use std::time::Duration;
 
 #[test]
 fn self_test_passes() {
-    let mut lines = Vec::new();
-    let ok = selftest::run(&mut |l| lines.push(l.to_string()));
-    assert!(ok, "{lines:#?}");
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_loomward-desktop"))
+        .arg("--self-test")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        stdout.contains("PASS bundled loomward-mcp starts with --help"),
+        "{stdout}"
+    );
 }
 
 /// A service that would grant anything, and counts how often it is asked.
@@ -247,6 +254,71 @@ fn disclosure_text_renders_every_item_with_hidden_characters_escaped() {
     assert!(text.contains("line\\u{000A}break.txt"));
     assert!(text.contains(s.payload_digest.as_str()));
     assert!(text.contains("Cancel (the default) sends nothing"));
+}
+
+/// LW-145: the shared hostile corpus and a spoofed extension through every native confirmation
+/// that names a file or folder (replace, folder grant, unverified volume, disclosure). Nothing
+/// hidden or direction-changing reaches the box, and a name cannot start a line of its own.
+#[test]
+fn every_confirmation_renders_hostile_names_escaped() {
+    use loomward_desktop::dialogs::grant_text;
+    use loomward_service::hostile::{injected_names, names, raw_hostile};
+    let spoof = "invoice\u{202E}fdp.exe";
+    let mut corpus: Vec<String> = names()
+        .iter()
+        .map(|n| n.to_string_lossy().into_owned())
+        .collect();
+    corpus.extend(injected_names());
+    corpus.push(spoof.into());
+    let shown: Shown = Arc::default();
+    let log = shown.clone();
+    let dialogs = DesktopDialogs::with_prompt(DatasetClass::Personal, move |_, text| {
+        log.lock().unwrap().push(text.to_string());
+        false
+    });
+    let texts = |name: &str| -> Vec<String> {
+        shown.lock().unwrap().clear();
+        assert!(!dialogs.confirm_replace(name));
+        let folder = Path::new("C:/synthetic").join(name);
+        assert!(!dialogs.confirm_identity_unverified(&folder, name));
+        let mut all = shown.lock().unwrap().clone();
+        assert_eq!(all.len(), 2, "{name:?}");
+        all.push(grant_text(&folder));
+        let item =
+            json!({"handle":"i00","name":name,"extension":"txt","context":name,"size_bucket":0});
+        // The protocol may refuse a name outright; then no box exists to spoof.
+        let mut s: Value = serde_json::from_str(
+            &std::fs::read_to_string(
+                Path::new(EXAMPLES_DIR)
+                    .join("dtos")
+                    .join("disclosure-summary.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        s["value"]["items"] = json!([item]);
+        if let Ok(s) = serde_json::from_value::<DisclosureSummary>(s["value"].clone()) {
+            all.push(disclosure_text(&s));
+        }
+        all
+    };
+    let plain = texts("x");
+    assert!(plain.len() >= 3, "{plain:?}");
+    for name in &corpus {
+        for (text, plain) in texts(name).iter().zip(&plain) {
+            assert_eq!(
+                text.matches('\n').count(),
+                plain.matches('\n').count(),
+                "{name:?} started a line of its own in: {text}"
+            );
+            if let Some(c) = text.chars().find(|c| *c != '\n' && raw_hostile(*c)) {
+                panic!("raw U+{:04X} for {name:?} in: {text}", c as u32);
+            }
+        }
+    }
+    for text in texts(spoof) {
+        assert!(text.contains("invoice\\u{202E}fdp.exe"), "{text}");
+    }
 }
 
 fn invoke(
@@ -476,6 +548,17 @@ fn concurrent_disclosure_is_declined() {
     release.send(()).unwrap();
     assert!(first.join().unwrap());
     assert!(!second, "a second dialog was admitted");
+}
+
+#[test]
+fn folder_grant_distinguishes_literal_escapes_from_hidden_characters() {
+    use loomward_desktop::dialogs::grant_text;
+    let literal = grant_text(Path::new(r"C:\synthetic\x\u{202E}y"));
+    assert!(literal.contains(r"C:\\synthetic\\x\\u{202E}y"), "{literal}");
+    assert_ne!(
+        grant_text(Path::new(r"x\u{202E}y")),
+        grant_text(Path::new("x\u{202E}y"))
+    );
 }
 
 #[test]
@@ -1144,18 +1227,58 @@ fn a_second_instance_on_one_state_directory_is_refused_until_the_first_closes() 
             ..launch_args(args).unwrap()
         };
         let first = launch::open(&launch, None).unwrap();
+        let started = std::time::Instant::now();
         let second = launch::open(&launch, None)
             .err()
             .expect("a second instance opened the same state directory");
-        assert!(
-            second.starts_with("busy: Loomward is already open"),
-            "{second}"
+        assert_eq!(
+            second,
+            "Loomward's data is in use by another Loomward process, for example an agent's Loomward tools. Stop that agent, or try again in a moment."
         );
+        assert!(started.elapsed() >= Duration::from_secs(15));
+        assert!(started.elapsed() < Duration::from_secs(20));
         assert!(state.join("lock").is_file());
+        assert!(
+            !state.join("lock.wanted").exists(),
+            "a refused launch left its yield marker"
+        );
         // An OS lock on a handle, not a marker file: closing the first frees the directory.
         drop(first);
         launch::open(&launch, None).expect("reopen after the first closed");
     }
+}
+
+#[test]
+fn launch_retries_a_shared_lock_released_after_one_second() {
+    let scratch = tempfile::tempdir().unwrap();
+    let state = scratch.path().join("state");
+    let lock = loomward_service::paths::lock_state_dir(&state).unwrap();
+    let started = std::time::Instant::now();
+    let marker = state.clone();
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(1));
+        // The waiting launch asked the holder to yield (#886).
+        let wanted = loomward_service::paths::lock_wanted(&marker);
+        drop(lock);
+        wanted
+    });
+    let launch = Launch {
+        state_dir: Some(state.clone()),
+        ..launch_args(&["--dataset", "synthetic"]).unwrap()
+    };
+    let opened = launch::open(&launch, None);
+    let elapsed = started.elapsed();
+    assert!(
+        release.join().unwrap(),
+        "the waiting launch wrote no yield marker"
+    );
+    assert!(opened.is_ok(), "launch did not wait for the shared lock");
+    assert!(
+        !state.join("lock.wanted").exists(),
+        "the launch kept its yield marker after taking the lock"
+    );
+    assert!(elapsed >= Duration::from_secs(1));
+    assert!(state.join("state.db").is_file());
 }
 
 #[test]

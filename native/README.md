@@ -46,9 +46,10 @@ homes in a console message or native notice; the legacy copy stays untouched. If
 or usable `USERPROFILE` start folder configured the picker, requesting a grant reports
 `capability_unavailable` instead of an owner cancellation. `launch::open` takes docs/41's exclusive `lock` file in the state
 directory before the stores open and holds it while the service lives. It is an OS lock on an open
-handle, so a crash leaves nothing stale. A second instance on the same state directory is refused
-with `busy` and exits; it does not focus the first window (no single-instance plugin, so the shell
-stays plugin-free). `loomward-serve` takes no such lock. A start that fails prints to a console when
+handle, so a crash leaves nothing stale. The desktop and MCP server share this lock helper. A start
+retries a busy lock every 250 ms for up to 15 seconds, then explains that another Loomward process
+(for example an agent's tools) is using the data and asks the owner to stop that agent or try again.
+`loomward-serve` takes no such lock. A start that fails prints to a console when
 there is one (a parent console, the debug build's own, or a redirected stderr) and otherwise shows a
 native error box, so an installed build never exits silently.
 
@@ -57,14 +58,14 @@ native error box, so an installed build never exits silently.
 ```sh
 npm.cmd --prefix app ci
 npm.cmd --prefix app run build                      # app/dist is embedded at compile time
-py -3 scripts/build_broker.py                       # build and stage the Ask sidecar first
+py -3 scripts/build_broker.py                       # build and stage the Ask and MCP sidecars first
 cargo build --locked --manifest-path native/Cargo.toml
 native/target/debug/loomward-desktop.exe --dataset synthetic --state-dir .loomward/desktop-state  # a demo window
 native/target/debug/loomward-desktop.exe              # the owner's personal session (real state)
 native/target/debug/loomward-desktop.exe --self-test  # headless; exit 1 on any failure
 ```
 
-After staging the broker, `cargo build` builds the shell: `tauri` is compiled with `custom-protocol`,
+After staging the sidecars, `cargo build` builds the shell: `tauri` is compiled with `custom-protocol`,
 so the window always serves the embedded `app/dist` (there is no `devUrl`; for UI work use Vite with
 `loomward-serve`).
 The Tauri CLI is pinned as an app devDependency (`@tauri-apps/cli` 2.12.1, no global install);
@@ -72,15 +73,18 @@ from the repository root, `app/node_modules/.bin/tauri.cmd info` reports the too
 `cargo build` and `cargo test` do not bundle. The unsigned NSIS installer uses
 `tauri build --bundles nsis`; previews and nightlies share `.github/actions/desktop-installer`
 (see [RELEASING.md](../RELEASING.md)). It
-bundles `contracts/v3/examples` and `loomward-broker.exe` beside the desktop exe; an installed build
+bundles `contracts/v3/examples`, `loomward-broker.exe` and `loomward-mcp.exe` beside the desktop exe
+(the default install directory is `%LOCALAPPDATA%\Loomward`); an installed build
 reads the examples from there (for `--fixtures` and the self-test) because it has no checkout.
 The self-test needs no checkout: it runs
 the protocol checks against those examples, then opens the engine service as `main` does, synthetic
-and personal, each in a scratch state directory that it removes.
+and personal, each in a scratch state directory that it removes. It also starts the adjacent
+`loomward-mcp.exe` with `--help` and checks its usage output, without opening personal state. From a build directory
+that file is Cargo's own output; only the installed app's self-test proves the bundled copy.
 
-The broker helper uses Cargo's desktop target directory (`CARGO_TARGET_DIR` included), builds with
-`--locked`, and stages Tauri's host-triple filename in ignored `native/binaries/`. Tauri copies it
-beside the desktop executable without the triple, as Ask expects. Run the helper with `--release`
+The sidecar helper uses Cargo's desktop target directory (`CARGO_TARGET_DIR` included), builds with
+`--locked`, and stages Tauri's host-triple filenames in ignored `native/binaries/`. Tauri copies them
+beside the desktop executable without the triple. Run the helper with `--release`
 before a release-mode shell or installer build. The current desktop pipeline builds for the host,
 not a cross-compilation target. No shell plugin or additional IPC permission is needed.
 

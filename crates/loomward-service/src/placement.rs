@@ -1,4 +1,4 @@
-//! Catalogue-only placement and durable simulations. No content reads and no effect authority.
+//! Catalogue placement with live root presence and durable simulations. No content reads or effects.
 use crate::{db, fail, now_ns, ts_ns, with_reason, Inner, Out, ReadWork};
 use loomward_engine::{placement::*, EngineError, EngineResult};
 use loomward_protocol::*;
@@ -25,7 +25,7 @@ fn placement_error(e: EngineError) -> ErrorBody {
     let message = body.message.as_str().to_owned();
     if message == "personal_placement_physics_unobserved" {
         body.code = ErrorCode::CapabilityUnavailable;
-        body.message = Text::new("Personal placement needs observed catalogue volume physics; this call reads catalogue metadata only.").expect("bounded refusal");
+        body.message = Text::new("Personal placement needs observed catalogue volume physics; this call does not refresh volume space.").expect("bounded refusal");
         return with_reason(body, &message);
     }
     if body.code == ErrorCode::InvalidRequest || message == "overlapping_grant_ancestry_unknown" {
@@ -464,8 +464,8 @@ impl<'a> Input<'a> {
 
     /// `observe_personal_grants` is set only by `volumes.list` and the alerts report (#519): a
     /// personal volume holding an active owner grant gets a read-only space observation through that
-    /// grant's own root. Placement and tier models keep reading catalogue physics only, so their
-    /// personal refusal still holds.
+    /// grant's own root. Placement and tier models share live presence but keep catalogue physics,
+    /// so their personal refusal still holds.
     pub(crate) fn volumes(
         &self,
         deadline: Instant,
@@ -478,6 +478,14 @@ impl<'a> Input<'a> {
             });
         }
         let inactive = inactive_volumes(&self.conn)?;
+        let roots = db::roots(&self.conn, None).map_err(sql)?;
+        let mut presence = crate::handlers::RootPresences::new();
+        for root in roots.iter().filter(|r| r.grant_state == "active") {
+            check(deadline)?;
+            if let Some(observed) = self.inner.root_presence(root) {
+                presence.insert(root.grant, observed);
+            }
+        }
         let mut volumes = Vec::new();
         for v in rows {
             check(deadline)?;
@@ -498,6 +506,30 @@ impl<'a> Input<'a> {
             let stored: Value = serde_json::from_str(&capabilities).unwrap_or(Value::Null);
             let mut space = stored.get("space").cloned().unwrap_or(Value::Null);
             let mut observed_at = v.observed_at_ns;
+            let online = crate::handlers::volume_online(&v, &roots, &presence);
+            let mut classification = None;
+            for root in roots.iter().filter(|r| {
+                observe_personal_grants
+                    && r.volume == Some(v.id)
+                    && r.grant_state == "active"
+                    && presence.get(&r.grant) == Some(&crate::handlers::RootPresence::Online)
+            }) {
+                check(deadline)?;
+                if classification.is_none() {
+                    classification = loomward_windows::volumes::classify(std::path::Path::new(
+                        &root.display_path,
+                    ))
+                    .ok();
+                }
+            }
+            let device = match &classification {
+                Some(c) => {
+                    json!({"bus_type": wire_bus_type(&c.bus_type), "seek_penalty": null, "multiple_disks": null, "basis": "ioctl_storage_query_property"})
+                }
+                None => {
+                    json!({"bus_type":"unknown", "seek_penalty":null, "multiple_disks":null, "basis":"unavailable"})
+                }
+            };
             // Only an active grant's own root may supply fresh volume physics: a registered lab root
             // in a synthetic session, or an owner grant for `volumes.list` in a personal session.
             let observed_origin = match self.inner.dataset {
@@ -556,7 +588,7 @@ impl<'a> Input<'a> {
                     let observed = if origin == "owner_granted" {
                         // A personal volume waits briefly and alone: an offline volume is not read, and a
                         // stall, a timeout or a busy reader leaves only that volume unknown (#519 review).
-                        if v.online {
+                        if online {
                             #[cfg(test)]
                             let budget = self
                                 .inner
@@ -584,7 +616,7 @@ impl<'a> Input<'a> {
                         } else {
                             None
                         }
-                    } else {
+                    } else if online {
                         bounded_space(
                             deadline,
                             None,
@@ -592,6 +624,8 @@ impl<'a> Input<'a> {
                             #[cfg(test)]
                             None,
                         )?
+                    } else {
+                        None
                     };
                     if let Some((observation, at)) = observed {
                         space = serde_json::to_value(observation).expect("space serialises");
@@ -609,11 +643,11 @@ impl<'a> Input<'a> {
             let declared = v.declared.flatten();
             let volume = serde_json::from_value(json!({
                 "volume_id":format!("vo_{}",v.id), "display_name":v.display_name.chars().take(64).collect::<String>(),
-                "mount_points":[],"filesystem":v.filesystem.map(|s| s.chars().take(32).collect::<String>()),"label":null,
-                "online":v.online,"read_only":space.get("read_only").and_then(Value::as_bool),"removable":null,
+                "mount_points":[],"filesystem":v.filesystem.as_ref().map(|s| s.chars().take(32).collect::<String>()),"label":null,
+                "online":online,"read_only":space.get("read_only").and_then(Value::as_bool),"removable":null,
                 "capacity_bytes":bytes("capacity_bytes"),"free_bytes":bytes("free_bytes"),
-                "device":{"bus_type":"unknown","seek_penalty":null,"multiple_disks":null,"basis":"unavailable"},
-                "tier":{"tier":declared,"basis":if declared.is_some(){"declared"}else{"unknown"},"declared_tier":declared,"hint_tier":null,"note":if inactive.contains(&v.id){"No active grant; excluded from placement simulation. Device speed is unmeasured."}else{"Declared tier; device speed is unmeasured."}},
+                "device":device,
+                "tier":{"tier":declared,"basis":if declared.is_some(){"declared"}else{"unknown"},"declared_tier":declared,"hint_tier":null,"note":if !online {crate::handlers::offline_space_note(&v, &roots, &presence)} else if inactive.contains(&v.id){"No active grant; excluded from placement simulation. Device speed is unmeasured."}else{"Declared tier; device speed is unmeasured."}},
                 "features":{"file_ids_128":null,"hard_links":null,"sparse_files":null,"compression":null,"reparse_points":null,"usn_journal":null},
                 "observed_at":ts_ns(observed_at)
             })).map_err(|_| EngineError::Internal { message: "invalid volume observation".into(), detail: None })?;
@@ -903,27 +937,7 @@ impl PlacementInput for Input<'_> {
                 let file_id: Option<Vec<u8>> = r.get(3)?;
                 let created: Option<i64> = r.get(4)?;
                 let reparse: Option<u32> = r.get(5)?;
-                let object = file_id
-                    .filter(|id| id.len() == 16 || id.len() == 8)
-                    .and_then(|id| {
-                        serial.strip_prefix("vsn_").map(|serial| {
-                            let mut bytes = [0; 16];
-                            bytes[..id.len()].copy_from_slice(&id);
-                            loomward_windows::identity::ObjectKey {
-                                volume_serial: serial.into(),
-                                file_id: bytes,
-                                quality: if id.len() == 16 {
-                                    loomward_windows::identity::IdentityQuality::FileId128
-                                } else {
-                                    loomward_windows::identity::IdentityQuality::Legacy64 {
-                                        reason: "catalogue width".into(),
-                                    }
-                                },
-                                creation_time: created.unwrap_or(0).to_string(),
-                                reparse_tag: reparse.unwrap_or(0),
-                            }
-                        })
-                    });
+                let object = catalogue_object(&serial, file_id, created, reparse);
                 Ok(FileEntry {
                     node_id: NodeId::new(format!("nd_file_{id}")).expect("file row"),
                     logical_bytes: uint(r, 1)?,
@@ -940,6 +954,32 @@ impl PlacementInput for Input<'_> {
         check(deadline)?;
         Ok(files)
     }
+}
+
+/// A catalogue file row's listed identity, as the link-count pass expects it (`linkcount::Entry`).
+pub(crate) fn catalogue_object(
+    volume_key: &str,
+    file_id: Option<Vec<u8>>,
+    created: Option<i64>,
+    reparse: Option<u32>,
+) -> Option<loomward_windows::identity::ObjectKey> {
+    let id = file_id.filter(|id| id.len() == 16 || id.len() == 8)?;
+    let serial = volume_key.strip_prefix("vsn_")?;
+    let mut bytes = [0; 16];
+    bytes[..id.len()].copy_from_slice(&id);
+    Some(loomward_windows::identity::ObjectKey {
+        volume_serial: serial.into(),
+        file_id: bytes,
+        quality: if id.len() == 16 {
+            loomward_windows::identity::IdentityQuality::FileId128
+        } else {
+            loomward_windows::identity::IdentityQuality::Legacy64 {
+                reason: "catalogue width".into(),
+            }
+        },
+        creation_time: created.unwrap_or(0).to_string(),
+        reparse_tag: reparse.unwrap_or(0),
+    })
 }
 
 struct Store<'a> {
@@ -1142,6 +1182,14 @@ impl ProposalStore for Store<'_> {
                 message: "unknown proposal".into(),
             })?;
         self.detail(self.conn, row)
+    }
+}
+
+/// The protocol's bus names; any other native bus is `other` (#888 item 6 keeps tests on this map).
+pub(crate) fn wire_bus_type(native: &str) -> &str {
+    match native {
+        "nvme" | "sata" | "sas" | "scsi" | "usb" | "raid" | "virtual" | "sd" => native,
+        _ => "other",
     }
 }
 

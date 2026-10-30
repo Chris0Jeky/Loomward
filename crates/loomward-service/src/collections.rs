@@ -158,7 +158,12 @@ impl Inner {
         Ok(out(result, revs))
     }
     /// Resolve sealed current nodes inside the state transaction before writing any references.
-    fn collection_reference(&self, conn: &Connection, id: &str) -> Result<Reference, ErrorBody> {
+    fn collection_reference(
+        &self,
+        conn: &Connection,
+        id: &str,
+        expected_generation: Option<Generation>,
+    ) -> Result<Reference, ErrorBody> {
         let (key, born) = self
             .ids
             .open(id, &self.instance)
@@ -178,7 +183,7 @@ impl Inner {
         } else {
             "main.dir n JOIN main.dir d ON d.id=n.id"
         };
-        let sql=format!("SELECT v.volume_key,n.file_id,n.created_ft,v.filesystem FROM {from} JOIN main.root rt ON rt.id=d.root_id JOIN main.volume v ON v.id=rt.volume_id JOIN st.root_grant g ON g.id=rt.grant_id WHERE n.id=?1 AND n.born_run=?2 AND g.state='active' AND NOT EXISTS(WITH RECURSIVE a(id,parent_id,listing_state) AS (SELECT id,parent_id,listing_state FROM main.dir WHERE id=d.id UNION ALL SELECT x.id,x.parent_id,x.listing_state FROM main.dir x JOIN a ON x.id=a.parent_id) SELECT 1 FROM a WHERE listing_state='absent_pending')");
+        let sql=format!("SELECT v.volume_key,n.file_id,n.created_ft,v.filesystem,rt.id,rt.generation,d.id FROM {from} JOIN main.root rt ON rt.id=d.root_id JOIN main.volume v ON v.id=rt.volume_id JOIN st.root_grant g ON g.id=rt.grant_id WHERE n.id=?1 AND n.born_run=?2 AND g.state='active' AND NOT EXISTS(WITH RECURSIVE a(id,parent_id,listing_state) AS (SELECT id,parent_id,listing_state FROM main.dir WHERE id=d.id UNION ALL SELECT x.id,x.parent_id,x.listing_state FROM main.dir x JOIN a ON x.id=a.parent_id) SELECT 1 FROM a WHERE listing_state='absent_pending')");
         let value = conn
             .query_row(&sql, params![row, born], |r| {
                 Ok((
@@ -186,12 +191,38 @@ impl Inner {
                     r.get::<_, Option<Vec<u8>>>(1)?,
                     r.get::<_, Option<i64>>(2)?,
                     r.get::<_, Option<String>>(3)?,
+                    r.get::<_, i64>(4)?,
+                    r.get::<_, Option<i64>>(5)?,
+                    r.get::<_, i64>(6)?,
                 ))
             })
             .optional()
             .map_err(sql_error)?
             .ok_or_else(|| fail(ErrorCode::NotFound, "unknown node"))?;
-        let (volume, identity, creation, fs) = value;
+        let (volume, identity, creation, fs, root, generation, dir) = value;
+        if let Some(expected) = expected_generation {
+            let unsafe_observation: bool = conn.query_row(
+                "WITH RECURSIVE a(id,parent_id,flags,attrs,listing_state,listing_outcome) AS (
+                 SELECT id,parent_id,flags,attrs,listing_state,listing_outcome FROM main.dir WHERE id=?1
+                 UNION ALL SELECT d.id,d.parent_id,d.flags,d.attrs,d.listing_state,d.listing_outcome
+                 FROM main.dir d JOIN a ON d.id=a.parent_id)
+                 SELECT EXISTS(SELECT 1 FROM a WHERE flags & ?3!=0 OR attrs & 1024!=0
+                   OR listing_state NOT IN ('complete','incomplete')
+                   OR coalesce(listing_outcome,'complete') IN ('stale','excluded','denied','unscanned'))
+                   OR EXISTS(SELECT 1 FROM main.scan_run WHERE root_id=?2 AND state='running')",
+                params![dir, root, loomward_catalog::EXCLUDED_FLAGS | 1 | (1 << 1) | (1 << 6) | (1 << 7) | (1 << 9)],
+                |r| r.get(0),
+            ).map_err(sql_error)?;
+            if generation.and_then(|g| u64::try_from(g).ok()) != Some(expected.get())
+                || self.freshness.stale(root)
+                || unsafe_observation
+            {
+                return Err(fail(
+                    ErrorCode::StaleGeneration,
+                    "project observations changed; find projects again",
+                ));
+            }
+        }
         let identity = identity
             .filter(|id| matches!(id.len(), 8 | 16))
             .ok_or_else(|| {
@@ -263,7 +294,7 @@ impl Inner {
             .add
             .iter()
             .chain(r.remove.iter())
-            .map(|id| self.collection_reference(&tx, id))
+            .map(|id| self.collection_reference(&tx, id, req.expected_generation))
             .collect::<Result<Vec<_>, _>>()?;
         let mut changed = 0;
         for (i, (kind, row, born, volume, identity, creation)) in nodes.into_iter().enumerate() {

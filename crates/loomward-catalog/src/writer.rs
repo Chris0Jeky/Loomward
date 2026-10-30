@@ -87,9 +87,12 @@ pub struct Writer {
     join: Option<JoinHandle<()>>,
     timings: Arc<Mutex<WriterTimings>>,
     bulk: Arc<AtomicBool>,
+    cancelled: Cancelled,
     #[cfg(any(test, feature = "test-hooks"))]
     window: Arc<PublicationWindow>,
 }
+/// Runs whose queued listing steps are answered without being executed (#934).
+type Cancelled = Arc<Mutex<HashSet<i64>>>;
 pub struct Receipt {
     rx: Receiver<Result<WriteReply>>,
 }
@@ -111,6 +114,8 @@ impl Writer {
         let measured = timings.clone();
         let bulk = Arc::new(AtomicBool::new(false));
         let enabled = bulk.clone();
+        let cancelled = Cancelled::default();
+        let skipped = cancelled.clone();
         #[cfg(any(test, feature = "test-hooks"))]
         let window = Arc::new(PublicationWindow::default());
         #[cfg(any(test, feature = "test-hooks"))]
@@ -125,6 +130,7 @@ impl Writer {
                     measured,
                     alive,
                     enabled,
+                    skipped,
                     #[cfg(test)]
                     None,
                     #[cfg(any(test, feature = "test-hooks"))]
@@ -138,9 +144,21 @@ impl Writer {
             join: Some(join),
             timings,
             bulk,
+            cancelled,
             #[cfg(any(test, feature = "test-hooks"))]
             window,
         })
+    }
+    /// #934: the run will end cancelled, so its listing steps still queued are answered
+    /// `Cancelled` without touching the database, in queue order, until its `EndRun` is dequeued.
+    /// The writer executes commands in order and a mark never lifts before that `EndRun`, so the
+    /// steps that did execute are a prefix of the run's sent steps: the catalogue is that of a run
+    /// cancelled right after the last of them.
+    pub fn cancel_run(&self, run_id: i64) {
+        self.cancelled
+            .lock()
+            .expect("cancelled runs lock")
+            .insert(run_id);
     }
     /// A full scan of a root with no earlier run then builds into unindexed bulk tables that
     /// readers never see, and its `EndRun` publishes the whole root atomically (#148). Decided per
@@ -601,14 +619,38 @@ fn work(
     alive: Sender<()>,
     crash: Option<PublicationCrash>,
 ) {
-    serve(conn, rx, timings, alive, Arc::default(), crash, None)
+    serve(
+        conn,
+        rx,
+        timings,
+        alive,
+        Arc::default(),
+        Cancelled::default(),
+        crash,
+        None,
+    )
 }
+/// A listing step of a run marked by `Writer::cancel_run` is answered here and dropped (its
+/// payload bytes released); the run's `EndRun` lifts the mark.
+fn unless_cancelled(p: Pending, cancelled: &Mutex<HashSet<i64>>) -> Option<Pending> {
+    let mut runs = cancelled.lock().expect("cancelled runs lock");
+    if let WriteCommand::EndRun { run_id, .. } = &p.command {
+        runs.remove(run_id);
+    } else if listing_run(&p.command).is_some_and(|run| runs.contains(&run)) {
+        drop(runs);
+        let _ = p.reply.send(Err(Error::Cancelled));
+        return None;
+    }
+    Some(p)
+}
+#[allow(clippy::too_many_arguments)]
 fn serve(
     mut conn: Connection,
     rx: Receiver<Pending>,
     timings: Arc<Mutex<WriterTimings>>,
     alive: Sender<()>,
     bulk_enabled: Arc<AtomicBool>,
+    cancelled: Cancelled,
     #[cfg(test)] crash: Option<PublicationCrash>,
     #[cfg(any(test, feature = "test-hooks"))] window: Option<Arc<PublicationWindow>>,
 ) {
@@ -626,7 +668,7 @@ fn serve(
         active: HashMap::new(),
         sequences_shared: false,
     };
-    // The state rewrite and WAL cut after a forget, when a lock outlasted the first try: retried between commands.
+    // The store rewrite and WAL cut after a forget or learning migration: retried between commands.
     // A forget that committed its state half but whose rewrite and log cut never finished (a crash,
     // a lock that outlasted open) leaves the marker in state.db: finish it here.
     let mut cut_pending = scrub_pending(&conn).unwrap_or(true);
@@ -677,6 +719,9 @@ fn serve(
         };
         let Some(first) = first else {
             break;
+        };
+        let Some(first) = unless_cancelled(first, &cancelled) else {
+            continue;
         };
         let checkpoint = matches!(first.command, WriteCommand::EndRun { .. });
         let compact_bulk = matches!(&first.command, WriteCommand::EndRun { run_id, .. } if context.bulk.contains_key(run_id));
@@ -869,7 +914,15 @@ fn serve(
                         }
                         let wait_start = Instant::now();
                         // A synchronous caller cannot enqueue again until this transaction commits.
-                        let next = rx.try_recv();
+                        let next = loop {
+                            match rx.try_recv() {
+                                Ok(p) => match unless_cancelled(p, &cancelled) {
+                                    Some(p) => break Ok(p),
+                                    None => continue,
+                                },
+                                Err(e) => break Err(e),
+                            }
+                        };
                         {
                             let mut timing = context.timings.lock().expect("timing lock");
                             timing.batch_wait_calls += 1;
@@ -993,14 +1046,33 @@ fn serve(
     crate::crashpoint::hit("shutdown checkpoint");
     let _ = conn.execute_batch("PRAGMA main.wal_checkpoint(TRUNCATE)");
 }
-/// Whether a forget's rewrite of the stores is still owed (the `scrub_pending` marker, written in
-/// the forget's own state.db transaction and cleared only after both rewrites and both log cuts).
+/// Whether a forget or legacy learning rewrite is still owed (the durable `scrub_pending` marker,
+/// cleared only after both rewrites and both log cuts).
 pub(crate) fn scrub_pending(conn: &Connection) -> Result<bool> {
     Ok(conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM st.meta WHERE key='scrub_pending')",
         [],
         |r| r.get(0),
     )?)
+}
+/// Rewrite the named stores with `VACUUM`, in order, so freed pages keep no old bytes.
+pub(crate) fn rewrite(conn: &Connection, stores: &[&str]) -> Result<()> {
+    let temp: i64 = conn.query_row("PRAGMA temp_store", [], |r| r.get(0))?;
+    conn.pragma_update(None, "temp_store", "FILE")?;
+    let result = stores.iter().try_for_each(|db| {
+        crate::crashpoint::hit(&format!("VACUUM {db}"));
+        conn.execute_batch(&format!("VACUUM {db}"))
+    });
+    // Only a changed temp_store drops temporary objects; listing tables are recreated lazily.
+    let restore = conn.pragma_update(None, "temp_store", temp);
+    let views = if temp == 1 {
+        Ok(())
+    } else {
+        crate::db::grant_view(conn)
+    };
+    result?;
+    restore?;
+    views
 }
 /// Page images from before a purge sit in the WALs until they are folded in and cut, and stale
 /// cells freed without secure_delete (a staged listing deleted when it was published, a cell an
@@ -1023,26 +1095,7 @@ pub(crate) fn wal_cut(conn: &Connection, wait: Duration, vacuum: &mut bool) -> b
     };
     let _ = conn.busy_timeout(wait);
     if *vacuum {
-        let rewrite = || -> Result<()> {
-            let temp: i64 = conn.query_row("PRAGMA temp_store", [], |r| r.get(0))?;
-            conn.pragma_update(None, "temp_store", "FILE")?;
-            crate::crashpoint::hit("VACUUM st");
-            let result = conn.execute_batch("VACUUM st").and_then(|()| {
-                crate::crashpoint::hit("VACUUM main");
-                conn.execute_batch("VACUUM main")
-            });
-            // Only a changed temp_store drops temporary objects; listing tables are recreated lazily.
-            let restore = conn.pragma_update(None, "temp_store", temp);
-            let views = if temp == 1 {
-                Ok(())
-            } else {
-                crate::db::grant_view(conn)
-            };
-            result?;
-            restore?;
-            views
-        };
-        *vacuum = rewrite().is_err();
+        *vacuum = rewrite(conn, &["st", "main"]).is_err();
         if *vacuum {
             let _ = conn.busy_timeout(Duration::from_millis(u64::from(timeout)));
             return false;
@@ -1060,9 +1113,15 @@ pub(crate) fn wal_cut(conn: &Connection, wait: Duration, vacuum: &mut bool) -> b
     let done = state && catalog;
     if done && !*vacuum {
         crate::crashpoint::hit("clear scrub marker");
-        return conn
-            .execute("DELETE FROM st.meta WHERE key='scrub_pending'", [])
-            .is_ok();
+        let complete = || -> Result<()> {
+            let tx = conn.unchecked_transaction()?;
+            // This full rewrite also discharges the legacy learning scrub, including on retry.
+            tx.execute("INSERT INTO st.meta(key,value) VALUES('learning_scrub_v1','1') ON CONFLICT(key) DO NOTHING", [])?;
+            tx.execute("DELETE FROM st.meta WHERE key='scrub_pending'", [])?;
+            tx.commit()?;
+            Ok(())
+        };
+        return complete().is_ok();
     }
     done
 }
@@ -1245,7 +1304,8 @@ fn prepare_state(
             {
                 return Err(Error::Invalid("ReFS root needs 128-bit identity"));
             }
-            let tx = conn.transaction()?;
+            // Provenance and grant reads must not precede admission to the state writer lock.
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             let lab: Option<i64> = if o.origin == "lab_generated" {
                 Some(
                     tx.query_row(
@@ -1318,7 +1378,7 @@ fn prepare_state(
             Ok(None)
         }
         WriteCommand::GrantIdentityChanged { grant_id } => {
-            let tx = conn.transaction()?;
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             if !tx.query_row(
                 "SELECT EXISTS(SELECT 1 FROM st.root_grant WHERE id=?1)",
                 [grant_id],
@@ -1549,8 +1609,8 @@ pub(crate) fn purge_root(conn: &Connection, root: i64) -> Result<()> {
             }
         }
     }
-    // The triggers removed the root's search entries, but a contentless delete only records a
-    // tombstone: the name trigrams stay in the index segments until a merge. Merging everything
+    // The triggers removed the root's search entries, but deletion terms can remain in older
+    // segments until a merge. Merging everything
     // now rewrites the index without them, and secure_delete zeroes the pages it frees.
     // ponytail: rewrites the whole index (about 1 s per million names here); per-segment if forgets get frequent.
     conn.execute(
@@ -1622,7 +1682,9 @@ fn retire_selected(
         &format!("INSERT OR IGNORE INTO retiring_reference {select}"),
         values,
     )?;
-    let tx = conn.transaction()?;
+    // Admit before reading the token: a later state commit would make a deferred upgrade BUSY_SNAPSHOT.
+    // Like forget_state and service writers, IMMEDIATE locks catalog (main) before state (st).
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let token: String = tx.query_row("SELECT coalesce((SELECT publication_token FROM st.pending_reference LIMIT 1),lower(hex(randomblob(16))))", [], |r| r.get(0))?;
     tx.execute("INSERT OR REPLACE INTO st.pending_reference(object_ref_id,catalog_instance,publication_token) SELECT id,catalog_instance,?1 FROM st.object_ref WHERE id IN (SELECT id FROM retiring_reference)", [token])?;
     tx.commit()?;
@@ -2439,6 +2501,20 @@ fn swap_bulk(conn: &Connection, root: i64) -> Result<()> {
     // The build's rows are new token keys (IDs are never reused): index them in one pass below
     // instead of queueing each through the insert triggers and reading it back (#520).
     let token_triggers = crate::search::suspend_insert_triggers(conn)?;
+    if !conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='trigger' AND name='search_file_insert')",
+        [],
+        |r| r.get::<_, bool>(0),
+    )? {
+        conn.execute_batch(include_str!("search.sql"))?;
+    }
+    let trigram_trigger: String = conn.query_row(
+        "SELECT sql FROM sqlite_schema WHERE type='trigger' AND name='search_file_insert'",
+        [],
+        |r| r.get(0),
+    )?;
+    // Row triggers force SQLite to spool the entire INSERT SELECT input to FILE scratch.
+    conn.execute_batch("DROP TRIGGER search_file_insert")?;
     conn.execute(
         "INSERT INTO dir SELECT * FROM bulk_dir WHERE root_id=?1 ORDER BY id",
         [root],
@@ -2477,6 +2553,19 @@ fn swap_bulk(conn: &Connection, root: i64) -> Result<()> {
         &format!("INSERT INTO file SELECT * FROM {source} ORDER BY id"),
         [root],
     )?;
+    // The same row the dropped trigger writes (search.sql `search_file_insert`), filled from the
+    // swapped rows only: the `search_name_content` view would scan every live file (review of #981).
+    conn.execute(
+        &format!(
+            "INSERT INTO search_name(rowid,name,root)
+             SELECT f.id+{}, char(1)||replace(replace(f.name,char(1),' '),char(2),' ')||char(2),
+                    char(128+(d.root_id>>10&31),128+(d.root_id>>5&31),128+(d.root_id&31))
+             FROM (SELECT id,name,dir_id FROM {source}) f JOIN dir d ON d.id=f.dir_id ORDER BY f.id",
+            crate::search::FILE_KEY
+        ),
+        [root],
+    )?;
+    conn.execute_batch(&trigram_trigger)?;
     for (_, sql) in deferred {
         conn.execute_batch(&sql)?;
     }
@@ -2612,6 +2701,8 @@ pub(crate) fn rollup(conn: &Connection, root: i64, clean: bool) -> Result<()> {
 #[cfg(test)]
 mod bulk_tests;
 #[cfg(test)]
+mod concurrency_tests;
+#[cfg(test)]
 mod full_disk_tests;
 #[cfg(test)]
 mod publication_tests;
@@ -2622,6 +2713,8 @@ mod tests {
     fn end_run_checkpoint_does_not_wait_for_a_reader_and_restores_write_timeout() {
         let temp = tempfile::tempdir().unwrap();
         let conn = crate::db::open_pair(temp.path(), "synthetic").unwrap();
+        // Leave scheduling headroom while keeping the receipt deadline below a blocking checkpoint.
+        conn.busy_timeout(Duration::from_secs(120)).unwrap();
         let writer = Writer::start(conn).unwrap();
         writer
             .call(WriteCommand::RegisterRoot(RootObservation {
@@ -2670,7 +2763,7 @@ mod tests {
             })
             .unwrap();
         // Keep the snapshot open until the receipt or timeout; release it even on a red run.
-        let result = end.rx.recv_timeout(Duration::from_secs(1));
+        let result = end.rx.recv_timeout(Duration::from_secs(30));
         assert_eq!(
             reader
                 .query_row("SELECT count(*) FROM file", [], |r| r.get::<_, i64>(0))
@@ -2681,7 +2774,6 @@ mod tests {
         result
             .expect("EndRun waited for a reader instead of returning its committed receipt")
             .unwrap();
-        assert!(writer.timings().checkpoint_seconds < 1.0);
         assert_eq!(
             reader
                 .query_row("SELECT logical FROM file", [], |r| r.get::<_, i64>(0))

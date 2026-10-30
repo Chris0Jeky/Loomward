@@ -146,20 +146,29 @@ pub fn start_directory() -> Option<PathBuf> {
         .filter(|p| p.is_absolute() && p.is_dir())
 }
 
-/// The one-line confirmation after a pick. Letters of any script stay readable; everything else
-/// outside printable ASCII (controls, bidi overrides, zero-width marks) is written as `\u{..}`.
-pub fn grant_text(folder: &Path) -> String {
-    let shown: String = folder
-        .to_string_lossy()
-        .chars()
+/// Letters and printable ASCII stay readable; anything else (controls, bidi overrides, zero-width
+/// marks, the Hangul fillers) is written as `\u{..}`, and literal backslashes are doubled.
+pub fn readable(text: &str) -> String {
+    text.chars()
         .map(|c| {
-            if c.is_alphanumeric() || matches!(c, ' '..='~') {
+            // The Hangul fillers are letters that draw nothing: they stay hidden (LW-145).
+            let filler = matches!(c, '\u{115F}' | '\u{1160}' | '\u{3164}' | '\u{FFA0}');
+            if c == '\\' {
+                "\\\\".to_string()
+            } else if (c.is_alphanumeric() && !filler) || matches!(c, ' '..='~') {
                 c.to_string()
             } else {
                 format!("\\u{{{:04X}}}", c as u32)
             }
         })
-        .collect();
+        .collect()
+}
+
+/// The one-line confirmation after a pick. Letters of any script stay readable (bar the invisible
+/// Hangul fillers); everything else outside printable ASCII (controls, bidi overrides, zero-width
+/// marks) is written as `\u{..}`, and literal backslashes are doubled.
+pub fn grant_text(folder: &Path) -> String {
+    let shown = readable(&folder.to_string_lossy());
     format!(
         "Let Loomward read the names, sizes and dates in {shown}?\n\n\
          It never changes your files, and reads no file contents unless you ask it to find \

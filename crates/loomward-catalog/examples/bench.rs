@@ -371,9 +371,18 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         [],
         |r| r.get(0),
     )?;
+    let objects = {
+        let mut stmt = db.prepare(
+            "SELECT s.name,s.type,s.tbl_name,coalesce(sum(d.pgsize),0),coalesce(sum(d.payload),0),coalesce(sum(d.unused),0) FROM sqlite_schema s LEFT JOIN dbstat d ON d.name=s.name WHERE s.type IN ('table','index') GROUP BY s.name ORDER BY s.name",
+        )?;
+        let objects = stmt.query_map([], |r| Ok(json!({"name":r.get::<_, String>(0)?,"type":r.get::<_, String>(1)?,"table":r.get::<_, String>(2)?,"bytes":r.get::<_, i64>(3)?,"payload_bytes":r.get::<_, i64>(4)?,"unused_bytes":r.get::<_, i64>(5)?})))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        objects
+    };
     drop(db);
     let entries = rows + directories + 1;
     let mut receipt = json!({"schema_version":SCHEMA_VERSION,"dataset_class":"synthetic","platform":std::env::consts::OS,"scope":"in-process generated metadata only; no enumeration, no HTTP, no personal data","files":rows,"directories":directories+1,"insert_includes_generation_and_queue_backpressure":true,"all_schema_indexes_present":true,"oracle":{"logical_bytes":expected_logical.to_string(),"allocated_known_bytes":expected_allocated.to_string(),"allocation_unknown_files":expected_unknown,"matched":true},"P4":{"insert_seconds":insert_s,"rows_per_second":entries as f64/insert_s,"target_rows_per_second":250000,"met":entries as f64/(insert_s+finalise_s)>=250000.0,"met_basis":"through_end_run_rows_per_second","through_end_run_rows_per_second":entries as f64/(insert_s+finalise_s)},"writer_timings":writer_timings,"finalise_seconds":finalise_s,"P6":{"timing":summary(slice_ms),"nodes":slice_nodes,"payload_bytes":payload_bytes,"target_ms":60,"target_payload_bytes":1500000,"target_dataset_rows":10000000,"dataset_scale_met":false,"http_round_trip":"unverified"},"P7":{"timing":summary(page_ms),"limit":200,"target_ms":20},"P8":{"timing":summary(search_ms),"work_budget_sqlite_ops":2000000,"budget_hits":budget_hits,"target_ms":300},"P14":{"catalog_bytes":catalog_bytes,"bytes_per_entry":catalog_bytes as f64/entries as f64,"target_bytes_per_entry":200,"target_dataset_rows":10000000,"dataset_scale_met":false},"limitations":["single warm run on this Windows host; no cold-cache claim","P6 and P14 at 1M, not the 10M target; HTTP and process-memory measurement belong to integration"]});
+    receipt["P14"]["objects"] = json!(objects);
     receipt["P14"]["freelist_pages"] = json!(freelist_pages);
     receipt["P14"]["search_index_bytes"] = json!(search_index_bytes);
     temp.close()?;

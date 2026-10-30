@@ -14,11 +14,15 @@ use loomward_http::fixture::{FixtureService, EXAMPLES_DIR};
 use loomward_protocol::{
     CallContext, DatasetClass, EventStream, RequestEnvelope, ResponseEnvelope, ViewService,
 };
-use loomward_service::{Config, Service};
+use loomward_service::{
+    paths::{lock_state_dir, unwant_lock, want_lock},
+    Config, Service,
+};
 use std::ffi::OsString;
-use std::fs::{File, TryLockError};
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 pub const USAGE: &str =
     "usage: loomward-desktop [--self-test] [--dataset personal|synthetic] [--state-dir DIR] [--fixtures]";
@@ -140,32 +144,6 @@ pub fn legacy_state_notice(launch: &Launch, local_app_data: Option<OsString>) ->
     })
 }
 
-/// The exclusive lock file of docs/41 section 3, created in `state_dir` and held until the service
-/// drops. It is an OS lock on an open handle, so a crashed instance leaves no stale lock behind.
-pub fn lock_state_dir(state_dir: &Path) -> Result<File, String> {
-    let dir = loomward_service::paths::prospective_dir(state_dir)?;
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| format!("cannot create {}: {e}", state_dir.display()))?;
-    let file = File::options()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(dir.join("lock"))
-        .map_err(|e| format!("cannot open the state lock in {}: {e}", state_dir.display()))?;
-    match file.try_lock() {
-        Ok(()) => Ok(file),
-        Err(TryLockError::WouldBlock) => Err(format!(
-            "busy: Loomward is already open on {}. Switch to that window, or close it first.",
-            state_dir.display()
-        )),
-        Err(TryLockError::Error(e)) => Err(format!(
-            "cannot lock the state in {}: {e}",
-            state_dir.display()
-        )),
-    }
-}
-
 /// The service with its state lock: the lock is released only after the service has dropped.
 struct Locked {
     service: Service,
@@ -212,7 +190,33 @@ pub fn open(
         }
     };
     // Before the stores open: a second instance must not touch them (docs/41 section 3).
-    let lock = lock_state_dir(&state_dir)?;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut wanted = false;
+    let lock = loop {
+        match lock_state_dir(&state_dir) {
+            Ok(lock) => break Ok(lock),
+            Err(e) => {
+                let Some(message) = e.strip_prefix("busy: ") else {
+                    break Err(e);
+                };
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    break Err(message.into());
+                }
+                // Ask a busy agent's loomward-mcp to yield (#886). Best effort: without the
+                // marker the retry still waits for an idle release.
+                if !wanted {
+                    wanted = true;
+                    let _ = want_lock(&state_dir);
+                }
+                std::thread::sleep(remaining.min(Duration::from_millis(250)));
+            }
+        }
+    };
+    if wanted {
+        unwant_lock(&state_dir);
+    }
+    let lock = lock?;
     let service = Service::open(Config {
         state_dir,
         dataset: launch.dataset,

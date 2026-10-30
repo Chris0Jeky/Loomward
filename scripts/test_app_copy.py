@@ -1,6 +1,7 @@
 """C7 browser proof: the real mock gate plus a scripted synthetic engine, never a copier."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from playwright.sync_api import Page, expect
@@ -9,6 +10,10 @@ from test_app_a11y import duplicate_names
 
 DIGEST = 'sha256:' + 'a' * 64
 HOSTILE = '<copy>\u202e.txt'
+
+RECEIPTS = Path(__file__).resolve().parents[1] / 'contracts/v3/examples/dtos'
+READ_BACK = json.loads((RECEIPTS / 'copy-receipt.json').read_text())['value']
+PUBLISHED = json.loads((RECEIPTS / 'copy-receipt-published-unverified.json').read_text())['value']
 
 
 class CopyEngine(FakeEngine):
@@ -54,7 +59,9 @@ class CopyEngine(FakeEngine):
         if command in ('copy.cancel', 'copy.abandon'):
             self.state = 'cancelled'
         return {'operation_id': 'cp_scripted', 'digest': DIGEST, 'state': self.state,
-                'items_total': 1, 'items_verified': 1 if self.state == 'committed' else 0,
+                'items_total': 3, 'items_verified': 3 if self.state == 'committed' else 0,
+                **({'receipt': READ_BACK} if self.state == 'committed' else
+                   {'receipt': PUBLISHED} if self.state == 'publishing' else {}),
                 'refusal': {'code': 'source_in_use', 'node_id': 'nd_item-000.txt'} if self.state == 'blocked' else None}
 
 
@@ -110,7 +117,7 @@ def run_copy(page: Page, base: str, shots: Path | None = None):
         expect(refresh).to_be_focused()
         ok(True, 'copy: read-only progress polling never steals keyboard focus')
         page.get_by_role('button', name='Cancel copy').click()
-        expect(page.get_by_role('heading', name='Receipt: cancelled')).to_be_visible()
+        expect(page.get_by_role('heading', name='Receipt', exact=True)).to_be_visible()
         ok(engine.calls[-1]['command'] == 'copy.cancel', 'copy: keyboard start and cancellation retain the engine outcome')
         page.get_by_role('button', name='Build preview').click()
         page.get_by_role('button', name='Approve this preview').click()
@@ -120,7 +127,7 @@ def run_copy(page: Page, base: str, shots: Path | None = None):
         page.get_by_role('button', name='Refresh copy status').click()
         expect(page.get_by_role('button', name='Confirm resume')).to_be_visible()
         page.get_by_role('button', name='Abandon operation').click()
-        expect(page.get_by_role('heading', name='Receipt: cancelled')).to_be_visible()
+        expect(page.get_by_role('heading', name='Receipt', exact=True)).to_be_visible()
         page.get_by_role('button', name='Build preview').click()
         page.get_by_role('button', name='Approve this preview').click()
         page.get_by_role('button', name='Start copying').click()
@@ -128,9 +135,13 @@ def run_copy(page: Page, base: str, shots: Path | None = None):
         engine.state = 'publishing'
         page.get_by_role('button', name='Refresh copy status').click()
         expect(page.get_by_role('button', name='Cancel copy')).to_have_count(0)
+        expect(operation).to_contain_text('published_unverified')
         engine.state = 'committed'
         page.get_by_role('button', name='Refresh copy status').click()
-        expect(page.get_by_role('heading', name='Receipt: completed and verified')).to_be_visible()
+        expect(page.get_by_role('heading', name='Receipt', exact=True)).to_be_visible()
+        expect(operation).to_contain_text(READ_BACK['explanation'])
+        expect(operation).to_contain_text('not power-loss tested on this disk')
+        assert 'durable' not in operation.inner_text().lower()
         expect(operation).to_contain_text('No space was freed on the source')
         expect(operation).to_contain_text('unknown / unknown')
         expect(operation).to_contain_text('U+200B')

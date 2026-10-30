@@ -10,6 +10,8 @@ pub enum JobKind {
     Refit,
     Teacher,
     Duplicates,
+    /// `reclaim.observe` (#939): the bounded link-count pass whose results `reclaim.plan` reads.
+    Reclaim,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -102,7 +104,9 @@ pub struct ScanProgress {
     pub logical_bytes: Bytes,
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub allocated_bytes: Option<Bytes>,
+    /// Queued and active tasks at sampling time, possibly including the listing just finished.
     pub pending_dirs: Count,
+    /// Waiting commands, including sender backpressure and deferred commands; excludes processing.
     pub writer_queue_depth: Count,
     pub entries_per_second: Rate,
     pub elapsed_ms: Count,
@@ -133,8 +137,8 @@ pub struct Job {
     pub started_at: Option<Timestamp>,
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub finished_at: Option<Timestamp>,
-    /// A scan's counters are published once, with its final report, so a running scan reads `null`
-    /// here. No live counters exist yet; a partial value is never invented in their place.
+    /// Running scans publish snapshots of their latest finished directory listings. Before
+    /// enumeration starts this can be null; `done` carries the exact final report.
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub progress: Option<ScanProgress>,
     #[serde(deserialize_with = "crate::types::required_nullable")]
@@ -147,6 +151,13 @@ pub struct Job {
         skip_serializing_if = "Option::is_none"
     )]
     pub duplicates: Option<DuplicateReport>,
+    /// Present only on `reclaim` jobs once the first candidate list is known.
+    #[serde(
+        default,
+        deserialize_with = "crate::types::optional_present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub reclaim: Option<ReclaimObserveProgress>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -169,7 +180,7 @@ pub struct JobListRequest {
         deserialize_with = "crate::types::optional_present",
         skip_serializing_if = "Option::is_none"
     )]
-    pub kinds: Option<UniqueVec<JobKind, 0, 4>>,
+    pub kinds: Option<UniqueVec<JobKind, 0, 5>>,
     pub limit: Int<1, 50>,
 }
 

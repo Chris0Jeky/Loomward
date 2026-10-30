@@ -670,3 +670,58 @@ fn preflight_verdict_on_a_corrupt_catalogue_is_unchanged_by_the_deferred_check()
     Catalog::validate_stores(temp.path(), "synthetic").unwrap();
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
 }
+
+#[test]
+fn older_child_sort_indexes_use_one_copy_of_the_rowid_and_keep_covering_plans() {
+    let temp = tempfile::tempdir().unwrap();
+    drop(Catalog::open(temp.path(), "synthetic").unwrap());
+    let db = Connection::open(temp.path().join("catalog.db")).unwrap();
+    db.execute_batch("DROP INDEX file_by_logical; DROP INDEX file_by_allocated; CREATE INDEX file_by_logical ON file(dir_id,logical DESC,id); CREATE INDEX file_by_allocated ON file(dir_id,allocated DESC,id);").unwrap();
+    drop(db);
+    drop(Catalog::open(temp.path(), "synthetic").unwrap());
+    let db = Connection::open(temp.path().join("catalog.db")).unwrap();
+    for (index, key) in [
+        ("file_by_logical", "logical"),
+        ("file_by_allocated", "allocated"),
+    ] {
+        assert_eq!(
+            db.query_row(
+                "SELECT count(*) FROM pragma_index_xinfo(?1) WHERE cid IN (0,-1)",
+                [index],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1,
+            "redundant rowid in {index}"
+        );
+        let mut stmt = db.prepare(&format!("EXPLAIN QUERY PLAN SELECT id,{key} FROM file WHERE dir_id=?1 ORDER BY {key} DESC,id LIMIT 200")).unwrap();
+        let plan = stmt
+            .query_map([1], |r| r.get::<_, String>(3))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+            .join(" ");
+        assert!(plan.contains(&format!("COVERING INDEX {index}")), "{plan}");
+        assert!(!plan.contains("TEMP B-TREE"), "{plan}");
+    }
+    for (sql, index) in [
+        (
+            "SELECT id FROM file WHERE file_id=x'0101010101010101'",
+            "file_identity",
+        ),
+        (
+            "SELECT id,logical FROM file WHERE ext_id=1 ORDER BY logical DESC,id",
+            "file_by_ext",
+        ),
+    ] {
+        let mut stmt = db.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+        let plan = stmt
+            .query_map([], |r| r.get::<_, String>(3))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+            .join(" ");
+        assert!(plan.contains(index), "{plan}");
+        assert!(!plan.contains("TEMP B-TREE"), "{plan}");
+    }
+}

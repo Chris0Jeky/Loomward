@@ -46,6 +46,8 @@ def run_ask(page, base: str) -> None:
     expect(page.get_by_text('Ask sees nothing until you choose folders')).to_be_visible()
     expect(page.get_by_test_id('ask-scope')).to_have_text('Ask can see no folder yet, so it cannot look anything up.')
     expect(page.get_by_text('No preview per question:')).to_be_visible()
+    # Endpoint trust must be explained before the owner grants access or sends a question.
+    expect(page.get_by_text('The configured loopback endpoint is unauthenticated. Another local process occupying that port can receive the approved request.', exact=False)).to_be_visible()
     # The tool list is read-only, and nothing that writes is offered.
     page.get_by_text(re.compile(r'^Tools the model may use \(2, all read-only\)')).click()
     items = page.get_by_role('list', name='Ask tools').get_by_role('listitem')
@@ -70,7 +72,7 @@ def run_ask(page, base: str) -> None:
     expect(page.get_by_role('table', name='Disclosure records').locator('tbody tr')).to_have_count(2)
     page.get_by_role('button', name="Revoke Ask's access").click()
     expect(page.get_by_text('Ask sees nothing until you choose folders')).to_be_visible()
-    print('PASS ask (mock): read-only tool list, grant empty state, scope stated, ledger citations open the entry, unverified handle, refused write, round records, revoke')
+    print('PASS ask (mock): endpoint warning before disclosure, read-only tool list, grant empty state, scope stated, ledger citations open the entry, unverified handle, refused write, round records, revoke')
 
 
 class _Stub:

@@ -30,7 +30,7 @@ const VOLUMES: VolumeSeed[] = [
 ];
 // Synthetic observations exercise every exclusion without inventing usable physics.
 for (const reason of ['offline', 'capacity_unknown', 'no_active_grant', 'physics_unusable'] as const) {
-  VOLUMES.push({ ...VOLUMES[1]!, id: `vo_${reason}`, name: `synthetic-${reason}`, exclusion: reason });
+  VOLUMES.push({ ...VOLUMES[1]!, id: `vo_${reason}`, name: `synthetic-${reason}`, bus: reason === 'offline' ? 'usb' : reason === 'capacity_unknown' ? 'unknown' : 'nvme', exclusion: reason });
 }
 
 interface GroupSeed {

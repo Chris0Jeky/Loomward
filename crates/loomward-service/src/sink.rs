@@ -222,8 +222,7 @@ fn observation(e: &Entry, unverified: bool) -> Observation {
         file_id,
         logical: e.logical,
         allocated: e.allocated,
-        // Family classification belongs to a later lane: an extension is only "other" here.
-        family: if extension.is_some() { "other" } else { "none" }.into(),
+        family: loomward_catalog::extension_family(extension.as_deref()).into(),
         extension,
         created_ft: e.creation,
         modified_ft: e.last_write,
@@ -312,6 +311,13 @@ impl CatalogScanSink {
             #[cfg(test)]
             gate: Default::default(),
         }
+    }
+
+    /// Listing steps sent for `root` whose receipts are not yet taken.
+    #[cfg(test)]
+    pub(crate) fn unsettled(&self, root: &RootId) -> usize {
+        let s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        s.roots.get(root).map_or(0, |r| r.sent.len())
     }
 
     /// Binds a wire root to its active grant before a scan; a new grant lifts an old fence.
@@ -413,6 +419,9 @@ impl CatalogScanSink {
                         }
                     }
                 }
+                // Dropped unexecuted for a run marked by `cancel_queued` (#934): the writer
+                // answers `Cancelled` to nothing else (a writer send is never cancellable here).
+                Err(CatalogError::Cancelled) => {}
                 Err(e) => match listing_error(e) {
                     EngineError::StaleGeneration { .. } => stale.push(step.ticket.dir),
                     e => {
@@ -424,7 +433,20 @@ impl CatalogScanSink {
         if published {
             self.invalidated(root, false);
         }
-        first.map_or(Ok(stale), Err)
+        if let Some(error) = first {
+            if let Some(r) = self
+                .state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .roots
+                .get_mut(root)
+            {
+                r.stale.extend(stale);
+            }
+            Err(error)
+        } else {
+            Ok(stale)
+        }
     }
 
     fn call(&self, command: WriteCommand) -> loomward_catalog::Result<WriteReply> {
@@ -569,9 +591,6 @@ impl ScanSink for CatalogScanSink {
             }
             r.grant
         };
-        if let Some(inner) = self.inner.upgrade() {
-            inner.freshness_begin(grant, scope);
-        }
         let reply = self
             .call(WriteCommand::BeginRun {
                 grant_id: grant,
@@ -604,6 +623,11 @@ impl ScanSink for CatalogScanSink {
         r.dirs.clear();
         r.sent.clear();
         r.stale.clear();
+        drop(s);
+        // A refused begin must not alter another run's freshness slot.
+        if let Some(inner) = self.inner.upgrade() {
+            inner.freshness_begin(grant, scope);
+        }
         Ok(())
     }
 
@@ -918,12 +942,10 @@ impl ScanSink for CatalogScanSink {
         let complete = complete && receipts_settled;
         let settled = settled && receipts_settled;
         let limited = limited && receipts_settled;
-        let catalog_run = {
+        let (catalog_run, grant) = {
             let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
             let r = Self::active(&mut s, root, run)?;
-            let catalog_run = r.run.take().unwrap().1;
-            r.dirs.clear();
-            catalog_run
+            (r.run.unwrap().1, r.grant)
         };
         // Only an engine-complete run may let the writer finalise absence and coverage; the writer
         // still requires its own full traversal for that. A settled traversal with coverage gaps
@@ -936,27 +958,34 @@ impl ScanSink for CatalogScanSink {
                 finished_at_ns: now_ns(),
             })
         };
-        if let Err(e) = end(if complete {
+        let result = end(if complete {
             "completed"
         } else if settled || limited {
             "partial"
         } else {
             "cancelled"
-        }) {
-            // Release the catalogue run, or every later begin_run answers busy until restart.
-            let _ = end("failed");
+        });
+        // Keep the run handle until either ending commits, so a failed fallback can be retried.
+        if result.is_ok() || end("failed").is_ok() {
+            let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(r) = s
+                .roots
+                .get_mut(root)
+                .filter(|r| r.run == Some((run, catalog_run)))
+            {
+                r.run = None;
+                r.dirs.clear();
+            }
+        }
+        if let Err(e) = result {
             // Throttling may have held back the last publication's event: announce it now.
             self.invalidated(root, true);
+            if let Some(inner) = self.inner.upgrade() {
+                inner.freshness_finish(grant, scope, false);
+            }
             return Err(listing_error(e));
         }
-        let grant = self
-            .state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .roots
-            .get(root)
-            .map(|r| r.grant);
-        if let (Some(inner), Some(grant)) = (self.inner.upgrade(), grant) {
+        if let Some(inner) = self.inner.upgrade() {
             #[cfg(test)]
             if matches!(scope, RunScope::Targeted(_)) {
                 inner.hooks.gate(
@@ -987,6 +1016,23 @@ impl ScanSink for CatalogScanSink {
         Ok(())
     }
 
+    /// #934: the engine cancelled the run, so the writer drops its queued steps unexecuted
+    /// instead of committing them before EndRun("cancelled"); the steps that did commit are a
+    /// prefix of those sent, as if the run had been cancelled there. Any other unsettled finish
+    /// never reaches here and still commits everything it sent.
+    fn cancel_queued(&self, root: &RootId, run: u64) {
+        let catalog_run = {
+            let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            Self::active(&mut s, root, run)
+                .ok()
+                .and_then(|r| r.run)
+                .map(|(_, catalog)| catalog)
+        };
+        if let (Some(catalog_run), Some(inner)) = (catalog_run, self.inner.upgrade()) {
+            inner.catalog.writer().cancel_run(catalog_run);
+        }
+    }
+
     fn settle(&self, root: &RootId) -> EngineResult<Vec<u64>> {
         let mut stale = self.settle_sent(root, None)?;
         let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -1004,5 +1050,103 @@ impl ScanSink for CatalogScanSink {
             r.dirs.clear();
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+
+    fn fixture() -> (tempfile::TempDir, crate::Service, RootId) {
+        let temp = crate::tests::temp_root();
+        let svc = crate::Service::open(crate::Config {
+            state_dir: temp.path().to_path_buf(),
+            dataset: loomward_protocol::DatasetClass::Synthetic,
+            allow_personal: false,
+            allow_identity_unverified: false,
+            grant_roots: vec![],
+        })
+        .unwrap();
+        svc.inner.freshness.stop();
+        let (root, grant) = crate::tests::fixture(&svc, 0);
+        let dir = db::active_root_dir(&svc.inner.db(), root).unwrap().unwrap();
+        let id = RootId::new(svc.inner.root_id(root)).unwrap();
+        svc.inner.scan.bind(&id, grant, dir);
+        svc.inner
+            .scan
+            .begin_run(&id, 42, &RunScope::FullRoot)
+            .unwrap();
+        (temp, svc, id)
+    }
+
+    #[test]
+    fn failed_end_and_fallback_retain_the_run_for_retry() {
+        let (_temp, svc, root) = fixture();
+        let sink = &svc.inner.scan;
+        svc.inner
+            .db()
+            .execute_batch(
+                "CREATE TRIGGER main.fail_end BEFORE UPDATE OF state ON scan_run
+             BEGIN SELECT RAISE(ABORT,'synthetic end failure'); END;",
+            )
+            .unwrap();
+        assert!(sink
+            .finish_run(&root, 42, &RunScope::FullRoot, true)
+            .is_err());
+        let running: bool = svc
+            .inner
+            .db()
+            .query_row(
+                "SELECT state='running' FROM main.scan_run ORDER BY id DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(running);
+        svc.inner
+            .db()
+            .execute_batch("DROP TRIGGER main.fail_end")
+            .unwrap();
+        sink.finish_run(&root, 42, &RunScope::FullRoot, false)
+            .expect("retry must retain the catalogue run after both ends failed");
+        sink.begin_run(&root, 43, &RunScope::FullRoot).unwrap();
+        sink.finish_run(&root, 43, &RunScope::FullRoot, false)
+            .unwrap();
+    }
+
+    #[test]
+    fn fatal_drain_keeps_earlier_obsolete_directories() {
+        let (_temp, svc, root) = fixture();
+        let sink = &svc.inner.scan;
+        let run = sink.state.lock().unwrap().roots[&root].run.unwrap().1;
+        let ticket = ListingTicket {
+            dir: 123,
+            input_revision: 0,
+            old_parent: None,
+        };
+        // The first receipt is obsolete; the second is a fatal inactive-run refusal.
+        for run_id in [run, i64::MAX] {
+            sink.send(
+                &root,
+                ticket,
+                false,
+                WriteCommand::ListingDone {
+                    run_id,
+                    dir_id: i64::MAX,
+                    outcome: ListingOutcome::Complete,
+                    skipped: 0,
+                    errors: 0,
+                },
+            )
+            .unwrap();
+        }
+        assert!(matches!(
+            sink.settle(&root),
+            Err(EngineError::PermissionDenied { .. })
+        ));
+        assert_eq!(sink.settle(&root).unwrap(), vec![ticket.dir]);
+        assert!(sink.settle(&root).unwrap().is_empty());
+        sink.finish_run(&root, 42, &RunScope::FullRoot, false)
+            .unwrap();
     }
 }

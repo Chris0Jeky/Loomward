@@ -6,7 +6,9 @@
 //! a separator), substring; then, for several words, all words at word starts, all words anywhere.
 //! Inside a pass, folders come before files and both run in key order, which makes the cursor a
 //! plain keyset position. An empty text lists by filters only (files of one extension largest
-//! first). Visibility is checked per hit: active grant, requested root, no hidden ancestor.
+//! first). Visibility is checked per hit: active grant, requested root, no hidden ancestor. A
+//! client's MATCH carries its roots (#887); filter-only SQL starts from those roots (#937), so
+//! out-of-grant rows are never visited at all.
 use crate::query::{
     instance, is_budget_interrupt, raw, revisions, Raw, WorkGuard, DIR_COLUMNS, FILE_COLUMNS,
 };
@@ -19,6 +21,8 @@ use std::sync::{
 };
 
 mod analyze;
+#[cfg(all(test, windows))]
+mod cold_probe;
 mod rank;
 mod tokens;
 pub use rank::{RankOptions, ALL_TIERS, TIER_CONTEXT, TIER_TOKEN, TIER_TRIGRAM};
@@ -245,8 +249,11 @@ fn place<'a>(
         .ok_or(Error::Invalid("directory identity cycle"))
 }
 
+// Start from the few parentless directories; dir_by_root visits every descendant on a fresh reader.
+const ROOT_STATES_SQL: &str = "SELECT r.id,CASE WHEN r.state='complete' AND d.agg_valid_rev<d.dirty_rev THEN 'stale' ELSE r.state END,coalesce(d.sub_complete,0),EXISTS(SELECT 1 FROM scan_run s WHERE s.root_id=r.id AND s.state='completed') FROM root r JOIN root_grant g ON g.id=r.id LEFT JOIN dir d INDEXED BY dir_by_logical ON d.root_id=r.id AND d.parent_id IS NULL WHERE g.state='active' AND (?1 IS NULL OR r.id=?1) ORDER BY r.id LIMIT 64";
+
 fn root_states(conn: &Connection, root: Option<i64>) -> Result<Vec<SearchRootState>> {
-    let mut s = conn.prepare_cached("SELECT r.id,r.state,coalesce(d.sub_complete,0),EXISTS(SELECT 1 FROM scan_run s WHERE s.root_id=r.id AND s.state='completed') FROM root r JOIN root_grant g ON g.id=r.id LEFT JOIN dir d ON d.root_id=r.id AND d.parent_id IS NULL WHERE g.state='active' AND (?1 IS NULL OR r.id=?1) ORDER BY r.id LIMIT 64")?;
+    let mut s = conn.prepare_cached(ROOT_STATES_SQL)?;
     let rows = s.query_map([root], |r| {
         let state: String = r.get(1)?;
         let complete: bool = r.get(2)?;
@@ -276,24 +283,117 @@ fn visible(files: bool, scope: Option<&[i64]>) -> String {
     } else {
         "?4 IS NULL AND ((?5 IS NULL AND ?6 IS NULL) OR d.agg_valid_rev>=d.dirty_rev) AND (?5 IS NULL OR d.sub_logical>=?5) AND (?6 IS NULL OR d.sub_logical<=?6) AND (?7 IS NULL OR d.modified_ft>=?7) AND (?8 IS NULL OR d.modified_ft<=?8)"
     };
-    // Root ids are integers from the store, so the scope is inlined; `IN ()` matches nothing.
-    let scope = scope.map_or(String::new(), |ids| {
-        let ids: Vec<String> = ids.iter().map(i64::to_string).collect();
-        format!(" AND d.root_id IN ({})", ids.join(","))
-    });
+    let scope = root_scope(scope);
     format!("d.root_id IN (SELECT id FROM root_grant WHERE state='active') AND d.listing_state!='absent_pending' AND (?3 IS NULL OR d.root_id=?3){scope} AND {filters}")
 }
+fn root_scope(scope: Option<&[i64]>) -> String {
+    // Root ids are integers from the store, so the scope is inlined; `IN ()` matches nothing.
+    scope.map_or(String::new(), |ids| {
+        let ids: Vec<String> = ids.iter().map(i64::to_string).collect();
+        format!(" AND d.root_id IN ({})", ids.join(","))
+    })
+}
 /// The SQL of one streaming pass: a pass's folders or files, or a filter-only listing of either.
-fn statement(filter: bool, files: bool, by_size: bool, scope: Option<&[i64]>) -> String {
+/// `by_root` (client scope only) starts a filter-only listing from the granted roots (#937).
+fn statement(
+    filter: bool,
+    files: bool,
+    by_size: bool,
+    scope: Option<&[i64]>,
+    by_root: bool,
+) -> String {
     let matched = format!("coalesce({},0)", visible(files, scope));
+    let (scope, dir_index) = if by_root {
+        (root_scope(scope), " INDEXED BY dir_by_root")
+    } else {
+        (String::new(), "")
+    };
+    // Keep the granted dirs outermost: a file/extension-first plan would still walk other roots.
+    let from = if by_root {
+        "dir d INDEXED BY dir_by_root CROSS JOIN file f INDEXED BY file_by_logical ON f.dir_id=d.id"
+    } else if by_size {
+        "file f INDEXED BY file_by_ext JOIN dir d ON d.id=f.dir_id"
+    } else {
+        "file f JOIN dir d ON d.id=f.dir_id"
+    };
     match (filter, files) {
         (false, false) => format!("SELECT {DIR_COLUMNS},{matched},s.rowid FROM search_name s JOIN dir d ON d.id=s.rowid WHERE search_name MATCH ?1 AND s.rowid>?2 AND s.rowid<{FILE_KEY} ORDER BY s.rowid"),
         (false, true) => format!("SELECT {FILE_COLUMNS},{matched},s.rowid FROM search_name s JOIN file f ON f.id=s.rowid-{FILE_KEY} JOIN dir d ON d.id=f.dir_id LEFT JOIN ext e ON e.id=f.ext_id WHERE search_name MATCH ?1 AND s.rowid>?2 ORDER BY s.rowid"),
-        (true, false) => format!("SELECT {DIR_COLUMNS},{matched},d.id FROM dir d WHERE ?1 IS NOT NULL AND d.id>?2 AND d.parent_id IS NOT NULL ORDER BY d.id"),
-        // One extension: its index, largest first, then by id.
-        (true, true) if by_size => format!("SELECT {FILE_COLUMNS},{matched},f.id+{FILE_KEY} FROM file f INDEXED BY file_by_ext JOIN dir d ON d.id=f.dir_id LEFT JOIN ext e ON e.id=f.ext_id WHERE ?1 IS NOT NULL AND f.ext_id=(SELECT id FROM ext WHERE ext=?4) AND (?9 IS NULL OR f.logical<?9 OR (f.logical=?9 AND f.id>?2-{FILE_KEY})) ORDER BY f.logical DESC,f.id"),
-        (true, true) => format!("SELECT {FILE_COLUMNS},{matched},f.id+{FILE_KEY} FROM file f JOIN dir d ON d.id=f.dir_id LEFT JOIN ext e ON e.id=f.ext_id WHERE ?1 IS NOT NULL AND f.id>?2-{FILE_KEY} ORDER BY f.id"),
+        (true, false) => format!("SELECT {DIR_COLUMNS},{matched},d.id FROM dir d{dir_index} WHERE ?1 IS NOT NULL AND d.id>?2 AND d.parent_id IS NOT NULL{scope} ORDER BY d.id"),
+        // One extension: largest first, then by id; the owner uses its extension index.
+        (true, true) if by_size => format!("SELECT {FILE_COLUMNS},{matched},f.id+{FILE_KEY} FROM {from} LEFT JOIN ext e ON e.id=f.ext_id WHERE ?1 IS NOT NULL AND f.ext_id=(SELECT id FROM ext WHERE ext=?4) AND (?9 IS NULL OR f.logical<?9 OR (f.logical=?9 AND f.id>?2-{FILE_KEY})){scope} ORDER BY f.logical DESC,f.id"),
+        (true, true) => format!("SELECT {FILE_COLUMNS},{matched},f.id+{FILE_KEY} FROM {from} LEFT JOIN ext e ON e.id=f.ext_id WHERE ?1 IS NOT NULL AND f.id>?2-{FILE_KEY}{scope} ORDER BY f.id"),
+    }
 }
+
+/// Most files (or folders) a client's filter-only page may sort when it starts from its granted
+/// roots. That plan reads and sorts every granted row on every page (about 130 VM steps per file,
+/// 17 ms per 20k, measured #937), so the cap holds a page near 5% of the 50M step budget; larger
+/// grants stream in key order and stop at the limit instead.
+const SORTED_GRANT_MAX: i64 = 20_000;
+
+/// How a filter-only client listing runs (#937): the roots it visits and, per kind, whether to
+/// start from them (small grants: out-of-grant rows are never read) or to stream in key order
+/// with a per-row check (large grants: the page stops at its limit without sorting the grant).
+struct Drive {
+    scope: Option<Vec<i64>>,
+    dirs: bool,
+    files: bool,
+}
+fn drive(conn: &Connection, req: &SearchRequest) -> Result<Drive> {
+    // The client's roots, narrowed to the requested root as `scoped()` does for text.
+    let scope: Option<Vec<i64>> = req.scope.as_ref().map(|s| {
+        let mut ids: Vec<i64> = s
+            .iter()
+            .copied()
+            .filter(|id| req.root_id.is_none_or(|r| r == *id))
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids
+    });
+    let (dirs, files) = match scope.as_deref() {
+        None => (false, false),
+        // `IN ()` matches nothing, so starting from the roots reads nothing.
+        Some([]) => (true, true),
+        Some(ids) => {
+            let list: Vec<String> = ids.iter().map(i64::to_string).collect();
+            // The root directory's totals; a root whose totals are stale or missing is unknown
+            // and takes the streaming plan.
+            let (known, dirs, files): (i64, i64, i64) = conn.query_row(
+                &format!("SELECT coalesce(sum(agg_valid_rev>=dirty_rev),0),coalesce(sum(sub_dirs),0),coalesce(sum(sub_files),0) FROM dir WHERE parent_id IS NULL AND root_id IN ({})", list.join(",")),
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )?;
+            let known = known == ids.len() as i64;
+            // One root's folders already come in key order from `dir_by_root`: nothing to sort.
+            (
+                known && (ids.len() == 1 || dirs <= SORTED_GRANT_MAX),
+                known && files <= SORTED_GRANT_MAX,
+            )
+        }
+    };
+    Ok(Drive { scope, dirs, files })
+}
+
+/// A root's `root` column code in `search.sql`: three C1 control characters, five bits each.
+fn root_code(id: i64) -> String {
+    [10, 5, 0]
+        .iter()
+        .map(|s| char::from_u32(0x80 + ((id >> s) & 31) as u32).unwrap_or('\u{80}'))
+        .collect()
+}
+/// A client's pass expression ANDed with its roots (#887), so FTS5 never visits an out-of-grant
+/// row; `None` when the client may see no root at all.
+fn scoped(expr: &str, scope: &[i64], root: Option<i64>) -> Option<String> {
+    let mut codes: Vec<String> = scope
+        .iter()
+        .filter(|id| root.is_none_or(|r| r == **id))
+        .map(|id| phrase(&root_code(*id)))
+        .collect();
+    codes.sort_unstable();
+    codes.dedup();
+    (!codes.is_empty()).then(|| format!("({expr}) AND root : {}", any(codes)))
 }
 
 /// A keyset position: pass, last key, and the last size of a by-size listing.
@@ -301,6 +401,7 @@ type Position = (u8, i64, Option<i64>);
 
 struct Walk<'r> {
     req: &'r SearchRequest,
+    drive: &'r Drive,
     text: &'r str,
     pass: u8,
     key: i64,
@@ -318,10 +419,25 @@ impl Walk<'_> {
     fn scan(&mut self, conn: &Connection, expr: &str, files: bool) -> Result<()> {
         let r = self.req;
         let by_size = files && self.pass == FILTER_PASS && r.extension.is_some();
-        let sql = statement(self.pass == FILTER_PASS, files, by_size, r.scope.as_deref());
+        let expr = match (&r.scope, self.pass == FILTER_PASS) {
+            (Some(scope), false) => match scoped(expr, scope, r.root_id) {
+                Some(expr) => expr,
+                None => return Ok(()),
+            },
+            _ => expr.to_string(),
+        };
+        let d = self.drive;
+        let by_root = self.pass == FILTER_PASS && if files { d.files } else { d.dirs };
+        let sql = statement(
+            self.pass == FILTER_PASS,
+            files,
+            by_size,
+            d.scope.as_deref(),
+            by_root,
+        );
         let mut stmt = conn.prepare_cached(&sql)?;
         let values = [
-            Value::Text(expr.into()),
+            Value::Text(expr),
             Value::Integer(self.key),
             r.root_id.map_or(Value::Null, Value::Integer),
             r.extension.clone().map_or(Value::Null, Value::Text),
@@ -375,8 +491,9 @@ impl Walk<'_> {
         } else {
             format!("{}\\{}", parent.rel, hit.name)
         };
+        self.skipped |= !hit.valid;
         let mut row = hit.entry();
-        if !hit.valid {
+        if !hit.valid && self.req.scope.is_none() {
             row.logical_bytes = None;
             row.allocated_bytes = None;
             row.files = None;
@@ -528,15 +645,18 @@ impl Reader {
             // Prepare afresh and before the budget: preparing the FTS table runs SQL, and a schema
             // error raised there under the progress handler would read as a budget cut.
             conn.flush_prepared_statement_cache();
+            let drive = drive(conn, req)?;
             for (pass, _) in &plan.passes {
                 let filter = *pass == FILTER_PASS;
                 for (files, by_size) in [(false, false), (true, false), (true, true)] {
                     if !by_size || filter {
+                        let by_root = filter && if files { drive.files } else { drive.dirs };
                         conn.prepare_cached(&statement(
                             filter,
                             files,
                             by_size,
-                            req.scope.as_deref(),
+                            drive.scope.as_deref(),
+                            by_root,
                         ))?;
                     }
                 }
@@ -549,6 +669,7 @@ impl Reader {
                 });
             let mut walk = Walk {
                 req,
+                drive: &drive,
                 text: &text,
                 pass,
                 key,
@@ -622,6 +743,41 @@ impl Reader {
 mod tests {
     use super::*;
     #[test]
+    fn root_status_work_does_not_grow_with_descendants() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("catalog.sql")).unwrap();
+        conn.execute_batch("CREATE TABLE root_grant(id INTEGER PRIMARY KEY,state TEXT);
+            WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<9)
+            INSERT INTO root_grant SELECT i,CASE WHEN i=9 THEN 'revoked' ELSE 'active' END FROM n;
+            INSERT INTO root(id,grant_id,state) SELECT id,id,'complete' FROM root_grant;
+            INSERT INTO dir(id,root_id,name,id_quality,id_basis,depth,attrs,listing_state,born_run,seen_run,sub_complete)
+            SELECT id*10000,id,'fixture-root','path_observation','none',0,0,'complete',0,0,1 FROM root;
+            WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<5000)
+            INSERT INTO dir(id,root_id,parent_id,name,id_quality,id_basis,depth,attrs,listing_state,born_run,seen_run)
+            SELECT r.id*10000+n.i,r.id,r.id*10000,'fixture-child','path_observation','none',1,0,'complete',0,0 FROM root r CROSS JOIN n;
+            UPDATE dir SET dirty_rev=1 WHERE id=10000;
+            INSERT INTO scan_run(root_id,mode,strategy,state,started_at_ns,counters_json,budget_json)
+            VALUES(2,'full','fixture','completed',0,'{}','{}');").unwrap();
+        let rows = root_states(&conn, None).unwrap();
+        assert_eq!(rows.len(), 8, "revoked roots stay hidden");
+        assert_eq!(rows[0].scan_state, "stale");
+        assert_eq!(rows[1].coverage, "complete");
+        assert!(rows[1].has_completed_scan);
+        assert!(!rows[0].has_completed_scan);
+        let steps = conn
+            .prepare_cached(ROOT_STATES_SQL)
+            .unwrap()
+            .get_status(rusqlite::StatementStatus::VmStep);
+        assert!(
+            steps < 20_000,
+            "root metadata visited descendants: {steps} VM steps"
+        );
+        let scoped = root_states(&conn, Some(2)).unwrap();
+        assert_eq!(scoped.len(), 1);
+        assert_eq!(scoped[0].root_id, 2);
+    }
+
+    #[test]
     fn an_uncached_search_parent_uses_one_ancestor_query_and_keeps_visibility() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(include_str!("catalog.sql")).unwrap();
@@ -667,8 +823,10 @@ mod tests {
             scope: Some(vec![2]),
             ..Default::default()
         };
+        let drive = drive(&conn, &req).unwrap();
         let mut walk = Walk {
             req: &req,
+            drive: &drive,
             text: &req.text,
             pass: 1,
             key: FILE_KEY - 1,
@@ -687,9 +845,111 @@ mod tests {
         assert_eq!(walk.hits[0].0.row.name, "common-513.txt");
         assert_eq!(walk.key, FILE_KEY + 513);
         let stmt = conn
-            .prepare_cached(&statement(false, true, false, req.scope.as_deref()))
+            .prepare_cached(&statement(
+                false,
+                true,
+                false,
+                drive.scope.as_deref(),
+                false,
+            ))
             .unwrap();
         assert_eq!(stmt.get_status(rusqlite::StatementStatus::Run), 1);
+    }
+    #[test]
+    fn filter_only_scans_visit_only_granted_rows() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("catalog.sql")).unwrap();
+        conn.execute_batch("CREATE TABLE root_grant(id INTEGER PRIMARY KEY,state TEXT);
+            INSERT INTO root_grant VALUES(1,'active'),(2,'active');
+            INSERT INTO root(id,grant_id,state) VALUES(1,1,'complete'),(2,2,'complete');
+            INSERT INTO ext(id,ext,family) VALUES(1,'dat','data');
+            INSERT INTO dir(id,root_id,name,id_quality,id_basis,depth,attrs,listing_state,born_run,seen_run)
+                VALUES(1,1,'Beta','path_observation','none',0,0,'complete',0,0),(2,2,'Alpha','path_observation','none',0,0,'complete',0,0);
+            WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<6003)
+            INSERT INTO dir(id,root_id,parent_id,name,id_quality,id_basis,depth,attrs,listing_state,born_run,seen_run)
+                SELECT i+2,CASE WHEN i<=6000 THEN 1 ELSE 2 END,CASE WHEN i<=6000 THEN 1 ELSE 2 END,'folder-'||i,'path_observation','none',1,0,'complete',0,0 FROM n;
+            WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<6003)
+            INSERT INTO file(id,dir_id,name,ext_id,logical,attrs,born_run,seen_run)
+                SELECT i,CASE WHEN i<=6000 THEN 1 ELSE 2 END,'file-'||i||'.dat',1,i%3,0,0,0 FROM n;").unwrap();
+        let mut work = Vec::new();
+        for (files, by_size) in [(false, false), (true, false), (true, true)] {
+            let req = SearchRequest {
+                kind: if files { "file" } else { "dir" }.into(),
+                extension: by_size.then(|| "dat".into()),
+                scope: Some(vec![2]),
+                limit: 20,
+                ..Default::default()
+            };
+            let drive = drive(&conn, &req).unwrap();
+            assert!(drive.dirs && drive.files);
+            let mut walk = Walk {
+                req: &req,
+                drive: &drive,
+                text: "",
+                pass: FILTER_PASS,
+                key: if files { FILE_KEY - 1 } else { i64::MIN },
+                size: None,
+                hits: Vec::new(),
+                places: HashMap::new(),
+                skipped: false,
+                progress: Arc::new(AtomicBool::new(false)),
+            };
+            walk.scan(&conn, "", files).unwrap();
+            assert_eq!(walk.hits.len(), 3);
+            assert!(walk.hits.iter().all(|(h, _)| h.root_id == 2));
+            let expected = if by_size {
+                vec![FILE_KEY + 6002, FILE_KEY + 6001, FILE_KEY + 6003]
+            } else if files {
+                vec![FILE_KEY + 6001, FILE_KEY + 6002, FILE_KEY + 6003]
+            } else {
+                vec![6003, 6004, 6005]
+            };
+            assert_eq!(
+                walk.hits.iter().map(|(_, at)| at.1).collect::<Vec<_>>(),
+                expected
+            );
+            let stmt = conn
+                .prepare_cached(&statement(
+                    true,
+                    files,
+                    by_size,
+                    drive.scope.as_deref(),
+                    true,
+                ))
+                .unwrap();
+            let steps = stmt.get_status(rusqlite::StatementStatus::VmStep);
+            eprintln!("filter-only files={files} by_size={by_size}: {steps} VM steps");
+            work.push(steps);
+        }
+        assert!(work.iter().all(|steps| *steps < 20_000), "{work:?}");
+    }
+    #[test]
+    fn a_client_listing_starts_from_its_roots_only_when_they_are_small_and_known() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("catalog.sql")).unwrap();
+        conn.execute_batch(&format!("INSERT INTO root(id,grant_id,state) VALUES(1,1,'complete'),(2,2,'complete'),(3,3,'complete');
+            INSERT INTO dir(id,root_id,name,id_quality,id_basis,depth,attrs,listing_state,born_run,seen_run,sub_files,sub_dirs,dirty_rev,agg_valid_rev) VALUES
+                (1,1,'Small','path_observation','none',0,0,'complete',0,0,5,5,1,1),
+                (2,2,'Big','path_observation','none',0,0,'complete',0,0,{max_plus},{max_plus},1,1),
+                (3,3,'Stale','path_observation','none',0,0,'complete',0,0,5,5,2,1)", max_plus = SORTED_GRANT_MAX + 1)).unwrap();
+        let run = |scope: &[i64], root_id: Option<i64>| {
+            let req = SearchRequest {
+                scope: Some(scope.to_vec()),
+                root_id,
+                ..Default::default()
+            };
+            let d = drive(&conn, &req).unwrap();
+            (d.scope.unwrap(), d.dirs, d.files)
+        };
+        assert_eq!(run(&[1], None), (vec![1], true, true));
+        // A big grant streams; a single big root still lists its folders in key order.
+        assert_eq!(run(&[2], None), (vec![2], true, false));
+        assert_eq!(run(&[1, 2], None), (vec![1, 2], false, false));
+        // A requested root narrows the roots the plan starts from.
+        assert_eq!(run(&[1, 2], Some(1)), (vec![1], true, true));
+        // Stale totals are unknown: stream.
+        assert_eq!(run(&[3], None), (vec![3], false, false));
+        assert_eq!(run(&[], None), (vec![], true, true));
     }
     #[test]
     fn an_over_depth_path_does_not_hide_valid_ancestors() {

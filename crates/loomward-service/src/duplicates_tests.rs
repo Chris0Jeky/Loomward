@@ -16,7 +16,8 @@ fn duplicates_select_candidates_before_opening_root_metadata() {
         "duplicates.inspect",
         duplicate_request(&lab.root, 1024),
     ));
-    assert_eq!(error.code, ErrorCode::PermissionDenied);
+    assert_eq!(error.code, ErrorCode::NotFound);
+    assert_eq!(error.detail.unwrap()["reason"], "root_folder_missing");
     assert!(svc
         .inner
         .hooks
@@ -92,7 +93,7 @@ fn duplicates_follow_a_fresh_grant_after_the_same_folder_was_revoked() {
         })
     };
     let first = open();
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         let e = first.err().expect("an elevated grant is refused");
         assert!(e.contains("identity_unavailable"), "{e}");
         return;
@@ -175,7 +176,7 @@ fn duplicates_personal_session_confirms_owner_duplicates_and_revocation_redacts(
         allow_identity_unverified: false,
         grant_roots: vec![root.clone()],
     });
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         let e = opened.err().expect("an elevated grant is refused");
         assert!(e.contains("identity_unavailable"), "{e}");
         return;

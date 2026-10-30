@@ -301,7 +301,7 @@ fn teacher(item: &Item) -> Option<&str> {
         .or_else(|| (item.source == Source::Teacher).then_some(item.label.as_str()))
 }
 
-fn selective(rows: &[&Row<'_>], threshold: f64) -> Value {
+fn risk_at_coverage(rows: &[&Row<'_>], threshold: f64) -> Value {
     let accepted: Vec<_> = rows
         .iter()
         .filter(|r| {
@@ -519,7 +519,7 @@ pub fn evaluate(
         "human_holdout_utility": {"scope": SCOPE, "truth": "human evaluation only", "metrics": classification_metrics(&corpus.labels, &utility)?,
             "operating_point": {"accepted": accepted.len(), "coverage": ratio(accepted.len(), human.len()),
                 "error": ratio(accepted.iter().filter(|r| top(r) != r.item.label).count(), accepted.len())},
-            "selective": ([0.5, 0.8, 0.9, 0.98].map(|t| selective(&human, t))),
+            "selective": ([0.5, 0.8, 0.9, 0.98].map(|t| risk_at_coverage(&human, t))),
             "correction_rate": {"value": null, "status": "unobserved; needs human correction interactions"},
             "interruption_cost": {"value": null, "status": "unobserved; needs human interaction timing"}},
         "calibration": {"evaluation_raw_score_diagnostics": calibration_report(&human, replicates, seed),
@@ -530,6 +530,7 @@ pub fn evaluate(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ablation::{model_report, Scored};
     use crate::student::Suggestion;
 
     #[test]
@@ -579,5 +580,164 @@ mod tests {
         assert_eq!(edge[1], Some(0.0));
         assert_eq!(edge[2 + 3 * 9], Some(1.0));
         assert!(calibration_values(&[])[0].is_none());
+    }
+
+    /// One hand-built scored prediction: truth "yes", predicted "yes" when
+    /// correct and "no" otherwise, with the given top and second scores.
+    fn scored(id: &str, top: f64, second: f64, correct: bool) -> Scored {
+        let predicted = if correct { "yes" } else { "no" }.to_owned();
+        let other = if predicted == "yes" { "no" } else { "yes" }.to_owned();
+        Scored {
+            truth: "yes".to_owned(),
+            prediction: Prediction {
+                model_id: "synthetic".into(),
+                suggestions: vec![
+                    Suggestion {
+                        label: predicted,
+                        score: top,
+                    },
+                    Suggestion {
+                        label: other,
+                        score: second,
+                    },
+                ],
+                abstain: false,
+                reasons: vec![],
+                feature_coverage: 1.0,
+                known_features: vec![],
+                review_priority: 0.0,
+            },
+            record_id: id.to_owned(),
+        }
+    }
+
+    fn risk_at_coverage_points(rows: &[Scored]) -> Value {
+        let labels = vec!["yes".to_owned(), "no".to_owned()];
+        model_report("test", "test-model", &labels, rows).unwrap()["selective_risk"].clone()
+    }
+
+    #[test]
+    fn risk_at_coverage_matches_hand_computed_top_slice_values() {
+        // Caller expectation (issue #931 item 2): ten predictions ranked by top
+        // score descending; coverage c keeps the top ceil(c*n); risk = errors/kept.
+        // Exact slice rule as implemented: accepted = (per_mille * n).div_ceil(1000)
+        // for COVERAGE_PER_MILLE = [500, 800, 900, 980], so n = 10 keeps 5, 8, 9, 10.
+        // The top five are correct and the bottom five wrong with uniform margins,
+        // so the ranking is purely by top score.
+        let scores = [0.95, 0.90, 0.85, 0.80, 0.75, 0.70, 0.65, 0.60, 0.55, 0.50];
+        let rows: Vec<Scored> = scores
+            .iter()
+            .enumerate()
+            .map(|(i, score)| scored(&format!("r{i:02}"), *score, score - 0.1, i < 5))
+            .collect();
+        let points = risk_at_coverage_points(&rows);
+        let points = points.as_array().unwrap();
+        assert_eq!(points.len(), 4);
+        let expected = [
+            (0.5, 5u64, 0.5, 0.0),
+            (0.8, 8, 0.8, 0.375),
+            (0.9, 9, 0.9, 4.0 / 9.0),
+            (0.98, 10, 1.0, 0.5),
+        ];
+        for (point, (target, accepted, coverage, risk)) in points.iter().zip(expected) {
+            assert!(
+                (point["target_coverage"].as_f64().unwrap() - target).abs() < 1e-12,
+                "{point}"
+            );
+            assert_eq!(point["accepted"].as_u64().unwrap(), accepted);
+            assert!(
+                (point["coverage"].as_f64().unwrap() - coverage).abs() < 1e-12,
+                "{point}"
+            );
+            assert!(
+                (point["risk"].as_f64().unwrap() - risk).abs() < 1e-12,
+                "{point}"
+            );
+        }
+    }
+
+    #[test]
+    fn risk_at_coverage_breaks_score_ties_by_record_id() {
+        // Current behaviour: the ranking key is (top score desc, margin desc,
+        // record id asc). Equal scores and equal margins fall through to the
+        // record id, not the input order.
+        let rows: Vec<Scored> = (0..10)
+            .rev()
+            .map(|i| scored(&format!("r{i:02}"), 1.0, 0.0, i < 5))
+            .collect();
+        let points = risk_at_coverage_points(&rows);
+        let points = points.as_array().unwrap();
+        assert_eq!(points[0]["accepted"].as_u64().unwrap(), 5);
+        assert!((points[0]["risk"].as_f64().unwrap() - 0.0).abs() < 1e-12);
+        assert!((points[3]["risk"].as_f64().unwrap() - 0.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn report_counts_duplicate_top_scores_including_saturation() {
+        let labels = vec!["yes".to_owned(), "no".to_owned()];
+        let rows = vec![
+            scored("a", 1.0, 0.0, true),
+            scored("b", 1.0, 0.0, false),
+            scored("c", 1.0, 0.0, true),
+            scored("d", 0.8, 0.2, false),
+            scored("e", 0.8, 0.1, true),
+            scored("f", 0.7, 0.3, false),
+        ];
+        let report = |rows: &[Scored]| model_report("test", "test-model", &labels, rows).unwrap();
+        // Two additional saturated rows and one additional row scoring 0.8.
+        assert_eq!(report(&rows)["top_score_tie_count"], 3);
+        assert_eq!(report(&[])["top_score_tie_count"], 0);
+        assert_eq!(report(&rows[..1])["top_score_tie_count"], 0);
+        assert_eq!(report(&rows[4..])["top_score_tie_count"], 0);
+    }
+
+    #[test]
+    fn risk_at_coverage_prefers_larger_margin_before_record_id() {
+        // Current-behaviour characterisation: with equal top scores the larger
+        // margin ranks first, ahead of the record-id tie-break. r04 has the
+        // smaller id but the smaller margin and is wrong; r05 is correct with
+        // margin 0.30, so the top five stay error-free only under margin order.
+        let rows = vec![
+            scored("r00", 0.95, 0.85, true),
+            scored("r01", 0.90, 0.80, true),
+            scored("r02", 0.85, 0.75, true),
+            scored("r03", 0.80, 0.70, true),
+            scored("r04", 0.70, 0.60, false),
+            scored("r05", 0.70, 0.40, true),
+            scored("r06", 0.65, 0.55, false),
+            scored("r07", 0.60, 0.50, false),
+            scored("r08", 0.55, 0.45, false),
+            scored("r09", 0.50, 0.40, false),
+        ];
+        let points = risk_at_coverage_points(&rows);
+        let points = points.as_array().unwrap();
+        assert_eq!(points[0]["accepted"].as_u64().unwrap(), 5);
+        assert!((points[0]["risk"].as_f64().unwrap() - 0.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn risk_at_coverage_empty_and_unknown_label_edges() {
+        // Empty boundary: nothing is kept, so coverage and risk stay null.
+        let points = risk_at_coverage_points(&[]);
+        for point in points.as_array().unwrap() {
+            assert_eq!(point["accepted"].as_u64().unwrap(), 0);
+            assert!(point["coverage"].is_null());
+            assert!(point["risk"].is_null());
+        }
+        // A single correct row: ceil keeps it at every target, including 50%.
+        let points = risk_at_coverage_points(&[scored("r00", 0.9, 0.8, true)]);
+        for point in points.as_array().unwrap() {
+            assert_eq!(point["accepted"].as_u64().unwrap(), 1);
+            assert!((point["coverage"].as_f64().unwrap() - 1.0).abs() < 1e-12);
+            assert!((point["risk"].as_f64().unwrap() - 0.0).abs() < 1e-12);
+        }
+        // Error path: a truth label outside the taxonomy is refused.
+        let labels = vec!["yes".to_owned(), "no".to_owned()];
+        let mut bad = vec![scored("r00", 0.9, 0.8, true)];
+        bad[0].truth = "maybe".to_owned();
+        assert!(model_report("test", "test-model", &labels, &bad)
+            .unwrap_err()
+            .message()
+            .contains("outside taxonomy"));
     }
 }

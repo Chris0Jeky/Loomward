@@ -5,7 +5,7 @@ use std::{fs, path::PathBuf};
 
 fn temp() -> Option<tempfile::TempDir> {
     let temp = tempfile::tempdir().unwrap();
-    if loomward_windows::enumerate::running_elevated() {
+    if loomward_windows::enumerate::skip_elevated_test() {
         assert!(
             matches!(generate(temp.path(), Profile::LongPath), Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied)
         );

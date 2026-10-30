@@ -97,6 +97,9 @@ commands! {
     SearchQuery = "search.query", SearchRequest, SearchPage, [Tauri, Http], 2, [];
     StatsBreakdown = "stats.breakdown", BreakdownRequest, Breakdown, [Tauri, Http], 2, [];
     ClutterDeveloper = "clutter.developer", DeveloperClutterRequest, DeveloperClutterReport, [Tauri, Http], 2, [];
+    ProjectsFind = "projects.find", ProjectsRequest, ProjectsPage, [Tauri, Http], 2, [];
+    ReclaimPlan = "reclaim.plan", ReclaimPlanRequest, ReclaimPlan, [Tauri, Http], 2, [];
+    ReclaimObserve = "reclaim.observe", ReclaimObserveRequest, JobResult, [Tauri, Http], 2, [JobState];
     TaxonomyGet = "taxonomy.get", EmptyRequest, Taxonomy, [Tauri, Http], 3, [];
     FeedbackRecord = "feedback.record", FeedbackRequest, FeedbackResult, [Tauri, Http], 3, [LearningUpdated];
     LearningStatus = "learning.status", EmptyRequest, LearningStatus, [Tauri, Http], 3, [];
@@ -141,6 +144,9 @@ commands! {
     AskStatus = "ask.status", EmptyRequest, AskStatus, [Tauri, Http], 3, [];
     AskConfigure = "ask.configure", AskConfigureRequest, AskStatus, [Tauri], 3, [];
     AskGrant = "ask.grant", AskGrantRequest, AskStatus, [Tauri, Http], 3, [];
+    ClientsGrant = "clients.grant", ClientGrantRequest, ClientGrantResult, [Tauri], 3, [];
+    ClientsList = "clients.list", EmptyRequest, ClientGrantList, [Tauri], 3, [];
+    ClientsRevoke = "clients.revoke", ClientRevokeRequest, ClientRevokeResult, [Tauri], 3, [];
     AskRevoke = "ask.revoke", EmptyRequest, AskStatus, [Tauri, Http], 3, [];
     AskTurn = "ask.turn", AskTurnRequest, AskTurnRecord, [Tauri, Http], 3, [];
     AskResult = "ask.result", AskTurnRef, AskTurnRecord, [Tauri, Http], 3, [];
@@ -152,6 +158,11 @@ impl Command {
         match self {
             Self::SearchQuery => Some("ClientSearchPage"),
             Self::NodeInspect => Some("ClientNodeDetail"),
+            Self::VolumesList => Some("VolumeList"),
+            Self::RootsList => Some("ClientRootList"),
+            Self::TreeChildren => Some("ClientEntryPage"),
+            Self::StatsBreakdown => Some("Breakdown"),
+            Self::ClutterDeveloper => Some("DeveloperClutterReport"),
             _ => None,
         }
     }
@@ -164,6 +175,15 @@ impl Command {
             }
             Self::NodeInspect => {
                 decode_exact::<ClientNodeDetail>(Value::Object(result.clone())).map(drop)
+            }
+            Self::VolumesList | Self::StatsBreakdown | Self::ClutterDeveloper => {
+                self.validate_result(result)
+            }
+            Self::RootsList => {
+                decode_exact::<ClientRootList>(Value::Object(result.clone())).map(drop)
+            }
+            Self::TreeChildren => {
+                decode_exact::<ClientEntryPage>(Value::Object(result.clone())).map(drop)
             }
             _ => Err(ErrorBody::invalid_request(
                 "this command has no client result",

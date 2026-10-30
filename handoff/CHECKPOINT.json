@@ -1,7 +1,7 @@
 {
   "project": "Loomward",
   "schema_version": 2,
-  "as_of": "2026-10-21",
+  "as_of": "2026-10-27",
   "version": "0.3.0-dev",
   "base_commit": "132e10e8c43a963658d03cbeaec34d8f20a6c0a8",
   "branch": "main",
@@ -14,7 +14,7 @@
     "docs/40-parallel-work-packs.md"
   ],
   "reference": {
-    "python_tests": 224,
+    "python_tests": 299,
     "browser_checks": 14,
     "js_boundary_assertions": 9,
     "js_python_parity_cases": 80,
@@ -24,7 +24,17 @@
     "catalog": "immutable in-memory scoped snapshot",
     "lease_broker": "ephemeral local accounting, no authentication or OS enforcement",
     "ui_pages": 10,
-    "windows_verified": true
+    "windows_verified": true,
+    "windows_witness": {
+      "issue": "LW-001 / #4",
+      "date": "2026-10-25",
+      "command": "py -3 scripts/test_reference_windows.py",
+      "cases_passed": 2,
+      "python_suite_passed": 297,
+      "python_suite_skipped": 2,
+      "scope": "Non-elevated Windows; disposable selected root; consented duplicates; fresh-process feedback restart; first live CPU sample unknown; fixture bytes unchanged. Frozen Python API only, legacy UI retired.",
+      "evidence": "evidence/v3/reference-windows.md"
+    }
   },
   "mcp": {
     "transport": "stdio",
@@ -38,7 +48,28 @@
     "real_host_tested": false,
     "official_sdk_used": false,
     "remote_http": false,
-    "providers_connected": 0
+    "providers_connected": 0,
+    "native": {
+      "binary": "loomward-mcp",
+      "prs": [
+        864,
+        866,
+        897
+      ],
+      "tools": [
+        "find",
+        "describe",
+        "volumes",
+        "roots",
+        "largest",
+        "breakdown",
+        "clutter",
+        "plan_archive"
+      ],
+      "read_only": true,
+      "real_host_tested": false,
+      "bundled_with_desktop": true
+    }
   },
   "native": {
     "crates": {
@@ -100,7 +131,7 @@
     "#766: retain the next complete panic and identify the original failing stage; PR812 is diagnostic only",
     "#787: remaining wedged-worker pins, retiring-watch hint coverage and sustained-load churn",
     "#414: actual durable-service 10M qualification, a new continuous 72-hour pass, required effect power-cut/restore evidence and owner UX acceptance",
-    "#4 and #24/#101: missing original reference witness and manual Windows accessibility/field acceptance"
+    "#24/#101: manual Windows accessibility/field acceptance"
   ],
   "optional_independent_starts": [
     "LW-065",
@@ -146,7 +177,8 @@
     "evidence/v3/duplicate-reader-bughunt.md",
     "evidence/v3/backlog-review-2026-10-20.md",
     "evidence/v3/backlog-review-2026-10-20.json",
-    "evidence/v3/backlog-closure-evidence-2026-10-20.md"
+    "evidence/v3/backlog-closure-evidence-2026-10-20.md",
+    "evidence/v3/reference-windows.md"
   ],
   "estate": {
     "repository": "Chris0Jeky/Loomward (public)",
@@ -744,5 +776,213 @@
       "independent_subagents_used": false
     },
     "verification_scope": "Exact-head hosted CI and independent source review; native qualifications and historical measurements retain their stated limits."
+  },
+  "external_disk_2026_10_25": {
+    "design": "docs/48-external-disk-and-agent-storage.md",
+    "merged_prs": [
+      860,
+      861,
+      863,
+      864,
+      866,
+      868,
+      869,
+      885,
+      894,
+      897,
+      902
+    ],
+    "owner_decisions": [
+      "loomward-copy-power-cut-method: a (Hyper-V; VM on E:)",
+      "loomward-copy-staging-removal: allowed after assess-and-explain (flag stays false until built)",
+      "loomward-first-cleanup-copier: b (agent robocopy + verify-tree)",
+      "loomward-archive-originals: b (Recycle Bin after per-plan confirmation, unbuilt, own gate)"
+    ],
+    "usb_roots": "fixed-media NTFS/ReFS allowed as scan roots; personal copy destinations on detachable volumes refused",
+    "c8": "closed",
+    "not_verified": [
+      "real MCP host",
+      "real H: scan",
+      "physical unplug/replug",
+      "installer"
+    ],
+    "follow_ups": [
+      865,
+      886,
+      887,
+      888,
+      895,
+      898,
+      903
+    ]
+  },
+  "external_disk_2026_10_27": {
+    "merged_prs": [
+      902,
+      904,
+      905,
+      906,
+      909,
+      910,
+      922,
+      925,
+      926,
+      932,
+      933,
+      936,
+      938
+    ],
+    "survey": "owner-authorised agent-run read-only survey of C:, E:, G:, H: via loomward-mcp; report local only",
+    "fixed_from_survey": [
+      908,
+      916,
+      887,
+      912,
+      913
+    ],
+    "open": [
+      898,
+      924,
+      934,
+      935,
+      937
+    ],
+    "owner_decisions": [
+      "loomward-archive-second-copy: c (single copy for now; second disk later)",
+      "loomward-power-loss-hardware: a (Hyper-V only)",
+      "loomward-categoriser-model-downloads: Other (download what space allows, efficient models)",
+      "loomward-space-survey-setup: Other (agent does it end to end)"
+    ],
+    "not_verified": [
+      "real Safely Remove on H:",
+      "real #924 hang interruptible",
+      "installer"
+    ],
+    "c8": "closed"
+  },
+  "day_wave_2026_10_27": {
+    "merged_prs": [
+      949,
+      950,
+      951,
+      952,
+      953,
+      955,
+      956,
+      957,
+      958,
+      959,
+      960,
+      961,
+      962
+    ],
+    "closed_or_advanced": {
+      "fixed": [
+        855,
+        921,
+        940,
+        948
+      ],
+      "advanced": [
+        844,
+        870,
+        928,
+        931,
+        934,
+        937,
+        942
+      ]
+    },
+    "lw_131_r1d": "reclaim.plan (owner-only, read-only, volume_id from volumes.list) and the app Reclaim view; reclaimable bytes stay unknown until the link-count pass (#939)",
+    "scan_cancel": "a cancelled scan drops its queued listing steps (#961); unsettled but uncancelled runs still commit everything",
+    "negative_evidence": "#960: FTS segment count costs milliseconds, not the 211-750 ms cold first query (#937 item 1 open)",
+    "tracked": [
+      939,
+      954,
+      963
+    ],
+    "not_verified": [
+      "live volume-root Recycle Bin read",
+      "reclaim view in the native Tauri window",
+      "real cancel time on a loaded survey",
+      "cold first query on the real 1.1M-entry store"
+    ],
+    "c8": "closed"
+  },
+  "evening_wave_2026_10_27": {
+    "merged_prs": [
+      965,
+      966,
+      967,
+      968,
+      969,
+      970,
+      971,
+      972,
+      973,
+      975,
+      976,
+      977,
+      978,
+      980,
+      981,
+      982,
+      983,
+      984,
+      985,
+      986,
+      988,
+      989,
+      990,
+      991,
+      992,
+      993,
+      994,
+      995,
+      996,
+      997,
+      998
+    ],
+    "closed_or_advanced": {
+      "fixed": [
+        766,
+        819,
+        821,
+        826,
+        838,
+        841,
+        843,
+        844,
+        871,
+        923,
+        934,
+        937,
+        942
+      ],
+      "advanced": [
+        876,
+        935,
+        939,
+        954
+      ]
+    },
+    "lw_131_r1g": "reclaim.observe bounded, cancellable link-count job; verified relief no longer always unknown (#970, #984)",
+    "lw_132": "copy status receipt: read_back or no label; published_unverified only for an observed publish; higher labels never emitted (#992)",
+    "grants": "re-grant of a renamed root retires the old grant first and fails closed (#996)",
+    "tracked": [
+      935,
+      954,
+      840,
+      762,
+      787,
+      851
+    ],
+    "not_verified": [
+      "native copy end to end with the receipt",
+      "reclaim.observe on a real volume",
+      "Reclaim and copy views in the native Tauri window",
+      "directory-symlink case of #997 on this host"
+    ],
+    "c8": "closed"
   }
 }

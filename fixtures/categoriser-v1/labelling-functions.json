@@ -1,0 +1,2052 @@
+{
+  "base": {
+    "schema": "loomward.evidence-packet.v1",
+    "synthetic": true,
+    "packet_id": "packet-labelling",
+    "group_id": "labelling-synthetic",
+    "observed_at": 1800000000,
+    "subject": {
+      "kind": "folder",
+      "name_tokens": [],
+      "depth": 0
+    },
+    "shape": {
+      "files": null,
+      "folders": null,
+      "logical_bytes": null,
+      "allocated_bytes": null,
+      "max_depth": null
+    },
+    "families": [],
+    "extensions": [],
+    "markers": [],
+    "time": {
+      "newest_content_write": null,
+      "oldest_content_write": null,
+      "newest_source_write": null,
+      "newest_generated_write": null,
+      "git_last_commit": null,
+      "git_dirty": null,
+      "last_access": "not_evidence"
+    },
+    "duplicates": {
+      "duplicate_bytes": null,
+      "groups": null
+    },
+    "media": null,
+    "coverage": {
+      "state": "complete",
+      "allocation_known": false,
+      "link_counts_observed": false,
+      "online": true
+    }
+  },
+  "cases": [
+    {
+      "name": "both_times_null",
+      "patch": {},
+      "expect": {
+        "meaning": "abstain:no_vote",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": []
+    },
+    {
+      "name": "lf_source_manifest:vote:cargo_toml",
+      "patch": {
+        "markers": [
+          "cargo_toml"
+        ]
+      },
+      "expect": {
+        "meaning": "source_project",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": [
+        "lf_source_manifest"
+      ]
+    },
+    {
+      "name": "lf_source_manifest:vote:package_json",
+      "patch": {
+        "markers": [
+          "package_json"
+        ]
+      },
+      "expect": {
+        "meaning": "source_project",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": [
+        "lf_source_manifest"
+      ]
+    },
+    {
+      "name": "lf_source_manifest:vote:pyproject_toml",
+      "patch": {
+        "markers": [
+          "pyproject_toml"
+        ]
+      },
+      "expect": {
+        "meaning": "source_project",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": [
+        "lf_source_manifest"
+      ]
+    },
+    {
+      "name": "lf_source_manifest:vote:requirements_txt",
+      "patch": {
+        "markers": [
+          "requirements_txt"
+        ]
+      },
+      "expect": {
+        "meaning": "source_project",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": [
+        "lf_source_manifest"
+      ]
+    },
+    {
+      "name": "lf_source_manifest:vote:dotnet_project",
+      "patch": {
+        "markers": [
+          "dotnet_project"
+        ]
+      },
+      "expect": {
+        "meaning": "source_project",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": [
+        "lf_source_manifest"
+      ]
+    },
+    {
+      "name": "lf_source_manifest:vote:gradle_build",
+      "patch": {
+        "markers": [
+          "gradle_build"
+        ]
+      },
+      "expect": {
+        "meaning": "source_project",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": [
+        "lf_source_manifest"
+      ]
+    },
+    {
+      "name": "lf_source_manifest:near_miss:generated_without_manifest",
+      "patch": {
+        "markers": [
+          "cargo_target_dir"
+        ]
+      },
+      "expect": {
+        "meaning": "abstain:no_vote",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": []
+    },
+    {
+      "name": "lf_model_layout:vote:gguf_file",
+      "patch": {
+        "markers": [
+          "gguf_file"
+        ]
+      },
+      "expect": {
+        "meaning": "model_weights",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": [
+        "lf_model_layout"
+      ]
+    },
+    {
+      "name": "lf_model_layout:near_miss:manifest_blocks:gguf_file",
+      "patch": {
+        "markers": [
+          "gguf_file",
+          "cargo_toml"
+        ]
+      },
+      "expect": {
+        "meaning": "source_project",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": [
+        "lf_source_manifest"
+      ]
+    },
+    {
+      "name": "lf_model_layout:vote:safetensors_file",
+      "patch": {
+        "markers": [
+          "safetensors_file"
+        ]
+      },
+      "expect": {
+        "meaning": "model_weights",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": [
+        "lf_model_layout"
+      ]
+    },
+    {
+      "name": "lf_model_layout:near_miss:manifest_blocks:safetensors_file",
+      "patch": {
+        "markers": [
+          "safetensors_file",
+          "cargo_toml"
+        ]
+      },
+      "expect": {
+        "meaning": "source_project",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": [
+        "lf_source_manifest"
+      ]
+    },
+    {
+      "name": "lf_model_layout:vote:hf_hub_layout",
+      "patch": {
+        "markers": [
+          "hf_hub_layout"
+        ]
+      },
+      "expect": {
+        "meaning": "model_weights",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "redownloadable"
+      },
+      "votes": [
+        "lf_hub_layout",
+        "lf_model_layout"
+      ]
+    },
+    {
+      "name": "lf_model_layout:near_miss:manifest_blocks:hf_hub_layout",
+      "patch": {
+        "markers": [
+          "hf_hub_layout",
+          "cargo_toml"
+        ]
+      },
+      "expect": {
+        "meaning": "source_project",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "redownloadable"
+      },
+      "votes": [
+        "lf_hub_layout",
+        "lf_source_manifest"
+      ]
+    },
+    {
+      "name": "lf_model_layout:vote:lmstudio_models_layout",
+      "patch": {
+        "markers": [
+          "lmstudio_models_layout"
+        ]
+      },
+      "expect": {
+        "meaning": "model_weights",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "redownloadable"
+      },
+      "votes": [
+        "lf_hub_layout",
+        "lf_model_layout"
+      ]
+    },
+    {
+      "name": "lf_model_layout:near_miss:manifest_blocks:lmstudio_models_layout",
+      "patch": {
+        "markers": [
+          "lmstudio_models_layout",
+          "cargo_toml"
+        ]
+      },
+      "expect": {
+        "meaning": "source_project",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "redownloadable"
+      },
+      "votes": [
+        "lf_hub_layout",
+        "lf_source_manifest"
+      ]
+    },
+    {
+      "name": "lf_model_layout:vote:ollama_blobs_layout",
+      "patch": {
+        "markers": [
+          "ollama_blobs_layout"
+        ]
+      },
+      "expect": {
+        "meaning": "model_weights",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "redownloadable"
+      },
+      "votes": [
+        "lf_hub_layout",
+        "lf_model_layout"
+      ]
+    },
+    {
+      "name": "lf_model_layout:near_miss:manifest_blocks:ollama_blobs_layout",
+      "patch": {
+        "markers": [
+          "ollama_blobs_layout",
+          "cargo_toml"
+        ]
+      },
+      "expect": {
+        "meaning": "source_project",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "redownloadable"
+      },
+      "votes": [
+        "lf_hub_layout",
+        "lf_source_manifest"
+      ]
+    },
+    {
+      "name": "lf_virtual_disk:vote",
+      "patch": {
+        "markers": [
+          "vhdx_file"
+        ]
+      },
+      "expect": {
+        "meaning": "virtual_disk",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": [
+        "lf_virtual_disk"
+      ]
+    },
+    {
+      "name": "lf_virtual_disk:near_miss:manifest_blocks",
+      "patch": {
+        "markers": [
+          "vhdx_file",
+          "cargo_toml"
+        ]
+      },
+      "expect": {
+        "meaning": "source_project",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": [
+        "lf_source_manifest"
+      ]
+    },
+    {
+      "name": "lf_lightroom_catalogue:vote",
+      "patch": {
+        "markers": [
+          "lightroom_catalog"
+        ]
+      },
+      "expect": {
+        "meaning": "photo_catalogue",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "unique"
+      },
+      "votes": [
+        "lf_catalogue_only",
+        "lf_lightroom_catalogue"
+      ]
+    },
+    {
+      "name": "lf_lightroom_catalogue:near_miss:backups_block",
+      "patch": {
+        "markers": [
+          "lightroom_catalog",
+          "lightroom_backups_dated"
+        ]
+      },
+      "expect": {
+        "meaning": "catalogue_backup",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "unique"
+      },
+      "votes": [
+        "lf_catalogue_only",
+        "lf_lightroom_backups"
+      ]
+    },
+    {
+      "name": "lf_lightroom_backups:vote",
+      "patch": {
+        "markers": [
+          "lightroom_backups_dated"
+        ]
+      },
+      "expect": {
+        "meaning": "catalogue_backup",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": [
+        "lf_lightroom_backups"
+      ]
+    },
+    {
+      "name": "lf_lightroom_backups:near_miss:catalogue_without_backups",
+      "patch": {
+        "markers": [
+          "lightroom_catalog"
+        ]
+      },
+      "expect": {
+        "meaning": "photo_catalogue",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "unique"
+      },
+      "votes": [
+        "lf_catalogue_only",
+        "lf_lightroom_catalogue"
+      ]
+    },
+    {
+      "name": "lf_photo_shoot:vote:dcim_layout",
+      "patch": {
+        "markers": [
+          "dcim_layout"
+        ],
+        "families": [
+          {
+            "family": "image",
+            "share_files": 0.5,
+            "share_bytes": null
+          }
+        ]
+      },
+      "expect": {
+        "meaning": "photo_shoot",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "unique"
+      },
+      "votes": [
+        "lf_camera_originals",
+        "lf_photo_shoot"
+      ]
+    },
+    {
+      "name": "lf_photo_shoot:near_miss:below_half:dcim_layout",
+      "patch": {
+        "markers": [
+          "dcim_layout"
+        ],
+        "families": [
+          {
+            "family": "image",
+            "share_files": 0.499999,
+            "share_bytes": null
+          }
+        ]
+      },
+      "expect": {
+        "meaning": "abstain:no_vote",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "unique"
+      },
+      "votes": [
+        "lf_camera_originals"
+      ]
+    },
+    {
+      "name": "lf_photo_shoot:vote:raw_xmp_pairs",
+      "patch": {
+        "markers": [
+          "raw_xmp_pairs"
+        ],
+        "families": [
+          {
+            "family": "image",
+            "share_files": 0.5,
+            "share_bytes": null
+          }
+        ]
+      },
+      "expect": {
+        "meaning": "photo_shoot",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "unique"
+      },
+      "votes": [
+        "lf_camera_originals",
+        "lf_photo_shoot"
+      ]
+    },
+    {
+      "name": "lf_photo_shoot:near_miss:below_half:raw_xmp_pairs",
+      "patch": {
+        "markers": [
+          "raw_xmp_pairs"
+        ],
+        "families": [
+          {
+            "family": "image",
+            "share_files": 0.499999,
+            "share_bytes": null
+          }
+        ]
+      },
+      "expect": {
+        "meaning": "abstain:no_vote",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "unique"
+      },
+      "votes": [
+        "lf_camera_originals"
+      ]
+    },
+    {
+      "name": "lf_photo_shoot:near_miss:no_marker",
+      "patch": {
+        "families": [
+          {
+            "family": "image",
+            "share_files": 1.0,
+            "share_bytes": null
+          }
+        ]
+      },
+      "expect": {
+        "meaning": "abstain:no_vote",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": []
+    },
+    {
+      "name": "lf_photo_shoot:near_miss:absent_image",
+      "patch": {
+        "markers": [
+          "dcim_layout"
+        ]
+      },
+      "expect": {
+        "meaning": "abstain:no_vote",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "unique"
+      },
+      "votes": [
+        "lf_camera_originals"
+      ]
+    },
+    {
+      "name": "lf_documents:vote:office_sum_at_half",
+      "patch": {
+        "markers": [
+          "office_documents"
+        ],
+        "families": [
+          {
+            "family": "document",
+            "share_files": 0.2,
+            "share_bytes": null
+          },
+          {
+            "family": "spreadsheet",
+            "share_files": 0.2,
+            "share_bytes": null
+          },
+          {
+            "family": "presentation",
+            "share_files": 0.1,
+            "share_bytes": null
+          }
+        ]
+      },
+      "expect": {
+        "meaning": "document_collection",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": [
+        "lf_documents"
+      ]
+    },
+    {
+      "name": "lf_documents:vote:document",
+      "patch": {
+        "markers": [
+          "office_documents"
+        ],
+        "families": [
+          {
+            "family": "document",
+            "share_files": 0.5,
+            "share_bytes": null
+          }
+        ]
+      },
+      "expect": {
+        "meaning": "document_collection",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": [
+        "lf_documents"
+      ]
+    },
+    {
+      "name": "lf_documents:vote:spreadsheet",
+      "patch": {
+        "markers": [
+          "office_documents"
+        ],
+        "families": [
+          {
+            "family": "spreadsheet",
+            "share_files": 0.5,
+            "share_bytes": null
+          }
+        ]
+      },
+      "expect": {
+        "meaning": "document_collection",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": [
+        "lf_documents"
+      ]
+    },
+    {
+      "name": "lf_documents:vote:presentation",
+      "patch": {
+        "markers": [
+          "office_documents"
+        ],
+        "families": [
+          {
+            "family": "presentation",
+            "share_files": 0.5,
+            "share_bytes": null
+          }
+        ]
+      },
+      "expect": {
+        "meaning": "document_collection",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": [
+        "lf_documents"
+      ]
+    },
+    {
+      "name": "lf_documents:near_miss:below_half",
+      "patch": {
+        "markers": [
+          "office_documents"
+        ],
+        "families": [
+          {
+            "family": "document",
+            "share_files": 0.499999,
+            "share_bytes": null
+          }
+        ]
+      },
+      "expect": {
+        "meaning": "abstain:no_vote",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": []
+    },
+    {
+      "name": "lf_documents:near_miss:missing_marker",
+      "patch": {
+        "families": [
+          {
+            "family": "document",
+            "share_files": 0.2,
+            "share_bytes": null
+          },
+          {
+            "family": "spreadsheet",
+            "share_files": 0.2,
+            "share_bytes": null
+          },
+          {
+            "family": "presentation",
+            "share_files": 0.1,
+            "share_bytes": null
+          }
+        ]
+      },
+      "expect": {
+        "meaning": "abstain:no_vote",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": []
+    },
+    {
+      "name": "lf_documents:near_miss:missing_family",
+      "patch": {
+        "markers": [
+          "office_documents"
+        ]
+      },
+      "expect": {
+        "meaning": "abstain:no_vote",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": []
+    },
+    {
+      "name": "lf_documents:near_miss:manifest_blocks",
+      "patch": {
+        "markers": [
+          "office_documents",
+          "cargo_toml"
+        ],
+        "families": [
+          {
+            "family": "document",
+            "share_files": 0.2,
+            "share_bytes": null
+          },
+          {
+            "family": "spreadsheet",
+            "share_files": 0.2,
+            "share_bytes": null
+          },
+          {
+            "family": "presentation",
+            "share_files": 0.1,
+            "share_bytes": null
+          }
+        ]
+      },
+      "expect": {
+        "meaning": "source_project",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": [
+        "lf_source_manifest"
+      ]
+    },
+    {
+      "name": "lf_installers:vote:bytes_at_half",
+      "patch": {
+        "markers": [
+          "installer_files"
+        ],
+        "families": [
+          {
+            "family": "executable",
+            "share_files": 0.1,
+            "share_bytes": 0.5
+          }
+        ]
+      },
+      "expect": {
+        "meaning": "installer",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": [
+        "lf_installers"
+      ]
+    },
+    {
+      "name": "lf_installers:near_miss:bytes_below_half",
+      "patch": {
+        "markers": [
+          "installer_files"
+        ],
+        "families": [
+          {
+            "family": "executable",
+            "share_files": 0.9,
+            "share_bytes": 0.499999
+          }
+        ]
+      },
+      "expect": {
+        "meaning": "abstain:no_vote",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": []
+    },
+    {
+      "name": "lf_installers:near_miss:bytes_unknown",
+      "patch": {
+        "markers": [
+          "installer_files"
+        ],
+        "families": [
+          {
+            "family": "executable",
+            "share_files": 1.0,
+            "share_bytes": null
+          }
+        ]
+      },
+      "expect": {
+        "meaning": "abstain:no_vote",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": []
+    },
+    {
+      "name": "lf_installers:near_miss:missing_marker",
+      "patch": {
+        "families": [
+          {
+            "family": "executable",
+            "share_files": 1.0,
+            "share_bytes": 1.0
+          }
+        ]
+      },
+      "expect": {
+        "meaning": "abstain:no_vote",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": []
+    },
+    {
+      "name": "lf_installers:near_miss:missing_family",
+      "patch": {
+        "markers": [
+          "installer_files"
+        ]
+      },
+      "expect": {
+        "meaning": "abstain:no_vote",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": []
+    },
+    {
+      "name": "lf_archives:vote:bytes_at_half",
+      "patch": {
+        "markers": [
+          "archive_files"
+        ],
+        "families": [
+          {
+            "family": "archive",
+            "share_files": 0.1,
+            "share_bytes": 0.5
+          }
+        ]
+      },
+      "expect": {
+        "meaning": "archive",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": [
+        "lf_archives"
+      ]
+    },
+    {
+      "name": "lf_archives:near_miss:bytes_below_half",
+      "patch": {
+        "markers": [
+          "archive_files"
+        ],
+        "families": [
+          {
+            "family": "archive",
+            "share_files": 0.9,
+            "share_bytes": 0.499999
+          }
+        ]
+      },
+      "expect": {
+        "meaning": "abstain:no_vote",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": []
+    },
+    {
+      "name": "lf_archives:near_miss:bytes_unknown",
+      "patch": {
+        "markers": [
+          "archive_files"
+        ],
+        "families": [
+          {
+            "family": "archive",
+            "share_files": 1.0,
+            "share_bytes": null
+          }
+        ]
+      },
+      "expect": {
+        "meaning": "abstain:no_vote",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": []
+    },
+    {
+      "name": "lf_archives:near_miss:missing_marker",
+      "patch": {
+        "families": [
+          {
+            "family": "archive",
+            "share_files": 1.0,
+            "share_bytes": 1.0
+          }
+        ]
+      },
+      "expect": {
+        "meaning": "abstain:no_vote",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": []
+    },
+    {
+      "name": "lf_archives:near_miss:missing_family",
+      "patch": {
+        "markers": [
+          "archive_files"
+        ]
+      },
+      "expect": {
+        "meaning": "abstain:no_vote",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": []
+    },
+    {
+      "name": "lf_git_dirty:vote",
+      "patch": {
+        "time": {
+          "newest_content_write": null,
+          "oldest_content_write": null,
+          "newest_source_write": null,
+          "newest_generated_write": null,
+          "git_last_commit": null,
+          "git_dirty": true,
+          "last_access": "not_evidence"
+        }
+      },
+      "expect": {
+        "meaning": "abstain:no_vote",
+        "lifecycle": "active",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": [
+        "lf_git_dirty"
+      ]
+    },
+    {
+      "name": "lf_git_dirty:near_miss:false",
+      "patch": {
+        "time": {
+          "newest_content_write": null,
+          "oldest_content_write": null,
+          "newest_source_write": null,
+          "newest_generated_write": null,
+          "git_last_commit": null,
+          "git_dirty": false,
+          "last_access": "not_evidence"
+        }
+      },
+      "expect": {
+        "meaning": "abstain:no_vote",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": []
+    },
+    {
+      "name": "lf_git_dirty:near_miss:null",
+      "patch": {},
+      "expect": {
+        "meaning": "abstain:no_vote",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": []
+    },
+    {
+      "name": "lf_recent_write:vote:zero",
+      "patch": {
+        "time": {
+          "newest_content_write": 1800000000,
+          "oldest_content_write": null,
+          "newest_source_write": null,
+          "newest_generated_write": null,
+          "git_last_commit": null,
+          "git_dirty": null,
+          "last_access": "not_evidence"
+        }
+      },
+      "expect": {
+        "meaning": "abstain:no_vote",
+        "lifecycle": "active",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": [
+        "lf_recent_write"
+      ]
+    },
+    {
+      "name": "lf_recent_write:vote:exactly_30_days",
+      "patch": {
+        "time": {
+          "newest_content_write": 1797408000,
+          "oldest_content_write": null,
+          "newest_source_write": null,
+          "newest_generated_write": null,
+          "git_last_commit": null,
+          "git_dirty": null,
+          "last_access": "not_evidence"
+        }
+      },
+      "expect": {
+        "meaning": "abstain:no_vote",
+        "lifecycle": "active",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": [
+        "lf_recent_write"
+      ]
+    },
+    {
+      "name": "lf_recent_write:near_miss:30_days_plus_second",
+      "patch": {
+        "time": {
+          "newest_content_write": 1797407999,
+          "oldest_content_write": null,
+          "newest_source_write": null,
+          "newest_generated_write": null,
+          "git_last_commit": null,
+          "git_dirty": null,
+          "last_access": "not_evidence"
+        }
+      },
+      "expect": {
+        "meaning": "abstain:no_vote",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": []
+    },
+    {
+      "name": "lf_quiet_months:near_miss:exactly_90_days",
+      "patch": {
+        "time": {
+          "newest_content_write": 1792224000,
+          "oldest_content_write": null,
+          "newest_source_write": null,
+          "newest_generated_write": null,
+          "git_last_commit": null,
+          "git_dirty": null,
+          "last_access": "not_evidence"
+        }
+      },
+      "expect": {
+        "meaning": "abstain:no_vote",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": []
+    },
+    {
+      "name": "lf_quiet_months:vote:90_days_plus_second",
+      "patch": {
+        "time": {
+          "newest_content_write": 1792223999,
+          "oldest_content_write": null,
+          "newest_source_write": null,
+          "newest_generated_write": null,
+          "git_last_commit": null,
+          "git_dirty": null,
+          "last_access": "not_evidence"
+        }
+      },
+      "expect": {
+        "meaning": "abstain:no_vote",
+        "lifecycle": "dormant",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": [
+        "lf_quiet_months"
+      ]
+    },
+    {
+      "name": "lf_quiet_months:vote:exactly_365_days",
+      "patch": {
+        "time": {
+          "newest_content_write": 1768464000,
+          "oldest_content_write": null,
+          "newest_source_write": null,
+          "newest_generated_write": null,
+          "git_last_commit": null,
+          "git_dirty": null,
+          "last_access": "not_evidence"
+        }
+      },
+      "expect": {
+        "meaning": "abstain:no_vote",
+        "lifecycle": "dormant",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": [
+        "lf_quiet_months"
+      ]
+    },
+    {
+      "name": "lf_quiet_years:near_miss:exactly_365_days",
+      "patch": {
+        "time": {
+          "newest_content_write": 1768464000,
+          "oldest_content_write": null,
+          "newest_source_write": null,
+          "newest_generated_write": null,
+          "git_last_commit": null,
+          "git_dirty": null,
+          "last_access": "not_evidence"
+        }
+      },
+      "expect": {
+        "meaning": "abstain:no_vote",
+        "lifecycle": "dormant",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": [
+        "lf_quiet_months"
+      ]
+    },
+    {
+      "name": "lf_quiet_years:vote:365_days_plus_second",
+      "patch": {
+        "time": {
+          "newest_content_write": 1768463999,
+          "oldest_content_write": null,
+          "newest_source_write": null,
+          "newest_generated_write": null,
+          "git_last_commit": null,
+          "git_dirty": null,
+          "last_access": "not_evidence"
+        }
+      },
+      "expect": {
+        "meaning": "abstain:no_vote",
+        "lifecycle": "historical",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": [
+        "lf_quiet_years"
+      ]
+    },
+    {
+      "name": "negative_age",
+      "patch": {
+        "time": {
+          "newest_content_write": 1800000001,
+          "oldest_content_write": null,
+          "newest_source_write": null,
+          "newest_generated_write": null,
+          "git_last_commit": null,
+          "git_dirty": null,
+          "last_access": "not_evidence"
+        }
+      },
+      "expect": {
+        "meaning": "abstain:no_vote",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": []
+    },
+    {
+      "name": "source_write_fallback",
+      "patch": {
+        "time": {
+          "newest_content_write": null,
+          "oldest_content_write": null,
+          "newest_source_write": 1797408000,
+          "newest_generated_write": null,
+          "git_last_commit": null,
+          "git_dirty": null,
+          "last_access": "not_evidence"
+        }
+      },
+      "expect": {
+        "meaning": "abstain:no_vote",
+        "lifecycle": "active",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": [
+        "lf_recent_write"
+      ]
+    },
+    {
+      "name": "source_write_fallback_old",
+      "patch": {
+        "time": {
+          "newest_content_write": null,
+          "oldest_content_write": null,
+          "newest_source_write": 1768377600,
+          "newest_generated_write": null,
+          "git_last_commit": null,
+          "git_dirty": null,
+          "last_access": "not_evidence"
+        }
+      },
+      "expect": {
+        "meaning": "abstain:no_vote",
+        "lifecycle": "historical",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": [
+        "lf_quiet_years"
+      ]
+    },
+    {
+      "name": "source_write_fallback_negative",
+      "patch": {
+        "time": {
+          "newest_content_write": null,
+          "oldest_content_write": null,
+          "newest_source_write": 1800000001,
+          "newest_generated_write": null,
+          "git_last_commit": null,
+          "git_dirty": null,
+          "last_access": "not_evidence"
+        }
+      },
+      "expect": {
+        "meaning": "abstain:no_vote",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": []
+    },
+    {
+      "name": "content_write_precedes_source",
+      "patch": {
+        "time": {
+          "newest_content_write": 1768377600,
+          "oldest_content_write": null,
+          "newest_source_write": 1800000000,
+          "newest_generated_write": null,
+          "git_last_commit": null,
+          "git_dirty": null,
+          "last_access": "not_evidence"
+        }
+      },
+      "expect": {
+        "meaning": "abstain:no_vote",
+        "lifecycle": "historical",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": [
+        "lf_quiet_years"
+      ]
+    },
+    {
+      "name": "negative_content_does_not_fall_back",
+      "patch": {
+        "time": {
+          "newest_content_write": 1800000001,
+          "oldest_content_write": null,
+          "newest_source_write": 1800000000,
+          "newest_generated_write": null,
+          "git_last_commit": null,
+          "git_dirty": null,
+          "last_access": "not_evidence"
+        }
+      },
+      "expect": {
+        "meaning": "abstain:no_vote",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": []
+    },
+    {
+      "name": "dirty_and_recent_agree",
+      "patch": {
+        "time": {
+          "newest_content_write": 1800000000,
+          "oldest_content_write": null,
+          "newest_source_write": null,
+          "newest_generated_write": null,
+          "git_last_commit": null,
+          "git_dirty": true,
+          "last_access": "not_evidence"
+        }
+      },
+      "expect": {
+        "meaning": "abstain:no_vote",
+        "lifecycle": "active",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": [
+        "lf_git_dirty",
+        "lf_recent_write"
+      ]
+    },
+    {
+      "name": "dirty_and_old_conflict",
+      "patch": {
+        "time": {
+          "newest_content_write": 1768377600,
+          "oldest_content_write": null,
+          "newest_source_write": null,
+          "newest_generated_write": null,
+          "git_last_commit": null,
+          "git_dirty": true,
+          "last_access": "not_evidence"
+        }
+      },
+      "expect": {
+        "meaning": "abstain:no_vote",
+        "lifecycle": "abstain:conflict",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": [
+        "lf_git_dirty",
+        "lf_quiet_years"
+      ]
+    },
+    {
+      "name": "lf_hub_layout:near_miss:loose_gguf",
+      "patch": {
+        "markers": [
+          "gguf_file"
+        ]
+      },
+      "expect": {
+        "meaning": "model_weights",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": [
+        "lf_model_layout"
+      ]
+    },
+    {
+      "name": "lf_hub_layout:near_miss:loose_safetensors",
+      "patch": {
+        "markers": [
+          "safetensors_file"
+        ]
+      },
+      "expect": {
+        "meaning": "model_weights",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": [
+        "lf_model_layout"
+      ]
+    },
+    {
+      "name": "lf_project_with_outputs:vote:cargo_target_dir",
+      "patch": {
+        "markers": [
+          "cargo_toml",
+          "cargo_target_dir"
+        ]
+      },
+      "expect": {
+        "meaning": "source_project",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "mixed"
+      },
+      "votes": [
+        "lf_project_with_outputs",
+        "lf_source_manifest"
+      ]
+    },
+    {
+      "name": "lf_project_with_outputs:near_miss:no_manifest:cargo_target_dir",
+      "patch": {
+        "markers": [
+          "cargo_target_dir"
+        ]
+      },
+      "expect": {
+        "meaning": "abstain:no_vote",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": []
+    },
+    {
+      "name": "lf_project_with_outputs:vote:node_modules_dir",
+      "patch": {
+        "markers": [
+          "cargo_toml",
+          "node_modules_dir"
+        ]
+      },
+      "expect": {
+        "meaning": "source_project",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "mixed"
+      },
+      "votes": [
+        "lf_project_with_outputs",
+        "lf_source_manifest"
+      ]
+    },
+    {
+      "name": "lf_project_with_outputs:near_miss:no_manifest:node_modules_dir",
+      "patch": {
+        "markers": [
+          "node_modules_dir"
+        ]
+      },
+      "expect": {
+        "meaning": "abstain:no_vote",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": []
+    },
+    {
+      "name": "lf_project_with_outputs:vote:python_venv_dir",
+      "patch": {
+        "markers": [
+          "cargo_toml",
+          "python_venv_dir"
+        ]
+      },
+      "expect": {
+        "meaning": "source_project",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "mixed"
+      },
+      "votes": [
+        "lf_project_with_outputs",
+        "lf_source_manifest"
+      ]
+    },
+    {
+      "name": "lf_project_with_outputs:near_miss:no_manifest:python_venv_dir",
+      "patch": {
+        "markers": [
+          "python_venv_dir"
+        ]
+      },
+      "expect": {
+        "meaning": "abstain:no_vote",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": []
+    },
+    {
+      "name": "lf_project_with_outputs:vote:pycache_dir",
+      "patch": {
+        "markers": [
+          "cargo_toml",
+          "pycache_dir"
+        ]
+      },
+      "expect": {
+        "meaning": "source_project",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "mixed"
+      },
+      "votes": [
+        "lf_project_with_outputs",
+        "lf_source_manifest"
+      ]
+    },
+    {
+      "name": "lf_project_with_outputs:near_miss:no_manifest:pycache_dir",
+      "patch": {
+        "markers": [
+          "pycache_dir"
+        ]
+      },
+      "expect": {
+        "meaning": "abstain:no_vote",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": []
+    },
+    {
+      "name": "lf_project_with_outputs:vote:dotnet_bin_obj_dirs",
+      "patch": {
+        "markers": [
+          "cargo_toml",
+          "dotnet_bin_obj_dirs"
+        ]
+      },
+      "expect": {
+        "meaning": "source_project",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "mixed"
+      },
+      "votes": [
+        "lf_project_with_outputs",
+        "lf_source_manifest"
+      ]
+    },
+    {
+      "name": "lf_project_with_outputs:near_miss:no_manifest:dotnet_bin_obj_dirs",
+      "patch": {
+        "markers": [
+          "dotnet_bin_obj_dirs"
+        ]
+      },
+      "expect": {
+        "meaning": "abstain:no_vote",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": []
+    },
+    {
+      "name": "lf_project_with_outputs:vote:gradle_cache_dir",
+      "patch": {
+        "markers": [
+          "cargo_toml",
+          "gradle_cache_dir"
+        ]
+      },
+      "expect": {
+        "meaning": "source_project",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "mixed"
+      },
+      "votes": [
+        "lf_project_with_outputs",
+        "lf_source_manifest"
+      ]
+    },
+    {
+      "name": "lf_project_with_outputs:near_miss:no_manifest:gradle_cache_dir",
+      "patch": {
+        "markers": [
+          "gradle_cache_dir"
+        ]
+      },
+      "expect": {
+        "meaning": "abstain:no_vote",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": []
+    },
+    {
+      "name": "lf_project_with_outputs:vote:package_json",
+      "patch": {
+        "markers": [
+          "package_json",
+          "cargo_target_dir"
+        ]
+      },
+      "expect": {
+        "meaning": "source_project",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "mixed"
+      },
+      "votes": [
+        "lf_project_with_outputs",
+        "lf_source_manifest"
+      ]
+    },
+    {
+      "name": "lf_project_with_outputs:vote:pyproject_toml",
+      "patch": {
+        "markers": [
+          "pyproject_toml",
+          "cargo_target_dir"
+        ]
+      },
+      "expect": {
+        "meaning": "source_project",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "mixed"
+      },
+      "votes": [
+        "lf_project_with_outputs",
+        "lf_source_manifest"
+      ]
+    },
+    {
+      "name": "lf_project_with_outputs:vote:requirements_txt",
+      "patch": {
+        "markers": [
+          "requirements_txt",
+          "cargo_target_dir"
+        ]
+      },
+      "expect": {
+        "meaning": "source_project",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "mixed"
+      },
+      "votes": [
+        "lf_project_with_outputs",
+        "lf_source_manifest"
+      ]
+    },
+    {
+      "name": "lf_project_with_outputs:vote:dotnet_project",
+      "patch": {
+        "markers": [
+          "dotnet_project",
+          "cargo_target_dir"
+        ]
+      },
+      "expect": {
+        "meaning": "source_project",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "mixed"
+      },
+      "votes": [
+        "lf_project_with_outputs",
+        "lf_source_manifest"
+      ]
+    },
+    {
+      "name": "lf_project_with_outputs:vote:gradle_build",
+      "patch": {
+        "markers": [
+          "gradle_build",
+          "cargo_target_dir"
+        ]
+      },
+      "expect": {
+        "meaning": "source_project",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "mixed"
+      },
+      "votes": [
+        "lf_project_with_outputs",
+        "lf_source_manifest"
+      ]
+    },
+    {
+      "name": "lf_project_with_outputs:near_miss:no_outputs",
+      "patch": {
+        "markers": [
+          "cargo_toml"
+        ]
+      },
+      "expect": {
+        "meaning": "source_project",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": [
+        "lf_source_manifest"
+      ]
+    },
+    {
+      "name": "lf_catalogue_previews:vote",
+      "patch": {
+        "markers": [
+          "lightroom_catalog",
+          "lightroom_previews"
+        ]
+      },
+      "expect": {
+        "meaning": "photo_catalogue",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "mixed"
+      },
+      "votes": [
+        "lf_catalogue_previews",
+        "lf_lightroom_catalogue"
+      ]
+    },
+    {
+      "name": "lf_catalogue_previews:near_miss:no_catalogue",
+      "patch": {
+        "markers": [
+          "lightroom_previews"
+        ]
+      },
+      "expect": {
+        "meaning": "abstain:no_vote",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": []
+    },
+    {
+      "name": "lf_catalogue_previews:near_miss:no_previews",
+      "patch": {
+        "markers": [
+          "lightroom_catalog"
+        ]
+      },
+      "expect": {
+        "meaning": "photo_catalogue",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "unique"
+      },
+      "votes": [
+        "lf_catalogue_only",
+        "lf_lightroom_catalogue"
+      ]
+    },
+    {
+      "name": "lf_catalogue_only:near_miss:previews_block",
+      "patch": {
+        "markers": [
+          "lightroom_catalog",
+          "lightroom_previews"
+        ]
+      },
+      "expect": {
+        "meaning": "photo_catalogue",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "mixed"
+      },
+      "votes": [
+        "lf_catalogue_previews",
+        "lf_lightroom_catalogue"
+      ]
+    },
+    {
+      "name": "lf_catalogue_only:near_miss:missing_catalogue",
+      "patch": {},
+      "expect": {
+        "meaning": "abstain:no_vote",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": []
+    },
+    {
+      "name": "lf_camera_originals:near_miss:no_camera_marker",
+      "patch": {
+        "families": [
+          {
+            "family": "image",
+            "share_files": 1.0,
+            "share_bytes": null
+          }
+        ]
+      },
+      "expect": {
+        "meaning": "abstain:no_vote",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "abstain:no_vote"
+      },
+      "votes": []
+    },
+    {
+      "name": "catalogue_and_documents_conflict",
+      "patch": {
+        "markers": [
+          "lightroom_catalog",
+          "office_documents"
+        ],
+        "families": [
+          {
+            "family": "document",
+            "share_files": 0.6,
+            "share_bytes": null
+          }
+        ]
+      },
+      "expect": {
+        "meaning": "abstain:conflict",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "unique"
+      },
+      "votes": [
+        "lf_catalogue_only",
+        "lf_documents",
+        "lf_lightroom_catalogue"
+      ]
+    },
+    {
+      "name": "unique_rules_with_photo_abstaining",
+      "patch": {
+        "markers": [
+          "lightroom_catalog",
+          "dcim_layout",
+          "raw_xmp_pairs"
+        ]
+      },
+      "expect": {
+        "meaning": "photo_catalogue",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "unique"
+      },
+      "votes": [
+        "lf_camera_originals",
+        "lf_catalogue_only",
+        "lf_lightroom_catalogue"
+      ]
+    },
+    {
+      "name": "mixed_rules_meaning_conflict",
+      "patch": {
+        "markers": [
+          "cargo_toml",
+          "cargo_target_dir",
+          "lightroom_catalog",
+          "lightroom_previews"
+        ]
+      },
+      "expect": {
+        "meaning": "abstain:conflict",
+        "lifecycle": "abstain:no_vote",
+        "recreatability": "mixed"
+      },
+      "votes": [
+        "lf_catalogue_previews",
+        "lf_lightroom_catalogue",
+        "lf_project_with_outputs",
+        "lf_source_manifest"
+      ]
+    },
+    {
+      "name": "conflict_on_all_axes",
+      "patch": {
+        "markers": [
+          "cargo_toml",
+          "cargo_target_dir",
+          "hf_hub_layout",
+          "dcim_layout"
+        ],
+        "families": [
+          {
+            "family": "image",
+            "share_files": 0.6,
+            "share_bytes": null
+          }
+        ],
+        "time": {
+          "newest_content_write": 1768377600,
+          "oldest_content_write": null,
+          "newest_source_write": null,
+          "newest_generated_write": null,
+          "git_last_commit": null,
+          "git_dirty": true,
+          "last_access": "not_evidence"
+        }
+      },
+      "expect": {
+        "meaning": "abstain:conflict",
+        "lifecycle": "abstain:conflict",
+        "recreatability": "abstain:conflict"
+      },
+      "votes": [
+        "lf_camera_originals",
+        "lf_git_dirty",
+        "lf_hub_layout",
+        "lf_photo_shoot",
+        "lf_project_with_outputs",
+        "lf_quiet_years",
+        "lf_source_manifest"
+      ]
+    },
+    {
+      "name": "coverage_partial_with_markers",
+      "patch": {
+        "markers": [
+          "cargo_toml",
+          "cargo_target_dir",
+          "hf_hub_layout",
+          "dcim_layout"
+        ],
+        "families": [
+          {
+            "family": "image",
+            "share_files": 0.6,
+            "share_bytes": null
+          }
+        ],
+        "time": {
+          "newest_content_write": 1768377600,
+          "oldest_content_write": null,
+          "newest_source_write": null,
+          "newest_generated_write": null,
+          "git_last_commit": null,
+          "git_dirty": true,
+          "last_access": "not_evidence"
+        },
+        "coverage": {
+          "state": "partial",
+          "allocation_known": false,
+          "link_counts_observed": false,
+          "online": true
+        }
+      },
+      "expect": {
+        "meaning": "abstain:coverage",
+        "lifecycle": "abstain:coverage",
+        "recreatability": "abstain:coverage"
+      },
+      "votes": []
+    },
+    {
+      "name": "coverage_stale_with_markers",
+      "patch": {
+        "markers": [
+          "cargo_toml",
+          "cargo_target_dir",
+          "hf_hub_layout",
+          "dcim_layout"
+        ],
+        "families": [
+          {
+            "family": "image",
+            "share_files": 0.6,
+            "share_bytes": null
+          }
+        ],
+        "time": {
+          "newest_content_write": 1768377600,
+          "oldest_content_write": null,
+          "newest_source_write": null,
+          "newest_generated_write": null,
+          "git_last_commit": null,
+          "git_dirty": true,
+          "last_access": "not_evidence"
+        },
+        "coverage": {
+          "state": "stale",
+          "allocation_known": false,
+          "link_counts_observed": false,
+          "online": true
+        }
+      },
+      "expect": {
+        "meaning": "abstain:coverage",
+        "lifecycle": "abstain:coverage",
+        "recreatability": "abstain:coverage"
+      },
+      "votes": []
+    },
+    {
+      "name": "coverage_denied",
+      "patch": {
+        "coverage": {
+          "state": "denied",
+          "allocation_known": false,
+          "link_counts_observed": false,
+          "online": true
+        }
+      },
+      "expect": {
+        "meaning": "abstain:coverage",
+        "lifecycle": "abstain:coverage",
+        "recreatability": "abstain:coverage"
+      },
+      "votes": []
+    },
+    {
+      "name": "coverage_unscanned",
+      "patch": {
+        "coverage": {
+          "state": "unscanned",
+          "allocation_known": false,
+          "link_counts_observed": false,
+          "online": true
+        }
+      },
+      "expect": {
+        "meaning": "abstain:coverage",
+        "lifecycle": "abstain:coverage",
+        "recreatability": "abstain:coverage"
+      },
+      "votes": []
+    },
+    {
+      "name": "coverage_excluded",
+      "patch": {
+        "coverage": {
+          "state": "excluded",
+          "allocation_known": false,
+          "link_counts_observed": false,
+          "online": true
+        }
+      },
+      "expect": {
+        "meaning": "abstain:coverage",
+        "lifecycle": "abstain:coverage",
+        "recreatability": "abstain:coverage"
+      },
+      "votes": []
+    },
+    {
+      "name": "coverage_cancelled",
+      "patch": {
+        "coverage": {
+          "state": "cancelled",
+          "allocation_known": false,
+          "link_counts_observed": false,
+          "online": true
+        }
+      },
+      "expect": {
+        "meaning": "abstain:coverage",
+        "lifecycle": "abstain:coverage",
+        "recreatability": "abstain:coverage"
+      },
+      "votes": []
+    },
+    {
+      "name": "coverage_unknown",
+      "patch": {
+        "coverage": {
+          "state": "unknown",
+          "allocation_known": false,
+          "link_counts_observed": false,
+          "online": true
+        }
+      },
+      "expect": {
+        "meaning": "abstain:coverage",
+        "lifecycle": "abstain:coverage",
+        "recreatability": "abstain:coverage"
+      },
+      "votes": []
+    }
+  ]
+}

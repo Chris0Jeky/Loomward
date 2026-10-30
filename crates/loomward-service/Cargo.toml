@@ -2,7 +2,7 @@
 name = "loomward-service"
 version.workspace = true
 edition.workspace = true
-rust-version = "1.88"
+rust-version = "1.89"
 license.workspace = true
 description = "Loomward v0.3 view service: the typed ViewService both adapters call. Owns ingress, deadlines, idempotency, node IDs, cursors, provenance and revocation; the engine and catalogue own the work."
 

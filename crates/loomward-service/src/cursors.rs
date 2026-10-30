@@ -15,6 +15,11 @@ use std::sync::Mutex;
 pub enum Position {
     Children(ChildrenCursor),
     Search(SearchCursor),
+    Projects {
+        after: i64,
+        catalog_rev: i64,
+        generation: Option<i64>,
+    },
     Members {
         after: i64,
         catalog_rev: i64,

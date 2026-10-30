@@ -92,6 +92,9 @@ runs:
         $broker = Get-Item (Join-Path $dir 'loomward-broker.exe') -ErrorAction Stop
         $stagedBroker = Get-Item 'native/binaries/loomward-broker-x86_64-pc-windows-msvc.exe'
         if ((Get-FileHash $broker.FullName).Hash -ne (Get-FileHash $stagedBroker.FullName).Hash) { throw 'installed broker differs from the packaged broker' }
+        $mcp = Get-Item (Join-Path $dir 'loomward-mcp.exe') -ErrorAction Stop
+        $stagedMcp = Get-Item 'native/binaries/loomward-mcp-x86_64-pc-windows-msvc.exe'
+        if ((Get-FileHash $mcp.FullName).Hash -ne (Get-FileHash $stagedMcp.FullName).Hash) { throw 'installed loomward-mcp differs from the packaged loomward-mcp' }
         $reply = (& $broker.FullName | ConvertFrom-Json)
         if ($LASTEXITCODE -ne 0 -or $reply.Err.kind -ne 'invalid_request') { throw 'installed broker did not answer the offline protocol probe' }
         $examples = @(Get-ChildItem (Join-Path $dir 'contracts/v3/examples/commands') -Filter '*.result.json' -ErrorAction SilentlyContinue)

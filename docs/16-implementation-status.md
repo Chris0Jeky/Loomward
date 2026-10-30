@@ -420,3 +420,73 @@ Counts (Windows, KRASPYON, at `4b05fd6`, `RUST_TEST_THREADS=3`):
 Reviewed the 173 initially open issues and four open PRs against current source, review comments and execution evidence. The [wave record](../evidence/v3/backlog-review-2026-10-20.md) lists 13 merged PRs, 1 remaining PR and 7 scoped closures before this documentation checkpoint; its JSON companion preserves exact heads, trees and hosted runs.
 
 The changes advance forgotten-response handling, source packaging, scan settlement/history/cancellation, watch probing, durable feedback replay, terminal metadata and diagnostics as detailed in that record. Historical counts and receipts above are retained unchanged. This wave adds no claim of complete 10M service readiness, a continuous 72-hour pass, real native foreign-rename qualification, required power-cut/restore proof, teacher confinement or manual accessibility acceptance. C8 remains closed.
+
+## LW-001 reference Windows witness — 25 October 2026
+
+`py -3 scripts/test_reference_windows.py` passes both live cases on Windows 11 build 26300,
+Python 3.14.3, non-elevated: a disposable selected-root scan, consented duplicate comparison,
+feedback committed by a separate interpreter and recovered after restart, unknown first-sample
+CPU, and unchanged fixture bytes/identity/write times. The frozen Python oracle is unchanged.
+The legacy browser UI was retired in q-40; this witnesses its retained reference API.
+Commands, named skips, regression controls and suite results are in
+[reference-windows.md](../evidence/v3/reference-windows.md). This closes the missing #4 witness;
+manual accessibility/field acceptance in #24/#101 remains separate. No new owner action was
+added to `HUMAN_TODO.md`.
+
+## Evening wave — 27 October 2026
+
+The same driver (Opus 5.5) worked the open issues with two Sol peers (LW-132, #954 code items), a Haiku worker (#821) and Sonnet helpers (reviews, a stale-issue scan). Every merged PR had green hosted CI (Ubuntu and Windows) at its exact head, after at least three minutes of aging, and a review: Codex alone for very-low-risk docs and tests, and one fresh-context reviewer for the rest, with a second round where a fix changed logic (#996).
+
+- **LW-131 R1g** (#965, #970, #984; #939 stays open): verified relief stops being always unknown. `reclaim.observe` is a cancellable, bounded job that checks every directory's identity and link counts, and the Reclaim view shows a run it did not start honestly.
+- **LW-132** (#992): copy status gains a `receipt` naming only earned evidence: `read_back` or no label, and `published_unverified` only when the publish is observed. `crash_qualified`, `power_loss_qualified` and `archive_verified` are vocabulary only; G5 is not earned. `StoragePath::requalify_receipt` downgrades an imported qualification unless `proves_same_path`.
+- **LW-136 slice** (#983): storage-path identity, with `proves_same_path` requiring every fact known and equal.
+- **Grants** (#996, #843): re-granting a renamed root retires the old grant before minting the new one and answers failure if it cannot. A post-mutation `roots.changed` listing bounds unique totals to 2 s and always completes. #997 pins that a refused old-path probe over a folder or junction never retires a grant (#838).
+- **Scanner** (#991, #998, #934): one process-wide I/O watchdog instead of a thread per cancellation, with deregistration serialised against its interrupt. A run-level cancel after a timeout reports aborted.
+- **Catalogue and service** (#972, #975, #976, #981, #985, #994): filter-only search plans, the freshness `since` restore, a learning-store scrub, bulk swap filling the search index directly (swap 3.57 s release), the cold first query's root-state index hint, and five #954 sink/freshness/search-trigger fixes.
+- **Fixes and tests:** #967, #968, #969, #971, #973, #977, #978, #980, #982, #986, #988, #989, #993, #995. Docs: the #922 rollback hazard in RELEASING.md (#990).
+- **Closed as already fixed:** #844 (six items), #942, #826, #819, #841, #766.
+
+Measured on Windows 11 build 26300, non-elevated: each PR's crate suites, fmt and workspace clippy, plus app check and unit tests where the app changed. New tests guarding a branch were shown failing with that branch removed. Known red on this host with unchanged code: the `copy_tests::lab_copy` set (including `fencing_an_unrelated_grant_does_not_read_historical_plans`), one duplicates test, and the copy lab tests that need an NTFS temp volume with room. Hosted runners are elevated, so native lab tests skip there (#823). Not verified: a native copy end to end with the receipt, the observe job on a real volume, the Reclaim and copy views in the native window, and the symlink case of #997 on this host. Follow-ups: #935 (items 1, 3, 4), #954 (remaining), #840, #762, #787. #851 waits for the copy lane. C8 remains closed.
+
+## Day wave — 27 October 2026
+
+One driver (Opus 5.5) with Sol peers, Muse lenses and workers, Haiku and Sonnet helpers, working the open issues. Thirteen PRs merged, each with green hosted CI (Ubuntu and Windows) at its exact head and a review: Codex alone for the very low-risk ones, and one fresh-context reviewer for the rest. The writer change also had an Opus second lens.
+
+- **LW-131 R1d** (#959, #962): `reclaim.plan` is an owner-only, read-only view-service command. It reads catalogue advice `without_repairs()`, covers the outermost active grants on one volume (named by its `volumes.list` id), reads the Recycle Bin only for an online volume-root grant, and refuses a volume with no active grant. The app's Reclaim view shows the four groups as facts with explicit unknowns and the unaccounted line, and offers no execute affordance. Reclaimable bytes stay unknown until the link-count pass is wired (#939).
+- **Scan cancel** (#961, #934 item 1): a cancelled scan no longer waits for every queued catalogue write. The writer answers the run's queued listing steps as cancelled, so what runs is always a prefix of what was sent. Unsettled but uncancelled runs still commit everything.
+- **Fixes:** the reclaim read is pinned write-free on a dirty root (#951, #940). Copy prepare reads elevation from `running_elevated` (#949, #855). The MCP guard refuses guessed `plan_archive` references before the state lock (#952). Three app LOWs from #844 are fixed (#953). The Hyper-V campaign maps windows from real journal kinds (#950, #948). The categoriser bench faithfulness checker gets its follow-ups (#958, #921).
+- **Tests:** reclaim-level unknown-relief cases, rules-version refusal and the 200k cap (#955). Selective risk is pinned (#956). Each labelling near miss is paired with a voting positive (#957).
+- **Negative evidence** (#960): FTS segment count costs milliseconds on a synthetic store, not the 211-750 ms cold first query. #937 item 1 stays open.
+
+Measured on Windows 11 build 26300, non-elevated: each PR's crate suites, fmt, workspace clippy, and app check, unit and Playwright where the app changed. Known red on this host with unchanged code: the eight `copy_tests::lab_copy` tests and one duplicates test. `pathological::real_acl_denied_directory_stays_visible_and_partial` failed under four parallel suites and passed alone. Not verified: a live volume-root Recycle Bin read, the Reclaim view in the native window, the real cancel time on a loaded survey, and the cold first query on the real store. Follow-ups: #939, #954, #963. C8 remains closed.
+
+## External disk lane, overnight and next day — 26 to 27 October 2026
+
+Per the owner's chat, the lane ran overnight with autonomy, and the owner answered the open questions there (HUMAN_TODO q-49, q-50). The agent ran the read-only space survey itself, using every top-level folder of `C:`, `E:`, `G:` and `H:` as a non-picker grant in local state on `E:`, because volume roots stay picker-only in code. It read the space through `loomward-mcp`. Every folder was measured as metadata only (names, sizes, times), the user profile and credential or browser stores included, under the owner's q-50 authority. No file content was read, and nothing was moved or deleted. The report stays local and is never committed. Survey-driven fixes below cover #908, #916, #887, #912 and #913; #924 has a first slice.
+
+Merged, each with one fresh-context review and an Opus 5.5 high second lens on data-loss, identity, trust-boundary and store paths:
+- #902, #906 (#862, #903): verify-tree reads are non-cached and report root identities. A missing sector geometry gets its own reason. The verification open is pinned free of background work.
+- #926 (#907): `loomward-native` exits 2 when its JSON report cannot be written.
+- #904 (#895): the installer smoke test hash-checks the bundled `loomward-mcp` (escalated review, protected CI path).
+- #909 (#865): client reads never repair the catalogue. This also fixed agent search on real data (#916): on a 1.1M-entry store, `find` went from a deadline at 3 s to 20 rows in 0.15-0.2 s.
+- #938 (#887): client search is scoped inside the FTS MATCH through a root-code column. Out-of-grant matches never spend a client's budget, and no client query got slower. An open-time migration rebuilds `search_name`.
+- #922 (#908): native scans classify extensions into the 15 families, and an open-time fix-up re-derives stored `other` rows.
+- #910, #933 (#888, #912, #913): detached and foreign volumes read offline everywhere and never retire a grant. Presence probes run off the mutation lock. Directory watches release on query-remove so Safely Remove works. A different disk on a root's letter is named plainly.
+- #932 (#924, first slice): each native call is bounded at 30 s (best effort). A timed-out operation never returns an open without identity (a HIGH from review, fixed). `state store error` carries its SQLite codes. Measurement put the multi-hour scans on the catalogue writer under parallel load, not on a hung call.
+- #936 (#886, #898): `loomward-mcp` yields the state lock to the desktop through a `lock.wanted` marker. `plan_archive` gained live tests, which found and fixed a folder-date bug.
+- #905, #925: checkpoint and HUMAN_TODO.
+
+Measured on Windows 11 build 26300, non-elevated, at the owner's request for light local testing: fmt, clippy and the touched tests locally, with full suites on hosted Windows and Ubuntu CI, all green before each merge. Under tonight's load (four disk scans, parallel builds, a Hyper-V VM), timing-sensitive freshness, ask, alerts and backups tests failed locally on branches that do not touch them; hosted CI passed them. Not verified: a real Safely Remove on `H:` (#888 item 4 is simulated), an interruptible real #924 hang, and the installer. Follow-ups: #924 (writer under load, in #934), #937, #935, and #898's small items.
+
+## External archive disk and agent storage — 25 to 26 October 2026
+
+The owner attached a WD Elements USB disk (`H:`) for backup and archive. Design: [docs/48](48-external-disk-and-agent-storage.md); owner answers in HUMAN_TODO q-47 and q-48. Merged, each with one fresh-context review (two lenses on effect, fence and disclosure paths) and an ai-security-red-teamer pass on the agent surface:
+
+- #860, #863, #885: design, owner answers, docs/49 (Insight categoriser seed), docs/50 (external media workflow seed), red-team runbook rules for the interim robocopy path.
+- #869 (E0): USB fixed-media NTFS/ReFS volumes are scan and grant roots; SD, removable media, USB FAT/exFAT and network stay refused; a foreign volume on a root's letter reads offline and never retires the grant; personal copy destinations on detachable volumes stay refused.
+- #864, #866, #897 (E2-E4): native read-only `loomward-mcp` (both MCP eras; lazy state lock with 10 s idle release; `find`, `describe`, `volumes`, `roots`, `largest`, `breakdown`, `clutter`, pure `plan_archive`); client space reads scoped to granted roots with per-field gating and the new `volumes` field; names treated as data.
+- #861, #902 (E5): `loomward-native verify-tree` over the C1 verifier, now non-cached with root identities in its report.
+- #868 (E6): owner-only, Tauri-only `clients.grant/list/revoke` and the Agent access view; USB volumes marked external.
+- #894 (E7): `loomward-mcp` ships beside the desktop executable; the desktop shares the state lock helper and retries for 15 s with an honest busy message.
+
+Measured on Windows 11 build 26300, non-elevated, rustc 1.97.1: each PR's named crate suites green; native shell 76 tests plus `--self-test`; app check, 685 unit tests and the Playwright suite. Known red on this host, unchanged code: eight `copy_tests::lab_copy` tests (also on main) and three `duplicate_reader::native::tree` tests when TMP has explicit ACLs. Not verified: a real MCP host end to end, a real scan of `H:`, physical unplug or replug, the installer. C8 remains closed: personal copying still needs C6, G5 (Hyper-V power-cut runs, method chosen 2026-10-25), G9 and the owner's go-ahead. Follow-ups: #865, #886, #887, #888, #895, #898, #903.

@@ -129,7 +129,7 @@ public static class QualificationCloudProbe {
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
     function Invoke-QualificationCargo {
-        param([string[]]$CargoArguments, [int]$MinimumPassed = 0, [switch]$NoSetupSkip)
+        param([string[]]$CargoArguments, [int]$MinimumPassed = 0, [switch]$NoSetupSkip, [switch]$NoElevatedSkip)
         Write-Host "::group::stable cargo $($CargoArguments -join ' ')"
         & $config.cargo @CargoArguments 2>&1 | Tee-Object -Variable cargoOutput
         $cargoExit = $LASTEXITCODE
@@ -138,6 +138,10 @@ public static class QualificationCloudProbe {
         $outputText = $cargoOutput -join "`n"
         if ($NoSetupSkip -and $outputText -match '(?i)\bskipped:') {
             throw 'A required native fixture refused setup.'
+        }
+        # libtest hides passing tests' output without --show-output; callers pass it with this switch.
+        if ($NoElevatedSkip -and $outputText.Contains('SKIPPED (elevated): ')) {
+            throw 'A native test returned early for elevation under the standard user.'
         }
         if ($MinimumPassed -gt 0) {
             $results = [regex]::Matches($outputText,
@@ -161,8 +165,8 @@ public static class QualificationCloudProbe {
     Invoke-QualificationCargo -CargoArguments @('test', '--locked', '-p', 'loomward-service', '--lib', 'tests::volumes_list_observes_space_through_a_second_root_when_the_first_is_unobservable', '--', '--exact', '--nocapture') -MinimumPassed 1 -NoSetupSkip
     Invoke-QualificationCargo -CargoArguments @('test', '--locked', '-p', 'loomward-engine', 'publication_tests') -MinimumPassed 2
     Invoke-QualificationCargo -CargoArguments @('test', '--locked', '-p', 'loomward-engine', '--lib', 'scan::pipeline::w2_tests::native::', '--', '--nocapture', '--test-threads=1') -MinimumPassed 4 -NoSetupSkip
-    Invoke-QualificationCargo -CargoArguments @('test', '--workspace')
-    Invoke-QualificationCargo -CargoArguments @('test', '--locked', '-p', 'loomward-windows', '--all-features')
+    Invoke-QualificationCargo -CargoArguments @('test', '--workspace', '--', '--show-output') -NoElevatedSkip
+    Invoke-QualificationCargo -CargoArguments @('test', '--locked', '-p', 'loomward-windows', '--all-features', '--', '--show-output') -NoElevatedSkip
     exit 0
 }
 

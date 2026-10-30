@@ -375,13 +375,17 @@ impl Reader {
             let roots = in_scope(req, root_states(conn, req.root_id)?, |r| r.root_id);
             // Prepare afresh and before the budget, as `search` does.
             conn.flush_prepared_statement_cache();
+            let drive = drive(conn, req)?;
             for (pass, _) in &plan.passes {
                 for (files, by_size) in [(false, false), (true, false)] {
+                    let filter = *pass == FILTER_PASS;
+                    let by_root = filter && if files { drive.files } else { drive.dirs };
                     conn.prepare_cached(&statement(
-                        *pass == FILTER_PASS,
+                        filter,
                         files,
                         by_size,
-                        req.scope.as_deref(),
+                        drive.scope.as_deref(),
+                        by_root,
                     ))?;
                 }
             }
@@ -397,6 +401,7 @@ impl Reader {
             };
             let mut walk = Walk {
                 req: &inner,
+                drive: &drive,
                 text: &text,
                 pass: plan.passes[0].0,
                 key: i64::MIN,

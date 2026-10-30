@@ -542,7 +542,7 @@ Checked at preview (P), at start or resume (S) and per item at open (I). "Resuma
 | `access_denied` | source unreadable, or destination write blocked (for example by Controlled Folder Access) | I | yes |
 | `insufficient_space` | caller-available bytes < need + reserve, or preallocation failed | P, S, I | yes |
 | `destination_inside_source` | a copied folder is the destination parent or one of its ancestors (compared by identity) | P, S | no |
-| `destination_cloud_synced`, `destination_unsupported_volume`, `destination_protected` | sync root; removable, network or non-NTFS/ReFS volume; state directory or the scan fences of #284/#286 | P, S | no |
+| `destination_cloud_synced`, `destination_unsupported_volume`, `destination_protected` | sync root; removable, network or non-NTFS/ReFS volume (fixed USB NTFS/ReFS without removable media is allowed only for synthetic lab sessions); state directory or the scan fences of #284/#286 | P, S | no |
 | `destination_changed` | the destination parent no longer opens as its pinned identity, or its ancestry no longer holds its grant's root (renamed, replaced, removed or moved after approval) | S | no |
 | `case_collision` | two names fold equal under the destination's rules (CompareStringOrdinal, ignore case) | P | no |
 | `name_unrepresentable` | reserved device name, trailing dot or space, component over 255 units [W13] | P | no |
@@ -697,13 +697,25 @@ C7 run on synthetic sessions, and C8 does not open, whatever else is green.
 **C1 implementation seam.** `loomward-operations::tree` compares observations without I/O;
 `Engine::compare_trees` admits both durable grants through the q-10 gate before asking the existing
 `loomward-windows::duplicate_reader` for bounded observations. Exact relative native names, including empty
-folders, are compared. Default and named file streams use full SHA-256 reads. Section 6 preserved classes
+folders, are compared. Default and named file streams use full SHA-256 reads below the system cache with no
+buffering and physical-sector-aligned buffers, sharing the copy read-back helper. The device cache stays
+outside this proof. Section 6 preserved classes
 require equality, refused classes remain refusals even when both sides match, destination ACLs require no
 explicit ACEs, and report-only classes retain both observations. A failed query, incomplete listing, changed
 identity, exhausted budget or unsupported class remains unknown and prevents an equal report. Directory
 named streams currently remain explicitly unsupported. This is observation-time evidence, not a durable
-read-back, restore receipt or permission to retire a source. C1 exposes no service, HTTP, IPC or MCP command
-and opens no effect gate.
+read-back, restore receipt or permission to retire a source. C1 exposes no service, HTTP, IPC or MCP command;
+the `loomward-native verify-tree SOURCE DESTINATION --state-dir DIR [--max-entries N] [--budget-bytes N]
+[--budget-secs N]` CLI runs it once (read-only) and opens no effect gate. It prints the report as JSON and
+exits 0 for equal, 1 for differences, or 2 for unknown/refused evidence. Exit 2 with empty stdout means a
+usage, setup or internal error; stderr names the reason, and no comparison report exists. With JSON stdout,
+exit 2 means the report contains unknown/refused evidence. `roots.source` and `roots.destination` each report
+`volume_guid` (32 lowercase hex digits in the native volume-key representation) and `root_file_id` (16 native
+ID bytes encoded as 32 lowercase hex digits), bound to the admitted roots read by the verifier. A reused scratch
+store with ambiguous active same-path grants is refused: use a fresh `--state-dir`. The one-shot service open
+records explicit grants without freshness watchers, automatic scans, telemetry or copy recovery.
+Defaults are 50,000 entries per tree,
+1 GiB of content reads across both trees, and 60 seconds of comparison time.
 
 **C5 implementation seam.** `loomward-windows::effects::exec` wires C2, C3 and C4; `loomward-service`
 serves the copy commands to synthetic sessions on registered lab roots only, and personal sessions keep

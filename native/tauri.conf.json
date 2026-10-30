@@ -24,7 +24,7 @@
     "publisher": "Loomward contributors",
     "shortDescription": "Local-first Windows workspace, storage and resource companion (unsigned preview)",
     "licenseFile": "../LICENSE",
-    "externalBin": ["binaries/loomward-broker"],
+    "externalBin": ["binaries/loomward-broker", "binaries/loomward-mcp"],
     "resources": { "../contracts/v3/examples": "contracts/v3/examples" },
     "windows": {
       "webviewInstallMode": { "type": "embedBootstrapper" },

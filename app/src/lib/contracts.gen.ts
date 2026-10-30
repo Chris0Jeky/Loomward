@@ -10,6 +10,36 @@ export const PROTOCOL = "loomward/3";
 
 // ---- $defs
 
+export interface ProjectsRequest {
+  root_id: RootId;
+  limit: number;
+  cursor: Cursor | null;
+}
+
+export interface ProjectMarker {
+  name: string;
+  provider: DeveloperClutterProvider;
+}
+
+export interface ProjectCandidate {
+  node_id: NodeId;
+  name: string;
+  path: DisplayPath;
+  coverage: CoverageState;
+  markers: ProjectMarker[];
+  markers_truncated: boolean;
+}
+
+export interface ProjectsPage {
+  root_id: RootId;
+  generation: Generation | null;
+  coverage: CoverageState;
+  partial: boolean;
+  budget_hit: boolean;
+  candidates: ProjectCandidate[];
+  next_cursor: Cursor | null;
+}
+
 export type Protocol = "loomward/3";
 
 export type RequestId = string;
@@ -430,7 +460,7 @@ export interface DuplicateReport {
 }
 
 /** placement.simulate is synchronous and bounded, never a job (semantics.md section 2). */
-export type JobKind = "scan" | "refit" | "teacher" | "duplicates";
+export type JobKind = "scan" | "refit" | "teacher" | "duplicates" | "reclaim";
 
 export type JobState = "queued" | "running" | "cancel_requested" | "cancelled" | "failed" | "completed";
 
@@ -479,6 +509,7 @@ export interface Job {
   coverage: CoverageState | null;
   error: ErrorBody | null;
   duplicates?: DuplicateReport;
+  reclaim?: ReclaimObserveProgress;
 }
 
 export interface JobRefRequest {
@@ -742,6 +773,33 @@ export interface ClientNodeDetail {
   row: ClientEntryRow;
   root_id: RootId;
   display_path?: DisplayPath;
+}
+
+export interface ClientRootScanState {
+  state: "never_scanned" | "scanning" | "complete" | "partial" | "stale" | "failed";
+  generation: NullableGeneration;
+  finished_at: NullableTimestamp;
+  coverage: CoverageState;
+}
+
+/** Client root coverage and freshness only; display_path starts at the root name and is absent without path disclosure. Owner grant metadata and totals stay with the owner. */
+export interface ClientRoot {
+  root_id: RootId;
+  display_path?: DisplayPath;
+  scan: ClientRootScanState;
+}
+
+export interface ClientRootList {
+  roots: ClientRoot[];
+}
+
+export interface ClientEntryPage {
+  anchor: NodeId | CollectionId | null;
+  generation: NullableGeneration;
+  items: ClientEntryRow[];
+  next_cursor: Cursor | null;
+  total: NullableCount;
+  budget_hit: boolean;
 }
 
 export interface NodeDetail {
@@ -2061,11 +2119,43 @@ export interface CopyOperationRequest {
   operation_id: CopyOperationId;
 }
 
+/** LW-146: the refusal or fence active when the run was cancelled: a refusal code (grant_revoked for a revoked-grant fence), emergency_stop, or cancelled when none was active. */
+export type CopyStopCause = CopyRefusalCode | "emergency_stop" | "cancelled";
+
+/** LW-146: immutable pre-removal journal counts and deterministic explanation. Native identities remain in state.db. Absent until the disposition is durable; not a receipt of removal. */
+export interface CopyDisposition {
+  explanation: string;
+  items_total: Count;
+  /** Compatibility count of earlier journal checks, not a qualification. Use receipt for current claims. */
+  items_verified: Count;
+  items_unverified: Count;
+  /** Every distinct refusal journaled during the run, including ones it resumed past; not the stopping cause. */
+  refusal_codes: CopyRefusalCode[];
+  stop_cause?: CopyStopCause;
+  resumable_before_cancel: boolean;
+  resume_possible: boolean;
+}
+
+export type CopyReceiptLabel = "read_back" | "crash_qualified" | "power_loss_qualified" | "archive_verified";
+
+export type CopyReceiptState = "unverified" | "read_back" | "published_unverified";
+
+/** LW-132 / ADR R1: highest evidence-supported label. Current engine emits read_back only for a completed copy; G5 unearned, LW-134/LW-136 unavailable. published_unverified is an observation, never inferred from a publish intent. */
+export interface CopyReceipt {
+  state: CopyReceiptState;
+  highest_label: CopyReceiptLabel | null;
+  items_read_back: Count;
+  archive_verified_at: Timestamp | null;
+  explanation: string;
+}
+
 export interface CopyStatus {
+  disposition?: CopyDisposition;
   operation_id: CopyOperationId;
   state: CopyState;
   digest: Digest;
   items_total: Count;
+  /** Compatibility count of earlier journal checks, not a qualification. Use receipt for current claims. */
   items_verified: Count;
   /** docs/47 Q1 default: the name (never a path) of the staging folder Loomward left in the destination parent on cancel or abandon, for the owner to remove; null otherwise. */
   staging_folder: string | null;
@@ -2076,13 +2166,14 @@ export interface CopyStatus {
   unjournaled_items: string[];
   /** Total observed, including names beyond the bounded list. */
   unjournaled_item_count: Count;
+  receipt?: CopyReceipt;
 }
 
 /** An Ask turn (LW-118), held in memory for this session only. */
 export type AskTurnId = string;
 
 /** Optional fields an Ask grant discloses to the model (LW-067). Name, kind, extension, coverage and match type are always part of a row. */
-export type AskField = "path" | "size" | "modified" | "attributes";
+export type AskField = "path" | "size" | "modified" | "attributes" | "volumes";
 
 /** local is the only class that runs; a cloud profile is refused when configured (q-5 not met). */
 export type AskProviderState = "not_configured" | "local";
@@ -2096,6 +2187,45 @@ export interface AskProfile {
 /** Tauri adapter only (docs/46 section 8.1). A cloud-class profile is refused with capability_unavailable, detail.reason ask_cloud_gated. null clears the profile. */
 export interface AskConfigureRequest {
   profile: AskProfile | null;
+}
+
+export type McpClient = string;
+
+export type ClientField = "path" | "size" | "modified" | "attributes" | "volumes";
+
+export interface ClientGrantRequest {
+  client: McpClient;
+  roots: RootId[];
+  fields: ClientField[];
+  expires_at?: Timestamp;
+}
+
+export interface ClientGrantResult {
+  grant_id: string;
+}
+
+export interface ClientGrantRecord {
+  grant_id: string;
+  client: McpClient;
+  roots: RootId[];
+  fields: ClientField[];
+  created_at: Timestamp;
+  expires_at: Timestamp | null;
+  revoked_at: Timestamp | null;
+}
+
+export interface ClientGrantList {
+  grants: ClientGrantRecord[];
+  available_fields: ClientField[];
+}
+
+export interface ClientRevokeRequest {
+  client: McpClient;
+}
+
+export interface ClientRevokeResult {
+  client: McpClient;
+  revoked: boolean;
 }
 
 /** Replaces the ask:local client grant (a new epoch). Every root must be an active granted root. */
@@ -2192,6 +2322,92 @@ export interface AskTurnRecord {
   rounds: AskRound[];
 }
 
+export interface ReclaimPlanRequest {
+  volume_id: VolumeId;
+  limit: number;
+  selection?: NodeId[];
+}
+
+export interface ReclaimVolume {
+  volume_id: VolumeId;
+  label: string | null;
+  bus_type: string | null;
+  capacity_bytes: NullableBytes;
+  free_bytes: NullableBytes;
+  reserve_bytes: NullableBytes;
+}
+
+export interface CoveredRoot {
+  root_id: RootId;
+  coverage: CoverageState;
+  allocated_bytes: NullableBytes;
+}
+
+export type GroupKind = "tool_owned_cleanup" | "relocate" | "archive_candidates" | "informational";
+
+export interface Relocation {
+  variable_or_setting: string;
+  suggested_target_volume: string | null;
+}
+
+/** Read-only facts, never a disposability claim. owner_step is display text only; unknown reclaimable bytes carry a reason, never zero. */
+export interface ReclaimCandidate {
+  node_id: NodeId | null;
+  name: string | null;
+  class: string;
+  provider: string;
+  kind: string | null;
+  logical_bytes: NullableBytes;
+  allocated_bytes: NullableBytes;
+  reclaimable_bytes: NullableBytes;
+  reclaimable_reason: string | null;
+  coverage: CoverageState;
+  owner_step: string;
+  relocation: Relocation | null;
+  evidence: string[];
+  uncertainty: string;
+}
+
+export interface ReclaimGroup {
+  kind: GroupKind;
+  candidates: ReclaimCandidate[];
+}
+
+/** LW-131 R1d. Four groups in GroupKind order. Outermost active grants only; unknown sizes remain null. No effects. */
+export interface ReclaimPlan {
+  volume: ReclaimVolume;
+  covered_roots: CoveredRoot[];
+  groups: ReclaimGroup[];
+  unaccounted_bytes: NullableBytes;
+  rules_version: number;
+  partial: boolean;
+  truncated: boolean;
+  budget_hit: boolean;
+  selection?: ReclaimSelection;
+}
+
+export interface ReclaimObserveRequest {
+  volume_id: VolumeId;
+  selection?: NodeId[];
+}
+
+/** LW-131 R1g counts only. Per-candidate verdicts live in state.db and reach the owner through reclaim.plan; a candidate the job did not finish stays unknown, never zero. */
+export interface ReclaimObserveProgress {
+  candidates_total: Count;
+  candidates_done: Count;
+  names_checked: Count;
+}
+
+export type ReclaimSelectionStatus = "unobserved" | "recorded" | "expired";
+
+export interface ReclaimSelection {
+  members: NodeId[];
+  status: ReclaimSelectionStatus;
+  observed_at: NullableTimestamp;
+  reclaimable_bytes: NullableBytes;
+  reason: string | null;
+}
+
 export interface DeveloperClutterRequest {
   root_id: RootId;
   limit: number;
@@ -2248,9 +2464,13 @@ export interface DeveloperClutterReport {
   not_assessed: ClutterNotAssessed[];
 }
 
+/** Closed field list for the Agent access form; availability comes from clients.list. */
+export const CLIENT_FIELDS = ["path", "size", "modified", "attributes", "volumes"] as const satisfies readonly ClientField[];
+
 // ---- commands (commands.json)
 
 export interface CommandMap {
+  "projects.find": { request: ProjectsRequest; result: ProjectsPage };
   "session.hello": { request: EmptyRequest; result: SessionInfo };
   "health.get": { request: EmptyRequest; result: Health };
   "apps.list": { request: MetadataPageRequest; result: ApplicationPage };
@@ -2274,6 +2494,8 @@ export interface CommandMap {
   "threads.meaning": { request: MeaningRequest; result: MeaningResult };
   "search.query": { request: SearchRequest; result: SearchPage };
   "stats.breakdown": { request: BreakdownRequest; result: Breakdown };
+  "reclaim.plan": { request: ReclaimPlanRequest; result: ReclaimPlan };
+  "reclaim.observe": { request: ReclaimObserveRequest; result: JobResult };
   "clutter.developer": { request: DeveloperClutterRequest; result: DeveloperClutterReport };
   "taxonomy.get": { request: EmptyRequest; result: Taxonomy };
   "feedback.record": { request: FeedbackRequest; result: FeedbackResult };
@@ -2318,6 +2540,9 @@ export interface CommandMap {
   "copy.status": { request: CopyOperationRequest; result: CopyStatus };
   "ask.status": { request: EmptyRequest; result: AskStatus };
   "ask.configure": { request: AskConfigureRequest; result: AskStatus };
+  "clients.grant": { request: ClientGrantRequest; result: ClientGrantResult };
+  "clients.list": { request: EmptyRequest; result: ClientGrantList };
+  "clients.revoke": { request: ClientRevokeRequest; result: ClientRevokeResult };
   "ask.grant": { request: AskGrantRequest; result: AskStatus };
   "ask.revoke": { request: EmptyRequest; result: AskStatus };
   "ask.turn": { request: AskTurnRequest; result: AskTurnRecord };
@@ -2326,14 +2551,20 @@ export interface CommandMap {
 
 /** Results for grant-scoped client principals; CommandMap remains owner-only. */
 export interface ClientCommandMap {
+  "roots.list": { request: EmptyRequest; result: ClientRootList };
+  "volumes.list": { request: EmptyRequest; result: VolumeList };
+  "tree.children": { request: TreeChildrenRequest; result: ClientEntryPage };
   "node.inspect": { request: NodeRefRequest; result: ClientNodeDetail };
   "search.query": { request: SearchRequest; result: ClientSearchPage };
+  "stats.breakdown": { request: BreakdownRequest; result: Breakdown };
+  "clutter.developer": { request: DeveloperClutterRequest; result: DeveloperClutterReport };
 }
 
 export type CommandKey = keyof CommandMap;
 
 /** Where each command exists (elsewhere: capability_unavailable), its wave and its events. */
 export const COMMANDS = {
+  "projects.find": { adapters: ["tauri", "http"], wave: 2, events: [] },
   "session.hello": { adapters: ["tauri", "http"], wave: 1, events: [] },
   "health.get": { adapters: ["tauri", "http"], wave: 2, events: [] },
   "apps.list": { adapters: ["tauri", "http"], wave: 2, events: [] },
@@ -2357,6 +2588,8 @@ export const COMMANDS = {
   "threads.meaning": { adapters: ["tauri", "http"], wave: 3, events: [] },
   "search.query": { adapters: ["tauri", "http"], wave: 2, events: [] },
   "stats.breakdown": { adapters: ["tauri", "http"], wave: 2, events: [] },
+  "reclaim.plan": { adapters: ["tauri", "http"], wave: 2, events: [] },
+  "reclaim.observe": { adapters: ["tauri", "http"], wave: 2, events: ["job.state"] },
   "clutter.developer": { adapters: ["tauri", "http"], wave: 2, events: [] },
   "taxonomy.get": { adapters: ["tauri", "http"], wave: 3, events: [] },
   "feedback.record": { adapters: ["tauri", "http"], wave: 3, events: ["learning.updated"] },
@@ -2401,6 +2634,9 @@ export const COMMANDS = {
   "copy.status": { adapters: ["tauri", "http"], wave: 3, events: [] },
   "ask.status": { adapters: ["tauri", "http"], wave: 3, events: [] },
   "ask.configure": { adapters: ["tauri"], wave: 3, events: [] },
+  "clients.grant": { adapters: ["tauri"], wave: 3, events: [] },
+  "clients.list": { adapters: ["tauri"], wave: 3, events: [] },
+  "clients.revoke": { adapters: ["tauri"], wave: 3, events: [] },
   "ask.grant": { adapters: ["tauri", "http"], wave: 3, events: [] },
   "ask.revoke": { adapters: ["tauri", "http"], wave: 3, events: [] },
   "ask.turn": { adapters: ["tauri", "http"], wave: 3, events: [] },
