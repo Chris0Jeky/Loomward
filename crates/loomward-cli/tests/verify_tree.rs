@@ -386,3 +386,172 @@ fn reparse_children_and_partial_listings_exit_two_with_json_unknowns() {
         "{report}"
     );
 }
+
+/// Manifest root (#875) of the populated fixture's destination holding `fixture` = `content` and an
+/// empty folder, computed independently of the CLI from the documented encoding.
+#[cfg(windows)]
+fn expected_root(content: &[u8]) -> String {
+    use loomward_operations::{manifest_root, CustodyEntry, EntryKind, COLLATION_V1};
+    use sha2::{Digest, Sha256};
+    let empty = manifest_root(&[], COLLATION_V1).unwrap();
+    let root = manifest_root(
+        &[
+            CustodyEntry::from_utf8_name(
+                "fixture",
+                EntryKind::File,
+                content.len() as u64,
+                Sha256::digest(content).into(),
+            ),
+            CustodyEntry::from_utf8_name("empty", EntryKind::Directory, 0, empty),
+        ],
+        COLLATION_V1,
+    )
+    .unwrap();
+    root.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+#[cfg(windows)]
+fn manifest_dir<'a>(report: &'a serde_json::Value, path: &str) -> &'a serde_json::Value {
+    report["manifest_roots"]["directories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["path"] == path)
+        .unwrap_or_else(|| panic!("no manifest entry for {path:?}: {report}"))
+}
+
+#[cfg(windows)]
+fn verify_json(
+    temp: &tempfile::TempDir,
+    source: &Path,
+    destination: &Path,
+    state: &str,
+    extra: &[&str],
+) -> (Option<i32>, serde_json::Value) {
+    let output = verify(source, destination, &temp.path().join(state), extra);
+    let report = serde_json::from_slice(&output.stdout).unwrap_or_else(|_| panic!("{output:?}"));
+    (output.status.code(), report)
+}
+
+#[cfg(windows)]
+#[test]
+fn manifest_roots_are_absent_unless_asked_for() {
+    if elevated() {
+        return;
+    }
+    let (temp, source, destination) = populated_fixture();
+    let (code, report) = verify_json(&temp, &source, &destination, "state", &[]);
+    assert_eq!(code, Some(0));
+    assert!(report.get("manifest_roots").is_none(), "{report}");
+}
+
+#[cfg(windows)]
+#[test]
+fn manifest_roots_cover_the_destination_and_are_stable_across_runs() {
+    if elevated() {
+        return;
+    }
+    let (temp, source, destination) = populated_fixture();
+    let mut roots = Vec::new();
+    for state in ["state-one", "state-two"] {
+        let (code, report) =
+            verify_json(&temp, &source, &destination, state, &["--manifest-roots"]);
+        assert_eq!(code, Some(0), "{report}");
+        assert_eq!(report["manifest_roots"]["collation_version"], 1);
+        assert_eq!(report["manifest_roots"]["digest_algorithm"], "sha256");
+        assert_eq!(manifest_dir(&report, "")["root"], expected_root(b"same"));
+        assert_eq!(manifest_dir(&report, "")["reason"], serde_json::Value::Null);
+        assert!(manifest_dir(&report, "empty")["root"].is_string());
+        roots.push(manifest_dir(&report, "")["root"].clone());
+    }
+    assert_eq!(roots[0], roots[1]);
+}
+
+#[cfg(windows)]
+#[test]
+fn manifest_root_changes_when_one_byte_changes() {
+    if elevated() {
+        return;
+    }
+    let (temp, source, destination) = populated_fixture();
+    // The same single-byte edit on both sides keeps the trees equal, so the root is emitted.
+    for root in [&source, &destination] {
+        std::fs::write(root.join("fixture"), b"sam3").unwrap();
+    }
+    align_times(&source.join("fixture"), &destination.join("fixture"));
+    align_times(&source, &destination);
+    let (code, report) = verify_json(&temp, &source, &destination, "state", &["--manifest-roots"]);
+    assert_eq!(code, Some(0), "{report}");
+    let root = manifest_dir(&report, "")["root"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(root, expected_root(b"sam3"));
+    assert_ne!(root, expected_root(b"same"));
+}
+
+#[cfg(windows)]
+#[test]
+fn directories_with_a_differing_or_unknown_entry_report_null_with_a_reason() {
+    if elevated() {
+        return;
+    }
+    let (temp, source, destination) = populated_fixture();
+    std::fs::write(destination.join("fixture"), b"diff").unwrap();
+    let (code, report) = verify_json(
+        &temp,
+        &source,
+        &destination,
+        "state-diff",
+        &["--manifest-roots"],
+    );
+    assert_eq!(code, Some(1), "{report}");
+    let top = manifest_dir(&report, "");
+    assert_eq!(top["root"], serde_json::Value::Null);
+    assert_eq!(top["reason"], "differing_entry");
+    // A sibling folder with nothing wrong still has its root: no all-or-nothing blanking.
+    assert!(manifest_dir(&report, "empty")["root"].is_string());
+
+    let (temp, source, destination) = populated_fixture();
+    let (code, report) = verify_json(
+        &temp,
+        &source,
+        &destination,
+        "state-budget",
+        &["--manifest-roots", "--budget-bytes", "0"],
+    );
+    assert_eq!(code, Some(2), "{report}");
+    let top = manifest_dir(&report, "");
+    assert_eq!(top["root"], serde_json::Value::Null);
+    assert!(
+        top["reason"].as_str().is_some_and(|r| !r.is_empty()),
+        "{top}"
+    );
+    drop(temp);
+}
+
+#[cfg(windows)]
+#[test]
+fn only_mode_emits_no_roots() {
+    if elevated() {
+        return;
+    }
+    let (temp, source, destination) = populated_fixture();
+    let list = temp.path().join("plan.txt");
+    std::fs::write(&list, "fixture\nempty\n").unwrap();
+    let list = list.to_str().unwrap();
+    let (code, report) = verify_json(
+        &temp,
+        &source,
+        &destination,
+        "state",
+        &["--manifest-roots", "--only", list],
+    );
+    assert_eq!(code, Some(0), "{report}");
+    assert_eq!(
+        report["manifest_roots"]["directories"],
+        serde_json::Value::Null
+    );
+    assert_eq!(report["manifest_roots"]["reason"], "selected_set");
+    assert!(!report.to_string().contains("\"root\""), "{report}");
+}

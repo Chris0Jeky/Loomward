@@ -59,6 +59,55 @@ fn sampled_system_cpu_count_is_required_but_nullable() {
 }
 
 #[test]
+fn volume_storage_path_is_additive_and_never_reads_as_healthy() {
+    let mut schema = Schema::load();
+    let list = read(&contracts().join("examples/commands/volumes.list.result.json"));
+    let volume = list["volumes"][1].clone();
+    assert_eq!(
+        volume["storage_path"]["health"]["state"],
+        "unsupported_or_hidden"
+    );
+    assert!(schema.errors("Volume", &volume).is_empty());
+    assert_eq!(roundtrip("Volume", &volume).unwrap().unwrap(), volume);
+    // Additive: a row without the field is still valid (older services), and stays without it.
+    let mut absent = volume.clone();
+    absent.as_object_mut().unwrap().remove("storage_path");
+    assert!(schema.errors("Volume", &absent).is_empty());
+    assert_eq!(roundtrip("Volume", &absent).unwrap().unwrap(), absent);
+    // A null storage_path is not a spelling of "absent", and no health state means healthy.
+    let mut null = volume.clone();
+    null["storage_path"] = Value::Null;
+    assert!(!schema.errors("Volume", &null).is_empty());
+    assert!(roundtrip("Volume", &null).unwrap().is_err());
+    for state in ["healthy", "ok", "good"] {
+        let mut healthy = volume.clone();
+        healthy["storage_path"]["health"]["state"] = json!(state);
+        assert!(!schema.errors("Volume", &healthy).is_empty());
+        assert!(roundtrip("Volume", &healthy).unwrap().is_err());
+    }
+    // Every fact and counter is required-nullable: omission is refused, null is unknown.
+    for (pointer, field) in [
+        ("/storage_path", "bridge"),
+        ("/storage_path", "removal_policy"),
+        ("/storage_path/health", "reason"),
+    ] {
+        let mut missing = volume.clone();
+        missing
+            .pointer_mut(pointer)
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        assert!(!schema.errors("Volume", &missing).is_empty(), "{field}");
+        assert!(roundtrip("Volume", &missing).unwrap().is_err(), "{field}");
+    }
+    let mut counters = list["volumes"][0]["storage_path"]["health"]["counters"].clone();
+    counters.as_object_mut().unwrap().remove("wear_percent");
+    assert!(!schema.errors("StorageCounters", &counters).is_empty());
+    assert!(roundtrip("StorageCounters", &counters).unwrap().is_err());
+}
+
+#[test]
 fn reclaim_sizes_are_required_nullable_and_requests_are_bounded() {
     let mut schema = Schema::load();
     let plan = read(&contracts().join("examples/commands/reclaim.plan.result.json"));
@@ -159,6 +208,69 @@ fn reclaim_selection_is_additive_bounded_and_preserves_exact_bytes() {
         assert!(!schema.errors("ReclaimSelection", &missing).is_empty());
         assert!(roundtrip("ReclaimSelection", &missing).unwrap().is_err());
     }
+}
+
+#[test]
+fn reclaim_relief_keeps_unknowns_null_and_refuses_extra_fields() {
+    let mut schema = Schema::load();
+    let result = read(&contracts().join("examples/commands/reclaim.sample.result.json"));
+    for field in ["after", "direction", "change_bytes"] {
+        let mut unknown = result.clone();
+        unknown[field] = Value::Null;
+        assert!(schema.errors("ReclaimRelief", &unknown).is_empty());
+        assert_eq!(
+            roundtrip("ReclaimRelief", &unknown).unwrap().unwrap(),
+            unknown
+        );
+        unknown.as_object_mut().unwrap().remove(field);
+        assert!(!schema.errors("ReclaimRelief", &unknown).is_empty());
+        assert!(roundtrip("ReclaimRelief", &unknown).unwrap().is_err());
+    }
+    for field in [
+        "capacity_bytes",
+        "free_bytes",
+        "recycle_bin_bytes",
+        "estimate_bytes",
+    ] {
+        let mut sample = result["after"].clone();
+        sample[field] = Value::Null;
+        assert!(schema.errors("ReliefSample", &sample).is_empty());
+        assert_eq!(roundtrip("ReliefSample", &sample).unwrap().unwrap(), sample);
+        sample.as_object_mut().unwrap().remove(field);
+        assert!(!schema.errors("ReliefSample", &sample).is_empty());
+        assert!(roundtrip("ReliefSample", &sample).unwrap().is_err());
+    }
+    let mut exact = result.clone();
+    exact["change_bytes"] = json!("18446744073709551615");
+    assert!(schema.errors("ReclaimRelief", &exact).is_empty());
+    assert_eq!(roundtrip("ReclaimRelief", &exact).unwrap().unwrap(), exact);
+    for bad in [json!("-1"), json!(5), json!("18446744073709551616")] {
+        let mut invalid = result.clone();
+        invalid["change_bytes"] = bad;
+        assert!(roundtrip("ReclaimRelief", &invalid).unwrap().is_err());
+    }
+    let mut extra = result.clone();
+    extra["cleanup_freed"] = json!("10000");
+    assert!(!schema.errors("ReclaimRelief", &extra).is_empty());
+    assert!(roundtrip("ReclaimRelief", &extra).unwrap().is_err());
+    let request = read(&contracts().join("examples/commands/reclaim.sample.request.json"));
+    for bad in [
+        json!({"volume_id":"vo_lab1"}),
+        json!({"volume_id":"vo_lab1","role":"during"}),
+        json!({"volume_id":"vo_lab1","role":"after","estimate_bytes":null}),
+        json!({"volume_id":"vo_lab1","role":"after","path":"C:\\"}),
+    ] {
+        assert!(!schema.errors("ReclaimSampleRequest", &bad).is_empty());
+        assert!(roundtrip("ReclaimSampleRequest", &bad).unwrap().is_err());
+    }
+    assert!(schema.errors("ReclaimSampleRequest", &request).is_empty());
+    assert_eq!(
+        roundtrip("ReclaimSampleRequest", &request)
+            .unwrap()
+            .unwrap(),
+        request
+    );
+    assert_eq!(Command::ReclaimSample.client_result_def(), None);
 }
 
 #[test]

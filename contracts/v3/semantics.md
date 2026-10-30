@@ -221,6 +221,17 @@ releases the service read permit while at most eight unfinished observation help
 own permits until the OS calls return.
 Stored canonical row references and input digests survive restart and never confer effect authority.
 
+`volumes.list` rows may carry an optional `storage_path` (LW-137): the bus type, bridge, BOT/UAS,
+sector geometry, removal policy and write-cache facts the Windows storage query observed through
+an active online grant's own root, plus a `health` object. A `null` fact is unknown, never a
+default. `health.state` is `counters_present` (the device reported reliability counters, an
+absent counter is `null`, not zero) or `unsupported_or_hidden` (nothing reported, including SMART
+behind a USB bridge). Neither is a verdict and no state means healthy: clients show
+`unsupported_or_hidden` and an absent `storage_path` (offline volume, no active grant, query
+refused) as unknown. `volumes.changed` and `volumes.declare_tier` rows carry no `storage_path`.
+The volume GUID, device serial and mount paths are never carried, and the field is observation,
+not authority.
+
 ## 4. Idempotency
 
 | Read-only command | Idempotency | Deadline | Pagination and unknowns |
@@ -617,6 +628,13 @@ verified equal default streams at observation time. Link sets are one native obj
 single visible name when native nlink>1), with no space to reclaim, and are not compared as duplicates.
 links_not_compared is the number of listed names in those link sets. skipped gives refusal reasons;
 bytes_read, partial, truncated and nullable stop preserve negative and incomplete evidence.
+candidate_space (optional, additive; absent is unknown, never zero, and never null) is the catalogue's count of
+files and logical bytes in the root that share an exact size with another eligible file, by the same
+eligibility rules as candidate selection and before any cap, so a result can say how many candidate
+files it examined out of how many existed. It reads no content and is computed under its own bounded
+work budget; a count that cannot finish is omitted. Names the catalogue filters as unknown (unreadable,
+unrepresentable, identity-unverified) are not in it and keep partial=true, so a present count is the
+visible candidate space of the catalogue at selection time, not a proof about unscanned content.
 No result authorises deleting, moving, renaming or creating links. No reclaim estimate is supplied.
 
 Personal content reads are open, local and read-only. Before resolving catalogue candidates or
@@ -1087,6 +1105,10 @@ unknown. `job.reclaim` carries counts only (`candidates_total`, `candidates_done
 candidate directory's subtree revision and the catalogue instance match, the root is complete with no
 scan in flight, and it is not stale; any rescan or catalogue write under the candidate therefore
 returns it to "not observed". Revoking, forgetting or losing a root's identity deletes its verdicts.
+Those bindings follow the catalogue, not the filesystem (a hard link made later changes neither), so
+every candidate whose `reclaimable_bytes` comes from a stored verdict carries `observed_at`, the time
+of the pass (a required nullable timestamp, null wherever the bytes are unknown). There is no maximum
+age after which a verdict is hidden. Placement's stored-relief use of the same rows carries no age.
 
 The pass opens names through verbatim (`\\?\`) paths and first checks every directory from below the
 root through the candidate is still the catalogued, non-reparse directory; otherwise the candidate is
@@ -1125,6 +1147,28 @@ Different selections never borrow the last selection's estimate. The UI clears t
 selection changes, shows its age, and compares only recorded known bytes with the target using
 integer arithmetic. The estimate does not approve deletion or guarantee physical space recovery;
 Recycle Bin moves and same-volume renames do not immediately free this allocation.
+
+## Reclaim relief check (#1013)
+
+`reclaim.sample { volume_id, role, estimate_bytes? }` is an owner-only mutation (Tauri and HTTP; clients are
+refused) that records one metadata sample of a volume with an active grant and answers a `ReclaimRelief`. `role`
+is `before` or `after`. `estimate_bytes` (an exact decimal string) is the plan's estimate as the owner saw it; it is
+accepted only with `before`. An `after` without a stored `before` is `invalid_request` (reason `no_before_sample`);
+an offline volume, or one whose drive letter holds another disk, is `device_offline` (reason `volume_offline`);
+a volume without an active grant is `invalid_request` (`no_active_grant`). A refusal records nothing.
+
+A sample holds the volume's capacity and free bytes, the Recycle Bin size, the estimate, and the time. Anything the
+service could not read is `null`, never zero; the bin is read only through a volume-root grant. The service stores at
+most one `before` and one `after` per volume in `state.db`; a new `before` removes the old `after`, and revoking,
+forgetting or losing the identity of the last active grant on the volume removes both. The sample
+carries no path or name. The catalogue and `state_rev` are unchanged.
+
+`ReclaimRelief.status` is `not_checked` (only the before sample exists), `different_volume` (the catalogue volume
+key or the volume GUID recorded with the granted root differs between the samples, so nothing is compared),
+`unreadable` (free bytes unknown in either sample) or `compared`. Only `compared` carries `direction`
+(`more_free`, `less_free`, `unchanged`) and `change_bytes`, the unsigned absolute change in free bytes. The change is
+the volume's whole change between the two samples and is never attributed to a cleanup. `reclaim.plan` returns the
+stored check as its optional `relief` block, absent until a before sample exists.
 
 ## Owner MCP client grants (docs/48 E6)
 

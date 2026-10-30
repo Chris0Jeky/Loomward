@@ -151,6 +151,10 @@ and an optional new folder name. Output, computed from the catalogue only:
 - warnings the catalogue can already see: offline sources, a destination on the same physical disk as a source
   ("not a backup", docs/09), more than 200,000 entries in one item (the verifier's cap: split it); with `attributes`,
   cloud placeholders and reparse points;
+- custody (LW-136): `copies_after_plan` and `last_content_verified_at` on every item and in the total, and one
+  plan-level `sole_copy_after_retirement` warning listing the item references. `copies_after_plan` is 1 (the archive copy is the only one once
+  originals are retired; the plan retires nothing and does not authorise it); `last_content_verified_at` is null
+  (unknown) until a scrub exists. Neither claims verification;
 - the destination identity (label, bus type, volume key) and the new-folder shape of docs/47 (Q3 defaulted to (a) on
   2026-10-24, no owner answer: a new folder only, never into an existing one);
 - `execution`: always `"owner_approval_required"`, with the reason the copy cannot run yet for personal data
@@ -181,6 +185,17 @@ The plan is JSON the agent shows to the owner. It writes nothing: no draft in `s
   listing and the container checks hold) but never hashed (#1037): the byte budget covers only the planned files, the
   files under a listed folder, and the whole destination. The rule that decides which source files are hashed is the
   one that decides which are compared, so the two cannot drift.
+- `--manifest-roots` (#875, LW-136) adds a `manifest_roots` object to the JSON: the **destination's** custody manifest
+  roots (`custody::manifest_root`, `collation_version` 1, `digest_algorithm` `sha256`) for the folder and each subfolder,
+  as `directories` entries `{path, root, reason}`. Each root is computed from the entries this run actually read and
+  hashed (names as the native UTF-16 code units, the existing default-stream SHA-256, no second read). A folder gets
+  `root: null` and a `reason` (`differing_entry`, `unknown_entry`, `listing_incomplete`, `entry_not_read`,
+  `content_not_hashed`, `size_unknown`, `descendant_not_rooted`, `name_not_representable`, `duplicate_name`, `custody_refused`) when anything at or under it
+  differs, is unknown, unread or unhashed; never a partial root. Metadata-class differences do not block a root (it
+  covers names, kinds, sizes and content only; named streams and times are outside it). With `--only` no roots are
+  emitted (`directories: null`, `reason: "selected_set"`): a selected set is not a whole folder. Directory `path`
+  labels are display text (lossy for a non-Unicode name); the roots hash the exact names. A root is the same
+  observation-time evidence as the rest of the report, not a stored receipt.
 - Its result is **observation-time evidence** (docs/47 section 11, C1): it says the two trees matched when read. It
   is not a durable read-back receipt and not by itself permission to retire a source (section 6).
 

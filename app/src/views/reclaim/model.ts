@@ -1,4 +1,4 @@
-import type { GroupKind, Job, ReclaimObserveProgress, ReclaimPlan, ReclaimSelection, Volume } from '../../lib/contracts.gen';
+import type { GroupKind, Job, ReclaimObserveProgress, ReclaimPlan, ReclaimRelief, ReclaimSelection, Volume } from '../../lib/contracts.gen';
 import { formatBytes, parseBytes } from '../../lib/format/bytes';
 import { LoomwardError } from '../../lib/transport/client';
 
@@ -45,10 +45,16 @@ export function selectionComparison(result: ReclaimSelection | null, target: str
 }
 
 export function observationAge(at: string, now: number): string {
-  const seconds = Math.max(0, Math.floor((now - Date.parse(at)) / 1000));
+  const elapsed = now - Date.parse(at);
+  if (Number.isNaN(elapsed)) return 'at an unknown time';
+  if (elapsed < 0) return 'at an unknown time (clock ahead)'; // never overstate freshness
+  const seconds = Math.floor(elapsed / 1000);
   if (seconds < 60) return 'less than a minute ago';
+  const unit = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'} ago`;
   const minutes = Math.floor(seconds / 60);
-  return `${minutes} minute${minutes === 1 ? '' : 's'} ago`;
+  if (minutes < 60) return unit(minutes, 'minute');
+  const hours = Math.floor(minutes / 60);
+  return hours < 48 ? unit(hours, 'hour') : unit(Math.floor(hours / 24), 'day');
 }
 
 /** Plain words for a refused or failed observe request. The service's own text is the fallback. */
@@ -99,4 +105,45 @@ export function observeStatus(job: Job | null, owned = true): string {
 export function observeLines(o: { job: Job | null; problem: string; pending: boolean; ownJobId: string | null }): { status: string; problem: string } {
   const status = o.job ? observeStatus(o.job, o.job.job_id === o.ownJobId) : o.pending ? 'Sending request…' : '';
   return { status, problem: o.problem };
+}
+
+export const RELIEF_EXPLAINER =
+  'Recording a sample reads only this volume\'s free and total space and, where Loomward may read it, the Recycle Bin size. It changes no file. Recording a new before sample replaces the earlier check. The estimate kept with a before sample is the recorded union estimate of the current selection, if there is one.';
+
+/** The plan's estimate to keep with a before sample: only a recorded, known selection estimate; otherwise none. */
+export function reliefEstimate(selection: ReclaimSelection | null): string | undefined {
+  return selection?.status === 'recorded' && parseBytes(selection.reclaimable_bytes) !== null ? selection.reclaimable_bytes! : undefined;
+}
+
+/** Plain words for a refused or failed sample request. Nothing is recorded on a refusal. */
+export function sampleRefusal(e: unknown): string {
+  if (!(e instanceof LoomwardError)) return e instanceof Error ? e.message : 'unexpected failure';
+  if (e.code === 'device_offline') return 'This volume is offline, or another disk is using its drive letter. Nothing was recorded.';
+  if (e.code === 'invalid_request' && (e.detail?.reason === 'no_before_sample' || e.message.includes('before sample'))) return 'Record a before sample first. Nothing was recorded.';
+  if (e.code === 'invalid_request' && (e.message === 'no_active_grant' || e.detail?.reason === 'no_active_grant')) {
+    return 'No folder on this volume has an active grant, so Loomward may not look at this volume. Nothing was recorded.';
+  }
+  if (e.code === 'not_found') return 'This volume is no longer listed. Use Look again.';
+  return e.message;
+}
+
+const binText = (bytes: string | null) => (bytes === null ? 'unknown (not read)' : formatBytes(bytes));
+
+/** What the owner is told about a relief check. It states an observed change and never credits it to the cleanup. */
+export function reliefSummary(relief: ReclaimRelief): { headline: string; estimate: string; bin: string; caveat: string } {
+  const change = relief.change_bytes === null ? '' : `${formatBytes(relief.change_bytes)} (${relief.change_bytes} bytes)`;
+  const headline = {
+    not_checked: 'Only the before sample is recorded. Clean up in the owning tool, then choose Check now.',
+    different_volume: 'The two samples come from different volume identities, so they are not compared. Record a new before sample for this volume.',
+    unreadable: 'Free space could not be read in one of the samples, so no change is reported. Unknown is not zero.',
+    compared: relief.direction === 'unchanged' ? 'Free space did not change between the two samples.'
+      : relief.direction === 'more_free' ? `Free space rose by ${change} between the two samples.`
+      : `Free space fell by ${change} between the two samples.`,
+  }[relief.status];
+  const estimate = relief.before.estimate_bytes === null
+    ? 'No plan estimate was recorded with the before sample.'
+    : `The plan estimated ${formatBytes(relief.before.estimate_bytes)} (${relief.before.estimate_bytes} bytes) when the before sample was recorded.`;
+  const bin = `Recycle Bin: ${binText(relief.before.recycle_bin_bytes)} at the before sample${relief.after ? `, ${binText(relief.after.recycle_bin_bytes)} at the second` : ''}. Files sent to the Recycle Bin keep taking space on this volume until it is emptied.`;
+  const caveat = 'This is the whole volume\'s change between the samples, not proof of what a cleanup freed: other writes, an unemptied Recycle Bin, hard links elsewhere and restore points all affect it.';
+  return { headline, estimate, bin, caveat };
 }

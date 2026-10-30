@@ -75,6 +75,9 @@ pub struct ReclaimCandidate {
     pub reclaimable_bytes: Option<Bytes>,
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub reclaimable_reason: Option<Text<256>>,
+    /// When the stored verdict behind `reclaimable_bytes` was observed; null when there is none.
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub observed_at: Option<Timestamp>,
     pub coverage: CoverageState,
     pub owner_step: Text<1024>,
     #[serde(deserialize_with = "crate::types::required_nullable")]
@@ -108,6 +111,13 @@ pub struct ReclaimPlan {
         skip_serializing_if = "Option::is_none"
     )]
     pub selection: Option<ReclaimSelection>,
+    /// #1013: present once the owner has recorded a before sample for this volume.
+    #[serde(
+        default,
+        deserialize_with = "crate::types::optional_present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub relief: Option<ReclaimRelief>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -151,4 +161,77 @@ pub struct ReclaimObserveProgress {
     pub candidates_total: Count,
     pub candidates_done: Count,
     pub names_checked: Count,
+}
+
+/// `reclaim.sample` (#1013): which side of a cleanup the owner is recording.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SampleRole {
+    Before,
+    After,
+}
+
+/// Records one volume sample. `estimate_bytes` is what the plan showed the owner, kept beside a
+/// before sample as a labelled estimate; it is refused with an after sample.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReclaimSampleRequest {
+    pub volume_id: VolumeId,
+    pub role: SampleRole,
+    #[serde(
+        default,
+        deserialize_with = "crate::types::optional_present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub estimate_bytes: Option<Bytes>,
+}
+
+/// Volume metadata at one moment. Anything the service could not read is `null`, never zero.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReliefSample {
+    pub sampled_at: Timestamp,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub capacity_bytes: Option<Bytes>,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub free_bytes: Option<Bytes>,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub recycle_bin_bytes: Option<Bytes>,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub estimate_bytes: Option<Bytes>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReliefStatus {
+    /// Only the before sample exists.
+    NotChecked,
+    /// The samples name different volume identities, so no change is computed.
+    DifferentVolume,
+    /// Free space was unreadable in one of the samples.
+    Unreadable,
+    Compared,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReliefDirection {
+    MoreFree,
+    LessFree,
+    Unchanged,
+}
+
+/// Observed free-space change between two samples. It says nothing about the cause: other writes
+/// happen between the samples, and a Recycle Bin move frees nothing until the bin is emptied.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReclaimRelief {
+    pub before: ReliefSample,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub after: Option<ReliefSample>,
+    pub status: ReliefStatus,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub direction: Option<ReliefDirection>,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub change_bytes: Option<Bytes>,
 }

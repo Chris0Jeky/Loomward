@@ -18,12 +18,13 @@ use loomward_windows::linkcount::{self, Outcome, Stop, MAX_FILES_PER_GROUP};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::json;
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::{Arc, Weak},
     time::{Duration, Instant},
 };
 
+mod relief;
 mod selection;
 
 /// Detectors cap all classes together, so they read their maximum; the planner applies the
@@ -38,6 +39,31 @@ fn root_path(path: &str) -> String {
     path.replace('/', "\\")
         .trim_end_matches('\\')
         .to_lowercase()
+}
+
+/// The outermost active roots on a volume, so covered allocation is never counted twice.
+fn active_roots(conn: &Connection, volume: i64) -> Result<Vec<db::RootRow>, ErrorBody> {
+    let mut roots: Vec<_> = db::roots(conn, None)
+        .map_err(sql_error)?
+        .into_iter()
+        .filter(|r| r.grant_state == "active" && r.volume == Some(volume))
+        .collect();
+    let paths: Vec<_> = roots
+        .iter()
+        .map(|r| (r.root, root_path(&r.display_path)))
+        .collect();
+    roots.retain(|r| {
+        let path = root_path(&r.display_path);
+        !paths.iter().any(|(id, outer)| {
+            *id != r.root
+                && (path.starts_with(&format!("{outer}\\")) || (path == *outer && *id < r.root))
+        })
+    });
+    // Like placement: with no active grant there is nothing to read, and an empty plan would read as nothing found.
+    if roots.is_empty() {
+        return Err(fail(ErrorCode::InvalidRequest, "no_active_grant"));
+    }
+    Ok(roots)
 }
 
 /// The plan's inputs for one volume, read once and shared by `reclaim.plan` and `reclaim.observe`.
@@ -93,30 +119,11 @@ impl Inner {
             .find(|v| v.id == volume_row)
             .ok_or_else(|| fail(ErrorCode::NotFound, "unknown volume"))?;
         let observed = input
-            .volumes(deadline, true)?
+            .volumes(deadline, true, false)?
             .into_iter()
             .find(|v| v.volume.volume_id.as_str() == format!("vo_{}", volume.id))
             .ok_or_else(|| fail(ErrorCode::NotFound, "unknown volume"))?;
-        let mut roots: Vec<_> = db::roots(&input.conn, None)
-            .map_err(sql_error)?
-            .into_iter()
-            .filter(|r| r.grant_state == "active" && r.volume == Some(volume.id))
-            .collect();
-        let paths: Vec<_> = roots
-            .iter()
-            .map(|r| (r.root, root_path(&r.display_path)))
-            .collect();
-        roots.retain(|r| {
-            let path = root_path(&r.display_path);
-            !paths.iter().any(|(id, outer)| {
-                *id != r.root
-                    && (path.starts_with(&format!("{outer}\\")) || (path == *outer && *id < r.root))
-            })
-        });
-        // Like placement: with no active grant there is nothing to read, and an empty plan would read as nothing found.
-        if roots.is_empty() {
-            return Err(fail(ErrorCode::InvalidRequest, "no_active_grant"));
-        }
+        let roots = active_roots(&input.conn, volume.id)?;
         // Offline also covers a foreign disk on the root's letter (#910): its bin is not this volume's.
         let online = observed.volume.online;
         let mut planner = ReclaimInput {
@@ -263,11 +270,15 @@ impl Inner {
             online,
         } = gathered;
         let mut bin_unknown = false;
+        // When each shown verdict was observed (#1029), by the candidate's wire reference.
+        let mut observed_at: HashMap<String, i64> = HashMap::new();
         for (i, root) in roots.iter().enumerate() {
             // A stale root's sizes are unknown, so a stored verdict for it is not shown either.
             if planner.covered_roots[i].coverage != "stale" {
-                let observed = self.observed_relief(&input.conn, root.root)?;
-                planner.observed.extend(observed);
+                for (node, bytes, at) in self.observed_relief(&input.conn, root.root, None)? {
+                    planner.observed.insert(node, bytes);
+                    observed_at.insert(node.reference(), at);
+                }
             }
             let path = Path::new(&root.display_path);
             // shortcut: mounted-folder roots stay unknown until volume mount points are recorded.
@@ -279,6 +290,7 @@ impl Inner {
                 bin_unknown = planner.recycle_bin.is_none();
             }
         }
+        let relief = relief::relief(&input.conn, &self.instance, volume_row)?;
         let mut plan = reclaim::plan(planner)?;
         plan.budget_hit |= budget_hit;
         plan.partial |= budget_hit || bin_unknown;
@@ -300,6 +312,9 @@ impl Inner {
                     "provider": c.provider, "kind": c.kind,
                     "logical_bytes": bytes(c.logical_bytes), "allocated_bytes": bytes(c.allocated_bytes),
                     "reclaimable_bytes": bytes(c.reclaimable_bytes), "reclaimable_reason": c.reclaimable_reason,
+                    // The plan runs no pass of its own, so known relief is always a stored verdict (#1029).
+                    "observed_at": c.reclaimable_bytes.and(c.node_id.as_ref())
+                        .and_then(|id| observed_at.get(id)).map(|&ns| crate::ts_ns(ns)),
                     "coverage": c.coverage, "owner_step": c.owner_step, "relocation": c.relocation,
                     "evidence": c.evidence, "uncertainty": c.uncertainty,
                 })).collect::<Vec<_>>()
@@ -309,6 +324,9 @@ impl Inner {
         });
         if let Some(selection) = selection {
             wire["selection"] = selection;
+        }
+        if let Some(relief) = relief {
+            wire["relief"] = relief;
         }
         let dto: ReclaimPlan = serde_json::from_value(wire)
             .map_err(|_| fail(ErrorCode::ResourceBudget, "reclaim projection bounds"))?;
@@ -325,19 +343,28 @@ impl Inner {
     /// Verified relief stored for this root's current generation, catalogue instance, node
     /// incarnation and subtree revision, on a complete root with no scan in flight. A targeted or
     /// partial run moves `subtree_rev` without a generation bump (#970 review); any other row is
-    /// not shown, so its candidate stays `RELIEF_UNOBSERVED`.
+    /// not shown, so its candidate stays `RELIEF_UNOBSERVED`. Each verdict carries the Unix
+    /// nanoseconds it was observed at; the bindings track the catalogue, not the filesystem, so
+    /// that age is the only sign a figure may have drifted (#1029). `only` reads one node's row.
     pub(crate) fn observed_relief(
         &self,
         conn: &Connection,
         root: i64,
-    ) -> Result<Vec<(NodeKey, u64)>, ErrorBody> {
+        only: Option<NodeKey>,
+    ) -> Result<Vec<(NodeKey, u64, i64)>, ErrorBody> {
+        let (kind, id) = match only {
+            Some(NodeKey::Dir(id)) => (Some("dir"), Some(id)),
+            Some(NodeKey::File(id)) => (Some("file"), Some(id)),
+            _ => (None, None),
+        };
         let mut stmt = conn
             .prepare_cached(
-                "SELECT o.node_kind,o.node_id,o.unique_allocated_bytes FROM st.reclaim_relief o
+                "SELECT o.node_kind,o.node_id,o.unique_allocated_bytes,o.observed_at_ns FROM st.reclaim_relief o
                  JOIN main.root r ON r.grant_id=o.grant_id
                  WHERE r.id=?1 AND o.catalog_instance=?2 AND o.generation=r.generation
                    AND r.state='complete' AND r.active_run IS NULL
                    AND o.unique_allocated_bytes IS NOT NULL
+                   AND (?3 IS NULL OR (o.node_kind=?3 AND o.node_id=?4))
                    AND o.incarnation IS (CASE o.node_kind WHEN 'dir' THEN (SELECT born_run FROM main.dir WHERE id=o.node_id)
                                          ELSE (SELECT born_run FROM main.file WHERE id=o.node_id) END)
                    AND o.subtree_rev IS (CASE o.node_kind WHEN 'dir' THEN (SELECT subtree_rev FROM main.dir WHERE id=o.node_id)
@@ -345,14 +372,14 @@ impl Inner {
             )
             .map_err(sql_error)?;
         let rows = stmt
-            .query_map(params![root, self.instance], |r| {
+            .query_map(params![root, self.instance, kind, id], |r| {
                 let id: i64 = r.get(1)?;
                 let node = if r.get::<_, String>(0)? == "dir" {
                     NodeKey::Dir(id)
                 } else {
                     NodeKey::File(id)
                 };
-                Ok((node, r.get::<_, i64>(2)? as u64))
+                Ok((node, r.get::<_, i64>(2)? as u64, r.get(3)?))
             })
             .map_err(sql_error)?
             .collect::<rusqlite::Result<Vec<_>>>()
@@ -493,11 +520,15 @@ impl Inner {
         })
     }
 
-    /// Forgetting, revoking or losing a root's identity deletes its relief verdicts.
+    /// Forgetting, revoking or losing a root's identity deletes its relief verdicts, and the relief
+    /// samples of a volume left with no active grant (#1013).
     pub(crate) fn drop_reclaim_relief(&self, grant: i64) -> Result<(), ErrorBody> {
         let conn = self.db();
         conn.execute("DELETE FROM st.reclaim_selection WHERE EXISTS(SELECT 1 FROM json_each(members) WHERE json_extract(value,'$.grant')=?1)", [grant]).map_err(sql_error)?;
         conn.execute("DELETE FROM st.reclaim_relief WHERE grant_id=?1", [grant])
+            .map_err(sql_error)?;
+        // The grant's state has already left `active`, so a volume with no other active grant loses its samples.
+        conn.execute(db::PURGE_ORPHAN_SAMPLES, [])
             .map(drop)
             .map_err(sql_error)
     }

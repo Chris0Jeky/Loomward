@@ -22,6 +22,7 @@ export const DUPLICATES_FIXTURE: DuplicateReport = {
   entries: ['equal-a.txt', 'equal-b.txt', 'linked.txt', 'alias.txt', 'changed.txt'].map((relative_path) => ({ relative_path, logical_bytes: '16' })),
   groups: [[0, 1]], links: [[2, 3]], links_not_compared: 2,
   skipped: [{ entry: 4, reason: 'changed_during_read' }], bytes_read: '96', partial: true, truncated: false, stop: null,
+  candidate_space: { files: 12, bytes: '192' },
 };
 export const LAB_ROOT_IDS = LABS.map((l) => l.id);
 

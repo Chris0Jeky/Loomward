@@ -208,6 +208,7 @@ fn only_the_listed_commands_change_state() {
         DuplicatesInspect,
         DuplicatesCancel,
         ReclaimObserve,
+        ReclaimSample,
         FeedbackRecord,
         LearningRefit,
         CollectionsCreate,

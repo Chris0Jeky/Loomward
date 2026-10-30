@@ -2,6 +2,11 @@
 use crate::{db, fail, now_ns, ts_ns, with_reason, Inner, Out, ReadWork};
 use loomward_engine::{placement::*, EngineError, EngineResult};
 use loomward_protocol::*;
+use loomward_windows::storage_path::{
+    HealthObservation, RemovalPolicy, StorageObservation, StorageQueryProvider, UsbTransport,
+    WindowsStorageQueryProvider,
+};
+use loomward_windows::volumes::Fact;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use sha2::{Digest as _, Sha256};
@@ -119,7 +124,7 @@ impl Inner {
             declaration_rev: declaration_rev(&input.conn)?,
         };
         let mut result = match command {
-            Command::VolumesList => Ok(json!({"volumes":input.volumes(deadline, true)?.into_iter().map(|v|v.volume).collect::<Vec<_>>()})),
+            Command::VolumesList => Ok(json!({"volumes":input.volumes(deadline, true, true)?.into_iter().map(|v|v.volume).collect::<Vec<_>>()})),
             Command::TiersModel => {
                 let mut model = self.engine.placement_model(&input, deadline)?;
                 let inactive = inactive_volumes(&input.conn)?;
@@ -462,14 +467,32 @@ impl<'a> Input<'a> {
         })
     }
 
+    /// One read-only storage-path query for an explicitly granted root; any failure is unobserved.
+    fn query_storage(&self, root: &std::path::Path) -> Option<StorageObservation> {
+        #[cfg(test)]
+        if let Some(provider) = self
+            .inner
+            .hooks
+            .storage
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            return provider.query(root).ok();
+        }
+        WindowsStorageQueryProvider.query(root).ok()
+    }
+
     /// `observe_personal_grants` is set only by `volumes.list` and the alerts report (#519): a
     /// personal volume holding an active owner grant gets a read-only space observation through that
     /// grant's own root. Placement and tier models share live presence but keep catalogue physics,
-    /// so their personal refusal still holds.
+    /// so their personal refusal still holds. `with_storage_path` (LW-137) is set only by `volumes.list`,
+    /// the one caller that reports the storage-path query; the others pay nothing for it.
     pub(crate) fn volumes(
         &self,
         deadline: Instant,
         observe_personal_grants: bool,
+        with_storage_path: bool,
     ) -> EngineResult<Vec<VolumeObservation>> {
         let rows = db::volumes(&self.conn, None).map_err(sql)?;
         if rows.len() > 64 {
@@ -508,6 +531,7 @@ impl<'a> Input<'a> {
             let mut observed_at = v.observed_at_ns;
             let online = crate::handlers::volume_online(&v, &roots, &presence);
             let mut classification = None;
+            let mut storage = None;
             for root in roots.iter().filter(|r| {
                 observe_personal_grants
                     && r.volume == Some(v.id)
@@ -520,6 +544,10 @@ impl<'a> Input<'a> {
                         &root.display_path,
                     ))
                     .ok();
+                }
+                // LW-137: the same granted online root, one read-only query, no scan of other disks.
+                if with_storage_path && storage.is_none() {
+                    storage = self.query_storage(std::path::Path::new(&root.display_path));
                 }
             }
             let device = match &classification {
@@ -641,7 +669,7 @@ impl<'a> Input<'a> {
                     .map(Bytes)
             };
             let declared = v.declared.flatten();
-            let volume = serde_json::from_value(json!({
+            let mut wire = json!({
                 "volume_id":format!("vo_{}",v.id), "display_name":v.display_name.chars().take(64).collect::<String>(),
                 "mount_points":[],"filesystem":v.filesystem.as_ref().map(|s| s.chars().take(32).collect::<String>()),"label":null,
                 "online":online,"read_only":space.get("read_only").and_then(Value::as_bool),"removable":null,
@@ -650,7 +678,15 @@ impl<'a> Input<'a> {
                 "tier":{"tier":declared,"basis":if declared.is_some(){"declared"}else{"unknown"},"declared_tier":declared,"hint_tier":null,"note":if !online {crate::handlers::offline_space_note(&v, &roots, &presence)} else if inactive.contains(&v.id){"No active grant; excluded from placement simulation. Device speed is unmeasured."}else{"Declared tier; device speed is unmeasured."}},
                 "features":{"file_ids_128":null,"hard_links":null,"sparse_files":null,"compression":null,"reparse_points":null,"usn_journal":null},
                 "observed_at":ts_ns(observed_at)
-            })).map_err(|_| EngineError::Internal { message: "invalid volume observation".into(), detail: None })?;
+            });
+            // Absent, not null, when unobserved: the field is optional and unknown is never healthy.
+            if let Some(observed) = &storage {
+                wire["storage_path"] = wire_storage_path(observed);
+            }
+            let volume = serde_json::from_value(wire).map_err(|_| EngineError::Internal {
+                message: "invalid volume observation".into(),
+                detail: None,
+            })?;
             volumes.push(VolumeObservation {
                 volume,
                 reserve_bytes: Bytes(0),
@@ -678,7 +714,7 @@ struct Dir {
 impl PlacementInput for Input<'_> {
     fn snapshot(&self, source: Option<&VolumeId>, deadline: Instant) -> EngineResult<Snapshot> {
         check(deadline)?;
-        let mut volumes = self.volumes(deadline, false)?;
+        let mut volumes = self.volumes(deadline, false, false)?;
         let Some(source) = source else {
             return Ok(Snapshot {
                 volumes,
@@ -977,16 +1013,14 @@ impl PlacementInput for Input<'_> {
             .optional()
             .map_err(sql)?;
         let Some(root) = root else { return Ok(None) };
-        let Ok(stored) = self.inner.observed_relief(&self.conn, root) else {
+        let node = loomward_catalog::NodeKey::Dir(dir);
+        let Ok(stored) = self.inner.observed_relief(&self.conn, root, Some(node)) else {
             // An unreadable verdict leaves this group's relief unknown, as before #939; a deadline still surfaces.
             check(deadline)?;
             return Ok(None);
         };
         check(deadline)?;
-        Ok(stored
-            .into_iter()
-            .find(|(node, _)| *node == loomward_catalog::NodeKey::Dir(dir))
-            .map(|(_, bytes)| bytes))
+        Ok(stored.first().map(|&(_, bytes, _)| bytes))
     }
 }
 
@@ -1217,6 +1251,57 @@ impl ProposalStore for Store<'_> {
             })?;
         self.detail(self.conn, row)
     }
+}
+
+/// LW-137: the wire form of one storage-path observation. An unknown fact is `null`; reported
+/// counters are evidence and there is no healthy state, so a hidden or empty result stays unknown.
+pub(crate) fn wire_storage_path(observed: &StorageObservation) -> Value {
+    fn known<T: Clone>(fact: &Fact<T>) -> Option<T> {
+        match fact {
+            Fact::Known { value } => Some(value.clone()),
+            Fact::Unknown { .. } => None,
+        }
+    }
+    fn clip(text: &str, max: usize) -> String {
+        text.chars().take(max).collect()
+    }
+    let count = |n: Option<u64>| n.map(|n| n.min(9_007_199_254_740_991));
+    let path = &observed.storage_path;
+    let health = match &observed.health {
+        HealthObservation::CountersPresent { counters: c } => json!({
+            "state": "counters_present", "reason": null,
+            "counters": {
+                "temperature_celsius": count(c.temperature_celsius.map(u64::from)),
+                "read_errors_total": count(c.read_errors_total),
+                "read_errors_uncorrected": count(c.read_errors_uncorrected),
+                "write_errors_total": count(c.write_errors_total),
+                "write_errors_uncorrected": count(c.write_errors_uncorrected),
+                "power_on_hours": count(c.power_on_hours),
+                "wear_percent": count(c.wear_percent.map(u64::from)),
+                "start_stop_cycles": count(c.start_stop_cycles),
+            },
+        }),
+        HealthObservation::UnsupportedOrHidden { reason } => json!({
+            "state": "unsupported_or_hidden", "reason": clip(reason, 256), "counters": null,
+        }),
+    };
+    json!({
+        "bus_type": known(&path.bus_type).filter(|b| b != "unknown").map(|b| wire_bus_type(&b).to_owned()),
+        "bridge": known(&path.bridge).map(|b| clip(&b, 64)),
+        "usb_transport": known(&path.usb_transport).map(|t| match t {
+            UsbTransport::Bot => "bot",
+            UsbTransport::Uas => "uas",
+        }),
+        "logical_sector_bytes": known(&path.logical_sector_bytes),
+        "physical_sector_bytes": known(&path.physical_sector_bytes),
+        "removal_policy": known(&path.removal_policy).map(|p| match p {
+            RemovalPolicy::ExpectNoRemoval => "expect_no_removal",
+            RemovalPolicy::ExpectOrderlyRemoval => "expect_orderly_removal",
+            RemovalPolicy::ExpectSurpriseRemoval => "expect_surprise_removal",
+        }),
+        "write_cache_enabled": known(&path.write_cache_enabled),
+        "health": health,
+    })
 }
 
 /// The protocol's bus names; any other native bus is `other` (#888 item 6 keeps tests on this map).

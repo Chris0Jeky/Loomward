@@ -14,6 +14,7 @@
 #![forbid(unsafe_code)]
 
 pub mod containment;
+pub mod custody;
 pub mod journal;
 pub mod manifest;
 pub mod receipt;
@@ -22,6 +23,10 @@ pub mod state;
 pub mod store;
 pub mod tree;
 
+pub use custody::{
+    manifest_root, tree_manifest_roots, CustodyEntry, CustodyError, DirectoryRoot, EntryKind,
+    COLLATION_V1,
+};
 pub use journal::{
     Entry, FenceCause, Invalid, ObjectId, Record, Refusal, Replay, Row, StagedItem,
     StagingDisposition, StopCause, StopKind, MAX_BATCH, MAX_ITEMS,

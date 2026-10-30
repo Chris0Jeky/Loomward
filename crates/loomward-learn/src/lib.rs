@@ -7,6 +7,7 @@ use std::fmt;
 
 pub mod ablation;
 pub mod evaluation;
+pub mod explain;
 pub mod features;
 pub mod labelling;
 pub mod linear;

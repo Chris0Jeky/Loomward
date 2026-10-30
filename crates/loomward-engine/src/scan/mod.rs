@@ -249,6 +249,29 @@ impl Engine {
         max_entries: usize,
         selection: Option<&std::collections::BTreeSet<std::path::PathBuf>>,
     ) -> EngineResult<loomward_operations::tree::Report> {
+        self.compare_selected_trees_keeping_destination(
+            source,
+            destination,
+            budget,
+            max_entries,
+            selection,
+        )
+        .map(|(report, _)| report)
+    }
+
+    /// `compare_selected_trees`, also returning the destination tree exactly as read, for evidence
+    /// computed from the same observation (the custody manifest roots, #875). Nothing is read twice.
+    pub fn compare_selected_trees_keeping_destination(
+        &self,
+        source: &GrantedRoot,
+        destination: &GrantedRoot,
+        budget: loomward_windows::duplicate_reader::Budget,
+        max_entries: usize,
+        selection: Option<&std::collections::BTreeSet<std::path::PathBuf>>,
+    ) -> EngineResult<(
+        loomward_operations::tree::Report,
+        loomward_operations::tree::Tree,
+    )> {
         use loomward_windows::duplicate_reader::{read_tree_wanting, Budget};
         use std::{path::Path, time::Instant};
         let left_cancel = self.duplicate_read_admission(source)?;
@@ -290,7 +313,7 @@ impl Engine {
             None => loomward_operations::tree::compare(&left, &right),
         };
         self.finish_tree_reads(source, destination, left_cancel, right_cancel)?;
-        Ok(report)
+        Ok((report, right))
     }
 
     /// Read-only #1011 evidence for `containment(a, b)`: the same q-10 admission and final gate as

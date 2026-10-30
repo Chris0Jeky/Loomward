@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { Client } from '../../src/lib/transport/client';
 import { createMockTransport } from '../../src/lib/transport/mock';
-import type { AlertReport, Job, ReclaimPlan, Root, Volume } from '../../src/lib/contracts.gen';
-import { ageText, jobNeed, largestGroup, missingSources, nearlyFull, needsYou, reclaimTargets, rootNeed, unplacedRoots, usedFraction, volumeRows, type Sources } from '../../src/views/today/model';
+import type { AlertItem, AlertReport, Job, ReclaimPlan, Root, Volume } from '../../src/lib/contracts.gen';
+import { ageText, jobNeed, largestGroup, linkName, missingSources, moreViews, needsEmptyText, nearlyFull, needsYou, reclaimTargets, rootNeed, unevaluatedAlerts, unevaluatedLine, unplacedRoots, usedFraction, volumeRows, type Sources } from '../../src/views/today/model';
 
 const NOW = Date.parse('2026-10-30T12:00:00Z');
 const iso = (minutesAgo: number) => new Date(NOW - minutesAgo * 60_000).toISOString();
@@ -73,6 +73,13 @@ describe('volume rows', () => {
     expect(row!.unknowns).toEqual(['Offline: space figures are from the last observation, 2 h ago.', 'No tier is declared or hinted.']);
   });
 
+  it('draws no fill level for an offline volume and words its figures as the last observation', () => {
+    const [row] = volumeRows([volume({ online: false, observed_at: iso(120) })], [], NOW);
+    expect(row!.used).toBeNull();
+    expect(row!.space).toBe('Last observed: 40.0 GiB free of 100 GiB');
+    expect(volumeRows([volume()], [], NOW)[0]!.space).toBe('40.0 GiB free of 100 GiB');
+  });
+
   it('says what the scan age rests on: no folder, never scanned, unread, partial, newest of several', () => {
     const v = [volume()];
     expect(volumeRows(v, [], NOW)[0]!.scan).toBe('No granted folder');
@@ -124,6 +131,24 @@ describe('needs you', () => {
     const out = needsYou({ volumes: null, roots: [root({ scan: { state: 'stale' } }), root({ root_id: 'rt_2', grant_state: 'identity_changed' })], alerts: null, jobs: null, reclaim: new Map() }, NOW);
     expect(out).toHaveLength(1);
     expect(out[0]!.items.map((i) => i.key)).toEqual(['root-rt_2', 'root-rt_1']);
+  });
+
+  it('does not call a complete scan with partial or unknown coverage clean', () => {
+    expect(rootNeed(root({ scan: { state: 'complete', coverage: 'complete' } }))).toBeNull();
+    for (const coverage of ['partial', 'unknown', 'stale'] as const) {
+      expect(rootNeed(root({ scan: { state: 'complete', coverage } }))!.text).toBe(`finished, but its coverage is ${coverage}, so its numbers may be incomplete.`);
+    }
+    expect(rootNeed(root({ scan: { state: 'scanning', coverage: 'partial' } }))).toBeNull();
+    expect(rootNeed(root({ grant_state: 'revoked', scan: { state: 'complete', coverage: 'partial' } }))).toBeNull();
+  });
+
+  it('names each linked view for people and points "and N more" at every view among the hidden items', () => {
+    expect(['alerts', 'health', 'duplicates', 'reclaim', 'review'].map(linkName)).toEqual(['Alerts', 'Grants & health', 'Duplicates', 'Reclaim', 'Learning review']);
+    expect(linkName('something_new')).toBe('something_new');
+    const kinds = ['scan', 'scan', 'scan', 'scan', 'scan', 'duplicates', 'refit', 'duplicates'] as const;
+    const items = kinds.map((kind, n) => jobNeed(job({ job_id: `jb_${n}`, kind, root_id: null }), null, NOW)!);
+    expect(moreViews(items, 5)).toEqual(['duplicates', 'review']);
+    expect(moreViews(items, 8)).toEqual([]);
   });
 
   it('lists only unfinished jobs, with the view that shows each', () => {
@@ -187,5 +212,36 @@ describe('needs you', () => {
     const src: Sources = { volumes: [volume()], roots: null, alerts: null, jobs: [], reclaim: new Map([['vo_a', null]]) };
     expect(missingSources(src, 1)).toEqual(['granted folders', 'alerts', 'one reclaim plan']);
     expect(needsYou(src, NOW)).toEqual([]);
+  });
+});
+
+describe('alerts that could not be evaluated', () => {
+  const alertItem = (status: AlertItem['status']): AlertItem =>
+    ({ kind: 'low_space', status, label: 'C:', volume_id: 'vo_a', root_id: null, measured_bytes: null, threshold_bytes: null, capacity_bytes: null, window_start: null, window_end: null, coverage: 'complete' }) as AlertItem;
+  const report = (...items: AlertItem[]) => ({ settings: { notifications_enabled: false, low_space_free_percent: 10, low_space_free_bytes: String(10n * GiB), growth_window_days: 7, growth_bytes: '1' }, items }) as AlertReport;
+
+  it('counts the alerts that were not evaluated, and neither the ok nor the active ones', () => {
+    expect(unevaluatedAlerts(null)).toBe(0);
+    expect(unevaluatedAlerts(report(alertItem('ok'), alertItem('alert')))).toBe(0);
+    expect(unevaluatedAlerts(report(alertItem('unknown'), alertItem('insufficient_history'), alertItem('incomplete_coverage'), alertItem('ok')))).toBe(3);
+  });
+
+  it('says how many could not be evaluated, and says nothing when every alert was evaluated', () => {
+    expect(unevaluatedLine(0)).toBeNull();
+    expect(unevaluatedLine(1)).toBe('1 alert could not be evaluated; see Alerts.');
+    expect(unevaluatedLine(2)).toBe('2 alerts could not be evaluated; see Alerts.');
+  });
+
+  it('keeps unevaluated alerts out of the needs list, and never shows "Nothing needs you." alone beside them', () => {
+    const src: Sources = { volumes: null, roots: null, alerts: report(alertItem('unknown'), alertItem('incomplete_coverage')), jobs: null, reclaim: new Map() };
+    expect(needsYou(src, NOW)).toEqual([]);
+    expect(needsEmptyText(missingSources(src, 0).length, unevaluatedAlerts(src.alerts))).toBe('Nothing needs you in what was read.');
+    expect(unevaluatedLine(unevaluatedAlerts(src.alerts))).toBe('2 alerts could not be evaluated; see Alerts.');
+  });
+
+  it('says "Nothing needs you." only when nothing was missing or unevaluated', () => {
+    expect(needsEmptyText(0, 0)).toBe('Nothing needs you.');
+    expect(needsEmptyText(0, 2)).toBe('Nothing needs you in what was read.');
+    expect(needsEmptyText(1, 0)).toBe('Nothing needs you in what was read.');
   });
 });

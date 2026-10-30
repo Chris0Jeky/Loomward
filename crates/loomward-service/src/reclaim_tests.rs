@@ -93,6 +93,69 @@ fn reclaim_composes_four_groups_with_unknown_relief_and_sealed_references() {
     assert_eq!(reclaim(&svc), plan, "same catalogue, same plan");
 }
 
+/// #1029: a stored verdict reaches the plan with the time it was observed; every candidate whose
+/// reclaimable bytes are unknown carries no time.
+#[test]
+fn reclaim_plan_states_when_a_stored_verdict_was_observed_and_nothing_else() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    fixture(&svc);
+    let unobserved = reclaim(&svc);
+    for g in unobserved["groups"].as_array().unwrap() {
+        for c in g["candidates"].as_array().unwrap() {
+            assert!(
+                c["reclaimable_bytes"].is_null() && c["observed_at"].is_null(),
+                "{c}"
+            );
+        }
+    }
+    let target: i64 = svc
+        .inner
+        .db()
+        .query_row("SELECT id FROM main.dir WHERE name='target'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    // 2023-11-14T22:13:20Z in Unix nanoseconds.
+    let observed_ns: i64 = 1_700_000_000_000_000_000;
+    let store = |bytes: Option<i64>| {
+        svc.inner
+            .db()
+            .execute("DELETE FROM st.reclaim_relief", [])
+            .unwrap();
+        svc.inner
+            .db()
+            .execute(
+                "INSERT INTO st.reclaim_relief(grant_id,node_kind,node_id,volume_id,generation,incarnation,subtree_rev,catalog_instance,observed_at_ns,unique_allocated_bytes,reason)
+                 SELECT r.grant_id,'dir',d.id,r.volume_id,r.generation,d.born_run,d.subtree_rev,?2,?3,?4,iif(?4 IS NULL,?5,NULL) FROM main.dir d JOIN main.root r ON r.id=d.root_id WHERE d.id=?1",
+                rusqlite::params![target, svc.inner.instance, observed_ns, bytes, loomward_engine::reclaim::RELIEF_UNOBSERVED],
+            )
+            .unwrap();
+    };
+    store(Some(4096));
+    let shown = reclaim(&svc);
+    for g in shown["groups"].as_array().unwrap() {
+        for c in g["candidates"].as_array().unwrap() {
+            if c["name"] == "target" {
+                assert_eq!(c["reclaimable_bytes"], "4096", "{c}");
+                assert_eq!(c["observed_at"], "2023-11-14T22:13:20.000Z", "{c}");
+            } else {
+                assert!(
+                    c["reclaimable_bytes"].is_null() && c["observed_at"].is_null(),
+                    "{c}"
+                );
+            }
+        }
+    }
+    // A verdict that found the relief unknown is not shown, so it has no age either.
+    store(None);
+    let unknown = target_candidate(&svc);
+    assert!(
+        unknown["reclaimable_bytes"].is_null() && unknown["observed_at"].is_null(),
+        "{unknown}"
+    );
+}
+
 #[test]
 fn reclaim_counts_only_outermost_active_roots_and_keeps_adjacent_roots() {
     let tmp = temp_root();
@@ -510,7 +573,6 @@ fn cargo_lab(extra: impl FnOnce(&std::path::Path)) -> Option<Lab> {
     Some(lab)
 }
 
-#[cfg(windows)]
 fn target_candidate(svc: &Service) -> Value {
     reclaim(svc)["groups"][0]["candidates"]
         .as_array()
@@ -1513,4 +1575,290 @@ fn reclaim_inspect_budget_is_explicit_and_partial() {
         complete,
         "inspection refusal is one-shot and read-only"
     );
+}
+
+fn set_space(svc: &Service, free: u64) {
+    svc.inner
+        .db()
+        .execute(
+            "UPDATE main.volume SET capabilities_json=?1",
+            [
+                json!({"space":{"capacity_bytes":"200000", "free_bytes":free.to_string()}})
+                    .to_string(),
+            ],
+        )
+        .unwrap();
+}
+
+fn sample(svc: &Service, role: &str, extra: Value) -> ResponseEnvelope {
+    let mut payload = json!({"volume_id": volume_id(svc), "role": role});
+    if let (Some(p), Some(e)) = (payload.as_object_mut(), extra.as_object()) {
+        p.extend(e.clone());
+    }
+    call(svc, "reclaim.sample", payload)
+}
+
+fn relief(svc: &Service, role: &str, extra: Value) -> Value {
+    json!(ok("reclaim.sample", sample(svc, role, extra)).0)
+}
+
+#[test]
+fn relief_check_reports_the_observed_change_beside_the_estimate() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    fixture(&svc);
+    assert!(
+        reclaim(&svc).get("relief").is_none(),
+        "nothing recorded yet"
+    );
+    set_space(&svc, 100_000);
+    let before = relief(&svc, "before", json!({"estimate_bytes": "20480"}));
+    assert_eq!(before["status"], "not_checked");
+    assert!(before["after"].is_null() && before["change_bytes"].is_null());
+    assert_eq!(before["before"]["free_bytes"], "100000");
+    assert_eq!(before["before"]["estimate_bytes"], "20480");
+    assert!(
+        before["before"]["recycle_bin_bytes"].is_null(),
+        "a bin that was not read is unknown, not zero"
+    );
+    assert_eq!(
+        reclaim(&svc)["relief"],
+        before,
+        "the plan shows the stored check"
+    );
+    set_space(&svc, 130_000);
+    let after = relief(&svc, "after", json!({}));
+    assert_eq!(after["status"], "compared");
+    assert_eq!(after["direction"], "more_free");
+    assert_eq!(after["change_bytes"], "30000");
+    assert_eq!(after["before"]["estimate_bytes"], "20480");
+    assert!(after["after"]["estimate_bytes"].is_null());
+    assert_eq!(reclaim(&svc)["relief"], after);
+    // Free space that fell is reported as such, not as a negative or zero relief.
+    set_space(&svc, 90_000);
+    let worse = relief(&svc, "after", json!({}));
+    assert_eq!(worse["direction"], "less_free");
+    assert_eq!(worse["change_bytes"], "10000");
+}
+
+#[test]
+fn relief_check_needs_a_before_sample_and_keeps_the_estimate_with_it() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    fixture(&svc);
+    set_space(&svc, 100_000);
+    let refused = err(sample(&svc, "after", json!({})));
+    assert_eq!(refused.code, ErrorCode::InvalidRequest);
+    assert!(reclaim(&svc).get("relief").is_none());
+    relief(&svc, "before", json!({}));
+    let refused = err(sample(&svc, "after", json!({"estimate_bytes": "1"})));
+    assert_eq!(refused.code, ErrorCode::InvalidRequest);
+    relief(&svc, "after", json!({}));
+    // A new before sample starts a new check: the old after sample is gone.
+    let restarted = relief(&svc, "before", json!({}));
+    assert_eq!(restarted["status"], "not_checked");
+    assert!(restarted["after"].is_null());
+}
+
+#[test]
+fn relief_check_does_not_compare_a_different_volume_identity_or_unreadable_space() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    fixture(&svc);
+    set_space(&svc, 100_000);
+    relief(&svc, "before", json!({}));
+    svc.inner
+        .db()
+        .execute(
+            "UPDATE st.root_grant SET volume_guid='00000000000000000000000000000001'",
+            [],
+        )
+        .unwrap();
+    set_space(&svc, 150_000);
+    let other = relief(&svc, "after", json!({}));
+    assert_eq!(other["status"], "different_volume");
+    assert!(other["direction"].is_null() && other["change_bytes"].is_null());
+    assert_eq!(
+        other["after"]["free_bytes"], "150000",
+        "the sample is kept, only the comparison is refused"
+    );
+    // Free space the service could not read is unknown on that side, not zero.
+    svc.inner
+        .db()
+        .execute("UPDATE st.root_grant SET volume_guid=NULL", [])
+        .unwrap();
+    relief(&svc, "before", json!({}));
+    svc.inner
+        .db()
+        .execute("UPDATE main.volume SET capabilities_json='{}'", [])
+        .unwrap();
+    let unreadable = relief(&svc, "after", json!({}));
+    assert_eq!(unreadable["status"], "unreadable");
+    assert!(unreadable["after"]["free_bytes"].is_null());
+    assert!(unreadable["change_bytes"].is_null());
+}
+
+#[test]
+fn relief_check_writes_only_its_own_sample_rows() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    fixture(&svc);
+    set_space(&svc, 100_000);
+    let catalogue = row_checksums(&svc.inner.db());
+    relief(&svc, "before", json!({}));
+    relief(&svc, "after", json!({}));
+    let rows: i64 = svc
+        .inner
+        .db()
+        .query_row("SELECT count(*) FROM st.reclaim_sample", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(rows, 2, "at most one before and one after per volume");
+    assert_eq!(row_checksums(&svc.inner.db()), catalogue);
+}
+
+fn sample_rows(svc: &Service) -> i64 {
+    svc.inner
+        .db()
+        .query_row("SELECT count(*) FROM st.reclaim_sample", [], |r| r.get(0))
+        .unwrap()
+}
+
+#[test]
+fn relief_samples_are_removed_with_the_last_active_grant_on_the_volume() {
+    for forget in [false, true] {
+        let tmp = temp_root();
+        let svc = open(tmp.path(), DatasetClass::Synthetic);
+        let first = fixture(&svc);
+        let second = scanned(&svc, 2, &dir("", &[("second.bin", 30)], vec![]));
+        let vid = volume_id(&svc);
+        set_space(&svc, 100_000);
+        relief(&svc, "before", json!({}));
+        let revoke = |root: &str| {
+            ok(
+                "roots.revoke",
+                call(
+                    &svc,
+                    "roots.revoke",
+                    json!({"root_id": root, "purge_catalog": false}),
+                ),
+            );
+        };
+        revoke(&first);
+        assert_eq!(sample_rows(&svc), 1, "another grant is still active");
+        assert_eq!(reclaim(&svc)["relief"]["status"], "not_checked");
+        revoke(&second);
+        assert_eq!(sample_rows(&svc), 0, "forget={forget}");
+        if forget {
+            for root in [&first, &second] {
+                ok(
+                    "roots.forget",
+                    call(&svc, "roots.forget", json!({"root_id": root})),
+                );
+            }
+        }
+        assert_eq!(sample_rows(&svc), 0, "forget={forget}");
+        let refused = err(call(
+            &svc,
+            "reclaim.plan",
+            json!({"volume_id": vid, "limit": 5}),
+        ));
+        // No plan, and so no relief block, is served for a volume with no active grant.
+        assert_eq!(
+            refused.message.as_str(),
+            if forget {
+                "unknown volume"
+            } else {
+                "no_active_grant"
+            }
+        );
+    }
+}
+
+#[test]
+fn relief_samples_are_removed_when_a_root_loses_its_identity_and_swept_at_startup() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let root = fixture(&svc);
+    set_space(&svc, 100_000);
+    relief(&svc, "before", json!({}));
+    let grant: i64 = svc
+        .inner
+        .db()
+        .query_row(
+            "SELECT grant_id FROM main.root WHERE id=?1",
+            [svc.inner.root_row(&root).unwrap()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    svc.inner
+        .identity_changed(grant, &RootId::new(root.clone()).unwrap(), false);
+    assert_eq!(sample_rows(&svc), 0);
+    // A sample left behind by an interrupted purge is swept when the connection opens.
+    svc.inner
+        .db()
+        .execute(
+            "INSERT INTO st.reclaim_sample(volume_id,role,catalog_instance,volume_key,sampled_at_ns) VALUES(1,'before','x','gone',0)",
+            [],
+        )
+        .unwrap();
+    assert_eq!(sample_rows(&svc), 1);
+    drop(crate::db::open(&svc.inner.state_dir).unwrap());
+    assert_eq!(sample_rows(&svc), 0);
+}
+
+#[test]
+fn relief_check_refuses_an_offline_volume_and_keeps_the_previous_sample() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    fixture(&svc);
+    set_space(&svc, 100_000);
+    let before = relief(&svc, "before", json!({}));
+    svc.inner
+        .db()
+        .execute("UPDATE main.volume SET online=0", [])
+        .unwrap();
+    set_space(&svc, 150_000);
+    for role in ["before", "after"] {
+        let refused = err(sample(&svc, role, json!({})));
+        assert_eq!(refused.code, ErrorCode::DeviceOffline, "{role}");
+        assert_eq!(reason(&refused), Some("volume_offline"));
+    }
+    assert_eq!(sample_rows(&svc), 1, "nothing was recorded");
+    svc.inner
+        .db()
+        .execute("UPDATE main.volume SET online=1", [])
+        .unwrap();
+    assert_eq!(
+        reclaim(&svc)["relief"],
+        before,
+        "the earlier sample is kept"
+    );
+}
+
+#[test]
+fn relief_check_is_closed_to_clients() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let root = fixture(&svc);
+    svc.grant_client(
+        "mcp:reader",
+        &[RootId::new(root).unwrap()],
+        &["size", "volumes"],
+        None,
+    )
+    .unwrap();
+    for client in ["ask:local", "mcp:reader"] {
+        assert_eq!(
+            err(svc.call(
+                request(
+                    "reclaim.sample",
+                    json!({"volume_id": volume_id(&svc), "role": "before"})
+                ),
+                &CallContext::client(client)
+            ))
+            .code,
+            ErrorCode::PermissionDenied
+        );
+    }
+    assert_eq!(sample_rows(&svc), 0);
 }

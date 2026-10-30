@@ -40,6 +40,18 @@ describe('reclaim display model', () => {
     expect(targetBytes('18446744073709551615')).toBe(18446744073709551615n);
     expect(observationAge(result.observed_at!, Date.parse('2026-10-29T00:02:00Z'))).toBe('2 minutes ago');
   });
+  it('words a stored verdict age in the largest whole unit, so an old figure reads as old', () => {
+    const at = '2026-10-29T00:00:00Z';
+    const after = (ms: number) => observationAge(at, Date.parse(at) + ms);
+    expect(observationAge('not a time', Date.parse(at))).toBe('at an unknown time');
+    expect(after(30_000)).toBe('less than a minute ago');
+    expect(after(59 * 60_000)).toBe('59 minutes ago');
+    expect(after(60 * 60_000)).toBe('1 hour ago');
+    expect(after(3 * 3_600_000 + 59 * 60_000)).toBe('3 hours ago');
+    expect(after(47 * 3_600_000)).toBe('47 hours ago');
+    expect(after(48 * 3_600_000)).toBe('2 days ago');
+    expect(after(-5_000)).toBe('at an unknown time (clock ahead)'); // a future time never reads as fresh
+  });
   it('names the four groups in contract order', () => {
     expect(Object.keys(GROUP_HEADINGS)).toEqual(resultFixture.groups.map((g) => g.kind));
     expect(Object.values(GROUP_HEADINGS)).toEqual(['Tool-owned cleanup', 'Relocate', 'Archive candidates', 'Informational']);
@@ -77,17 +89,19 @@ describe('reclaim view', () => {
   }
 
   it('offers read-only selection, target and observe/cancel controls, with owner steps as text', () => {
-    expect(source.match(/<button\b/g)).toHaveLength(5);
+    expect(source.match(/<button\b/g)).toHaveLength(7);
     expect(source.match(/<select\b/g)).toHaveLength(1);
     expect(source).toContain('>Look again</button>');
     expect(source).toContain('>Observe hard links</button>');
     expect(source).toContain('>Cancel observation</button>');
+    expect(source).toContain('>Record before</button>');
+    expect(source).toContain('>Check now</button>');
     expect(source).toContain('Owner step: {candidate.owner_step}</p>');
     expect(source.match(/<input\b/g)).toHaveLength(2);
     expect(source).toContain('type="checkbox"');
     expect(source).toContain('inputmode="numeric"');
     expect(source).not.toMatch(/<a\b|<form\b|{@html|clipboard|exec\(|invoke\(/);
-    expect([...source.matchAll(/c.call\('([^']+)'/g)].map((m) => m[1])).toEqual(['reclaim.plan', 'volumes.list']);
+    expect([...source.matchAll(/c.call\('([^']+)'/g)].map((m) => m[1])).toEqual(['reclaim.plan', 'volumes.list', 'reclaim.sample']);
   });
 
   it('the observe store calls only the read-only job commands and the plan', () => {

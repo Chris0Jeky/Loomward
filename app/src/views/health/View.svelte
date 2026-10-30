@@ -14,6 +14,8 @@
   import { Say } from '../../lib/ui/say.svelte';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
   import VolumeStatus from '../../lib/ui/VolumeStatus.svelte';
+  import { diskHealthLine } from '../../lib/format/volume';
+  import { volumes } from '../../lib/stores/volumes.svelte';
   import Diagnostics from './Diagnostics.svelte';
   import type { GrantList, Health, Root, RootList } from '../../lib/contracts.gen';
   import type { ScanView } from '../../lib/scan/model';
@@ -350,6 +352,19 @@
   {:else}<p class="muted">{error ? 'Roots unknown: refresh failed.' : 'Loading'}</p>{/if}
 </section>
 
+<section class="panel" aria-labelledby="h-volumes">
+  <h2 id="h-volumes">Volumes</h2>
+  {#if volumes.items}
+    <ul class="volumes">
+      {#each volumes.items as v (v.volume_id)}
+        <li class="volume"><span class="num">{v.display_name}</span> <span class="muted">{diskHealthLine(v)}</span></li>
+      {:else}
+        <li class="muted">No volumes known.</li>
+      {/each}
+    </ul>
+  {:else}<p class="muted">{volumes.error ? 'Disk health unknown: volumes unavailable.' : 'Loading'}</p>{/if}
+</section>
+
 <section class="panel" aria-labelledby="h-grants">
   <h2 id="h-grants">Grants</h2>
   {#if grants}
@@ -405,6 +420,8 @@
   .kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 20px; margin: 0 0 12px; align-content: start; }
   .kv dt { color: var(--muted); }
   .kv dd { margin: 0; }
+  .volumes { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+  .volume { overflow-wrap: anywhere; }
   .caps { list-style: none; margin: 0 0 12px; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 6px; }
   .tag.ok-tag { color: var(--ok); border-color: var(--ok); }
   .meter { display: inline-block; width: 90px; height: 8px; margin-left: 10px; border: 1px solid var(--control-line); border-radius: 4px; vertical-align: middle; overflow: hidden; }
