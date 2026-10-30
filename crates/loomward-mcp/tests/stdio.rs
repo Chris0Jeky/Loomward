@@ -816,7 +816,7 @@ mod live {
                 .unwrap()
                 .iter()
                 .any(|w| w["code"] == "sole_copy_after_retirement"
-                    && w["reference"] == plan["items"][0]["reference"]));
+                    && w["references"] == json!([plan["items"][0]["reference"].clone()])));
             assert_eq!(plan["items"][0].get("modified_range").is_some(), modified);
             assert_eq!(plan["total"].get("modified_range").is_some(), modified);
             assert_eq!(
@@ -1206,7 +1206,7 @@ mod live {
             json!([
                 {"reference":reference,"code":"offline_source","message":"Source volume is offline; the catalogue is a stored observation."},
                 {"reference":reference,"code":"same_volume","message":"Destination is on the same volume as this source: not a backup."},
-                {"reference":reference,"code":"sole_copy_after_retirement","message":"Only one archive copy is planned and no second copy exists. If the originals were later retired, this would be the only copy. This plan retires nothing and does not authorise retiring originals; content has not been verified."},
+                {"reference":null,"references":[reference],"code":"sole_copy_after_retirement","message":"Only one archive copy is planned for the items listed in references, and no second copy is planned or known to Loomward. If the originals were later retired, it would be the only copy. This plan retires nothing and does not authorise retiring originals; content has not been verified."},
                 {"reference":null,"code":"offline_destination","message":"Destination volume is offline; its free space is a stored observation."}
             ])
         );

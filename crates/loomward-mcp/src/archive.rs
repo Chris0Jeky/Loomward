@@ -152,19 +152,24 @@ fn warning(warnings: &mut Vec<Value>, reference: &Value, code: &str, message: &s
     warnings.push(json!({"reference":reference,"code":code,"message":message}));
 }
 
-/// Custody facts for one plan item (LW-136, docs/51 section 4.3). `copies_after_plan` counts
-/// archive copies once originals are retired: the plan retires nothing and verifies nothing.
-/// `last_content_verified_at` stays null (unknown) because no scrub exists yet. Each item is a
-/// sole copy until a second copy exists (owner accepted one copy for now: loomward-archive-second-copy).
-fn custody(item: &mut Value, warnings: &mut Vec<Value>, reference: &Value) {
-    item["copies_after_plan"] = json!(1);
-    item["last_content_verified_at"] = Value::Null;
-    warning(
-        warnings,
-        reference,
-        "sole_copy_after_retirement",
-        "Only one archive copy is planned and no second copy exists. If the originals were later retired, this would be the only copy. This plan retires nothing and does not authorise retiring originals; content has not been verified.",
-    );
+/// Custody facts (LW-136, docs/51 section 4.3). `copies_after_plan` counts archive copies once
+/// originals are retired: the plan retires nothing and verifies nothing. `last_content_verified_at`
+/// stays null (unknown) because no scrub exists yet. The owner accepted one copy for now
+/// (loomward-archive-second-copy). Items carry only these two compact fields; the long sole-copy
+/// text is emitted once per plan so a 64-item plan stays inside the response budget.
+const CUSTODY_BASIS: &str = "copies_after_plan counts archive copies once originals are retired; the plan itself retires nothing. The count is planned, not verified, and last_content_verified_at is null (unknown) because no scrub exists.";
+const SOLE_COPY: &str = "Only one archive copy is planned for the items listed in references, and no second copy is planned or known to Loomward. If the originals were later retired, it would be the only copy. This plan retires nothing and does not authorise retiring originals; content has not been verified.";
+
+fn custody_fields(value: &mut Value) {
+    value["copies_after_plan"] = json!(1);
+    value["last_content_verified_at"] = Value::Null;
+}
+
+/// One plan-level warning naming every item (at most 64) instead of one long warning per item.
+fn sole_copy_warning(warnings: &mut Vec<Value>, references: Vec<Value>) {
+    if !references.is_empty() {
+        warnings.push(json!({"reference":Value::Null,"references":references,"code":"sole_copy_after_retirement","message":SOLE_COPY}));
+    }
 }
 
 impl Host {
@@ -195,7 +200,8 @@ impl Host {
         let mut coverage_complete = true;
         let mut pages = DETAIL_PAGES;
         let deadline = Instant::now() + Duration::from_secs(5);
-        for reference in args["references"].as_array().expect("validated") {
+        let references = args["references"].as_array().expect("validated");
+        for reference in references {
             let ids = self.resolve(reference.as_str().expect("validated"))?;
             let node = ids
                 .node_id
@@ -298,7 +304,7 @@ impl Host {
                 );
             }
             details.output(&mut item);
-            custody(&mut item, &mut warnings, reference);
+            custody_fields(&mut item);
             total_details.modified |= details.modified;
             total_details.attributes |= details.attributes;
             total_details.complete &= details.complete;
@@ -324,8 +330,8 @@ impl Host {
         }
         let mut total = json!({"bytes":byte_value(total_bytes),"files":total_files,"coverage":if coverage_complete {"complete"} else {"partial"},"freshness":freshness});
         total_details.output(&mut total);
-        total["copies_after_plan"] = json!(1);
-        total["last_content_verified_at"] = Value::Null;
+        custody_fields(&mut total);
+        sole_copy_warning(&mut warnings, references.to_vec());
         if destination["online"] == false {
             warning(
                 &mut warnings,
@@ -334,7 +340,7 @@ impl Host {
                 "Destination volume is offline; its free space is a stored observation.",
             );
         }
-        let mut out = json!({"items":items,"total":total,"destination":destination,"space":space(total_bytes,&destination),"warnings":warnings,"shape":"new folder only","execution":"owner_approval_required","reason":"Personal copy gate C8 is closed: docs/47 section 11 requires C6, G5, G9 and the owner's Q1-Q3 decisions and approval. MCP cannot approve or execute a copy.","totals_basis":"sum of selected items; overlapping selections count separately","custody_basis":"copies_after_plan counts archive copies once originals are retired; the plan itself retires nothing. The count is planned, not verified, and last_content_verified_at is null (unknown) because no scrub exists."});
+        let mut out = json!({"items":items,"total":total,"destination":destination,"space":space(total_bytes,&destination),"warnings":warnings,"shape":"new folder only","execution":"owner_approval_required","reason":"Personal copy gate C8 is closed: docs/47 section 11 requires C6, G5, G9 and the owner's Q1-Q3 decisions and approval. MCP cannot approve or execute a copy.","totals_basis":"sum of selected items; overlapping selections count separately","custody_basis":CUSTODY_BASIS});
         if let Some(name) = args.get("folder_name") {
             out["folder_name"] = name.clone();
         }
@@ -349,27 +355,49 @@ mod tests {
 
     #[test]
     fn custody_states_a_sole_copy_without_claiming_verification_or_authorising_retirement() {
-        let reference = json!("r1");
-        let (mut item, mut warnings) = (json!({"reference":"r1"}), Vec::new());
-        custody(&mut item, &mut warnings, &reference);
-        assert_eq!(item["copies_after_plan"], 1);
-        assert!(item["last_content_verified_at"].is_null());
-        assert_eq!(
-            item.as_object().unwrap().len(),
-            3,
-            "no other custody field: {item}"
-        );
+        let (mut item, mut total) = (json!({"reference":"r1"}), json!({"bytes":"1"}));
+        custody_fields(&mut item);
+        custody_fields(&mut total);
+        for value in [&item, &total] {
+            assert_eq!(value["copies_after_plan"], 1);
+            assert!(value["last_content_verified_at"].is_null());
+        }
+        assert_eq!(item.as_object().unwrap().len(), 3, "{item}");
+        assert_eq!(total.as_object().unwrap().len(), 3, "{total}");
+        let mut warnings = Vec::new();
+        sole_copy_warning(&mut warnings, Vec::new());
+        assert!(warnings.is_empty(), "no items, no warning");
+        sole_copy_warning(&mut warnings, vec![json!("r1"), json!("r2")]);
         assert_eq!(warnings.len(), 1);
-        assert_eq!(warnings[0]["reference"], reference);
+        assert!(warnings[0]["reference"].is_null());
+        assert_eq!(warnings[0]["references"], json!(["r1", "r2"]));
         assert_eq!(warnings[0]["code"], "sole_copy_after_retirement");
         let message = warnings[0]["message"].as_str().unwrap();
-        assert!(message.contains("only copy"), "{message}");
-        assert!(message.contains("retires nothing"), "{message}");
-        assert!(
-            message.contains("does not authorise retiring originals"),
-            "{message}"
-        );
-        assert!(message.contains("has not been verified"), "{message}");
+        assert!(message.contains("no second copy is planned or known to Loomward"));
+        assert!(message.contains("only copy"));
+        assert!(message.contains("retires nothing"));
+        assert!(message.contains("does not authorise retiring originals"));
+        assert!(message.contains("has not been verified"));
+        assert!(!message.contains("exists"), "must not overclaim: {message}");
+        assert!(CUSTODY_BASIS.contains("planned, not verified"));
+        assert!(CUSTODY_BASIS.contains("null (unknown) because no scrub exists"));
+    }
+
+    #[test]
+    fn custody_overhead_stays_small_for_a_64_item_plan() {
+        // References are at most 32 characters (tools.rs validation). The response is encoded
+        // twice (structuredContent and content text) against the 262,144-byte budget.
+        let references: Vec<Value> = (0..64).map(|i| json!(format!("{i:0>32}"))).collect();
+        let mut items: Vec<Value> = references.iter().map(|r| json!({"reference":r})).collect();
+        let before = serde_json::to_string(&items).unwrap().len();
+        items.iter_mut().for_each(custody_fields);
+        let per_item = (serde_json::to_string(&items).unwrap().len() - before) / 64;
+        assert!(per_item <= 60, "per-item custody overhead {per_item} bytes");
+        let mut warnings = Vec::new();
+        sole_copy_warning(&mut warnings, references);
+        let warning = serde_json::to_string(&warnings).unwrap().len();
+        assert!(warning < 3_000, "plan-level warning {warning} bytes");
+        assert!((per_item * 64 + warning + CUSTODY_BASIS.len()) * 2 < 16_000);
     }
 
     #[test]
