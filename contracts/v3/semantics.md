@@ -1133,6 +1133,28 @@ selection changes, shows its age, and compares only recorded known bytes with th
 integer arithmetic. The estimate does not approve deletion or guarantee physical space recovery;
 Recycle Bin moves and same-volume renames do not immediately free this allocation.
 
+## Reclaim relief check (#1013)
+
+`reclaim.sample { volume_id, role, estimate_bytes? }` is an owner-only mutation (Tauri and HTTP; clients are
+refused) that records one metadata sample of a volume with an active grant and answers a `ReclaimRelief`. `role`
+is `before` or `after`. `estimate_bytes` (an exact decimal string) is the plan's estimate as the owner saw it; it is
+accepted only with `before`. An `after` without a stored `before` is `invalid_request` (reason `no_before_sample`);
+an offline volume, or one whose drive letter holds another disk, is `device_offline` (reason `volume_offline`);
+a volume without an active grant is `invalid_request` (`no_active_grant`). A refusal records nothing.
+
+A sample holds the volume's capacity and free bytes, the Recycle Bin size, the estimate, and the time. Anything the
+service could not read is `null`, never zero; the bin is read only through a volume-root grant. The service stores at
+most one `before` and one `after` per volume in `state.db`; a new `before` removes the old `after`, and revoking,
+forgetting or losing the identity of the last active grant on the volume removes both. The sample
+carries no path or name. The catalogue and `state_rev` are unchanged.
+
+`ReclaimRelief.status` is `not_checked` (only the before sample exists), `different_volume` (the catalogue volume
+key or the volume GUID recorded with the granted root differs between the samples, so nothing is compared),
+`unreadable` (free bytes unknown in either sample) or `compared`. Only `compared` carries `direction`
+(`more_free`, `less_free`, `unchanged`) and `change_bytes`, the unsigned absolute change in free bytes. The change is
+the volume's whole change between the two samples and is never attributed to a cleanup. `reclaim.plan` returns the
+stored check as its optional `relief` block, absent until a before sample exists.
+
 ## Owner MCP client grants (docs/48 E6)
 
 `clients.grant`, `clients.list` and `clients.revoke` accept the owner principal only, on the desktop

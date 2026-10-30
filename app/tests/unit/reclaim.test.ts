@@ -77,17 +77,19 @@ describe('reclaim view', () => {
   }
 
   it('offers read-only selection, target and observe/cancel controls, with owner steps as text', () => {
-    expect(source.match(/<button\b/g)).toHaveLength(5);
+    expect(source.match(/<button\b/g)).toHaveLength(7);
     expect(source.match(/<select\b/g)).toHaveLength(1);
     expect(source).toContain('>Look again</button>');
     expect(source).toContain('>Observe hard links</button>');
     expect(source).toContain('>Cancel observation</button>');
+    expect(source).toContain('>Record before</button>');
+    expect(source).toContain('>Check now</button>');
     expect(source).toContain('Owner step: {candidate.owner_step}</p>');
     expect(source.match(/<input\b/g)).toHaveLength(2);
     expect(source).toContain('type="checkbox"');
     expect(source).toContain('inputmode="numeric"');
     expect(source).not.toMatch(/<a\b|<form\b|{@html|clipboard|exec\(|invoke\(/);
-    expect([...source.matchAll(/c.call\('([^']+)'/g)].map((m) => m[1])).toEqual(['reclaim.plan', 'volumes.list']);
+    expect([...source.matchAll(/c.call\('([^']+)'/g)].map((m) => m[1])).toEqual(['reclaim.plan', 'volumes.list', 'reclaim.sample']);
   });
 
   it('the observe store calls only the read-only job commands and the plan', () => {

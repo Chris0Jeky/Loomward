@@ -9,6 +9,11 @@ use std::time::Duration;
 
 pub type Sql<T> = rusqlite::Result<T>;
 
+/// #1013: a volume's relief samples live only while some grant on it is active. Revoking, forgetting
+/// or losing the identity of the last grant on a volume deletes them (`st.root_grant.volume_key` is
+/// the catalogue volume's key).
+pub const PURGE_ORPHAN_SAMPLES: &str = "DELETE FROM st.reclaim_sample WHERE volume_key NOT IN (SELECT volume_key FROM st.root_grant WHERE state='active')";
+
 pub fn open(dir: &Path) -> Sql<Connection> {
     let dir = &loomward_catalog::sqlite_dir(dir);
     let conn = Connection::open(dir.join("catalog.db"))?;
@@ -63,6 +68,23 @@ pub fn open(dir: &Path) -> Sql<Connection> {
         CHECK((unique_allocated_bytes IS NULL)<>(reason IS NULL))
     )",
     )?;
+    // #1013: at most one before and one after volume sample per volume (docs/52 section 6.3).
+    // Byte counts are decimal text like `reclaim_selection`; NULL is unknown, never zero.
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS st.reclaim_sample (
+        volume_id INTEGER NOT NULL,
+        role TEXT NOT NULL CHECK(role IN ('before','after')),
+        catalog_instance TEXT NOT NULL,
+        volume_key TEXT NOT NULL,
+        volume_guid TEXT,
+        sampled_at_ns INTEGER NOT NULL,
+        capacity_bytes TEXT,
+        free_bytes TEXT,
+        recycle_bin_bytes TEXT,
+        estimate_bytes TEXT,
+        PRIMARY KEY(volume_id,role)
+    )",
+    )?;
     // Repeat an interrupted forget's derived-state cleanup before serving this session.
     conn.execute_batch(
         "DELETE FROM st.root_freshness WHERE grant_id IN (SELECT grant_id FROM st.root_forgotten);
@@ -70,6 +92,7 @@ pub fn open(dir: &Path) -> Sql<Connection> {
          DELETE FROM st.reclaim_selection WHERE EXISTS(SELECT 1 FROM json_each(members) m
            JOIN st.root_forgotten f ON f.grant_id=json_extract(m.value,'$.grant'))",
     )?;
+    conn.execute(PURGE_ORPHAN_SAMPLES, [])?;
     Ok(conn)
 }
 
