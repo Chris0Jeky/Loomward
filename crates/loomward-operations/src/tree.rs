@@ -289,7 +289,8 @@ pub fn compare(source: &Tree, destination: &Tree) -> Report {
 /// Selected-set comparison (#1009): compares only the `selected` relative paths and everything
 /// under a selected directory, so a plan that copied some files out of a folder can pass.
 /// Unselected source entries are ignored; every destination entry still counts, so anything
-/// unplanned in the destination is `Extra`. Strict ancestors of selected paths are containers:
+/// unplanned in the destination is `Extra`. Ancestors of selected paths that are not themselves
+/// selected or under a selected folder are containers:
 /// their kind, listing and refused or inherited classes are checked, but not their preserved
 /// metadata, because the source container also holds what the plan left behind. A selected path
 /// the source does not hold, or an empty selection, is unknown, never equal.
