@@ -44,19 +44,6 @@ export function selectionComparison(result: ReclaimSelection | null, target: str
     : `The recorded estimate is ${(need - bytes).toString()} bytes short of the target.`;
 }
 
-export function observationAge(at: string, now: number): string {
-  const elapsed = now - Date.parse(at);
-  if (Number.isNaN(elapsed)) return 'at an unknown time';
-  if (elapsed < 0) return 'at an unknown time (clock ahead)'; // never overstate freshness
-  const seconds = Math.floor(elapsed / 1000);
-  if (seconds < 60) return 'less than a minute ago';
-  const unit = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'} ago`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return unit(minutes, 'minute');
-  const hours = Math.floor(minutes / 60);
-  return hours < 48 ? unit(hours, 'hour') : unit(Math.floor(hours / 24), 'day');
-}
-
 /** Plain words for a refused or failed observe request. The service's own text is the fallback. */
 export function observeRefusal(e: unknown): string {
   if (!(e instanceof LoomwardError)) return e instanceof Error ? e.message : 'unexpected failure';

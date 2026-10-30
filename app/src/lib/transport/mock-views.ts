@@ -36,9 +36,11 @@ for (const reason of ['offline', 'capacity_unknown', 'no_active_grant', 'physics
 interface GroupSeed {
   id: string; name: string; gib: number; basis: CandidateGroup['estimate_basis']; reliefKnown: boolean; coverage: CandidateGroup['coverage'];
   modified: string; pinned: boolean | null; active: boolean | null; protected: boolean | null; days: number | null; shared?: boolean;
+  /** Relief came from a stored reclaim verdict observed at this time; absent means a live link-count pass. */
+  verifiedAt?: string;
 }
 const GROUPS: GroupSeed[] = [
-  { id: 'cg_models', name: 'synthetic-model-store', gib: 212, basis: 'allocated_entries', reliefKnown: true, coverage: 'complete', modified: '2025-03-18T10:00:00Z', pinned: false, active: false, protected: false, days: 420 },
+  { id: 'cg_models', name: 'synthetic-model-store', gib: 212, basis: 'allocated_entries', reliefKnown: true, coverage: 'complete', modified: '2025-03-18T10:00:00Z', pinned: false, active: false, protected: false, days: 420, verifiedAt: '2026-10-28T09:15:00Z' },
   { id: 'cg_render', name: 'synthetic-render-cache', gib: 148, basis: 'allocated_entries', reliefKnown: true, coverage: 'complete', modified: '2026-09-28T18:30:00Z', pinned: false, active: false, protected: false, days: 60 },
   { id: 'cg_vms', name: 'synthetic-vm-images', gib: 96, basis: 'logical_fallback', reliefKnown: false, coverage: 'complete', modified: '2025-06-02T08:15:00Z', pinned: false, active: false, protected: false, days: 300 },
   { id: 'cg_photos', name: 'synthetic-photo-archive', gib: 131, basis: 'allocated_entries', reliefKnown: true, coverage: 'complete', modified: '2024-11-30T12:00:00Z', pinned: true, active: false, protected: false, days: 500 },
@@ -137,6 +139,7 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
     source_bytes: str(bytesOf(g)), destination_bytes: str(bytesOf(g) + bytesOf(g) / 256n), transfer_bytes: str((bytesOf(g) * 97n) / 100n),
     estimate_basis: g.basis, estimated_relief_bytes: g.reliefKnown ? str(bytesOf(g)) : null,
     relief_basis: g.reliefKnown ? 'verified_unique_allocation' : 'unknown',
+    relief_observed_at: g.reliefKnown ? g.verifiedAt ?? null : null,
     heat: null, heat_basis: 'unknown', newest_modified_at: g.modified, pinned: g.pinned, active: g.active, protected: g.protected, days_since_move: g.days, coverage: g.coverage,
   });
 

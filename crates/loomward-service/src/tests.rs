@@ -1438,6 +1438,9 @@ fn fresh_relief_row(svc: &Service, root: i64, grant: i64) -> (i64, i64, ReliefRo
     )
 }
 
+/// The observation time `store_relief` stamps on its verdict (2025-10-09T08:53:20.000Z).
+const RELIEF_AT_NS: i64 = 1_760_000_000_000_000_000;
+
 fn store_relief(svc: &Service, dir: i64, bytes: i64, row: &ReliefRow) {
     svc.inner
         .db()
@@ -1445,12 +1448,12 @@ fn store_relief(svc: &Service, dir: i64, bytes: i64, row: &ReliefRow) {
         .unwrap();
     svc.inner.db().execute(
         "INSERT INTO st.reclaim_relief(grant_id,node_kind,node_id,volume_id,generation,incarnation,subtree_rev,catalog_instance,observed_at_ns,unique_allocated_bytes,reason)
-         VALUES(?1,'dir',?2,1,?3,?4,?5,?6,0,?7,NULL)",
-        rusqlite::params![row.grant, dir, row.generation, row.incarnation, row.subtree_rev, row.instance, bytes],
+         VALUES(?1,'dir',?2,1,?3,?4,?5,?6,?8,?7,NULL)",
+        rusqlite::params![row.grant, dir, row.generation, row.incarnation, row.subtree_rev, row.instance, bytes, RELIEF_AT_NS],
     ).unwrap();
 }
 
-fn placement_group_relief(svc: &Service, volume: &str) -> (Value, Value) {
+fn placement_group_relief(svc: &Service, volume: &str) -> (Value, Value, Value) {
     let (candidates, _) = ok(
         "placement.candidates",
         call(
@@ -1463,6 +1466,7 @@ fn placement_group_relief(svc: &Service, volume: &str) -> (Value, Value) {
     (
         g["estimated_relief_bytes"].clone(),
         g["relief_basis"].clone(),
+        g["relief_observed_at"].clone(),
     )
 }
 
@@ -1472,7 +1476,7 @@ fn placement_uses_a_bound_reclaim_verdict_and_leaves_stale_or_missing_ones_unkno
     let svc = open(tmp.path(), DatasetClass::Synthetic);
     let (root, grant, volume) = placement_fixture(&svc);
     let (dir, allocated, fresh) = fresh_relief_row(&svc, root, grant);
-    let unknown = (Value::Null, json!("unknown"));
+    let unknown = (Value::Null, json!("unknown"), Value::Null);
     // Another root's grant, so a row can be bound to the wrong grant.
     let WriteReply::Root {
         grant_id: other_grant,
@@ -1504,9 +1508,21 @@ fn placement_uses_a_bound_reclaim_verdict_and_leaves_stale_or_missing_ones_unkno
         placement_group_relief(&svc, &volume),
         (
             json!(allocated.to_string()),
-            json!("verified_unique_allocation")
+            json!("verified_unique_allocation"),
+            // #1029: the stored verdict's own observation time reaches the group.
+            json!("2025-10-09T08:53:20.000Z")
         )
     );
+    // placement.simulate reads the same verdict: the group is not pre-rejected as relief_unknown.
+    let (plan, _) = ok(
+        "placement.simulate",
+        call(
+            &svc,
+            "placement.simulate",
+            placement_request(&volume, false),
+        ),
+    );
+    assert_ne!(plan["pre_rejected"][0]["reason"], "relief_unknown");
     // Each binding that no longer matches leaves the group unknown.
     let stale: [(&str, ReliefRow); 5] = [
         (
@@ -1584,6 +1600,7 @@ fn placement_wire_preserves_unknowns_and_exclusions() {
     let g = &candidates["groups"][0];
     assert!(g["estimated_relief_bytes"].is_null());
     assert_eq!(g["relief_basis"], "unknown");
+    assert!(g["relief_observed_at"].is_null());
     assert!(g["heat"].is_null() && g["pinned"].is_null());
     let (plan, _) = ok(
         "placement.simulate",

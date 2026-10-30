@@ -1938,7 +1938,7 @@
     "CandidateGroup": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["group_id", "node_id", "root_id", "name", "source_bytes", "destination_bytes", "transfer_bytes", "estimate_basis", "estimated_relief_bytes", "relief_basis", "heat", "heat_basis", "newest_modified_at", "pinned", "active", "protected", "days_since_move", "coverage"],
+      "required": ["group_id", "node_id", "root_id", "name", "source_bytes", "destination_bytes", "transfer_bytes", "estimate_basis", "estimated_relief_bytes", "relief_basis", "relief_observed_at", "heat", "heat_basis", "newest_modified_at", "pinned", "active", "protected", "days_since_move", "coverage"],
       "properties": {
         "group_id": { "$ref": "#/$defs/GroupId" },
         "node_id": { "$ref": "#/$defs/NodeId" },
@@ -1950,6 +1950,7 @@
         "estimate_basis": { "enum": ["allocated_entries", "logical_fallback", "unknown"] },
         "estimated_relief_bytes": { "$ref": "#/$defs/NullableBytes", "$comment": "null unless relief_basis is verified_unique_allocation or an entry_allocation_whatif was requested." },
         "relief_basis": { "enum": ["verified_unique_allocation", "entry_allocation_whatif", "unknown"], "$comment": "verified_unique_allocation: every entry has a native ID, every object's names are inside this group and link counts were observed; default stream only." },
+        "relief_observed_at": { "$ref": "#/$defs/NullableTimestamp", "$comment": "When the stored link-count verdict behind estimated_relief_bytes was observed; null unless that figure came from a stored verdict (not a live link-count pass, not unknown). Hard links made since then are not reflected (#1029)." },
         "heat": { "$ref": "#/$defs/NullableFraction" },
         "heat_basis": { "$ref": "#/$defs/HeatBasis" },
         "newest_modified_at": { "$ref": "#/$defs/NullableTimestamp" },
