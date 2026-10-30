@@ -868,15 +868,18 @@ def main() -> None:
 
         # --- mock mode ---------------------------------------------------------------------------
         page.goto(f'{base}/?transport=mock')
-        expect(page.get_by_role('heading', name='Explorer', level=1)).to_be_visible()
+        expect(page.get_by_role('heading', name='Today', level=1)).to_be_visible()
         status = page.get_by_role('status', name='Session status')
         expect(status).to_contain_text('Dataset synthetic')
         expect(status).to_contain_text('Simulation')
         expect(status).to_contain_text('Mock transport')
         expect(status).to_contain_text('Connected')
-        check(page.url.endswith('#/explorer'), 'default route is the first discovered view (#/explorer)')
+        check(page.url.endswith('#/today'), 'default route is the first discovered view (#/today)')
         nav = page.get_by_role('navigation', name='Views')
         check(nav.get_by_role('link').count() >= 2, 'views are discovered into the navigation')
+        expect(nav.get_by_role('link', name='Today')).to_have_attribute('aria-current', 'page')
+        nav.get_by_role('link', name='Explorer', exact=True).click()
+        expect(page.get_by_role('heading', name='Explorer', level=1)).to_be_visible()
         expect(nav.get_by_role('link', name='Explorer')).to_have_attribute('aria-current', 'page')
 
         rows = page.locator('main table tbody tr')
@@ -1045,10 +1048,10 @@ def main() -> None:
         engine.down = True
         expect(page.get_by_role('alert').filter(has_text='Unavailable')).to_contain_text('Unavailable', timeout=10000)
         expect(page.get_by_role('status', name='Session status')).to_contain_text('Dataset unknown')
-        check(page.locator('main h1', has_text='Explorer').count() == 0, 'the view is gone while the engine is down')
+        check(page.locator('main h1', has_text='Today').count() == 0, 'the view is gone while the engine is down')
         engine.down = False
         expect(page.get_by_role('status', name='Session status')).to_contain_text('Connected', timeout=20000)
-        expect(page.get_by_role('heading', name='Explorer', level=1)).to_be_visible()
+        expect(page.get_by_role('heading', name='Today', level=1)).to_be_visible()
         print('PASS drop to unavailable and recover')
         # the reconnect resumes with the full frame id `<epoch>.<seq>`; a bare seq makes the real service answer epoch_changed
         check_resume(page)
