@@ -234,7 +234,7 @@ describe('duplicates candidate coverage', () => {
   it('says examined of candidate files with the size, and why the rest were not examined', () => {
     const { heading, detail } = candidateCoverage(report());
     expect(heading).toBe('Examined 200 of 41,312 candidate files (38.2 GiB).');
-    expect(detail).toBe('41,112 candidate files were not examined: the candidate cap was reached.');
+    expect(detail).toBe('41,112 candidate files were not examined: the candidate cap was reached. Unreadable or unrepresentable names are not in this count.');
   });
   it('names the byte and time budgets and warns that listed files may be unread', () => {
     const bytes = candidateCoverage(report({ stop: 'byte_budget' }));
@@ -257,11 +257,19 @@ describe('duplicates candidate coverage', () => {
     expect(candidateCoverage(report({ entries: [], stop: null, truncated: false, candidate_space: { files: 0, bytes: '0' } })).heading).toBe('Examined 0 of 0 candidate files (0 B).');
   });
   it('reports a fully examined root with nothing left over and does not count skipped entries as examined', () => {
-    const full = candidateCoverage(report({ entries: entries(12), stop: null, truncated: false, candidate_space: { files: 12, bytes: '192' } }));
+    const full = candidateCoverage(report({ entries: entries(12), stop: null, truncated: false, partial: false, candidate_space: { files: 12, bytes: '192' } }));
     expect(full).toEqual({ heading: 'Examined 12 of 12 candidate files (192 B).', detail: '' });
-    const skipped = candidateCoverage(report({ entries: entries(12), stop: null, skipped: [{ entry: 3, reason: 'changed_during_read' }], candidate_space: { files: 12, bytes: '192' } }));
+    const skipped = candidateCoverage(report({ entries: entries(12), stop: null, partial: false, skipped: [{ entry: 3, reason: 'changed_during_read' }], candidate_space: { files: 12, bytes: '192' } }));
     expect(skipped.heading).toBe('Examined 11 of 12 candidate files (192 B).');
     expect(skipped.detail).toBe('1 candidate file was not examined.');
+  });
+  it('says unreadable and unrepresentable names are not counted, only on a partial report with a known space', () => {
+    const note = 'Unreadable or unrepresentable names are not in this count.';
+    const full = { entries: entries(12), stop: null, truncated: false, candidate_space: { files: 12, bytes: '192' } };
+    expect(candidateCoverage(report({ ...full, partial: true })).detail).toBe(note);
+    expect(candidateCoverage(report({ ...full, partial: false })).detail).toBe('');
+    // No count, nothing to qualify.
+    expect(candidateCoverage(report({ ...full, partial: true, candidate_space: undefined })).detail).not.toContain(note);
   });
   it('renders the coverage heading in the result panel', () => {
     const source = readFileSync(new URL('../../src/views/duplicates/View.svelte', import.meta.url), 'utf8');

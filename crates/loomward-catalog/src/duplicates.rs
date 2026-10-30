@@ -43,8 +43,9 @@ const ELIGIBLE_SIZES: &str = "WITH RECURSIVE shielded(id) AS (
     AND f.flags & ?3 = 0 AND f.logical>=?2 AND f.logical>0),
     sizes AS (SELECT logical FROM eligible GROUP BY logical HAVING count(*)>=2)";
 const SPACE_WORK_BUDGET: u64 = 32_000_000;
-/// Count the candidate space without reading content. A count that cannot finish (work budget or
-/// deadline) is `None`, unknown, never zero: the candidates already selected are unaffected.
+/// Count the candidate space without reading content. A count interrupted by its work budget or the
+/// deadline is `None`, unknown, never zero: the candidates already selected are unaffected. Any other
+/// failure (corruption, busy, overflow) is a real error and surfaces, never a budget stop (invariant 4).
 fn candidate_space(
     conn: &rusqlite::Connection,
     root: i64,
@@ -54,7 +55,7 @@ fn candidate_space(
     budget: u64,
 ) -> Result<Option<CandidateSpace>> {
     let _guard = WorkGuard::new(conn, budget, deadline)?;
-    Ok(conn
+    match conn
         .query_row(
             &format!(
                 "{}
@@ -68,8 +69,17 @@ fn candidate_space(
                     bytes: r.get::<_, i64>(1)? as u64,
                 })
             },
-        )
-        .ok())
+        ) {
+        Ok(space) => Ok(Some(space)),
+        Err(e) => {
+            let e = Error::from(e);
+            if crate::query::is_budget_interrupt(&e) {
+                Ok(None)
+            } else {
+                Err(e)
+            }
+        }
+    }
 }
 impl Reader {
     pub fn duplicate_candidates(
@@ -77,6 +87,16 @@ impl Reader {
         root: i64,
         floor: u64,
         cap: usize,
+    ) -> Result<DuplicateCandidates> {
+        self.duplicate_candidates_with(root, floor, cap, SPACE_WORK_BUDGET)
+    }
+    /// `space_budget` is the count's own work budget; tests shrink it to interrupt only the count.
+    fn duplicate_candidates_with(
+        &mut self,
+        root: i64,
+        floor: u64,
+        cap: usize,
+        space_budget: u64,
     ) -> Result<DuplicateCandidates> {
         if !(2..=200).contains(&cap) || floor > i64::MAX as u64 {
             return Err(Error::Invalid("duplicate candidate bounds"));
@@ -135,7 +155,7 @@ impl Reader {
             let partial = !complete || unknown || !skipped.is_empty();
             // A fresh budget of the same size: the count must not starve because selection used its own.
             drop(_guard);
-            let space = candidate_space(conn, root, floor.max(1) as i64, flags, deadline, SPACE_WORK_BUDGET)?;
+            let space = candidate_space(conn, root, floor.max(1) as i64, flags, deadline, space_budget)?;
             Ok(DuplicateCandidates { entries, truncated, partial, skipped, space })
         });
         match result {
@@ -232,6 +252,134 @@ mod tests {
         assert_eq!(
             candidate_space(&reader.conn, root_id, 1, flags, None, 1).unwrap(),
             None
+        );
+    }
+
+    /// A completed run listing `files` in the root directory.
+    fn catalog_with(files: Vec<Observation>) -> (tempfile::TempDir, Catalog, i64) {
+        let temp = tempfile::tempdir().unwrap();
+        let c = Catalog::open(temp.path(), "synthetic").unwrap();
+        let WriteReply::Root {
+            grant_id,
+            dir_id,
+            root_id,
+        } = c
+            .writer()
+            .call(WriteCommand::RegisterRoot(RootObservation {
+                volume_guid: None,
+                volume_key: "fixture".into(),
+                display_name: "Root".into(),
+                display_path: "Synthetic root".into(),
+                root_file_id: Some(vec![0; 16]),
+                filesystem: Some("NTFS".into()),
+                origin: "fixture".into(),
+                granted_via: "fixture".into(),
+                observed_at_ns: 0,
+            }))
+            .unwrap()
+        else {
+            panic!()
+        };
+        let WriteReply::Run(run) = c
+            .writer()
+            .call(WriteCommand::BeginRun {
+                grant_id,
+                mode: "full".into(),
+                strategy: "fixture".into(),
+                started_at_ns: 0,
+            })
+            .unwrap()
+        else {
+            panic!()
+        };
+        c.writer()
+            .call(WriteCommand::DirListing(DirListing {
+                run_id: run,
+                dir_id,
+                files,
+                dirs: vec![],
+                state: "complete".into(),
+                skipped: 0,
+                errors: 0,
+            }))
+            .unwrap();
+        c.writer()
+            .call(WriteCommand::EndRun {
+                run_id: run,
+                state: "completed".into(),
+                finished_at_ns: 1,
+            })
+            .unwrap();
+        (temp, c, root_id)
+    }
+
+    fn pairs(n: u64) -> Vec<Observation> {
+        (0..n)
+            .map(|i| Observation::file(format!("file-{i:03}"), 10 + i / 2, Some(4096)))
+            .collect()
+    }
+
+    #[test]
+    fn a_count_failure_that_is_not_a_budget_stop_surfaces_as_an_error() {
+        let (temp, c, root) = catalog_with(pairs(40));
+        // Two same-size files whose logical sum overflows i64: only the count sums sizes, so
+        // selection still succeeds and the count's SQL error must reach the caller.
+        rusqlite::Connection::open(temp.path().join("catalog.db"))
+            .unwrap()
+            .execute(
+                "UPDATE file SET logical=5000000000000000000 WHERE name IN ('file-000','file-001')",
+                [],
+            )
+            .unwrap();
+        let mut reader = c.reader().unwrap();
+        let failed = reader.duplicate_candidates(root, 1, 200);
+        assert!(
+            matches!(&failed, Err(e @ Error::Sql(_)) if !crate::query::is_budget_interrupt(e)),
+            "an overflow is not unknown: {failed:?}"
+        );
+        // A denied statement is likewise an error, not a stop.
+        let flags =
+            EXCLUDED_FLAGS | 1 | (1 << 1) | (1 << 6) | (1 << 9) | crate::IDENTITY_UNVERIFIED;
+        reader
+            .conn
+            .authorizer(Some(|_: AuthContext<'_>| Authorization::Deny))
+            .unwrap();
+        let denied = candidate_space(&reader.conn, root, 1, flags, None, SPACE_WORK_BUDGET);
+        assert!(
+            matches!(&denied, Err(e) if !crate::query::is_budget_interrupt(e)),
+            "{denied:?}"
+        );
+    }
+
+    #[test]
+    fn a_count_interrupted_inside_the_full_path_leaves_entries_intact_and_the_read_committed() {
+        let (_temp, c, root) = catalog_with(pairs(40));
+        let mut reader = c.reader().unwrap();
+        let whole = reader.duplicate_candidates(root, 1, 200).unwrap();
+        assert_eq!(whole.entries.len(), 40);
+        assert_eq!(whole.space.map(|s| s.files), Some(40));
+        // One progress tick of budget for the count alone: selection keeps its own.
+        let cut = reader.duplicate_candidates_with(root, 1, 200, 1).unwrap();
+        assert_eq!(cut.space, None, "an interrupted count is unknown, not zero");
+        assert_eq!(
+            cut.entries.iter().map(|e| &e.relative).collect::<Vec<_>>(),
+            whole
+                .entries
+                .iter()
+                .map(|e| &e.relative)
+                .collect::<Vec<_>>()
+        );
+        assert!(!cut.truncated && !cut.partial);
+        // Ok means the read transaction committed; the connection holds no open transaction and
+        // no leftover progress handler, so the next full read counts again.
+        assert!(reader.conn.is_autocommit());
+        assert_eq!(
+            reader
+                .duplicate_candidates(root, 1, 200)
+                .unwrap()
+                .space
+                .map(|s| s.files),
+            Some(40)
         );
     }
 

@@ -7,6 +7,14 @@ use std::collections::HashMap;
 // strands a lone group member prunes it instead of reporting a singleton.
 
 fn setup_with_files(files: Vec<Observation>) -> (tempfile::TempDir, Catalog, i64) {
+    setup_tree(files, &[])
+}
+
+/// Root files plus named child directories, each holding its own files, in one completed run.
+fn setup_tree(
+    files: Vec<Observation>,
+    children: &[(&str, Vec<Observation>)],
+) -> (tempfile::TempDir, Catalog, i64) {
     let tmp = tempfile::tempdir().unwrap();
     let catalog = Catalog::open(tmp.path(), "synthetic").unwrap();
     let WriteReply::Root {
@@ -48,12 +56,33 @@ fn setup_with_files(files: Vec<Observation>) -> (tempfile::TempDir, Catalog, i64
             run_id: run,
             dir_id,
             files,
-            dirs: vec![],
+            dirs: children
+                .iter()
+                .map(|(name, _)| Observation::file(*name, 0, None))
+                .collect(),
             state: "complete".into(),
             skipped: 0,
             errors: 0,
         }))
         .unwrap();
+    let db = rusqlite::Connection::open(tmp.path().join("catalog.db")).unwrap();
+    for (name, files) in children {
+        let child: i64 = db
+            .query_row("SELECT id FROM dir WHERE name=?1", [name], |r| r.get(0))
+            .unwrap();
+        catalog
+            .writer()
+            .call(WriteCommand::DirListing(DirListing {
+                run_id: run,
+                dir_id: child,
+                files: files.clone(),
+                dirs: vec![],
+                state: "complete".into(),
+                skipped: 0,
+                errors: 0,
+            }))
+            .unwrap();
+    }
     catalog
         .writer()
         .call(WriteCommand::EndRun {
@@ -164,4 +193,62 @@ fn candidate_space_counts_the_whole_eligible_same_size_population_beyond_the_cap
     // Nothing shares a size above every file: a known zero, distinct from unknown.
     let none = reader.duplicate_candidates(root, 5000, 2).unwrap();
     assert_eq!(none.space.map(|s| (s.files, s.bytes)), Some((0, 0)));
+}
+
+#[test]
+fn candidate_space_matches_the_listed_entries_when_nothing_is_cut_off() {
+    // Selection and the count share one eligibility rule; under the cap they must agree on a
+    // fixture exercising each way a same-size file stops being a candidate.
+    let flagged = |name: &str, size: u64, flags: u32| {
+        let mut o = Observation::file(name, size, Some(4096));
+        o.flags = flags;
+        o
+    };
+    let (tmp, catalog, root) = setup_tree(
+        vec![
+            flagged("a1", 100, 0),
+            flagged("a2", 100, 0),
+            flagged("lossy", 100, 1 << 9), // name_lossy: unrepresentable
+            flagged("unverified", 100, IDENTITY_UNVERIFIED),
+            flagged("r3", 300, 0),
+            flagged("u1", 500, IDENTITY_UNVERIFIED), // leaves u2 alone in its size
+            flagged("u2", 500, 0),
+        ],
+        &[
+            ("keep", vec![flagged("k1", 300, 0), flagged("k2", 700, 0)]),
+            (
+                "excluded",
+                vec![flagged("e1", 100, 0), flagged("e2", 300, 0)],
+            ),
+            (
+                "tombstone",
+                vec![flagged("t1", 300, 0), flagged("t2", 100, 0)],
+            ),
+        ],
+    );
+    // Synthetic catalogue rows only: an excluded directory and a tombstoned (absent) one.
+    let db = rusqlite::Connection::open(tmp.path().join("catalog.db")).unwrap();
+    db.execute(
+        "UPDATE dir SET listing_state='excluded' WHERE name='excluded'",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "UPDATE dir SET listing_state='absent_pending' WHERE name='tombstone'",
+        [],
+    )
+    .unwrap();
+    let mut reader = catalog.reader().unwrap();
+
+    let report = reader.duplicate_candidates(root, 1, 200).unwrap();
+    assert!(!report.truncated);
+    // The 100-byte pair (a1, a2) and the 300-byte pair (r3, k1); everything else is out.
+    let mut names: Vec<_> = report.entries.iter().map(|e| e.relative.as_str()).collect();
+    names.sort_unstable();
+    assert_eq!(names, ["a1", "a2", r"keep\k1", "r3"]);
+    let space = report.space.expect("a small root counts within budget");
+    assert_eq!(space.files as usize, report.entries.len());
+    assert_eq!(space.bytes, 100 + 100 + 300 + 300);
+    // The lossy and identity-unverified names are unknowns, so the report says partial.
+    assert!(report.partial);
 }
