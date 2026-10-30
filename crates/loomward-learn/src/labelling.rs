@@ -107,6 +107,9 @@ pub fn votes(packet: &Value) -> Result<Vec<Vote>, LearnError> {
         .sum();
 
     let time = &packet["time"];
+    // Lifecycle rules age the newest content write, else the source write, and nothing else (frozen
+    // categoriser-v1 oracle shared with Python). `explain::coldness` reads every dated field, including
+    // generated writes and the git commit, so it can be newer than this age; the difference is intended.
     let age = time["newest_content_write"]
         .as_u64()
         .or_else(|| time["newest_source_write"].as_u64())

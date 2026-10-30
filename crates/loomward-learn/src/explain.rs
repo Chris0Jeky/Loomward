@@ -63,6 +63,23 @@ fn size(bytes: u64) -> String {
     unreachable!()
 }
 
+/// Whole-percent share for display. The share is first rounded to the nearest basis point (0.01%), which
+/// absorbs float noise (0.29 * 100 is 28.999...), then floored to a whole percent, so 2 x 33.5% reads 33% +
+/// 33%, not 34% + 34%. Consequently a share of 99.995% or more can show 100%, and a column of valid shares
+/// (sum at most 1.000001) cannot show more than 100 in total. A non-zero share below 1% reads "<1%", never
+/// "0%", because "0%" reads as absence; only an exact zero prints "0%".
+fn percent(share: f64) -> String {
+    let basis_points = (share * 10_000.0).round() as u64;
+    match basis_points / 100 {
+        0 if share > 0.0 => "<1%".to_owned(),
+        whole => format!("{whole}%"),
+    }
+}
+
+/// Qualifier for any figure that double-counts hard-linked files when link counts were not observed:
+/// logical size, allocated size, byte shares and duplicate figures all come from the same per-row sums.
+const LINKS_UNOBSERVED: &str = " (link counts not observed)";
+
 fn words(id: &str) -> String {
     id.replace('_', " ")
 }
@@ -175,6 +192,11 @@ fn axis_line(axis: Axis, outcome: &Outcome) -> Line {
 
 /// Newest of every dated activity field, never content writes alone; a dirty working tree is itself
 /// activity evidence, so inactivity is not claimed then. Future dates make no statement.
+///
+/// This is deliberately wider than the `lf_recent_write` / `lf_quiet_*` labelling rules (`labelling::votes`),
+/// which age only the newest content write (falling back to the source write): they are the frozen
+/// categoriser-v1 oracle shared with Python. This line is a plain fact about every dated field, so a recent
+/// generated write or commit can make it newer than the age those rules vote on; the two are not reconciled.
 fn coldness(packet: &Value) -> Line {
     const TRACE: [&str; 6] = [
         "/observed_at",
@@ -264,23 +286,34 @@ pub fn explain(packet: &Value) -> Result<Vec<Line>, LearnError> {
         &["/subject/name_tokens"],
     ));
 
+    let links_unobserved = coverage["link_counts_observed"] == false;
+    let qualify = |known: bool| {
+        if links_unobserved && known {
+            LINKS_UNOBSERVED
+        } else {
+            ""
+        }
+    };
     let shape = &packet["shape"];
     lines.push(line(
         format!(
-            "Contents: {}; {}; logical size {}; allocated size {}; deepest nesting {}.",
+            "Contents: {}; {}; logical size {}{}; allocated size {}{}; deepest nesting {}.",
             count(&shape["files"], "files"),
             count(&shape["folders"], "folders"),
             shape["logical_bytes"]
                 .as_u64()
                 .map_or("unknown".into(), size),
+            qualify(shape["logical_bytes"].is_u64()),
             shape["allocated_bytes"]
                 .as_u64()
                 .map_or("unknown".into(), size),
+            qualify(shape["allocated_bytes"].is_u64()),
             shape["max_depth"]
                 .as_u64()
                 .map_or("unknown".into(), |d| d.to_string()),
         ),
         &[
+            "/coverage/link_counts_observed",
             "/shape/allocated_bytes",
             "/shape/files",
             "/shape/folders",
@@ -310,18 +343,22 @@ pub fn explain(packet: &Value) -> Result<Vec<Line>, LearnError> {
                 .map(|f| {
                     let bytes = f["share_bytes"].as_f64().map_or_else(
                         || "bytes share unknown".to_owned(),
-                        |s| format!("{}% of bytes", (s * 100.0).round()),
+                        |s| format!("{} of bytes", percent(s)),
                     );
                     format!(
-                        "{} {}% of files ({bytes})",
+                        "{} {} of files ({bytes})",
                         f["family"].as_str().unwrap(),
-                        (f["share_files"].as_f64().unwrap() * 100.0).round()
+                        percent(f["share_files"].as_f64().unwrap())
                     )
                 })
                 .collect();
-            format!("File types by share: {}.", parts.join("; "))
+            format!(
+                "File types by share: {}{}.",
+                parts.join("; "),
+                qualify(families.iter().any(|f| f["share_bytes"].as_f64().is_some()))
+            )
         },
-        &["/families"],
+        &["/coverage/link_counts_observed", "/families"],
     ));
 
     let mut extensions: Vec<_> = packet["extensions"].as_array().unwrap().iter().collect();
@@ -401,15 +438,20 @@ pub fn explain(packet: &Value) -> Result<Vec<Line>, LearnError> {
     let duplicates = &packet["duplicates"];
     lines.push(line(
         format!(
-            "Duplicate bytes: {}; duplicate groups: {}.",
+            "Duplicate bytes: {}; duplicate groups: {}{}.",
             duplicates["duplicate_bytes"]
                 .as_u64()
                 .map_or("unknown".into(), size),
             duplicates["groups"]
                 .as_u64()
-                .map_or("unknown".into(), |g| g.to_string())
+                .map_or("unknown".into(), |g| g.to_string()),
+            qualify(duplicates["duplicate_bytes"].is_u64() || duplicates["groups"].is_u64()),
         ),
-        &["/duplicates/duplicate_bytes", "/duplicates/groups"],
+        &[
+            "/coverage/link_counts_observed",
+            "/duplicates/duplicate_bytes",
+            "/duplicates/groups",
+        ],
     ));
 
     let media = &packet["media"];
