@@ -77,6 +77,8 @@ function pendingClient() {
   } as unknown as Client;
   return { client, pending };
 }
+/** The engine's answer about one folder of root rt_a. */
+const about = (node: string): Reply => ({ result: { ...folder, root_id: 'rt_a', node_id: node } });
 const refusal = (code: ErrorCode) => new LoomwardError({ code, message: 'engine wording', retryable: false, detail: null });
 
 describe('FolderInsight request', () => {
@@ -87,7 +89,7 @@ describe('FolderInsight request', () => {
     const run = ins.describe(client, 'rt_a', 'nd_a');
     expect(ins.busy).toBe(true);
     expect(pending[0]!.params).toEqual({ root_id: 'rt_a', node_id: 'nd_a' });
-    pending[0]!.reply({ result: folder });
+    pending[0]!.reply(about('nd_a'));
     await run;
     expect(ins.busy).toBe(false);
     expect(ins.result!.lines.map((l) => l.text)).toEqual(folder.lines.map((l) => l.text));
@@ -99,9 +101,9 @@ describe('FolderInsight request', () => {
     const old = ins.describe(client, 'rt_a', 'nd_old');
     const fresh = ins.describe(client, 'rt_a', 'nd_new');
     expect(pending[0]!.signal.aborted).toBe(true);
-    pending[1]!.reply({ result: { ...folder, node_id: 'nd_new' } });
+    pending[1]!.reply(about('nd_new'));
     await fresh;
-    pending[0]!.reply({ result: { ...folder, node_id: 'nd_old' } });
+    pending[0]!.reply(about('nd_old'));
     await old;
     expect(ins.result!.node_id).toBe('nd_new');
     expect(ins.busy).toBe(false);
@@ -114,7 +116,7 @@ describe('FolderInsight request', () => {
     const ins = new FolderInsight();
     const old = ins.describe(client, 'rt_a', 'nd_old');
     const fresh = ins.describe(client, 'rt_a', 'nd_new');
-    pending[1]!.reply({ result: { ...folder, node_id: 'nd_new' } });
+    pending[1]!.reply(about('nd_new'));
     await fresh;
     pending[0]!.fail(refusal('resource_budget'));
     await old;
@@ -122,7 +124,7 @@ describe('FolderInsight request', () => {
     expect(ins.result!.node_id).toBe('nd_new');
     const third = ins.describe(client, 'rt_a', 'nd_third');
     ins.clear();
-    pending[2]!.reply({ result: { ...folder, node_id: 'nd_third' } });
+    pending[2]!.reply(about('nd_third'));
     await third;
     expect(ins.result).toBeNull();
     expect(ins.busy).toBe(false);
@@ -150,14 +152,76 @@ describe('FolderInsight request', () => {
     await run;
     expect(ins.message).toBe('connection lost');
   });
+
+  it('drops a reply about another folder or root instead of showing it', async () => {
+    const { client, pending } = pendingClient();
+    const ins = new FolderInsight();
+    const run = ins.describe(client, 'rt_a', 'nd_a');
+    pending[0]!.reply(about('nd_other'));
+    await run;
+    expect(ins.result).toBeNull();
+    expect(ins.message).toContain('different folder');
+    const again = ins.describe(client, 'rt_a', 'nd_a');
+    pending[1]!.reply({ result: { ...folder, root_id: 'rt_b', node_id: 'nd_a' } });
+    await again;
+    expect(ins.result).toBeNull();
+    expect(ins.busy).toBe(false);
+  });
 });
 
 describe('FolderInsight panel', () => {
+  // server rendering adds hydration comments between nodes; the markup under test is what is left
+  const show = (props: Record<string, unknown>) => render(FolderInsightPanel, { props: { rootId: 'rt_a', nodeId: 'nd_a', kind: 'dir', ...props } }).body.replace(/<!--.*?-->/g, '');
+  const seeded = (set: (m: FolderInsight) => void) => { const m = new FolderInsight(); set(m); return m; };
+  const decode = (html: string) => html.replaceAll('&quot;', '"').replaceAll('&#39;', "'").replaceAll('&amp;', '&');
+
   it('renders the button and the footer, and asks for nothing before the button is pressed', () => {
-    const { body } = render(FolderInsightPanel, { props: { rootId: 'rt_a', nodeId: 'nd_a' } });
+    const body = show({});
     expect(body).toContain('About this folder');
     expect(body).toMatch(/<button[^>]*>Describe<\/button>/);
     expect(body).toContain(INSIGHT_FOOTER);
     expect(body).not.toContain('Meaning');
+  });
+
+  it('shows the section for a folder only', () => {
+    for (const kind of ['file', 'root', 'other', '']) expect(show({ kind })).not.toContain('About this folder');
+    expect(show({ kind: 'dir' })).toContain('About this folder');
+  });
+
+  it('keeps the button focusable while busy: aria-disabled, never disabled', () => {
+    const body = show({ model: seeded((m) => { m.busy = true; }) });
+    const button = body.match(/<button[^>]*>Describe<\/button>/)![0];
+    expect(button).toContain('aria-disabled="true"');
+    expect(button).not.toMatch(/\sdisabled/);
+    expect(body).toContain('Describing…');
+  });
+
+  it('renders the result: three rows, the lines verbatim, the read time and the ready announcement', () => {
+    const body = show({ model: seeded((m) => { m.result = folder; }) });
+    expect(body).toContain('Description ready');
+    const rows = [...body.matchAll(/<dt[^>]*>([^<]*)<\/dt>/g)].map((x) => x[1]);
+    expect(rows).toEqual(['Meaning', 'Lifecycle', 'Recreatability']);
+    expect(body).toContain('source project (rule inference, not a recorded fact)');
+    expect(body).toContain('Rule: lf_source_manifest');
+    const items = [...body.matchAll(/<li><bdi[^>]*>([\s\S]*?)<\/bdi><\/li>/g)].map((x) => decode(x[1]!));
+    expect(items).toEqual(folder.lines.map((l) => l.text));
+    expect(body).toContain('Read from the catalogue at 2026-10-30 09:00 UTC.');
+    expect(body).not.toMatch(/<dd[^>]*class="[^"]*unknown/);
+  });
+
+  it('marks an abstaining row as unknown and shows a line with a hidden character as a badge', () => {
+    const result = { ...withAxes([abstain('meaning', 'no_vote'), abstain('lifecycle', 'conflict'), abstain('recreatability', 'coverage')]),
+      lines: [{ text: 'Folder name words: a‮b.', trace: ['/subject/name_tokens'] }] };
+    const body = show({ model: seeded((m) => { m.result = result; }) });
+    expect(body.match(/<dd[^>]*class="[^"]*unknown/g)).toHaveLength(3);
+    expect(body).toContain('U+202E');
+    expect(body).not.toContain('‮');
+  });
+
+  it('renders a failure as an alert and no result', () => {
+    const body = show({ model: seeded((m) => { m.message = insightFailure('resource_budget', ''); }) });
+    expect(body).toMatch(/<p[^>]*role="alert"[^>]*>This folder is too large to describe within the budget\. Nothing was guessed\.<\/p>/);
+    expect(body).not.toContain('<dl');
+    expect(body).not.toContain('Description ready');
   });
 });

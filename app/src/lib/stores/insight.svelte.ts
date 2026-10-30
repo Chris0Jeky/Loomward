@@ -29,7 +29,11 @@ export class FolderInsight {
     this.busy = true;
     try {
       const { result } = await client.call('insight.folder', { root_id: rootId, node_id: nodeId }, { signal: ctl.signal });
-      if (!ctl.signal.aborted) this.result = result;
+      if (!ctl.signal.aborted) {
+        // a reply about another folder is never shown under this one
+        if (result.node_id === nodeId && result.root_id === rootId) this.result = result;
+        else this.message = 'The reply was for a different folder and was dropped. Nothing was described.';
+      }
     } catch (e) {
       if (!ctl.signal.aborted) {
         const text = handle(e);

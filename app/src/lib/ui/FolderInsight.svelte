@@ -1,24 +1,28 @@
 <script lang="ts">
   // "About this folder": an explicit, read-only request (#877). Nothing is asked until Describe is pressed.
+  import { untrack } from 'svelte';
   import { INSIGHT_FOOTER, axisRows } from '../format/insight';
   import { formatTime } from '../format/time';
   import { FolderInsight } from '../stores/insight.svelte';
   import { session } from '../stores/session.svelte';
   import VisibleName from './VisibleName.svelte';
 
-  let { rootId, nodeId }: { rootId: string; nodeId: string } = $props();
-  const insight = new FolderInsight();
+  // `kind` gates the section: only a folder can be described. `model` is for tests, which seed a state to render.
+  let { rootId, nodeId, kind, model }: { rootId: string; nodeId: string; kind: string; model?: FolderInsight } = $props();
+  const insight = untrack(() => model ?? new FolderInsight());
   // a different folder, or leaving the page, drops the answer and any request still in flight
   $effect(() => { void rootId; void nodeId; return () => insight.clear(); });
 
   const rows = $derived(insight.result ? axisRows(insight.result) : []);
-  const describe = () => { if (session.client) void insight.describe(session.client, rootId, nodeId, (e) => session.handle(e)); };
+  // aria-disabled, not disabled: a disabled button would drop keyboard focus to the page body
+  const describe = () => { if (!insight.busy && session.client) void insight.describe(session.client, rootId, nodeId, (e) => session.handle(e)); };
 </script>
 
+{#if kind === 'dir'}
 <section class="insight" aria-labelledby="insight-title">
   <h3 id="insight-title">About this folder</h3>
-  <button class="btn" type="button" disabled={insight.busy || !session.client} aria-describedby="insight-foot" onclick={describe}>Describe</button>
-  <p class="live" role="status">{#if insight.busy}Describing…{/if}</p>
+  <button class="btn" type="button" aria-disabled={insight.busy || !session.client} aria-describedby="insight-foot" onclick={describe}>Describe</button>
+  <p class="live" role="status">{#if insight.busy}Describing…{:else if insight.result}Description ready{/if}</p>
   {#if insight.message}<p class="bad" role="alert">{insight.message}</p>{/if}
   {#if insight.result}
     <dl class="axes">
@@ -36,6 +40,7 @@
   {/if}
   <p id="insight-foot" class="muted small">{INSIGHT_FOOTER}</p>
 </section>
+{/if}
 
 <style>
   .insight { margin-top: 16px; }

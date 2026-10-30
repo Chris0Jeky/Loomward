@@ -492,7 +492,7 @@
     {#if detail.identity.durable_reference === 'available'}
       {#key detail.row.node_id}<AddToCollection nodeId={detail.row.node_id} expectedGeneration={detailGeneration} />{/key}
     {:else}<p class="muted">This node has no durable identity, so it cannot join a collection.</p>{/if}
-    {#if detail.row.kind === 'dir'}{#key detail.row.node_id}<FolderInsight rootId={detail.root_id} nodeId={detail.row.node_id} />{/key}{/if}
+    {#key detail.row.node_id}<FolderInsight rootId={detail.root_id} nodeId={detail.row.node_id} kind={detail.row.kind} />{/key}
   </section>
 {/if}
 
