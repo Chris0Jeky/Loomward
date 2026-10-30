@@ -34,7 +34,10 @@
 //! Names are single path components. This function does not validate them; the caller supplies exact names.
 
 use sha2::{Digest as _, Sha256};
-use std::fmt;
+use std::{
+    fmt,
+    path::{Path, PathBuf},
+};
 
 const DOMAIN: &[u8] = b"loomward/manifest-root/1\0";
 
@@ -173,6 +176,121 @@ pub fn manifest_root(
     Ok(Sha256::digest(preimage(&sorted, collation_version)).into())
 }
 
+/// One directory of an observed tree and its manifest root, or the reason it has none.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DirectoryRoot {
+    /// Relative path of the directory; empty for the tree root.
+    pub path: PathBuf,
+    /// The root under [`COLLATION_V1`], or why no root exists. Never a partial root.
+    pub root: Result<[u8; 32], &'static str>,
+}
+
+/// The exact name as UTF-16 code units. On Windows this is the native wide name, unpaired surrogates
+/// included; elsewhere only names that are valid Unicode can be represented.
+fn name_units(name: &std::ffi::OsStr) -> Option<Vec<u16>> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        Some(name.encode_wide().collect())
+    }
+    #[cfg(not(windows))]
+    {
+        name.to_str().map(|s| s.encode_utf16().collect())
+    }
+}
+
+/// Manifest roots (`COLLATION_V1`) for every directory of an observed `tree`, from the entries actually read
+/// and hashed in that observation (the file digest is the tree reader's SHA-256 of the default stream). A
+/// directory has a root only if its listing was complete, every entry was read with a known size and, for a
+/// file, a content digest, every subdirectory has a root of its own, and `report` holds no difference or
+/// unknown at or under it. Metadata-class differences are the one exception: the root covers names, kinds,
+/// sizes and content digests only, so they do not make it partial. Anything else yields `Err(reason)`.
+/// Pure: reads nothing from the filesystem.
+pub fn tree_manifest_roots(
+    tree: &crate::tree::Tree,
+    report: &crate::tree::Report,
+) -> Vec<DirectoryRoot> {
+    use crate::tree::{DifferenceKind, Kind};
+    use std::collections::BTreeMap;
+    let blockers: Vec<(&Path, &'static str)> = report
+        .differences
+        .iter()
+        .filter(|d| !matches!(d.kind, DifferenceKind::Metadata(_)))
+        .map(|d| (d.path.as_path(), "differing_entry"))
+        .chain(
+            report
+                .unknowns
+                .iter()
+                .map(|u| (u.path.as_path(), "unknown_entry")),
+        )
+        .collect();
+    let mut children: BTreeMap<&Path, Vec<(&Path, &crate::tree::Observation<crate::tree::Node>)>> =
+        BTreeMap::new();
+    for (path, node) in &tree.nodes {
+        if let Some(parent) = path.parent() {
+            children.entry(parent).or_default().push((path, node));
+        }
+    }
+    let mut directories: Vec<&Path> = tree
+        .nodes
+        .iter()
+        .filter(|(_, node)| matches!(node, Ok(n) if n.kind == Kind::Directory))
+        .map(|(path, _)| path.as_path())
+        .collect();
+    // Children before parents: a directory's digest in its parent is its own root.
+    directories.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+    let mut roots: BTreeMap<&Path, Result<[u8; 32], &'static str>> = BTreeMap::new();
+    for dir in directories {
+        let root = (|| {
+            let Ok(node) = &tree.nodes[dir] else {
+                unreachable!("only observed directories are listed");
+            };
+            if node.children.is_err() {
+                return Err("listing_incomplete");
+            }
+            if let Some((_, reason)) = blockers.iter().find(|(path, _)| path.starts_with(dir)) {
+                return Err(*reason);
+            }
+            let mut entries = Vec::new();
+            for (path, node) in children.get(dir).map(Vec::as_slice).unwrap_or_default() {
+                let node = node.as_ref().map_err(|_| "entry_not_read")?;
+                let name = name_units(path.file_name().ok_or("name_not_representable")?)
+                    .ok_or("name_not_representable")?;
+                let (kind, size, digest) = match node.kind {
+                    Kind::File => (
+                        EntryKind::File,
+                        node.size.map_err(|_| "size_unknown")?,
+                        node.content.map_err(|_| "content_not_hashed")?,
+                    ),
+                    Kind::Directory => (
+                        EntryKind::Directory,
+                        0,
+                        roots[path].map_err(|_| "descendant_not_rooted")?,
+                    ),
+                };
+                entries.push(CustodyEntry {
+                    name,
+                    kind,
+                    size,
+                    digest,
+                });
+            }
+            manifest_root(&entries, COLLATION_V1).map_err(|e| match e {
+                CustodyError::DuplicateName { .. } => "duplicate_name",
+                _ => "custody_refused",
+            })
+        })();
+        roots.insert(dir, root);
+    }
+    roots
+        .into_iter()
+        .map(|(path, root)| DirectoryRoot {
+            path: path.to_path_buf(),
+            root,
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -249,5 +367,191 @@ mod tests {
             ),
             expected
         );
+    }
+
+    mod tree_roots {
+        use super::super::*;
+        use crate::tree::{
+            Difference, DifferenceKind, Field, Kind, Node, Report, Side, Tree, Unknown,
+        };
+        use std::collections::BTreeMap;
+
+        fn node(kind: Kind, size: u64, fill: u8) -> Node {
+            Node {
+                kind,
+                size: Ok(size),
+                content: if kind == Kind::File {
+                    Ok([fill; 32])
+                } else {
+                    Err("content_not_read")
+                },
+                metadata: BTreeMap::new(),
+                children: Ok(()),
+            }
+        }
+
+        /// `"" / a.txt, sub / b.txt`
+        fn tree() -> Tree {
+            let mut t = Tree::default();
+            for (path, n) in [
+                ("", node(Kind::Directory, 0, 0)),
+                ("a.txt", node(Kind::File, 3, 1)),
+                ("sub", node(Kind::Directory, 0, 0)),
+                ("sub/b.txt", node(Kind::File, 5, 2)),
+            ] {
+                t.nodes.insert(PathBuf::from(path), Ok(n));
+            }
+            t
+        }
+
+        fn root_of(roots: &[DirectoryRoot], path: &str) -> Result<[u8; 32], &'static str> {
+            roots
+                .iter()
+                .find(|r| r.path == Path::new(path))
+                .unwrap()
+                .root
+        }
+
+        fn file_mut<'a>(t: &'a mut Tree, path: &str) -> &'a mut Node {
+            t.nodes.get_mut(Path::new(path)).unwrap().as_mut().unwrap()
+        }
+
+        #[test]
+        fn complete_tree_roots_equal_the_manual_merkle_recursion() {
+            let roots = tree_manifest_roots(&tree(), &Report::default());
+            let sub = manifest_root(
+                &[CustodyEntry::from_utf8_name(
+                    "b.txt",
+                    EntryKind::File,
+                    5,
+                    [2; 32],
+                )],
+                COLLATION_V1,
+            )
+            .unwrap();
+            let top = manifest_root(
+                &[
+                    CustodyEntry::from_utf8_name("a.txt", EntryKind::File, 3, [1; 32]),
+                    CustodyEntry::from_utf8_name("sub", EntryKind::Directory, 0, sub),
+                ],
+                COLLATION_V1,
+            )
+            .unwrap();
+            assert_eq!(root_of(&roots, "sub"), Ok(sub));
+            assert_eq!(root_of(&roots, ""), Ok(top));
+            assert_eq!(roots.len(), 2);
+        }
+
+        #[test]
+        fn one_changed_digest_changes_the_root() {
+            let before = root_of(&tree_manifest_roots(&tree(), &Report::default()), "");
+            let mut changed = tree();
+            file_mut(&mut changed, "sub/b.txt").content = Ok([9; 32]);
+            let after = root_of(&tree_manifest_roots(&changed, &Report::default()), "");
+            assert!(before.is_ok() && after.is_ok());
+            assert_ne!(before, after);
+        }
+
+        #[test]
+        fn unreadable_unhashed_and_incomplete_entries_leave_no_root_and_propagate_upward() {
+            let mut unhashed = tree();
+            file_mut(&mut unhashed, "sub/b.txt").content = Err("byte_budget");
+            let roots = tree_manifest_roots(&unhashed, &Report::default());
+            assert_eq!(root_of(&roots, "sub"), Err("content_not_hashed"));
+            assert_eq!(root_of(&roots, ""), Err("descendant_not_rooted"));
+
+            let mut unreadable = tree();
+            unreadable
+                .nodes
+                .insert(PathBuf::from("a.txt"), Err("access_denied"));
+            let roots = tree_manifest_roots(&unreadable, &Report::default());
+            assert!(
+                root_of(&roots, "sub").is_ok(),
+                "an unrelated sibling keeps its root"
+            );
+            assert_eq!(root_of(&roots, ""), Err("entry_not_read"));
+
+            let mut partial = tree();
+            file_mut(&mut partial, "sub").children = Err("incomplete_listing");
+            let roots = tree_manifest_roots(&partial, &Report::default());
+            assert_eq!(root_of(&roots, "sub"), Err("listing_incomplete"));
+            assert_eq!(root_of(&roots, ""), Err("descendant_not_rooted"));
+        }
+
+        #[test]
+        fn differences_and_unknowns_block_only_the_directories_that_hold_them() {
+            let mut report = Report::default();
+            report.differences.push(Difference {
+                path: "sub/b.txt".into(),
+                kind: DifferenceKind::Content,
+            });
+            let roots = tree_manifest_roots(&tree(), &report);
+            assert_eq!(root_of(&roots, "sub"), Err("differing_entry"));
+            assert_eq!(root_of(&roots, ""), Err("differing_entry"));
+
+            let mut report = Report::default();
+            report.unknowns.push(Unknown {
+                path: "a.txt".into(),
+                side: Side::Source,
+                field: Field::Content,
+                reason: "byte_budget",
+            });
+            let roots = tree_manifest_roots(&tree(), &report);
+            assert!(root_of(&roots, "sub").is_ok(), "a.txt is not under sub");
+            assert_eq!(root_of(&roots, ""), Err("unknown_entry"));
+
+            // The root does not cover metadata, so a metadata-only difference leaves it whole.
+            let mut report = Report::default();
+            report.differences.push(Difference {
+                path: "a.txt".into(),
+                kind: DifferenceKind::Metadata(crate::tree::MetadataClass::LastWriteTime),
+            });
+            assert!(root_of(&tree_manifest_roots(&tree(), &report), "").is_ok());
+        }
+
+        #[cfg(windows)]
+        #[test]
+        fn native_wide_names_keep_unpaired_surrogates() {
+            use std::{ffi::OsString, os::windows::ffi::OsStringExt};
+            let wide = [0x61u16, 0xD800];
+            let mut t = Tree::default();
+            t.nodes
+                .insert(PathBuf::new(), Ok(node(Kind::Directory, 0, 0)));
+            t.nodes.insert(
+                PathBuf::from(OsString::from_wide(&wide)),
+                Ok(node(Kind::File, 1, 4)),
+            );
+            let expected = manifest_root(
+                &[CustodyEntry {
+                    name: wide.to_vec(),
+                    kind: EntryKind::File,
+                    size: 1,
+                    digest: [4; 32],
+                }],
+                COLLATION_V1,
+            )
+            .unwrap();
+            assert_eq!(
+                root_of(&tree_manifest_roots(&t, &Report::default()), ""),
+                Ok(expected)
+            );
+        }
+
+        #[cfg(not(windows))]
+        #[test]
+        fn names_that_are_not_unicode_have_no_root_here() {
+            use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+            let mut t = Tree::default();
+            t.nodes
+                .insert(PathBuf::new(), Ok(node(Kind::Directory, 0, 0)));
+            t.nodes.insert(
+                PathBuf::from(OsString::from_vec(vec![0x66, 0xFF])),
+                Ok(node(Kind::File, 1, 4)),
+            );
+            assert_eq!(
+                root_of(&tree_manifest_roots(&t, &Report::default()), ""),
+                Err("name_not_representable")
+            );
+        }
     }
 }
