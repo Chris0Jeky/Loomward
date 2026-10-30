@@ -977,16 +977,14 @@ impl PlacementInput for Input<'_> {
             .optional()
             .map_err(sql)?;
         let Some(root) = root else { return Ok(None) };
-        let Ok(stored) = self.inner.observed_relief(&self.conn, root) else {
+        let node = loomward_catalog::NodeKey::Dir(dir);
+        let Ok(stored) = self.inner.observed_relief(&self.conn, root, Some(node)) else {
             // An unreadable verdict leaves this group's relief unknown, as before #939; a deadline still surfaces.
             check(deadline)?;
             return Ok(None);
         };
         check(deadline)?;
-        Ok(stored
-            .into_iter()
-            .find(|(node, _)| *node == loomward_catalog::NodeKey::Dir(dir))
-            .map(|(_, bytes)| bytes))
+        Ok(stored.first().map(|&(_, bytes, _)| bytes))
     }
 }
 

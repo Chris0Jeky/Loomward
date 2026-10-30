@@ -51,6 +51,7 @@ export function createReclaimMock(fail: Fail, volumes: () => Volume[], observe: 
         const first = report.groups[0]!.candidates[0]!;
         first.reclaimable_bytes = '6144'; // 2 KiB of the candidate's 8,000 bytes are shared with files outside it
         first.reclaimable_reason = null;
+        first.observed_at = new Date().toISOString();
       }
       for (const group of report.groups) {
         if (group.candidates.length > (limit as number)) report.truncated = true;
