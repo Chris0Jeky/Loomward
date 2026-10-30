@@ -702,6 +702,83 @@ fn reclaim_selection_rejects_duplicates_non_candidates_wrong_volumes_and_ancestr
     assert_eq!(wrong.code, ErrorCode::InvalidRequest);
 }
 
+/// #1003: more than 200 candidates in one group, so the 200-wide membership view and the displayed
+/// plan rank differently once stored relief promotes the smallest candidate.
+#[test]
+fn reclaim_selection_accepts_a_displayed_candidate_promoted_past_the_detector_cap_by_stored_relief()
+{
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let projects = |first: u8, low: bool| {
+        (0..120)
+            .map(|i| {
+                let name: &'static str = if low && i == 0 {
+                    "lowrelief"
+                } else {
+                    Box::leak(format!("p{first}-{i}").into_boxed_str())
+                };
+                let size = if low && i == 0 { 1000 } else { 5000 + i };
+                dir(
+                    name,
+                    &[("Cargo.toml", 10)],
+                    vec![dir("target", &[("out.bin", size)], vec![])],
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    scanned(&svc, 1, &dir("", &[], projects(1, false)));
+    scanned(&svc, 2, &dir("", &[], projects(2, true)));
+    let wide = |selection: Option<Value>| {
+        let mut request = json!({"volume_id": volume_id(&svc), "limit": 200});
+        if let Some(selection) = selection {
+            request["selection"] = selection;
+        }
+        ok("reclaim.plan", call(&svc, "reclaim.plan", request)).0
+    };
+    let before = json!(wide(None));
+    let cleanup = &before["groups"][0];
+    assert_eq!(cleanup["kind"], "tool_owned_cleanup");
+    assert_eq!(cleanup["candidates"].as_array().unwrap().len(), 200);
+    assert_eq!(before["truncated"], true);
+    let (low, grant): (i64, i64) = svc
+        .inner
+        .db()
+        .query_row(
+            "SELECT d.id,r.grant_id FROM main.dir d JOIN main.dir p ON p.id=d.parent_id JOIN main.root r ON r.id=d.root_id WHERE p.name='lowrelief' AND d.name='target'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    let mut low_id = json!({"node_id": format!("nd_dir_{low}")});
+    svc.inner.seal(&mut low_id).unwrap();
+    let low_id = low_id["node_id"].clone();
+    assert!(
+        !cleanup["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["node_id"] == low_id),
+        "the smallest candidate is outside the top 200 before relief"
+    );
+    svc.inner
+        .db()
+        .execute(
+            "INSERT INTO st.reclaim_relief(grant_id,node_kind,node_id,volume_id,generation,incarnation,subtree_rev,catalog_instance,observed_at_ns,unique_allocated_bytes,reason)
+             SELECT ?1,'dir',d.id,r.volume_id,r.generation,d.born_run,d.subtree_rev,?3,0,1000,NULL FROM main.dir d JOIN main.root r ON r.id=d.root_id WHERE d.id=?2",
+            rusqlite::params![grant, low, svc.inner.instance],
+        )
+        .unwrap();
+    let shown = reclaim(&svc);
+    assert_eq!(shown["groups"][0]["candidates"][0]["node_id"], low_id);
+    assert_eq!(
+        shown["groups"][0]["candidates"][0]["reclaimable_bytes"],
+        "1000"
+    );
+    let selected = json!(wide(Some(json!([low_id]))));
+    assert_eq!(selected["selection"]["members"], json!([low_id]));
+    assert_eq!(selected["selection"]["status"], "unobserved");
+}
+
 #[cfg(windows)]
 #[test]
 fn reclaim_selection_external_links_and_identity_mismatch_stay_unknown() {

@@ -45,6 +45,7 @@ mod native {
         memory: MemorySink,
         watched: AtomicBool,
         finish_pause: Mutex<Option<FinishPause>>,
+        publication_pause: Mutex<Option<FinishPause>>,
     }
 
     impl Sink {
@@ -53,6 +54,7 @@ mod native {
                 memory: MemorySink::default(),
                 watched: AtomicBool::new(watched),
                 finish_pause: Mutex::new(None),
+                publication_pause: Mutex::new(None),
             }
         }
     }
@@ -69,7 +71,22 @@ mod native {
             self.memory.recover_interrupted()
         }
         fn begin_run(&self, root: &RootId, run: u64, scope: &RunScope) -> EngineResult<()> {
-            self.memory.begin_run(root, run, scope)
+            self.memory.begin_run(root, run, scope)?;
+            if let Some(pause) = self.publication_pause.lock().unwrap().take() {
+                // begin_run executes on the actual native job worker, as does this hook.
+                let mut pause = Some(pause);
+                BEFORE_PUBLISH.with_borrow_mut(|hook| {
+                    assert!(hook.is_none());
+                    *hook = Some(Box::new(move |point| {
+                        if point == "run_scan_finish" {
+                            let (reached, resume) = pause.take().unwrap();
+                            reached.send(()).unwrap();
+                            resume.recv_timeout(Duration::from_secs(10)).unwrap();
+                        }
+                    }));
+                });
+            }
+            Ok(())
         }
         fn prepare_listing(
             &self,
@@ -100,6 +117,7 @@ mod native {
             scope: &RunScope,
             complete: bool,
         ) -> EngineResult<()> {
+            BEFORE_PUBLISH.with_borrow_mut(|hook| *hook = None);
             self.memory.finish_run(root, run, scope, complete)?;
             if complete {
                 if let Some((finished, resume)) = self.finish_pause.lock().unwrap().take() {
@@ -158,40 +176,138 @@ mod native {
         }
     }
 
+    struct ReleasePause(SyncSender<()>);
+
+    impl Drop for ReleasePause {
+        fn drop(&mut self) {
+            // A full channel already contains the release; never block while unwinding.
+            let _ = self.0.try_send(());
+        }
+    }
+
+    fn revoke_plain_while_paused(
+        engine: &Engine,
+        root: &GrantedRoot,
+        resume: SyncSender<()>,
+    ) -> Vec<Job> {
+        std::thread::scope(|scope| {
+            let release = ReleasePause(resume);
+            let (returned, response) = mpsc::channel();
+            let revoking = scope.spawn(move || {
+                returned
+                    .send(engine.scan_cancel_root(root.key(), root.root_id()))
+                    .unwrap();
+            });
+            let early = response.recv_timeout(Duration::from_secs(2));
+            // Release before joining or asserting, including a blocked-cancellation regression.
+            let released = release.0.send(());
+            let joined = revoking.join();
+            released.unwrap();
+            joined.unwrap();
+            early
+                .expect("root revocation waited for the paused plain scan")
+                .unwrap()
+        })
+    }
+
+    fn assert_revoked_root_is_fenced(engine: &Engine, root: &GrantedRoot, sink: &Sink) {
+        engine
+            .scan_writer_fence(root.key(), root.root_id())
+            .unwrap();
+        assert!(matches!(
+            engine.scan_start(root, None),
+            Err(EngineError::PermissionDenied { .. })
+        ));
+        assert!(matches!(
+            sink.begin_run(root.root_id(), 999, &RunScope::FullRoot),
+            Err(EngineError::PermissionDenied { .. })
+        ));
+        assert!(!sink.memory.sweep_allowed(root.root_id()));
+    }
+
     #[test]
     fn revocation_after_scan_finish_cannot_publish_complete() {
-        for watched in [false, true] {
-            let Some((_temp, root, engine)) = fixture() else {
-                return;
-            };
-            let sink = Arc::new(Sink::new(watched));
-            let (finished, reached_finish) = mpsc::sync_channel(1);
-            let (resume, paused) = mpsc::sync_channel(1);
-            *sink.finish_pause.lock().unwrap() = Some((finished, paused));
-            engine.set_scan_sink(sink.clone()).unwrap();
-            let job = engine.scan_start(&root, None).unwrap();
-            reached_finish
-                .recv_timeout(Duration::from_secs(10))
-                .unwrap();
-            std::thread::scope(|scope| {
-                let revoking =
-                    scope.spawn(|| engine.scan_cancel_root(root.key(), root.root_id()).unwrap());
-                wait_for(&engine, &job.job_id, |job| {
-                    job.state == JobState::CancelRequested
-                });
-                resume.send(()).unwrap();
-                revoking.join().unwrap();
+        let Some((_temp, root, engine)) = fixture() else {
+            return;
+        };
+        // Watched scans retain their separate cancellation boundary after sink completion.
+        let sink = Arc::new(Sink::new(true));
+        let (finished, reached_finish) = mpsc::sync_channel(1);
+        let (resume, paused) = mpsc::sync_channel(1);
+        *sink.finish_pause.lock().unwrap() = Some((finished, paused));
+        engine.set_scan_sink(sink.clone()).unwrap();
+        let job = engine.scan_start(&root, None).unwrap();
+        reached_finish
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap();
+        std::thread::scope(|scope| {
+            // This guard drops before the scope joins a revoker waiting for watch teardown.
+            let release = ReleasePause(resume);
+            let revoking =
+                scope.spawn(|| engine.scan_cancel_root(root.key(), root.root_id()).unwrap());
+            wait_for(&engine, &job.job_id, |job| {
+                job.state == JobState::CancelRequested
             });
-            engine
-                .scan_writer_fence(root.key(), root.root_id())
-                .unwrap();
-            let terminal = wait_for(&engine, &job.job_id, |job| job.state == JobState::Cancelled);
-            assert_eq!(terminal.coverage, Some(CoverageState::Cancelled));
-            assert!(matches!(
-                sink.begin_run(root.root_id(), 999, &RunScope::FullRoot),
-                Err(EngineError::PermissionDenied { .. })
-            ));
-        }
+            release.0.send(()).unwrap();
+            revoking.join().unwrap();
+        });
+        let terminal = wait_for(&engine, &job.job_id, |job| job.state == JobState::Cancelled);
+        assert_eq!(terminal.coverage, Some(CoverageState::Cancelled));
+        assert_revoked_root_is_fenced(&engine, &root, &sink);
+    }
+
+    #[test]
+    fn revocation_before_plain_scan_publication_cannot_publish_complete() {
+        let Some((_temp, root, engine)) = fixture() else {
+            return;
+        };
+        let sink = Arc::new(Sink::new(false));
+        let (reached, at_publication) = mpsc::sync_channel(1);
+        let (resume, paused) = mpsc::sync_channel(1);
+        *sink.publication_pause.lock().unwrap() = Some((reached, paused));
+        engine.set_scan_sink(sink.clone()).unwrap();
+        let job = engine.scan_start(&root, None).unwrap();
+        at_publication
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap();
+        let revoked = revoke_plain_while_paused(&engine, &root, resume);
+        assert_eq!(revoked.len(), 1);
+        assert_eq!(revoked[0].job_id, job.job_id);
+        assert_eq!(revoked[0].state, JobState::CancelRequested);
+        let terminal = wait_for(&engine, &job.job_id, |job| job.state == JobState::Cancelled);
+        assert_eq!(terminal.coverage, Some(CoverageState::Cancelled));
+        assert!(!sink.memory.sweep_allowed(root.root_id()));
+        assert_revoked_root_is_fenced(&engine, &root, &sink);
+    }
+
+    #[test]
+    fn revocation_after_plain_scan_finish_withdraws_admitted_completion() {
+        let Some((_temp, root, engine)) = fixture() else {
+            return;
+        };
+        let sink = Arc::new(Sink::new(false));
+        let (finished, reached_finish) = mpsc::sync_channel(1);
+        let (resume, paused) = mpsc::sync_channel(1);
+        *sink.finish_pause.lock().unwrap() = Some((finished, paused));
+        engine.set_scan_sink(sink.clone()).unwrap();
+        let job = engine.scan_start(&root, None).unwrap();
+        reached_finish
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap();
+        // Admission and MemorySink::finish_run have already succeeded. Root revocation still
+        // withdraws the job's coverage (ADR-V3-22, d215fa44) and fences all future work.
+        let published = sink.memory.sweep_allowed(root.root_id());
+        let revoked = revoke_plain_while_paused(&engine, &root, resume);
+        assert!(
+            published,
+            "the paused plain scan had not published completion"
+        );
+        assert_eq!(revoked.len(), 1);
+        assert_eq!(revoked[0].job_id, job.job_id);
+        assert_eq!(revoked[0].state, JobState::CancelRequested);
+        let terminal = wait_for(&engine, &job.job_id, |job| job.state == JobState::Cancelled);
+        assert_eq!(terminal.coverage, Some(CoverageState::Cancelled));
+        assert_revoked_root_is_fenced(&engine, &root, &sink);
     }
 
     #[test]

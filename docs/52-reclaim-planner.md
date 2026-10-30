@@ -37,7 +37,7 @@ statement of which tool owns the data and what its owner-run command is. Recogni
 | Class | Recogniser (names only) | Owning tool and owner-run step | Relocation the owner may choose |
 |---|---|---|---|
 | Project build output | rules v1 (Cargo, .NET, Gradle) | `cargo clean` (preview: `cargo clean --dry-run`), `dotnet clean`, `gradlew clean` | `CARGO_TARGET_DIR` on another volume |
-| Shared Cargo target dirs | a folder holding `debug/` or `release/` plus `.rustc_info.json` / `CACHEDIR.TAG`, outside any project | `cargo clean --target-dir <dir>` | the same variable pointing at `E:` or `G:` |
+| Shared Cargo target dirs | a folder holding `debug/` or `release/` plus `.rustc_info.json` / `CACHEDIR.TAG`, outside any project | `cargo clean --target-dir <dir>` | the same variable pointing at a faster declared tier (docs/07) |
 | Dependency installs | `node_modules` beside `package.json` (v1) | reinstall from the lockfile | none |
 | Package caches | npm `_cacache`; pnpm `store/v*`; NuGet `packages` under `.nuget`; pip `http-v2`/`wheels` under a `pip` cache; uv cache (`CACHEDIR.TAG` + `archive-v*`); Gradle `caches/` under a Gradle home; Cargo `registry/cache` and `git/db` under a Cargo home | `npm cache verify`; `pnpm store prune`; `dotnet nuget locals all --list` then `--clear`; `pip cache info` / `pip cache purge`; `uv cache prune`; Gradle's own retention; `cargo cache` tools are third-party, so for Cargo the step is "delete `registry/cache` by hand" marked **owner judgement** | `npm_config_cache`, `PNPM_STORE_DIR`, `NUGET_PACKAGES`, `PIP_CACHE_DIR`, `UV_CACHE_DIR`, `GRADLE_USER_HOME`, `CARGO_HOME` |
 | Model stores | Hugging Face `hub/models--*` with `blobs/` and `snapshots/`; LM Studio `models/<publisher>/<model>/*.gguf`; Ollama `models/blobs/sha256-*` | the host's own model manager (LM Studio "My Models", `ollama rm`, `huggingface-cli delete-cache`) | `HF_HOME` / `HF_HUB_CACHE`; LM Studio models directory setting; `OLLAMA_MODELS` |
@@ -77,7 +77,7 @@ The plan groups candidates by **what the owner does next**, then ranks inside ea
 bytes (unknowns last, never ranked as zero):
 
 1. **Tool-owned cleanup**: generated or cache data whose owning tool offers a supported cleanup command.
-2. **Relocate**: active caches, model stores and target directories better placed on `E:` or `G:` (docs/07 tiers).
+2. **Relocate**: active caches, model stores and target directories better placed on a faster declared or hinted tier (docs/07 tiers).
    Changing an environment variable or a tool setting is a global configuration change, so it is always the owner's
    step (invariant 2), shown as the exact variable and value to set.
 3. **Archive candidates**: things that are not generated (old projects, installers, media) go to the archive plan

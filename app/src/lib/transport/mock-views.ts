@@ -252,7 +252,7 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
       const state = placementState();
       const inputs = JSON.stringify([
         p.source_volume_id, p.target_free_bytes, p.max_transfer_bytes, p.heat_policy, p.relief_policy, p.candidate_basis, p.max_groups, p.node_budget,
-        [...p.overrides].sort((a, b) => a.group_id < b.group_id ? -1 : a.group_id > b.group_id ? 1 : 0).map(o => [o.group_id, o.heat, o.pinned, o.active, o.protected, o.days_since_move]),
+        [...(Array.isArray(p.overrides) ? p.overrides : [])].sort((a, b) => a.group_id < b.group_id ? -1 : a.group_id > b.group_id ? 1 : 0).map(o => [o.group_id, o.heat, o.pinned, o.active, o.protected, o.days_since_move]),
         plannerGroups, state, excluded,
       ]);
       const digest = 'sha256:' + [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(inputs)))].map(b => b.toString(16).padStart(2, '0')).join('');
