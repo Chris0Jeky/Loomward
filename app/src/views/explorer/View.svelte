@@ -11,7 +11,7 @@
   import { fallbackStep, onRefetchError, resolveTrail, type Crumb } from './refetch';
   import { session } from '../../lib/stores/session.svelte';
   import { route } from '../../lib/stores/route.svelte';
-  import { planFind, PRESETS, type FindRequest } from '../../lib/search/find';
+  import { planFind, PRESETS, type FindPlan, type FindRequest } from '../../lib/search/find';
   import NodeMeaning from '../../lib/ui/NodeMeaning.svelte';
   import AddToCollection from '../../lib/ui/AddToCollection.svelte';
   import CopyTo from '../../lib/ui/CopyTo.svelte';
@@ -63,6 +63,8 @@
   let sent: FindRequest | null = null;
   /** The box text of the search that is showing. */
   let ran = $state('');
+  /** The plan of the search that is showing (#1073): its chips and notes describe these results, not the draft in the box. */
+  let shown = $state<FindPlan | null>(null);
   /** The box text as it is being typed, parsed on every keystroke: chips and notices follow it. */
   const plan = $derived(planFind(query, { extension, kind, minBytes }, Date.now()));
   /** Per-row search facts (match tier, highlights, root-relative path), by node ID. */
@@ -268,6 +270,7 @@
       return false;
     }
     sent = fresh.request;
+    shown = fresh;
     ran = query.trim();
     searching = true;
     return true;
@@ -372,6 +375,7 @@
   let appliedQ: string | null = null;
   let appliedNode: string | null = null;
   let linkedPending: Promise<void> | null = null;
+  let linkedAt = 0; // the inspection counter the linked inspection holds; any later inspect or navigation moves it
   $effect(() => {
     void session.epoch;
     const params = new URLSearchParams(route.search);
@@ -392,14 +396,15 @@
         if (current && node && node !== appliedNode) {
           appliedNode = node;
           const run = inspect(node, observed ?? undefined);
-          linkedPending = run;
+          linkedPending = run; linkedAt = inspection;
           void run.finally(() => { if (linkedPending === run) linkedPending = null; });
         }
       });
     });
     return () => {
       current = false;
-      if (linkedPending) { appliedNode = null; linkedPending = null; }
+      if (linkedPending && linkedAt === inspection) appliedNode = null; // still the current inspection: not consumed
+      linkedPending = null;
       inspection++; inspectAbort?.abort();
     };
   });
@@ -465,6 +470,12 @@
 
   {#if searching}
     <p class="where">Search results {#if ran}for <q><VisibleName name={ran} /></q>{/if}</p>
+    {#if shown?.chips.length}
+      <ul class="chips" aria-label="Filters applied to these results">{#each shown.chips as c, i (i)}<li class="chip">{c}</li>{/each}</ul>
+    {/if}
+    {#if shown?.notices.length}
+      <ul class="scope muted small" aria-label="Notes on these results">{#each shown.notices as n, i (i)}<li>{n}</li>{/each}</ul>
+    {/if}
     {#if scope && (scope.index_state !== 'current' || scope.partial || !scope.substring_searched)}
       <ul class="scope muted small" aria-label="Search coverage">
         {#if scope.index_state === 'building'}<li class="bad">A searched folder is still being scanned, so more results may appear.</li>{/if}

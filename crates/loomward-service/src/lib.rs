@@ -19,6 +19,7 @@ mod alerts;
 mod apps;
 mod ask;
 mod backups;
+mod changes;
 mod client_commands;
 mod client_refs;
 mod clients;

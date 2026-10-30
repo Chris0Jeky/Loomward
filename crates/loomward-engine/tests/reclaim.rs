@@ -801,7 +801,7 @@ fn reclaim_rules_v3_model_folders_and_game_libraries_are_relocate_candidates() {
     let common = lab.directory(steamapps, "common", 0);
     let game = NodeKey::Dir(lab.directory(common, "Synthetic Game", 900));
     let plan = reclaim::plan(lab.input()).unwrap();
-    assert_eq!(plan.rules_version, 4);
+    assert_eq!(plan.rules_version, 5);
     for (node, class, provider) in [
         (checkpoints, "model_store", "comfyui"),
         (game, "game_library", "steam"),
@@ -837,8 +837,8 @@ fn reclaim_wrong_rules_version_is_refused() {
         input.developer[0].rules_version = version;
         refused(&input);
     }
-    // Machine stores must be rules v4 (the plan's RULES_VERSION).
-    for version in [0, 1, 2, 3, 5, u32::MAX] {
+    // Machine stores must be rules v5 (the plan's RULES_VERSION).
+    for version in [0, 1, 2, 3, 4, 6, u32::MAX] {
         let mut input = lab.input();
         input.machine[0].rules_version = version;
         refused(&input);
@@ -846,7 +846,7 @@ fn reclaim_wrong_rules_version_is_refused() {
     // Positive control: the shipped versions plan Ok and stamp the plan version.
     let plan = reclaim::plan(lab.input()).unwrap();
     assert_eq!(plan.rules_version, RULES_VERSION);
-    assert_eq!(plan.rules_version, 4);
+    assert_eq!(plan.rules_version, 5);
 }
 
 /// Rules v4: Windows leftovers plan under tool-owned cleanup with the usual relief rule, and the
@@ -874,7 +874,7 @@ fn reclaim_rules_v4_windows_leftovers_are_cleanup_and_installer_caches_are_infor
         observed(vec![name("a", 1, 200, 1, 0), name("b", 2, 200, 1, 0)]),
     );
     let plan = reclaim::plan(input).unwrap();
-    assert_eq!(plan.rules_version, 4);
+    assert_eq!(plan.rules_version, 5);
     for node in [old, temp, dump] {
         let (group, c) = find(&plan, node);
         assert_eq!(group, GroupKind::ToolOwnedCleanup, "{node:?}");

@@ -36,7 +36,9 @@ pub use duplicates::{CandidateSpace, DuplicateCandidate, DuplicateCandidates};
 pub use family::extension_family;
 mod machine_stores;
 mod model;
+mod new_since;
 pub use machine_stores::{MachineStoreCandidate, MachineStores};
+pub use new_since::{NewFile, NewFolder, NewSince, NewSinceTotals, ScanRunInfo};
 mod query;
 mod search;
 mod slice;
@@ -170,6 +172,7 @@ fn ordinary_win32_component(component: &str) -> bool {
 pub struct Catalog {
     dir: std::path::PathBuf,
     writer: std::sync::Arc<Writer>,
+    space_cache: duplicates::SpaceCache,
 }
 
 /// Preflight for an immediate open of these same stores and dataset.
@@ -236,7 +239,11 @@ impl Catalog {
         let connection =
             db::open_pair_validated(&dir, dataset, options.ranked_index, state_validated)?;
         let writer = std::sync::Arc::new(Writer::start(connection)?);
-        Ok(Self { dir, writer })
+        Ok(Self {
+            dir,
+            writer,
+            space_cache: Default::default(),
+        })
     }
     pub fn writer(&self) -> &Writer {
         &self.writer
@@ -244,6 +251,7 @@ impl Catalog {
     pub fn reader(&self) -> Result<Reader> {
         let mut reader = Reader::open(&self.dir)?;
         reader.writer = Some(self.writer.clone());
+        reader.space_cache = Some(self.space_cache.clone());
         Ok(reader)
     }
 }

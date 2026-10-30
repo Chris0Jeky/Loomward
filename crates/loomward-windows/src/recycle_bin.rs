@@ -125,9 +125,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn recycle_bin_size_is_unknown_when_elevated() {
-        if crate::win::non_elevated().is_ok() {
-            return;
-        }
+        let _elevated = crate::enumerate::force_elevation_for_test();
         let root = std::env::var("SystemDrive").unwrap() + "\\";
         assert_eq!(query(Path::new(&root)), None);
     }
