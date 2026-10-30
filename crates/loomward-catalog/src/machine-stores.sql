@@ -1,4 +1,4 @@
--- Rules v4 (v3 plus Windows leftovers; v3 is v2 plus ComfyUI, A1111 and Steam): safe rows are inlined into indexed lookups, never materialised across the catalogue.
+-- Rules v5 (v4 plus ComfyUI children that skip known-empty folders and defer to Hugging Face caches; v4 is v3 plus Windows leftovers; v3 is v2 plus ComfyUI, A1111 and Steam): safe rows are inlined into indexed lookups, never materialised across the catalogue.
 -- The top-down walk stops at stores, dependency/git directories and v1 project outputs.
 WITH RECURSIVE
 safe AS NOT MATERIALIZED (
@@ -31,10 +31,26 @@ rules AS NOT MATERIALIZED (
           AND f.name IN ('build.gradle','build.gradle.kts')) THEN 'pruned'
       WHEN d.name='packages' AND p.name='.nuget' THEN 'nuget'
       WHEN d.name='models' AND p.name='.lmstudio' THEN 'lmstudio'
-      -- ComfyUI: each child of a models directory whose parent holds comfy and custom_nodes.
+      -- ComfyUI: each child of a models directory whose parent holds comfy and custom_nodes, except
+      -- a Hugging Face cache (the huggingface arm below owns it) and a folder known empty after a
+      -- complete listing (a stock folder with nothing to reclaim; mid-scan nothing is known empty).
       WHEN p.name='models'
         AND EXISTS(SELECT 1 FROM safe c WHERE c.parent_id=p.parent_id AND c.name='comfy')
-        AND EXISTS(SELECT 1 FROM safe c WHERE c.parent_id=p.parent_id AND c.name='custom_nodes') THEN 'comfyui'
+        AND EXISTS(SELECT 1 FROM safe c WHERE c.parent_id=p.parent_id AND c.name='custom_nodes')
+        AND NOT (d.listing_state IN ('complete','incomplete')
+          AND coalesce(d.listing_outcome,'complete') NOT IN ('stale','excluded','denied','unscanned')
+          -- Same predicate as the huggingface arm below.
+          AND EXISTS(SELECT 1 FROM safe c WHERE c.parent_id=d.id
+            AND (c.name GLOB 'models--*' OR c.name GLOB 'datasets--*')
+            AND c.listing_state IN ('complete','incomplete')
+            AND coalesce(c.listing_outcome,'complete') NOT IN ('stale','excluded','denied','unscanned')
+            AND EXISTS(SELECT 1 FROM safe g WHERE g.parent_id=c.id AND g.name='blobs')
+            AND EXISTS(SELECT 1 FROM safe g WHERE g.parent_id=c.id AND g.name='snapshots')))
+        AND NOT (NOT ?4 AND d.listing_state='complete' AND coalesce(d.listing_outcome,'complete')='complete'
+          AND d.sub_complete=1 AND d.agg_valid_rev>=d.dirty_rev
+          AND d.sub_files=0 AND d.sub_dirs=0 AND d.sub_logical=0
+          AND NOT EXISTS(SELECT 1 FROM file f WHERE f.dir_id=d.id)
+          AND NOT EXISTS(SELECT 1 FROM dir c WHERE c.parent_id=d.id)) THEN 'comfyui'
       -- Steam: each game folder under steamapps/common, where steamapps records an app manifest.
       WHEN p.name='common' AND g.name='steamapps'
         AND EXISTS(SELECT 1 FROM files f WHERE f.dir_id=g.id AND f.name GLOB 'appmanifest_*.acf') THEN 'steam'
