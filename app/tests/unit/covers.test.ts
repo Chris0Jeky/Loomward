@@ -59,13 +59,14 @@ describe('covers wording', () => {
     const at = Date.parse('2026-10-30T09:00:07Z');
     expect(statusText(null, null, true, at, 60)).toBe('Sending request…');
     expect(statusText(job(), null, false, at, 60)).toContain('7 s so far, at most 60 s');
-    expect(statusText(job({ state: 'cancelled' }), null, false, at, 60)).toBe('Cancelled. No verdict was produced and nothing was changed.');
+    expect(statusText(job({ state: 'cancelled' }), null, false, at, 60)).toContain('Cancelled. No verdict was produced and nothing was changed. The read may still be finishing in the background');
     expect(statusText(job({ state: 'failed', error: { code: 'permission_denied', message: 'entry_budget', retryable: false, detail: null } }), null, false, at, 60)).toBe('Failed: entry_budget. No verdict was produced.');
     expect(statusText(job({ state: 'completed' }), null, false, at, 60)).toContain('no longer available');
     expect(statusText(job({ state: 'completed' }), report(), false, at, 60)).toBe('');
   });
   it('translates refusals', () => {
     expect(coversRefusal(error('busy', 'x'))).toContain('already running');
+    expect(coversRefusal(error('busy', 'x', { reason: 'read_still_finishing' }))).toContain('still finishing its read in the background');
     expect(coversRefusal(error('invalid_request', 'x', { reason: 'roots_must_differ' }))).toBe('Choose two different folders.');
     expect(coversRefusal(error('invalid_request', 'x', { reason: 'roots_overlap' }))).toContain('inside the other');
     expect(coversRefusal(error('permission_denied', 'grant_not_active'))).toContain('Nothing was read');

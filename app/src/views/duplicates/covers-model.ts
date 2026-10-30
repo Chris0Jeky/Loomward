@@ -114,8 +114,8 @@ export function statusText(job: Job | null, report: CoverageReport | null, pendi
   switch (job.state) {
     case 'queued': return 'Check queued.';
     case 'running': return `Reading both folders · ${n(elapsed)} s so far, at most ${n(budgetSecs)} s. The service reports no finer progress.`;
-    case 'cancel_requested': return 'Cancelling. No verdict will be produced.';
-    case 'cancelled': return 'Cancelled. No verdict was produced and nothing was changed.';
+    case 'cancel_requested': return 'Cancelling. No verdict will be produced. The read may still be finishing in the background.';
+    case 'cancelled': return 'Cancelled. No verdict was produced and nothing was changed. The read may still be finishing in the background; a new check starts once it has ended.';
     case 'failed': return `Failed${job.error ? `: ${job.error.message}` : ''}. No verdict was produced.`;
     case 'completed':
       return report ? '' : 'Finished, but its report is no longer available: it is kept for ten minutes and ends if either folder\'s grant ends. Run the check again.';
@@ -125,6 +125,7 @@ export function statusText(job: Job | null, report: CoverageReport | null, pendi
 /** Plain words for a refused or failed start. The service's own text is the fallback. */
 export function coversRefusal(e: unknown): string {
   if (!(e instanceof LoomwardError)) return e instanceof Error ? e.message : 'unexpected failure';
+  if (e.code === 'busy' && e.detail?.reason === 'read_still_finishing') return 'The previous check is still finishing its read in the background (cancelling does not stop a read at once). Try again in a moment.';
   if (e.code === 'busy') return 'Another coverage check is already running. Wait for it to end, or cancel it.';
   if (e.code === 'invalid_request' && e.detail?.reason === 'roots_must_differ') return 'Choose two different folders.';
   if (e.code === 'invalid_request' && e.detail?.reason === 'roots_overlap') return 'One folder lies inside the other. Choose two separate folders.';

@@ -1233,8 +1233,9 @@ folder A is present somewhere in granted folder B by content, whatever the paths
 app side of `loomward-native covers`). It starts a `coverage` job (`JobResult`, `job.state` events,
 `jobs.get`, `jobs.cancel`; `job.root_id` is A's) and is owner-only on Tauri and HTTP: client principals are
 refused, and neither command is in any client allowlist. It is a mutation of the job registry, so
-`request_id` is idempotent for ten minutes like `duplicates.inspect`. One coverage job runs at a time
-(`busy` with `detail.job_id`).
+`request_id` is idempotent for ten minutes like `duplicates.inspect`. One coverage read runs at a time:
+a start while a job is live is `busy` with `detail.job_id`, and a start while a cancelled job's read is
+still finishing in the background is `busy` with reason `read_still_finishing` (retryable, no `job_id`).
 
 Both roots must be distinct, active, granted roots of the session's own dataset class, admitted exactly as
 a duplicates inspection admits one (q-10: registered lab roots in a synthetic session, owner-granted
@@ -1249,12 +1250,12 @@ all passes; at most 200,000 entries per folder are listed. The job reports no ph
 `queued`, `running`, then terminal.
 
 `jobs.cancel` ends the job `cancelled` at once and it keeps no result. The read already in progress cannot
-be interrupted (the engine call takes no per-job cancel flag), so it runs on to its time budget and its
-output is discarded. A refused read (an unsupported volume, a revoked grant, an identity change) fails the
+be interrupted (the engine call takes no per-job cancel flag), so it keeps reading until it finishes or
+spends its time budget and its output is discarded; the slot stays busy until it ends. A refused read (an unsupported volume, a revoked grant, an identity change) fails the
 job with the reason only, never a path.
 
 `coverage.result { job_id }` answers the finished job's `CoverageReport`, kept for ten minutes (newest
-eight). A job that is running, cancelled, failed or expired answers `not_found`. Revoking, forgetting or
+eight). A job that is not `completed` (running, cancelled, failed) or has expired answers `not_found`. Revoking, forgetting or
 losing the identity of either root deletes the report, since it names files of both. Each A file is
 `covered` (one B file of equal size and equal content digest), `not_covered` (B has no file of that size or
 content, and B's listing was complete) or `unknown` (an unreadable file or folder, a spent budget, a file

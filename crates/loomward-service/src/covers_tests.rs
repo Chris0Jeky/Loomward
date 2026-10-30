@@ -514,8 +514,93 @@ mod native {
         ));
         assert_eq!(none.code, ErrorCode::NotFound);
         // The slot is free again and a fresh run completes.
-        let again = finished(&p.svc, &start(&p, json!({})).job_id);
+        // The cancelled read frees the slot when it ends, a moment after the job did.
+        let until = Instant::now() + Duration::from_secs(20);
+        let again = loop {
+            let r = call(
+                &p.svc,
+                "coverage.start",
+                json!({"a_root_id":p.a,"b_root_id":p.b}),
+            );
+            if let ResponseEnvelope::Ok(_) = r {
+                let r: JobResult =
+                    serde_json::from_value(json!(ok("coverage.start", r).0)).unwrap();
+                break finished(&p.svc, &r.job.job_id);
+            }
+            assert!(Instant::now() < until, "the slot never freed");
+            std::thread::sleep(Duration::from_millis(10));
+        };
         assert_eq!(again.state, JobState::Completed, "{:?}", again.error);
+    }
+
+    /// The orphan path: a cancel lands while the engine read is still running. The job is terminal
+    /// at once, but the read goes on, so a new check is refused until it ends, and the orphan keeps
+    /// no report.
+    #[test]
+    fn a_cancelled_read_still_running_keeps_the_slot_busy_and_stores_nothing() {
+        let Some(p) = pair(|a, b| {
+            put(a, "one.txt", b"same");
+            put(b, "two.txt", b"same");
+        }) else {
+            return;
+        };
+        let hooks = &p.svc.inner.hooks;
+        let held = (Command::CoverageStart, "orphan_read");
+        hooks.closed.lock().unwrap().push(held);
+        let started = start(&p, json!({}));
+        hooks.until("the read thread holding", |h| {
+            h.arrived.lock().unwrap().contains(&held)
+        });
+        ok(
+            "jobs.cancel",
+            call(&p.svc, "jobs.cancel", json!({"job_id":started.job_id})),
+        );
+        // The job is terminal through the timeout branch while the read has not even begun.
+        let job = finished(&p.svc, &started.job_id);
+        assert_eq!(job.state, JobState::Cancelled);
+        let busy = err(call(
+            &p.svc,
+            "coverage.start",
+            json!({"a_root_id":p.a,"b_root_id":p.b}),
+        ));
+        assert_eq!(busy.code, ErrorCode::Busy, "{busy:?}");
+        assert_eq!(reason(&busy), Some("read_still_finishing"));
+        assert!(busy.retryable);
+        hooks.open(held.0, held.1);
+        let until = Instant::now() + Duration::from_secs(20);
+        let second = loop {
+            let r = call(
+                &p.svc,
+                "coverage.start",
+                json!({"a_root_id":p.a,"b_root_id":p.b}),
+            );
+            match r {
+                ResponseEnvelope::Ok(_) => break r,
+                ResponseEnvelope::Err(ref e) => {
+                    assert_eq!(e.error.code, ErrorCode::Busy);
+                    assert!(Instant::now() < until, "the orphan read never ended");
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+        };
+        let second: JobResult =
+            serde_json::from_value(json!(ok("coverage.start", second).0)).unwrap();
+        assert_eq!(
+            finished(&p.svc, &second.job.job_id).state,
+            JobState::Completed
+        );
+        // The orphan stored nothing; only the second run has a report.
+        assert_eq!(
+            err(call(
+                &p.svc,
+                "coverage.result",
+                json!({"job_id":started.job_id})
+            ))
+            .code,
+            ErrorCode::NotFound
+        );
+        assert!(p.svc.inner.covers.get(&started.job_id).is_none());
+        assert!(p.svc.inner.covers.get(&second.job.job_id).is_some());
     }
 
     #[test]

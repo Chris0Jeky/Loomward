@@ -19,8 +19,12 @@ use loomward_protocol::*;
 use serde_json::json;
 use std::{
     cmp::Ordering,
+    collections::BTreeMap,
     path::{Component, Path},
-    sync::{mpsc, Arc, Mutex, Weak},
+    sync::{
+        atomic::{AtomicBool, Ordering as AtomicOrdering},
+        mpsc, Arc, Mutex, Weak,
+    },
     time::{Duration, Instant},
 };
 
@@ -48,11 +52,31 @@ struct Stored {
 /// The newest few finished reports. A report names files of two granted folders, so revoking,
 /// forgetting or losing either grant deletes it (`forget_grant`).
 #[derive(Default)]
-pub(crate) struct Results(Mutex<Vec<Stored>>);
+pub(crate) struct Results {
+    kept: Mutex<Vec<Stored>>,
+    /// Held from `coverage.start` until the engine read actually ends, which for a cancelled job is
+    /// after the job itself is terminal: the registry's one-at-a-time rule sees live jobs only.
+    reading: Arc<AtomicBool>,
+}
+
+/// The right to run (or still be running) one coverage read; dropping it frees the slot.
+struct Reading(Arc<AtomicBool>);
+
+impl Drop for Reading {
+    fn drop(&mut self) {
+        self.0.store(false, AtomicOrdering::Release);
+    }
+}
 
 impl Results {
     fn lock(&self) -> std::sync::MutexGuard<'_, Vec<Stored>> {
-        self.0.lock().unwrap_or_else(|e| e.into_inner())
+        self.kept.lock().unwrap_or_else(|e| e.into_inner())
+    }
+    fn take_reading(&self) -> Option<Reading> {
+        self.reading
+            .compare_exchange(false, true, AtomicOrdering::AcqRel, AtomicOrdering::Acquire)
+            .ok()
+            .map(|_| Reading(self.reading.clone()))
     }
     pub(crate) fn get(&self, job: &JobId) -> Option<CoverageReport> {
         let mut kept = self.lock();
@@ -78,6 +102,8 @@ struct Plan {
     a_dir: Option<i64>,
     budget_bytes: u64,
     budget_secs: u64,
+    /// Moved into the read thread by `run`, so it is freed when the read ends, not when the job does.
+    reading: Mutex<Option<Reading>>,
 }
 
 impl Inner {
@@ -140,6 +166,9 @@ impl Inner {
                 "roots_overlap",
             ));
         }
+        let Some(reading) = self.covers.take_reading() else {
+            return Err(self.coverage_busy());
+        };
         let plan = Plan {
             a: self.coverage_granted(&a, &request.a_root_id)?,
             b: self.coverage_granted(&b, &request.b_root_id)?,
@@ -149,6 +178,7 @@ impl Inner {
             a_dir: a.dir,
             budget_bytes: request.budget_bytes.map_or(DEFAULT_BYTES, |b| b.get()),
             budget_secs: request.budget_secs.map_or(DEFAULT_SECS, |s| s.get() as u64),
+            reading: Mutex::new(Some(reading)),
         };
         let weak = self.weak.clone();
         let spec = JobSpec::new(JobKind::Coverage, Some(request.a_root_id));
@@ -161,8 +191,51 @@ impl Inner {
         })
     }
 
+    /// Why a start is refused while a read is held: the live job (with its id), or, once the job
+    /// is terminal (a cancel), the read still finishing in the background.
+    fn coverage_busy(&self) -> ErrorBody {
+        let live = self
+            .engine
+            .job_list(&serde_json::from_value(json!({"kinds":["coverage"],"limit":5})).unwrap())
+            .ok()
+            .and_then(|list| {
+                list.jobs
+                    .iter()
+                    .find(|j| {
+                        matches!(
+                            j.state,
+                            JobState::Queued | JobState::Running | JobState::CancelRequested
+                        )
+                    })
+                    .map(|j| j.job_id.clone())
+            });
+        match live {
+            Some(id) => ErrorBody::from(EngineError::Busy {
+                message: "coverage check already running".into(),
+                detail: Detail::new(BTreeMap::from([("job_id".into(), json!(id))])).ok(),
+            }),
+            None => {
+                let mut busy = with_reason(
+                    fail(
+                        ErrorCode::Busy,
+                        "the previous coverage read is still finishing in the background; try again shortly",
+                    ),
+                    "read_still_finishing",
+                );
+                busy.retryable = true;
+                busy
+            }
+        }
+    }
+
     pub(crate) fn coverage_result(&self, request: JobRefRequest) -> Result<Out, ErrorBody> {
-        let report = self.covers.get(&request.job_id).ok_or_else(|| {
+        // Only a job that completed has a report, whatever the table holds (a cancel can land
+        // between storing and the job's last transition).
+        let completed = self
+            .engine
+            .job_status(&request.job_id)
+            .is_ok_and(|job| job.state == JobState::Completed);
+        let report = self.covers.get(&request.job_id).filter(|_| completed).ok_or_else(|| {
             fail(
                 ErrorCode::NotFound,
                 "no coverage result for this job: it is still running, was cancelled or failed, or expired",
@@ -179,8 +252,17 @@ impl Inner {
     /// Keeps a finished report unless a grant it names has ended meanwhile. The check and the
     /// insert share the results lock that `forget_grant` takes after a revocation commits, so a
     /// report is either refused here or deleted there.
-    fn store_coverage(&self, grants: [i64; 2], report: CoverageReport) -> EngineResult<()> {
+    fn store_coverage(
+        &self,
+        grants: [i64; 2],
+        report: CoverageReport,
+        ctx: &JobContext,
+    ) -> EngineResult<()> {
         let mut kept = self.covers.lock();
+        // A cancel that landed since the read leaves no retrievable report for a cancelled job.
+        if ctx.is_cancelled() {
+            return Ok(());
+        }
         let active: i64 = self
             .db()
             .query_row(
@@ -283,15 +365,19 @@ fn gone() -> EngineError {
 }
 
 /// The job body. It waits for the read on a helper thread so that `jobs.cancel` is answered at
-/// once: `Engine::observe_coverage` takes no per-job cancel flag, so a cancelled read runs on to
-/// its time budget (at most `budget_secs`) with its result discarded, and reads nothing it does
-/// not already have a handle on.
+/// once: `Engine::observe_coverage` takes no per-job cancel flag, so a cancelled read keeps
+/// listing and hashing both folders until it finishes or spends its budget (at most `budget_secs`),
+/// with its result discarded. The `Reading` guard travels with that thread, so `coverage.start`
+/// stays busy until the read really ends.
 // ponytail: detached read after a cancel; give observe_coverage a job cancel flag (#1037's owner)
 // to stop it early.
 fn run(weak: &Weak<Inner>, plan: &Plan, ctx: &JobContext) -> EngineResult<CoverageState> {
     let engine = weak.upgrade().ok_or_else(gone)?.engine.clone();
     let (tx, rx) = mpsc::channel();
     let (a, b) = (plan.a.clone(), plan.b.clone());
+    let reading = plan.reading.lock().ok().and_then(|mut slot| slot.take());
+    #[cfg(test)]
+    let hooks = weak.clone();
     let budget = TreeBudget {
         bytes: plan.budget_bytes,
         time: Duration::from_secs(plan.budget_secs),
@@ -299,6 +385,11 @@ fn run(weak: &Weak<Inner>, plan: &Plan, ctx: &JobContext) -> EngineResult<Covera
     std::thread::Builder::new()
         .name("loomward-coverage-read".into())
         .spawn(move || {
+            let _reading = reading;
+            #[cfg(test)]
+            if let Some(inner) = hooks.upgrade() {
+                inner.hooks.gate(Command::CoverageStart, "orphan_read");
+            }
             let _ = tx.send(engine.observe_coverage(&a, &b, budget, MAX_ENTRIES));
         })
         .map_err(|_| internal("read thread unavailable"))?;
@@ -338,7 +429,7 @@ fn run(weak: &Weak<Inner>, plan: &Plan, ctx: &JobContext) -> EngineResult<Covera
     }
     .map_err(|_| internal("report bounds"))?;
     let partial = report.outcome == CoverageOutcome::Partial;
-    inner.store_coverage(plan.grants, report)?;
+    inner.store_coverage(plan.grants, report, ctx)?;
     Ok(if partial {
         CoverageState::Partial
     } else {
