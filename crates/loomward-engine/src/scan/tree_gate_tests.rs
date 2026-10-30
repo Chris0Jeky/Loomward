@@ -292,3 +292,82 @@ fn success_path_hashes_content_on_both_roots() {
         "{report:?}"
     );
 }
+
+/// #1011: `observe_coverage` hashes a B file only when an A file of its size was hashed, so B is
+/// never read in full; a renamed and moved copy is covered by content; a byte-budget stop leaves
+/// A files unknown, never covered. Same admitted pair as `compare_trees`.
+#[cfg(windows)]
+#[test]
+fn coverage_reads_only_matching_b_sizes_and_covers_a_renamed_copy() {
+    use loomward_operations::containment::{containment, Coverage};
+    use std::path::Path;
+    if skip_elevated() {
+        return;
+    }
+    let pair = pair_of(b"same", b"same");
+    let (a, b) = (pair.left.path(), pair.right.path());
+    std::fs::create_dir(a.join("photos")).unwrap();
+    std::fs::write(a.join("photos").join("one.jpg"), b"photo-bytes").unwrap();
+    std::fs::write(a.join("missing.txt"), b"nope!").unwrap();
+    std::fs::create_dir(b.join("archive")).unwrap();
+    std::fs::write(b.join("archive").join("renamed.jpg"), b"photo-bytes").unwrap();
+    std::fs::write(b.join("same-size.bin"), b"other-bytes").unwrap();
+    let big = 256 * 1024;
+    std::fs::write(b.join("big.bin"), vec![7u8; big]).unwrap();
+    let budget = |bytes| loomward_windows::duplicate_reader::Budget {
+        bytes,
+        time: std::time::Duration::from_secs(30),
+    };
+    let (a_tree, b_tree, bytes) = pair
+        .engine
+        .observe_coverage(&pair.left, &pair.right, budget(1024 * 1024), 100)
+        .unwrap();
+    let content = |tree: &loomward_operations::tree::Tree, path: &Path| {
+        tree.nodes[path].as_ref().unwrap().content
+    };
+    assert_eq!(content(&b_tree, Path::new("big.bin")), Err("not_requested"));
+    assert_eq!(
+        content(&a_tree, Path::new("missing.txt")),
+        Err("not_requested")
+    );
+    assert!(content(&b_tree, &Path::new("archive").join("renamed.jpg")).is_ok());
+    assert!(
+        (bytes as usize) < big,
+        "B was read beyond its matching sizes: {bytes}"
+    );
+    let report = containment(&a_tree, &b_tree);
+    let found: Vec<_> = report
+        .items
+        .iter()
+        .map(|item| (item.path.clone(), item.coverage.clone()))
+        .collect();
+    assert_eq!(
+        found,
+        vec![
+            (
+                "fixture".into(),
+                Coverage::Covered {
+                    by: "fixture".into()
+                }
+            ),
+            ("missing.txt".into(), Coverage::NotCovered),
+            (
+                Path::new("photos").join("one.jpg"),
+                Coverage::Covered {
+                    by: Path::new("archive").join("renamed.jpg")
+                }
+            ),
+        ]
+    );
+    let (a_tree, b_tree, bytes) = pair
+        .engine
+        .observe_coverage(&pair.left, &pair.right, budget(0), 100)
+        .unwrap();
+    assert_eq!(bytes, 0);
+    let report = containment(&a_tree, &b_tree);
+    assert!(!report
+        .items
+        .iter()
+        .any(|item| matches!(item.coverage, Coverage::Covered { .. })));
+    assert!(report.totals().unknown.files >= 2, "{report:?}");
+}

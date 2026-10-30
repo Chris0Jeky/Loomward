@@ -182,6 +182,24 @@ The plan is JSON the agent shows to the owner. It writes nothing: no draft in `s
 - Its result is **observation-time evidence** (docs/47 section 11, C1): it says the two trees matched when read. It
   is not a durable read-back receipt and not by itself permission to retire a source (section 6).
 
+#### Checking that A is covered by B
+
+`loomward-native covers A B --state-dir DIR [--max-entries N] [--budget-bytes N] [--budget-secs N]` (#1011) asks
+whether every file of A is present somewhere in B **by content, whatever the paths**, for backups that were renamed
+or reorganised. It grants and admits both folders exactly as `verify-tree` does and takes the same budgets, shared
+across its reads.
+
+- It lists B without reading content, hashes only the A files whose size occurs in B, then hashes only the B files
+  whose size occurs among those A files. A B file of a size no A file has is never read.
+- Each A file is `covered` (with one B path of equal size and equal content digest), `not_covered` (B has no file of
+  that size or content, and B's listing was complete), or `unknown` with a side and reason (unreadable, budget, an
+  incomplete B listing that leaves absence unproven). Never `covered` without equal digests on both sides.
+- Stdout carries the totals (files and bytes per state), the `not_covered` and `unknown` lists (at most 1,000 each),
+  a sample of 100 covered pairs, `truncated` flags, `bytes_read`, both root identities and a fixed note. Exit 0 only
+  when every A file is covered and nothing is unknown, 1 when something is not covered, 2 when anything is unknown.
+- Coverage is not metadata fidelity, not an independent backup (B may share a failing disk) and not permission to
+  delete anything.
+
 ## 5. What may live on the external disk
 
 Location-insensitive data can move to `H:` once copying is open; location-sensitive data stays. Agents propose,
