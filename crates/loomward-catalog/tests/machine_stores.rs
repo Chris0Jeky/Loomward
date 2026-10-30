@@ -74,7 +74,7 @@ fn machine_store_signature_produces_catalogue_advice() {
     lab.directory(cache, "content-v2", 100);
     lab.directory(cache, "index-v5", 23);
     let report = lab.report(200);
-    assert_eq!(report.rules_version, 3);
+    assert_eq!(report.rules_version, 4);
     assert!(!report.partial);
     assert!(!report.truncated);
     assert!(!report.budget_hit);
@@ -1167,4 +1167,433 @@ fn exhausted_root_query_budget_is_still_an_error() {
         lab.catalog.reader().unwrap().machine_stores(lab.root, 200),
         Err(Error::ResourceBudget)
     ));
+}
+
+// Rules v4: Windows leftovers. Synthetic names only; nothing is opened or executed.
+impl Lab {
+    fn path(&self, parent: i64, names: &[&str]) -> i64 {
+        names.iter().fold(parent, |p, n| self.directory(p, n, 0))
+    }
+    fn nodes(&self) -> Vec<NodeKey> {
+        sorted(self.report(200).candidates.iter().map(|c| c.node).collect())
+    }
+}
+
+fn sorted(mut nodes: Vec<NodeKey>) -> Vec<NodeKey> {
+    nodes.sort_by_key(|n| format!("{n:?}"));
+    nodes
+}
+
+#[test]
+fn windows_leftover_rules_are_recognised_with_their_own_owner_steps() {
+    let lab = Lab::new();
+    let windows = lab.directory(lab.dir, "Windows", 0);
+    let programdata = lab.directory(lab.dir, "ProgramData", 0);
+    let local = lab.path(lab.dir, &["Users", "synthetic-user", "AppData", "Local"]);
+    let nvidia = lab.directory(local, "NVIDIA", 0);
+    let amd = lab.directory(local, "AMD", 0);
+    let wer = lab.path(programdata, &["Microsoft", "Windows", "WER"]);
+    let distribution = lab.directory(windows, "SoftwareDistribution", 50);
+    let delivery = lab.path(
+        windows,
+        &[
+            "ServiceProfiles",
+            "NetworkService",
+            "AppData",
+            "Local",
+            "Microsoft",
+            "Windows",
+            "DeliveryOptimization",
+        ],
+    );
+    let amd_root = lab.directory(lab.dir, "AMD", 410);
+    lab.file(amd_root, "Setup.exe", 1, Some(1));
+    let nvidia_root = lab.directory(lab.dir, "NVIDIA", 411);
+    lab.directory(nvidia_root, "DisplayDriver", 0);
+    let dump = lab.file(windows, "MEMORY.DMP", 800, Some(800));
+
+    let leftover = "windows_leftover";
+    let previous = "Previous Windows installation(s)";
+    let dumps = "System error memory dump files";
+    let reports = "Windows Error Reports and Feedback Diagnostics";
+    let shader = "DirectX Shader Cache";
+    let extract = "Delete by hand after the driver is installed";
+    let delivery_step = "Delivery Optimization Files";
+    let never = "never remove by hand";
+    let dir = |parent, name, bytes| NodeKey::Dir(lab.directory(parent, name, bytes));
+    let expected = [
+        (dir(lab.dir, "Windows.old", 101), leftover, previous),
+        (dir(lab.dir, "$WINDOWS.~BT", 102), leftover, previous),
+        (dir(lab.dir, "$WINDOWS.~WS", 103), leftover, previous),
+        (NodeKey::File(dump), leftover, dumps),
+        (dir(windows, "Minidump", 201), leftover, dumps),
+        (dir(windows, "LiveKernelReports", 202), leftover, dumps),
+        (dir(windows, "Temp", 203), leftover, "Storage Sense"),
+        (dir(local, "Temp", 204), leftover, "Storage Sense"),
+        (dir(wer, "ReportArchive", 301), leftover, reports),
+        (dir(wer, "ReportQueue", 302), leftover, reports),
+        (
+            dir(local, "CrashDumps", 205),
+            leftover,
+            "Review the dump files by hand",
+        ),
+        (dir(local, "D3DSCache", 206), leftover, shader),
+        (dir(nvidia, "DXCache", 207), leftover, shader),
+        (dir(nvidia, "GLCache", 208), leftover, shader),
+        (dir(amd, "DxCache", 209), leftover, shader),
+        (NodeKey::Dir(amd_root), leftover, extract),
+        (NodeKey::Dir(nvidia_root), leftover, extract),
+        (
+            dir(distribution, "DeliveryOptimization", 51),
+            leftover,
+            delivery_step,
+        ),
+        (dir(delivery, "Cache", 52), leftover, delivery_step),
+        (
+            dir(programdata, "Package Cache", 303),
+            "system_managed",
+            never,
+        ),
+        (dir(windows, "Installer", 304), "system_managed", never),
+        (
+            NodeKey::Dir(distribution),
+            "system_managed",
+            "managed by Windows",
+        ),
+    ];
+    let report = lab.report(200);
+    assert_eq!(report.rules_version, 4);
+    assert!(!report.partial && !report.truncated && !report.budget_hit);
+    assert_eq!(report.candidates.len(), expected.len());
+    for (node, class, step) in expected {
+        let c = report.candidates.iter().find(|c| c.node == node).unwrap();
+        assert_eq!((c.class, c.provider), (class, "windows"), "{node:?}");
+        assert!(c.owner_step.contains(step), "{node:?}: {}", c.owner_step);
+        assert_eq!(c.relocation, None);
+        assert!(c.logical_bytes.is_some() && c.allocated_bytes.is_some());
+        assert!(c.owner_step.len() <= 256 && c.reason.len() <= 256 && c.uncertainty.len() <= 512);
+        assert!(!c.reason.is_empty());
+        assert!(c
+            .uncertainty
+            .ends_with("This is advice, never a disposability claim."));
+    }
+    // Sizes are the recorded aggregates, and a file uses its own.
+    let size = |name: &str| {
+        let c = report.candidates.iter().find(|c| c.name == name).unwrap();
+        (c.logical_bytes, c.allocated_bytes)
+    };
+    assert_eq!(size("MEMORY.DMP"), (Some(800), Some(800)));
+    assert_eq!(size("Windows.old"), (Some(101), Some(101)));
+}
+
+#[test]
+fn windows_leftover_names_compare_ascii_case_insensitively() {
+    let lab = Lab::new();
+    let windows = lab.directory(lab.dir, "WINDOWS", 0);
+    let programdata = lab.directory(lab.dir, "programdata", 0);
+    let local = lab.path(lab.dir, &["users", "u", "APPDATA", "local"]);
+    let nvidia = lab.directory(local, "nvidia", 0);
+    let wer = lab.path(programdata, &["MICROSOFT", "windows", "wer"]);
+    let expected = vec![
+        NodeKey::Dir(lab.directory(lab.dir, "WINDOWS.OLD", 1)),
+        NodeKey::Dir(lab.directory(lab.dir, "$windows.~bt", 1)),
+        NodeKey::File(lab.file(windows, "memory.dmp", 1, Some(1))),
+        NodeKey::Dir(lab.directory(windows, "MINIDUMP", 1)),
+        NodeKey::Dir(lab.directory(windows, "temp", 1)),
+        NodeKey::Dir(lab.directory(local, "TEMP", 1)),
+        NodeKey::Dir(lab.directory(local, "crashdumps", 1)),
+        NodeKey::Dir(lab.directory(local, "d3dscache", 1)),
+        NodeKey::Dir(lab.directory(nvidia, "dxcache", 1)),
+        NodeKey::Dir(lab.directory(wer, "reportqueue", 1)),
+        NodeKey::Dir(lab.directory(programdata, "PACKAGE CACHE", 1)),
+    ];
+    assert_eq!(lab.nodes(), sorted(expected));
+}
+
+#[test]
+fn windows_leftover_names_in_the_wrong_place_are_not_candidates() {
+    let lab = Lab::new();
+    // Everything under `users` is below the root, so no root-relative rule can match it.
+    let users = lab.path(lab.dir, &["Users", "u"]);
+    for chain in [
+        &["Windows.old"][..],
+        &["$WINDOWS.~BT"],
+        &["Temp"],
+        &["Local", "Temp"],
+        &["AppData", "Temp"],
+        &["AppData", "Roaming", "Temp"],
+        &["AppData", "LocalLow", "Temp"],
+        &["Windows", "Temp"],
+        &["Windows", "Minidump"],
+        &["Windows", "LiveKernelReports"],
+        &["Windows", "Installer"],
+        &["Windows", "SoftwareDistribution", "DeliveryOptimization"],
+        &["AppData", "CrashDumps"],
+        &["Local", "CrashDumps"],
+        &["AppData", "Roaming", "D3DSCache"],
+        &["Local", "D3DSCache"],
+        &["AppData", "Local", "AMD", "GLCache"],
+        &["AppData", "Local", "NVIDIA", "Cache"],
+        &["AppData", "Roaming", "NVIDIA", "DXCache"],
+        &["Local", "NVIDIA", "GLCache"],
+        &["AppData", "Local", "Other", "DXCache"],
+        &["ProgramData", "Package Cache"],
+        &["ProgramData", "Microsoft", "Package Cache"],
+        &[
+            "ProgramData",
+            "Microsoft",
+            "Windows",
+            "WER",
+            "ReportArchive",
+        ],
+        &[
+            "AppData",
+            "Local",
+            "Microsoft",
+            "Windows",
+            "DeliveryOptimization",
+            "Cache",
+        ],
+        &[
+            "ServiceProfiles",
+            "LocalService",
+            "AppData",
+            "Local",
+            "Microsoft",
+            "Windows",
+            "DeliveryOptimization",
+            "Cache",
+        ],
+    ] {
+        lab.path(users, chain);
+    }
+    lab.file(users, "MEMORY.DMP", 1, Some(1));
+    lab.directory(lab.path(users, &["AMD"]), "Setup.exe", 0);
+    lab.file(lab.path(users, &["NVIDIA"]), "Setup.exe", 1, Some(1));
+    // Directly under the root, but a file, a wrong parent or a missing link in the chain.
+    lab.file(lab.dir, "Windows.old", 1, Some(1));
+    lab.file(lab.dir, "$WINDOWS.~WS", 1, Some(1));
+    lab.file(lab.dir, "MEMORY.DMP", 1, Some(1));
+    for name in [
+        "Temp",
+        "Minidump",
+        "LiveKernelReports",
+        "Installer",
+        "Package Cache",
+    ] {
+        lab.directory(lab.dir, name, 1);
+    }
+    let windows = lab.directory(lab.dir, "Windows", 0);
+    lab.directory(windows, "MEMORY.DMP", 1);
+    lab.file(windows, "Temp", 1, Some(1));
+    lab.path(windows, &["System32", "Temp"]);
+    lab.path(windows, &["System32", "Minidump"]);
+    lab.path(windows, &["System32", "Installer"]);
+    lab.file(lab.path(windows, &["System32"]), "MEMORY.DMP", 1, Some(1));
+    let programdata = lab.directory(lab.dir, "ProgramData", 0);
+    lab.path(programdata, &["Other", "Package Cache"]);
+    lab.path(programdata, &["Microsoft", "WER", "ReportArchive"]);
+    lab.path(programdata, &["Microsoft", "Windows", "WER", "Other"]);
+    lab.path(
+        programdata,
+        &["Microsoft", "Windows", "Other", "ReportArchive"],
+    );
+    let names: Vec<_> = lab
+        .report(200)
+        .candidates
+        .iter()
+        .map(|c| c.name.clone())
+        .collect();
+    assert!(names.is_empty(), "{names:?}");
+}
+
+type Payload = dyn Fn(&Lab, i64) -> i64;
+
+#[test]
+fn driver_extracts_need_an_installer_payload_directly_under_the_root() {
+    let positives: [&Payload; 5] = [
+        &|lab, v| lab.file(v, "SETUP.EXE", 1, Some(1)),
+        &|lab, v| lab.directory(v, "Packages", 0),
+        &|lab, v| lab.directory(v, "Display.Driver", 0),
+        &|lab, v| lab.directory(v, "DisplayDriver", 0),
+        &|lab, v| lab.file(lab.directory(v, "package", 0), "Setup.exe", 1, Some(1)),
+    ];
+    for vendor in ["AMD", "NVIDIA", "nvidia"] {
+        for payload in positives {
+            let lab = Lab::new();
+            let v = lab.directory(lab.dir, vendor, 7);
+            payload(&lab, v);
+            let report = lab.report(200);
+            assert_eq!(report.candidates.len(), 1, "{vendor}");
+            assert_eq!(report.candidates[0].node, NodeKey::Dir(v));
+            assert_eq!(report.candidates[0].class, "windows_leftover");
+        }
+    }
+    // Pick one rule: no payload, a payload two levels down, an unlisted vendor, the wrong vendor
+    // or a vendor below the root are all advice-free.
+    let negatives: [&dyn Fn(&Lab); 6] = [
+        &|lab| {
+            lab.directory(lab.dir, "AMD", 1);
+        },
+        &|lab| {
+            let v = lab.directory(lab.dir, "NVIDIA", 1);
+            lab.file(lab.directory(v, "Docs", 0), "readme.txt", 1, Some(1));
+        },
+        &|lab| {
+            let v = lab.directory(lab.dir, "AMD", 1);
+            lab.file(lab.path(v, &["package", "deeper"]), "Setup.exe", 1, Some(1));
+        },
+        &|lab| {
+            let v = lab.directory(lab.dir, "Intel", 1);
+            lab.file(v, "Setup.exe", 1, Some(1));
+        },
+        &|lab| {
+            let v = lab.directory(lab.dir, "NVIDIA Corporation", 1);
+            lab.file(v, "Setup.exe", 1, Some(1));
+        },
+        &|lab| {
+            let v = lab.path(lab.dir, &["Program Files", "NVIDIA"]);
+            lab.file(v, "Setup.exe", 1, Some(1));
+        },
+    ];
+    for decoy in negatives {
+        let lab = Lab::new();
+        decoy(&lab);
+        assert!(lab.report(200).candidates.is_empty());
+    }
+    // A vendor directory whose listing is stale proves nothing about its payload.
+    let lab = Lab::new();
+    let v = lab.directory(lab.dir, "AMD", 1);
+    lab.file(v, "Setup.exe", 1, Some(1));
+    lab.db
+        .execute("UPDATE dir SET listing_outcome='stale' WHERE id=?1", [v])
+        .unwrap();
+    assert!(lab.report(200).candidates.is_empty());
+}
+
+#[test]
+fn windows_leftover_stores_shield_their_subtrees() {
+    let lab = Lab::new();
+    let windows = lab.directory(lab.dir, "Windows", 0);
+    let programdata = lab.directory(lab.dir, "ProgramData", 0);
+    let local = lab.path(lab.dir, &["Users", "u", "AppData", "Local"]);
+    let wer = lab.path(programdata, &["Microsoft", "Windows", "WER"]);
+    let amd = lab.directory(lab.dir, "AMD", 0);
+    lab.file(amd, "Setup.exe", 1, Some(1));
+    let mut shells = vec![
+        lab.directory(lab.dir, "Windows.old", 50),
+        lab.directory(lab.dir, "$WINDOWS.~WS", 50),
+        lab.directory(windows, "Temp", 50),
+        lab.directory(windows, "Minidump", 50),
+        lab.directory(windows, "Installer", 50),
+        lab.directory(programdata, "Package Cache", 50),
+        lab.directory(wer, "ReportArchive", 50),
+        lab.directory(local, "Temp", 50),
+        lab.directory(local, "D3DSCache", 50),
+        amd,
+    ];
+    for shell in &shells {
+        lab.store(*shell, "npm", 10);
+        lab.store(*shell, "git", 10);
+        lab.file(*shell, "ext4.vhdx", 10, Some(10));
+    }
+    assert_eq!(
+        lab.nodes(),
+        sorted(shells.iter().map(|d| NodeKey::Dir(*d)).collect())
+    );
+    // A vendor directory without a payload is not a store, so what it holds is still found.
+    let bare = lab.directory(lab.dir, "NVIDIA", 5);
+    let inner = lab.store(bare, "npm", 10);
+    shells.push(inner);
+    assert_eq!(
+        lab.nodes(),
+        sorted(shells.iter().map(|d| NodeKey::Dir(*d)).collect())
+    );
+}
+
+#[test]
+fn windows_leftover_rules_respect_the_shared_safety_filters() {
+    let lab = Lab::new();
+    let windows = lab.directory(lab.dir, "Windows", 0);
+    let programdata = lab.directory(lab.dir, "ProgramData", 0);
+    let local = lab.path(lab.dir, &["Users", "u", "AppData", "Local"]);
+    let dump = lab.file(windows, "MEMORY.DMP", 9, Some(9));
+    let dirs = [
+        lab.directory(lab.dir, "Windows.old", 1),
+        lab.directory(windows, "Temp", 1),
+        lab.directory(programdata, "Package Cache", 1),
+        lab.directory(local, "Temp", 1),
+    ];
+    let all = {
+        let mut all: Vec<_> = dirs.iter().map(|d| NodeKey::Dir(*d)).collect();
+        all.push(NodeKey::File(dump));
+        sorted(all)
+    };
+    assert_eq!(lab.nodes(), all);
+    for id in dirs {
+        for set in [
+            format!("attrs=attrs|1024 WHERE id={id}"),
+            format!("flags={EXCLUDED_FLAGS} WHERE id={id}"),
+            format!("listing_state='denied' WHERE id={id}"),
+            format!("listing_state='absent_pending' WHERE id={id}"),
+        ] {
+            lab.db
+                .execute(&format!("UPDATE dir SET {set}"), [])
+                .unwrap();
+            assert!(!lab.nodes().contains(&NodeKey::Dir(id)), "{set}");
+            lab.db
+                .execute(
+                    "UPDATE dir SET attrs=16,flags=0,listing_state='complete' WHERE id=?1",
+                    [id],
+                )
+                .unwrap();
+        }
+    }
+    assert_eq!(lab.nodes(), all);
+    // The dump file follows the shared file filters and the same-run rule.
+    lab.db
+        .execute("UPDATE file SET attrs=attrs|1024 WHERE id=?1", [dump])
+        .unwrap();
+    assert!(!lab.nodes().contains(&NodeKey::File(dump)));
+    lab.db
+        .execute("UPDATE file SET attrs=32 WHERE id=?1", [dump])
+        .unwrap();
+    lab.db
+        .execute(
+            "UPDATE dir SET listing_state='incomplete',seen_run=2 WHERE id=?1",
+            [windows],
+        )
+        .unwrap();
+    assert!(!lab.nodes().contains(&NodeKey::File(dump)));
+    lab.db
+        .execute("UPDATE file SET seen_run=2 WHERE id=?1", [dump])
+        .unwrap();
+    assert!(lab.nodes().contains(&NodeKey::File(dump)));
+    // A stale parent listing hides what it holds.
+    lab.db
+        .execute(
+            "UPDATE dir SET listing_outcome='stale' WHERE id IN (?1,?2)",
+            [windows, programdata],
+        )
+        .unwrap();
+    let nodes = lab.nodes();
+    for hidden in [
+        NodeKey::File(dump),
+        NodeKey::Dir(dirs[1]),
+        NodeKey::Dir(dirs[2]),
+    ] {
+        assert!(!nodes.contains(&hidden), "{hidden:?}");
+    }
+    // Unknown sizes stay null on a leftover directory whose aggregate is not complete.
+    lab.db
+        .execute("UPDATE dir SET sub_complete=0 WHERE id=?1", [dirs[0]])
+        .unwrap();
+    let report = lab.report(200);
+    let old = report
+        .candidates
+        .iter()
+        .find(|c| c.node == NodeKey::Dir(dirs[0]))
+        .unwrap();
+    assert_eq!((old.logical_bytes, old.allocated_bytes), (None, None));
+    assert!(report.partial);
 }

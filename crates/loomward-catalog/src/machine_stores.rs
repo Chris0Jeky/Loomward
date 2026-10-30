@@ -124,7 +124,7 @@ fn query_candidates(
     scanning: bool,
 ) -> Result<MachineStores> {
     let mut report = MachineStores {
-        rules_version: 3,
+        rules_version: 4,
         ..MachineStores::default()
     };
     let mut stmt = conn.prepare(sql)?;
@@ -221,6 +221,34 @@ fn candidate(row: query::Raw, rule: &str, scanning: bool) -> Result<MachineStore
         "system" => ("system_managed", "windows", "Informational: managed by Windows (Disk Cleanup or DISM); never counted as reclaimable.", None,
             "Recorded root system file or WinSxS or SoftwareDistribution directory directly under the root's Windows directory.",
             "Windows owns this space, and no reclaimable bytes or permission to alter it are established. This is advice, never a disposability claim."),
+        // Rules v4: Windows' own leftovers. Each owner step names the tool Windows itself offers.
+        "windows-old" => ("windows_leftover", "windows", "Use Settings > System > Storage > Temporary files (Previous Windows installation(s)) or Disk Cleanup, after owner review of whether to keep the rollback.", None,
+            "Recorded Windows.old, $WINDOWS.~BT or $WINDOWS.~WS directory directly under the granted root.",
+            "Names only: whether the upgrade finished, whether rollback is still wanted and what the folder holds are unverified. This is advice, never a disposability claim."),
+        "memory-dump" => ("windows_leftover", "windows", "Use Disk Cleanup, category \"System error memory dump files\", after owner review.", None,
+            "Recorded MEMORY.DMP file, or Minidump or LiveKernelReports directory, directly under the Windows directory directly under the granted root.",
+            "Names only: a dump may be the only record of a crash still under investigation, and its contents are unverified. This is advice, never a disposability claim."),
+        "error-reports" => ("windows_leftover", "windows", "Use Disk Cleanup, category \"Windows Error Reports and Feedback Diagnostics\", after owner review.", None,
+            "Recorded ReportArchive or ReportQueue directory under ProgramData/Microsoft/Windows/WER directly under the granted root.",
+            "Names only: reports may be wanted for a pending support case, and their contents are unverified. This is advice, never a disposability claim."),
+        "temp" => ("windows_leftover", "windows", "Use Settings > System > Storage > Temporary files (Storage Sense) rather than deleting by hand; files in use are left alone.", None,
+            "Recorded Temp directory directly under the Windows directory under the root, or directly under AppData/Local.",
+            "Names only: running programs and installers may still use files here, and contents are unverified. This is advice, never a disposability claim."),
+        "crash-dumps" => ("windows_leftover", "windows", "Review the dump files by hand and keep any still needed for a bug report; no Windows cleanup category is assumed.", None,
+            "Recorded CrashDumps directory directly under AppData/Local.",
+            "Names only: a dump may be the only record of a crash still under investigation, and its contents are unverified. This is advice, never a disposability claim."),
+        "shader-cache" => ("windows_leftover", "windows", "Use Disk Cleanup, category \"DirectX Shader Cache\", or the GPU vendor's control panel, after owner review.", None,
+            "Recorded D3DSCache, NVIDIA/DXCache, NVIDIA/GLCache or AMD/DxCache directory under AppData/Local.",
+            "Names only: regeneration cost, such as stutter on the next game launch, and active users are unverified. This is advice, never a disposability claim."),
+        "driver-extract" => ("windows_leftover", "windows", "Delete by hand after the driver is installed and the owner has confirmed the installer files are not needed for a rollback.", None,
+            "Recorded AMD or NVIDIA directory directly under the granted root holding Setup.exe, or a Packages, Display.Driver or DisplayDriver child, or a child holding Setup.exe.",
+            "Names only: the grant is not shown to be a volume root, and whether the driver installed or the installer is still wanted is unverified. This is advice, never a disposability claim."),
+        "delivery-optimization" => ("windows_leftover", "windows", "Use Disk Cleanup, category \"Delivery Optimization Files\", or Settings > Windows Update > Advanced options > Delivery Optimization, after owner review.", None,
+            "Recorded SoftwareDistribution/DeliveryOptimization directory, or a Cache directory under NetworkService/AppData/Local/Microsoft/Windows/DeliveryOptimization, under the granted root.",
+            "Names only: the cache is shared with other devices and updates in progress when enabled, and its contents are unverified. This is advice, never a disposability claim."),
+        "installer-cache" => ("system_managed", "windows", "Informational: Package Cache and Windows Installer back up repair and uninstall; never remove by hand, and never counted as reclaimable.", None,
+            "Recorded ProgramData/Package Cache or Windows/Installer directory directly under the granted root.",
+            "Windows and installed programs own this space, and removing files can break repair or uninstall; no reclaimable bytes are established. This is advice, never a disposability claim."),
         _ => return Err(Error::Invalid("machine store rule")),
     };
     let coverage = row.coverage();
