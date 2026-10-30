@@ -1089,11 +1089,20 @@ mod wal_reader_tests {
             barrier.wait(); // readers open their snapshots
             barrier.wait(); // every reader is inside its transaction
             barrier.wait(); // every reader has committed
-            let (busy, log, done): (i64, i64, i64) = state
-                .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
-                    Ok((r.get(0)?, r.get(1)?, r.get(2)?))
-                })
-                .unwrap();
+                            // #390 leaked a read lock for good, so a pinned WAL never clears. The catalogue's own writer
+                            // can still touch state.db for a moment (#1054); retry within a bound, then fail.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            let (busy, log, done) = loop {
+                let (busy, log, done): (i64, i64, i64) = state
+                    .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
+                        Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+                    })
+                    .unwrap();
+                if busy == 0 || std::time::Instant::now() >= deadline {
+                    break (busy, log, done);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            };
             assert_eq!(
                 busy, 0,
                 "round {round}: a finished reader still pins the WAL ({done} of {log} frames)"

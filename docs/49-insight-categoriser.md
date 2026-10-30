@@ -66,8 +66,13 @@ Stage 1 is served by `insight.folder { root_id, node_id }` (LW-138, #877; `contr
 insight"): an owner-only, read-only view-service command that builds a folder's evidence facts from the catalogue,
 validates the packet, runs `labelling::combine` and returns the three axes (a label with its agreeing rules, or an
 abstention with its reason) and the `explain` lines with their traces. A stale or partial root answers with its
-coverage and every axis abstains. It makes no teacher or model call, is not exposed to clients or MCP, and the app
-view is a later slice.
+coverage and every axis abstains. It makes no teacher or model call and is not exposed to clients or MCP.
+
+The app shows it as "About this folder" in the Explorer's node inspector, for a folder only, and only after the
+owner presses **Describe** (no request on selection). The explanation lines appear exactly as the engine returned them;
+each axis is one labelled row worded as an inference ("rule inference, not a recorded fact") or as "not decided" with
+its reason; a refusal or an over-budget folder is said in words; a newer selection drops an older reply; and the footer
+says it is not a recommendation or an approval. Wiring into the archive-originals review stays I5.
 
 ## 4. Where it is used first
 
