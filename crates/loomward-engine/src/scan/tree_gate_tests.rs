@@ -371,3 +371,83 @@ fn coverage_reads_only_matching_b_sizes_and_covers_a_renamed_copy() {
         .any(|item| matches!(item.coverage, Coverage::Covered { .. })));
     assert!(report.totals().unknown.files >= 2, "{report:?}");
 }
+
+/// #1037: with a selection, `compare_selected_trees` hashes only selected source files and files
+/// under a selected folder. The 1 KiB budget fits the unselected 1000-byte file, which lists
+/// before `planned`, but not that file plus `planned/inside`: the selected run passes only if the
+/// file costs nothing, and the default run, which hashes everything, does not.
+/// The selected file's verdict is unchanged: equal stays equal and a difference is still caught.
+#[cfg(windows)]
+#[test]
+fn selected_run_never_hashes_unselected_source_files() {
+    use std::path::PathBuf;
+    if skip_elevated() {
+        return;
+    }
+    let small = loomward_windows::duplicate_reader::Budget {
+        bytes: 1024,
+        time: std::time::Duration::from_secs(30),
+    };
+    let select = |paths: &[&str]| -> std::collections::BTreeSet<PathBuf> {
+        paths.iter().map(PathBuf::from).collect()
+    };
+    // A source file the budget did not reach has `Content` unknown; the report cannot show an
+    // unselected file's own read (it is only `Missing`), so the observable is the files after it.
+    let budget_stops = |report: &Report| report.unknowns.iter().any(|u| u.field == Field::Content);
+    for (destination, differs) in [(&b"same"[..], false), (&b"diff"[..], true)] {
+        let pair = pair_of(b"same", destination);
+        let (a, b) = (pair.left.path(), pair.right.path());
+        std::fs::create_dir(a.join("planned")).unwrap();
+        std::fs::write(a.join("planned").join("inside"), [3u8; 100]).unwrap();
+        std::fs::create_dir(b.join("planned")).unwrap();
+        std::fs::write(b.join("planned").join("inside"), [3u8; 100]).unwrap();
+        std::fs::write(a.join("left_behind"), [7u8; 1000]).unwrap();
+        let run = |selection: Option<&[&str]>| {
+            let selection = selection.map(select);
+            pair.engine
+                .compare_selected_trees(&pair.left, &pair.right, small, 100, selection.as_ref())
+                .unwrap()
+        };
+        let content_diffs = |report: &Report| -> Vec<PathBuf> {
+            report
+                .differences
+                .iter()
+                .filter(|d| d.kind == DifferenceKind::Content)
+                .map(|d| d.path.clone())
+                .collect()
+        };
+        // The default path hashes `left_behind` (listed before `planned`) and exhausts the budget.
+        let whole = run(None);
+        assert!(budget_stops(&whole), "{whole:?}");
+        for selection in [
+            &["fixture", "planned"][..],
+            &["planned/inside", "fixture"][..],
+        ] {
+            let selected = run(Some(selection));
+            assert!(!budget_stops(&selected), "{selection:?}: {selected:?}");
+            assert!(
+                !selected
+                    .differences
+                    .iter()
+                    .any(|d| d.path.as_os_str() == "left_behind"),
+                "{selected:?}"
+            );
+            let expect: Vec<PathBuf> = if differs {
+                vec!["fixture".into()]
+            } else {
+                vec![]
+            };
+            assert_eq!(
+                content_diffs(&selected),
+                expect,
+                "{selection:?}: {selected:?}"
+            );
+            let known = selected
+                .unknowns
+                .iter()
+                .filter(|u| u.field == Field::Content)
+                .count();
+            assert_eq!(known, 0, "{selection:?}: {selected:?}");
+        }
+    }
+}
