@@ -43,7 +43,10 @@ class V3ContractTests(unittest.TestCase):
         self.assertEqual(command['effects'], 'none')
         self.assertEqual(command['adapters'], ['tauri', 'http'])
         self.assertNotIn('client_result', command)
-        import jsonschema
+        try:
+            import jsonschema
+        except ImportError:
+            self.skipTest('jsonschema not installed')
         request = {'root_id': 'rt_1', 'node_id': 'nd_1'}
         validator = jsonschema.Draft202012Validator({
             '$defs': self.defs, '$ref': '#/$defs/' + command['request']})
