@@ -11,14 +11,16 @@ export function sortLargestFirst(rows: InstalledApplication[]): InstalledApplica
     .map((e) => e.row);
 }
 
-export function createInventoryMock(now: () => Date, fail: (code: ErrorCode, message: string) => never) {
+/** `source` replaces the contract fixtures; tests use it to seed a snapshot whose registry order differs from size order. */
+export function createInventoryMock(now: () => Date, fail: (code: ErrorCode, message: string) => never, source: { apps?: unknown; desktop?: unknown } = {}) {
   type Page = ApplicationPage | DesktopPage;
   const cursors = new Map<string, { command: string; page: Page; offset: number; sort: string }>();
   const prefix = `cu${crypto.randomUUID().replaceAll('-', '')}`;
   let serial = 0;
 
   function page(command: 'apps.list' | 'desktop.contexts', p: Record<string, unknown>): Page {
-    const sort = p.sort ?? 'registry';
+    // Absent means registry; an explicit null is not a sort, so the service's closed set rejects it below.
+    const sort = p.sort === undefined ? 'registry' : p.sort;
     const allowed = command === 'apps.list' ? ['limit', 'cursor', 'sort'] : ['limit', 'cursor'];
     if (Object.keys(p).some((k) => !allowed.includes(k)) || (sort !== 'registry' && sort !== 'size_desc') || !Number.isInteger(p.limit) || Number(p.limit) < 1 || Number(p.limit) > 200 || !('cursor' in p) || (p.cursor !== null && typeof p.cursor !== 'string')) {
       return fail('invalid_request', 'Expected limit 1–200 and nullable cursor');
@@ -31,7 +33,7 @@ export function createInventoryMock(now: () => Date, fail: (code: ErrorCode, mes
       snapshot = saved.page;
       offset = saved.offset;
     } else {
-      snapshot = structuredClone(command === 'apps.list' ? appFixture : desktopFixture) as Page;
+      snapshot = structuredClone(command === 'apps.list' ? (source.apps ?? appFixture) : (source.desktop ?? desktopFixture)) as Page;
       snapshot.observed_at = now().toISOString();
       if ('applications' in snapshot && sort === 'size_desc') snapshot.applications = sortLargestFirst(snapshot.applications);
     }
