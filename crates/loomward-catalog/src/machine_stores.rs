@@ -235,7 +235,7 @@ fn candidate(row: query::Raw, rule: &str, scanning: bool) -> Result<MachineStore
             "Names only: reports may be wanted for a pending support case, and their contents are unverified. This is advice, never a disposability claim."),
         "temp" => ("windows_leftover", "windows", "Use Settings > System > Storage > Temporary files (Storage Sense) rather than deleting by hand; files in use are left alone.", None,
             "Recorded Temp directory directly under the Windows directory under the root, or directly under AppData/Local.",
-            "Names only: running programs and installers may still use files here, and contents are unverified. This is advice, never a disposability claim."),
+            "Names only: the grant is not shown to be a volume root (a Windows folder inside a project is matched too), running programs and installers may still use files here, and contents are unverified. This is advice, never a disposability claim."),
         "crash-dumps" => ("windows_manual_leftover", "windows", "Review the dump files by hand and keep any still needed for a bug report; no Windows cleanup category is assumed.", None,
             "Recorded CrashDumps directory directly under AppData/Local.",
             "Names only: a dump may be the only record of a crash still under investigation, and its contents are unverified. This is advice, never a disposability claim."),
