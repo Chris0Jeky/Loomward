@@ -172,8 +172,8 @@ The plan is JSON the agent shows to the owner. It writes nothing: no draft in `s
   section 4).
 - Budgets: `--max-entries` (at most 200,000, the verifier's cap), `--budget-bytes`, `--budget-secs`. Exit 0 equal,
   1 differences (listed), 2 unknown (budget, cap, refusal or an unsupported class), which never counts as equal.
-- `--only LIST` (#1009) compares a selected set: LIST holds one path per line, relative to SOURCE, as the approved
-  plan names them (a listed folder covers everything under it). Source entries not listed are ignored; every
+- `--only LIST` (#1009) compares a selected set: LIST is a UTF-8 file (other encodings are refused) with one path per
+  line, relative to SOURCE, as the approved plan names them (a listed folder covers everything under it). Source entries not listed are ignored; every
   destination entry still counts, so anything unplanned in the copy is a difference. Listed files keep every check;
   the folders that only contain them are compared for kind and listing, not for their own times and attributes,
   because the source folder also holds what the plan left behind. A listed path the source does not hold, an empty

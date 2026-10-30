@@ -309,16 +309,17 @@ pub fn compare_selected(
         });
         return report;
     }
+    let under_selected = |path: &Path| {
+        path.ancestors()
+            .any(|a| !a.as_os_str().is_empty() && selected.contains(a))
+    };
+    // A folder selected whole keeps every check, even when a path inside it is also listed.
     let containers: BTreeSet<&Path> = selected
         .iter()
         .flat_map(|path| path.ancestors().skip(1))
+        .filter(|a| !under_selected(a))
         .collect();
-    let chosen = |path: &Path| {
-        containers.contains(path)
-            || path
-                .ancestors()
-                .any(|a| !a.as_os_str().is_empty() && selected.contains(a))
-    };
+    let chosen = |path: &Path| containers.contains(path) || under_selected(path);
     let kept = Tree {
         nodes: source
             .nodes
@@ -721,6 +722,45 @@ mod tests {
                     class: MetadataClass::ReparsePoint
                 }
             }]
+        );
+    }
+    #[test]
+    fn an_overlapping_selection_keeps_folder_checks_and_containers_keep_entry_unknowns() {
+        let (mut source, mut destination) = partial_copy();
+        for tree in [&mut source, &mut destination] {
+            tree.nodes.insert("m/sub".into(), Ok(node(Kind::Directory)));
+            tree.nodes.insert("m/sub/f".into(), Ok(node(Kind::File)));
+        }
+        destination
+            .nodes
+            .insert("m/sub".into(), Ok(stamped(Kind::Directory, 9)));
+        destination.nodes.remove(Path::new("m/planned"));
+        let report = compare_selected(&source, &destination, &selection(&["m/sub", "m/sub/f"]));
+        assert_eq!(
+            report.differences,
+            vec![Difference {
+                path: "m/sub".into(),
+                kind: DifferenceKind::Metadata(MetadataClass::LastWriteTime)
+            }]
+        );
+        // A container's unreadable times are dropped; its unreadable listing is not.
+        let mut unread = stamped(Kind::Directory, 2);
+        unread
+            .metadata
+            .insert(MetadataClass::LastWriteTime, Err("metadata_unreadable"));
+        unread.children = Err("partial_listing");
+        destination.nodes.insert("m".into(), Ok(unread));
+        destination
+            .nodes
+            .insert("m/sub".into(), Ok(node(Kind::Directory)));
+        let report = compare_selected(&source, &destination, &selection(&["m/sub"]));
+        assert_eq!(
+            report
+                .unknowns
+                .iter()
+                .map(|u| (u.path.to_str().unwrap(), u.field.clone()))
+                .collect::<Vec<_>>(),
+            vec![("m", Field::Listing)]
         );
     }
     #[test]
