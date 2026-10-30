@@ -181,8 +181,10 @@ The plan is JSON the agent shows to the owner. It writes nothing: no draft in `s
   destination entry still counts, so anything unplanned in the copy is a difference. Listed files keep every check;
   the folders that only contain them are compared for kind and listing, not for their own times and attributes,
   because the source folder also holds what the plan left behind. A listed path the source does not hold, an empty
-  list, or a path that is absolute or uses `..` is never equal. Unlisted source files are still read today (the
-  budget must cover the whole source folder); only the comparison is limited.
+  list, or a path that is absolute or uses `..` is never equal. Unlisted source files are still listed (so the
+  listing and the container checks hold) but never hashed (#1037): the byte budget covers only the planned files, the
+  files under a listed folder, and the whole destination. The rule that decides which source files are hashed is the
+  one that decides which are compared, so the two cannot drift.
 - `--manifest-roots` (#875, LW-136) adds a `manifest_roots` object to the JSON: the **destination's** custody manifest
   roots (`custody::manifest_root`, `collation_version` 1, `digest_algorithm` `sha256`) for the folder and each subfolder,
   as `directories` entries `{path, root, reason}`. Each root is computed from the entries this run actually read and
