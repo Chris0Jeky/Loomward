@@ -227,7 +227,7 @@ fn candidate(row: query::Raw, rule: &str, scanning: bool) -> Result<MachineStore
         "windows-old" => ("windows_leftover", "windows", "Use Settings > System > Storage > Temporary files (Previous Windows installation(s)) or Disk Cleanup, after owner review of whether to keep the rollback.", None,
             "Recorded Windows.old, $WINDOWS.~BT or $WINDOWS.~WS directory directly under the granted root.",
             "Names only: whether the upgrade finished, whether rollback is still wanted and what the folder holds are unverified. This is advice, never a disposability claim."),
-        "memory-dump" => ("windows_leftover", "windows", "Use Disk Cleanup, category \"System error memory dump files\", after owner review.", None,
+        "memory-dump" => ("windows_leftover", "windows", "Use Disk Cleanup, categories \"System error memory dump files\" and \"System error minidump files\", after owner review.", None,
             "Recorded MEMORY.DMP file, or Minidump or LiveKernelReports directory, directly under the Windows directory directly under the granted root.",
             "Names only: a dump may be the only record of a crash still under investigation, and its contents are unverified. This is advice, never a disposability claim."),
         "error-reports" => ("windows_leftover", "windows", "Use Disk Cleanup, category \"Windows Error Reports and Feedback Diagnostics\", after owner review.", None,
