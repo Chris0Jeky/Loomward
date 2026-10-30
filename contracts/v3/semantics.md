@@ -649,9 +649,11 @@ a report that carries the field and must be upgraded with it. Names the catalogu
 unrepresentable, identity-unverified) are not in it and keep partial=true, so a present count is the
 visible candidate space of the catalogue at selection time, not a proof about unscanned content.
 entries_compared (optional, additive on the same terms; absent is unknown, never zero, and never null) is the exact number
-of listed entries whose content was read and set against at least one other file: it excludes link sets,
-empty files, refused or skipped names, names left without a readable same-size partner, and anything a
-stop left unread, so it can be below listed minus skipped. It never exceeds entries.length.
+of listed entries whose content was read (for a large file, its sampled ranges) and set against at least one other
+file, and that no later stage skipped: it excludes link sets, empty files, refused or skipped names, names left
+without a readable same-size partner, and anything a stop left unread, so it can be below listed minus skipped. It
+never exceeds entries.length. Compared is not equal: only groups claim equal content, and a stop after the sample
+can leave counted entries unconfirmed.
 No result authorises deleting, moving, renaming or creating links. No reclaim estimate is supplied.
 
 Personal content reads are open, local and read-only. Before resolving catalogue candidates or

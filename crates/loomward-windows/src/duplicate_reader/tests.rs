@@ -516,6 +516,49 @@ impl ContentReader for FailsFirstHash {
         Collision.equal(left, right, entries, meter)
     }
 }
+/// Reads fine at the partial stage, then fails the full hash of entry 0.
+struct FailsFirstFullHash;
+impl ContentReader for FailsFirstFullHash {
+    fn validate(&mut self, index: usize, entry: &Entry, meter: &Meter) -> Result<(), Reason> {
+        Collision.validate(index, entry, meter)
+    }
+    fn hash(
+        &mut self,
+        index: usize,
+        entry: &Entry,
+        partial: bool,
+        meter: &mut Meter,
+    ) -> Result<[u8; 32], Reason> {
+        if index == 0 && !partial {
+            return Err(Reason::AccessDenied);
+        }
+        Collision.hash(index, entry, partial, meter)
+    }
+    fn equal(
+        &mut self,
+        left: usize,
+        right: usize,
+        entries: &[Entry],
+        meter: &mut Meter,
+    ) -> Result<bool, Skip> {
+        Collision.equal(left, right, entries, meter)
+    }
+}
+#[test]
+fn core_compared_excludes_an_entry_skipped_after_the_partial_stage() {
+    let entries = [
+        synthetic_entry(1, "1", 4),
+        synthetic_entry(2, "1", 4),
+        synthetic_entry(3, "1", 4),
+    ];
+    let report = group(
+        &entries,
+        &mut FailsFirstFullHash,
+        &mut Meter::new(Budget::test()),
+    );
+    assert_eq!(report.skipped.len(), 1);
+    assert_eq!(report.compared, 2);
+}
 #[test]
 fn core_compared_excludes_a_partner_whose_read_failed() {
     let entries = [synthetic_entry(1, "1", 4), synthetic_entry(2, "1", 4)];
