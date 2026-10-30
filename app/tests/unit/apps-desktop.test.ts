@@ -71,3 +71,15 @@ it('offers Largest first on Applications and sends the sort with every page requ
   expect(src).toContain("largestFirst ? { sort: 'size_desc' as const } : {}");
   expect(src).toContain('void load();');
 });
+
+it('keeps the Largest first toggle mounted outside the loaded-applications block, so focus survives a reload', () => {
+  const src = readFileSync(join(import.meta.dirname, '..', '..', 'src', 'lib', 'ui', 'InventoryView.svelte'), 'utf8');
+  const toggle = src.indexOf('Largest first</label>');
+  // load() sets apps = null, so anything inside the top-level `{#if apps}` unmounts on every reload.
+  const loaded = src.indexOf('\n{#if apps}\n');
+  expect(toggle).toBeGreaterThan(-1);
+  expect(loaded).toBeGreaterThan(-1);
+  expect(toggle).toBeLessThan(loaded);
+  expect(toggle).toBeGreaterThan(src.indexOf('<div class="headrow">'));
+  expect(src.slice(src.indexOf('<div class="headrow">'), toggle)).toContain("kind === 'applications'");
+});

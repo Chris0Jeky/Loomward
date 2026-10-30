@@ -58,7 +58,10 @@
     <h1>{title}</h1>
     <p class="lede">{kind === 'applications' ? 'Installed application evidence, with each provider’s coverage kept visible.' : 'Personal and public contexts, with redirection and shortcut health kept separate.'}</p>
   </div>
-  <button type="button" class="btn" disabled={busy} onclick={() => void load()}>Refresh {title.toLowerCase()}</button>
+  <div class="controls">
+    {#if kind === 'applications'}<label><input type="checkbox" checked={largestFirst} disabled={busy} onchange={(e) => { largestFirst = e.currentTarget.checked; void load(); }} /> Largest first</label>{/if}
+    <button type="button" class="btn" disabled={busy} onclick={() => void load()}>Refresh {title.toLowerCase()}</button>
+  </div>
 </div>
 <p class="sr-only" role="status" aria-live="polite" aria-atomic="true">{say.text}</p>
 {#if error}<p class="bad">{error}</p>{/if}
@@ -79,7 +82,6 @@
   <section class="panel" aria-labelledby="inv-apps">
     <h2 id="inv-apps">Reported applications</h2>
     <p class="note">Sizes are provider estimates. Unknown sizes stay unknown; application locations are evidence only.</p>
-    <label><input type="checkbox" checked={largestFirst} disabled={busy} onchange={(e) => { largestFirst = e.currentTarget.checked; void load(); }} /> Largest first</label>
     {#if largestFirst}<p class="note">Ordered by estimated size across all pages. Applications with an unknown size come last, not as zero.</p>{/if}
     <!-- svelte-ignore a11y_no_noninteractive_tabindex (keyboard access to horizontal scrolling) -->
     <div class="tbl-wrap" tabindex="0" role="region" aria-label="Installed applications">
@@ -138,6 +140,7 @@
 <style>
   .headrow { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: start; gap: var(--sp-3); }
   .headrow > div { flex: 1 1 280px; }
+  .controls { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-3); flex: 0 0 auto; }
   .meta { margin: 0 0 var(--sp-3); color: var(--muted); }
   dd { overflow-wrap: anywhere; }
   .tbl { min-width: 680px; }
