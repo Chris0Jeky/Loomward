@@ -1,4 +1,4 @@
--- Rules v3 (v2 plus ComfyUI, A1111 and Steam): safe rows are inlined into indexed lookups, never materialised across the catalogue.
+-- Rules v4 (v3 plus Windows leftovers; v3 is v2 plus ComfyUI, A1111 and Steam): safe rows are inlined into indexed lookups, never materialised across the catalogue.
 -- The top-down walk stops at stores, dependency/git directories and v1 project outputs.
 WITH RECURSIVE
 safe AS NOT MATERIALIZED (
@@ -38,7 +38,46 @@ rules AS NOT MATERIALIZED (
       -- Steam: each game folder under steamapps/common, where steamapps records an app manifest.
       WHEN p.name='common' AND g.name='steamapps'
         AND EXISTS(SELECT 1 FROM files f WHERE f.dir_id=g.id AND f.name GLOB 'appmanifest_*.acf') THEN 'steam'
-      -- Root-level advice is queried first; keep shielding its subtrees here.
+      -- Windows leftovers (rules v4): parent-chain names only, wherever AppData sits under the grant.
+      WHEN d.name COLLATE NOCASE IN ('Temp','CrashDumps','D3DSCache')
+        AND p.name COLLATE NOCASE='Local' AND g.name COLLATE NOCASE='AppData' THEN
+        CASE lower(d.name) WHEN 'temp' THEN 'temp' WHEN 'crashdumps' THEN 'crash-dumps'
+          ELSE 'shader-cache' END
+      WHEN ((d.name COLLATE NOCASE IN ('DXCache','GLCache') AND p.name COLLATE NOCASE='NVIDIA')
+          OR (d.name COLLATE NOCASE='DxCache' AND p.name COLLATE NOCASE='AMD'))
+        AND g.name COLLATE NOCASE='Local'
+        AND EXISTS(SELECT 1 FROM dir h WHERE h.id=g.parent_id AND h.name COLLATE NOCASE='AppData')
+        THEN 'shader-cache'
+      WHEN d.name COLLATE NOCASE='Cache' AND p.name COLLATE NOCASE='DeliveryOptimization'
+        AND g.name COLLATE NOCASE='Windows'
+        AND EXISTS(SELECT 1 FROM dir h JOIN dir i ON i.id=h.parent_id JOIN dir j ON j.id=i.parent_id
+          JOIN dir k ON k.id=j.parent_id
+          WHERE h.id=g.parent_id AND h.name COLLATE NOCASE='Microsoft' AND i.name COLLATE NOCASE='Local'
+            AND j.name COLLATE NOCASE='AppData' AND k.name COLLATE NOCASE='NetworkService')
+        THEN 'delivery-optimization'
+      -- Root-level advice is queried first; keep shielding its subtrees here, v4 stores included.
+      WHEN p.id=?1 AND (d.name COLLATE NOCASE IN ('Windows.old','$WINDOWS.~BT','$WINDOWS.~WS')
+        OR (d.name COLLATE NOCASE IN ('AMD','NVIDIA')
+          AND d.listing_state IN ('complete','incomplete')
+          AND coalesce(d.listing_outcome,'complete') NOT IN ('stale','excluded','denied','unscanned')
+          -- Same driver-payload predicate as machine-stores-root.sql.
+          AND (EXISTS(SELECT 1 FROM files f WHERE f.dir_id=d.id AND f.name COLLATE NOCASE='Setup.exe')
+            OR EXISTS(SELECT 1 FROM safe c WHERE c.parent_id=d.id
+              AND (c.name COLLATE NOCASE IN ('Packages','Display.Driver','DisplayDriver')
+                OR EXISTS(SELECT 1 FROM files f WHERE f.dir_id=c.id AND f.name COLLATE NOCASE='Setup.exe'))))))
+        THEN 'pruned'
+      WHEN p.parent_id=?1 AND (
+        (p.name COLLATE NOCASE='Windows'
+          AND d.name COLLATE NOCASE IN ('Temp','Minidump','LiveKernelReports','Installer'))
+        OR (p.name COLLATE NOCASE='ProgramData' AND d.name COLLATE NOCASE='Package Cache')) THEN 'pruned'
+      -- The root query matches SoftwareDistribution case-insensitively for Delivery Optimization.
+      WHEN d.name COLLATE NOCASE='DeliveryOptimization' AND p.name COLLATE NOCASE='SoftwareDistribution'
+        AND g.name COLLATE NOCASE='Windows' AND g.parent_id=?1 THEN 'pruned'
+      WHEN d.name COLLATE NOCASE IN ('ReportArchive','ReportQueue') AND p.name COLLATE NOCASE='WER'
+        AND g.name COLLATE NOCASE='Windows'
+        AND EXISTS(SELECT 1 FROM dir h JOIN dir i ON i.id=h.parent_id
+          WHERE h.id=g.parent_id AND h.name COLLATE NOCASE='Microsoft'
+            AND i.name COLLATE NOCASE='ProgramData' AND i.parent_id=?1) THEN 'pruned'
       WHEN d.name='$Recycle.Bin' AND p.id=?1 THEN 'pruned'
       WHEN d.name IN ('WinSxS','SoftwareDistribution') AND p.name='Windows'
         AND p.parent_id=?1 THEN 'pruned'

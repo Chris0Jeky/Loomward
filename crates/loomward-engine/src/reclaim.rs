@@ -24,7 +24,7 @@ use std::{
 };
 
 /// The plan's recogniser rules version (docs/52 section 3).
-pub const RULES_VERSION: u32 = 3;
+pub const RULES_VERSION: u32 = 4;
 /// Reason for unknown relief when the link-count pass did not verify every identity.
 pub const RELIEF_UNOBSERVED: &str = "hard links outside the candidate, or not observed";
 const SIZES_UNKNOWN: &str =
@@ -314,6 +314,11 @@ pub fn plan(input: ReclaimInput) -> EngineResult<ReclaimPlan> {
                 ("model_store", _) => GroupKind::Relocate,
                 // Steam's supported step is Move install folder; uninstall stays the owner's call.
                 ("game_library", _) => GroupKind::Relocate,
+                // Windows' own leftovers: the owner step names Windows' tool or a manual review.
+                ("windows_leftover", _) => GroupKind::ToolOwnedCleanup,
+                // No supported cleanup command (crash dumps, driver installer payloads): the
+                // owner reviews and removes by hand, which docs/52 section 5 files as archive.
+                ("windows_manual_leftover", _) => GroupKind::ArchiveCandidates,
                 // A checkout may hold unique work: never on the cleanup list.
                 ("agent_worktree", _) => GroupKind::ArchiveCandidates,
                 _ => GroupKind::Informational,

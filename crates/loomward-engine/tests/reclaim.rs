@@ -801,7 +801,7 @@ fn reclaim_rules_v3_model_folders_and_game_libraries_are_relocate_candidates() {
     let common = lab.directory(steamapps, "common", 0);
     let game = NodeKey::Dir(lab.directory(common, "Synthetic Game", 900));
     let plan = reclaim::plan(lab.input()).unwrap();
-    assert_eq!(plan.rules_version, 3);
+    assert_eq!(plan.rules_version, 4);
     for (node, class, provider) in [
         (checkpoints, "model_store", "comfyui"),
         (game, "game_library", "steam"),
@@ -837,8 +837,8 @@ fn reclaim_wrong_rules_version_is_refused() {
         input.developer[0].rules_version = version;
         refused(&input);
     }
-    // Machine stores must be rules v3 (the plan's RULES_VERSION).
-    for version in [0, 1, 2, 4, u32::MAX] {
+    // Machine stores must be rules v4 (the plan's RULES_VERSION).
+    for version in [0, 1, 2, 3, 5, u32::MAX] {
         let mut input = lab.input();
         input.machine[0].rules_version = version;
         refused(&input);
@@ -846,7 +846,73 @@ fn reclaim_wrong_rules_version_is_refused() {
     // Positive control: the shipped versions plan Ok and stamp the plan version.
     let plan = reclaim::plan(lab.input()).unwrap();
     assert_eq!(plan.rules_version, RULES_VERSION);
-    assert_eq!(plan.rules_version, 3);
+    assert_eq!(plan.rules_version, 4);
+}
+
+/// Rules v4: Windows leftovers plan under tool-owned cleanup with the usual relief rule, and the
+/// installer caches stay informational, never reclaimable.
+#[test]
+fn reclaim_rules_v4_windows_leftovers_are_cleanup_and_installer_caches_are_informational() {
+    let lab = Lab::new();
+    let old = NodeKey::Dir(lab.directory(lab.dir, "Windows.old", 400));
+    let windows = lab.directory(lab.dir, "Windows", 0);
+    let temp = NodeKey::Dir(lab.directory(windows, "Temp", 200));
+    let installer = NodeKey::Dir(lab.directory(windows, "Installer", 300));
+    let dump = NodeKey::File(lab.file(windows, "MEMORY.DMP", 500));
+    let programdata = lab.directory(lab.dir, "ProgramData", 0);
+    let package_cache = NodeKey::Dir(lab.directory(programdata, "Package Cache", 600));
+    let local = lab.directory(lab.dir, "AppData", 0);
+    let local = lab.directory(local, "Local", 0);
+    let crash = NodeKey::Dir(lab.directory(local, "CrashDumps", 150));
+    let extract = lab.directory(lab.dir, "NVIDIA", 700);
+    lab.directory(extract, "DisplayDriver", 0);
+    let extract = NodeKey::Dir(extract);
+    let mut input = lab.input();
+    // One leftover has an observed deletion set; the others have none.
+    input.files.insert(
+        old,
+        observed(vec![name("a", 1, 200, 1, 0), name("b", 2, 200, 1, 0)]),
+    );
+    let plan = reclaim::plan(input).unwrap();
+    assert_eq!(plan.rules_version, 4);
+    for node in [old, temp, dump] {
+        let (group, c) = find(&plan, node);
+        assert_eq!(group, GroupKind::ToolOwnedCleanup, "{node:?}");
+        assert_eq!((c.class, c.provider), ("windows_leftover", "windows"));
+        assert!(c.relocation.is_none());
+        assert!(c.owner_step.contains("Disk Cleanup") || c.owner_step.contains("Storage"));
+    }
+    let (_, c) = find(&plan, old);
+    assert_eq!(c.reclaimable_bytes, Some(400));
+    // No link pass ran for the others: relief is unobserved, never claimed from names.
+    for node in [temp, dump] {
+        let (_, c) = find(&plan, node);
+        assert_eq!(
+            (c.reclaimable_bytes, c.reclaimable_reason),
+            (None, Some(RELIEF_UNOBSERVED))
+        );
+    }
+    // No supported cleanup command: reviewed and removed by hand, so Archive candidates.
+    for (node, step) in [(crash, "Review"), (extract, "Delete by hand")] {
+        let (group, c) = find(&plan, node);
+        assert_eq!(group, GroupKind::ArchiveCandidates, "{node:?}");
+        assert_eq!(
+            (c.class, c.provider),
+            ("windows_manual_leftover", "windows")
+        );
+        assert!(c.owner_step.starts_with(step), "{}", c.owner_step);
+        assert_eq!(c.reclaimable_bytes, None);
+    }
+    for node in [installer, package_cache] {
+        let (group, c) = find(&plan, node);
+        assert_eq!(group, GroupKind::Informational, "{node:?}");
+        assert_eq!((c.class, c.provider), ("system_managed", "windows"));
+        assert_eq!(c.reclaimable_bytes, None);
+        assert!(c
+            .reclaimable_reason
+            .is_some_and(|r| r.contains("never counted")));
+        assert!(c.owner_step.contains("never remove by hand"));
+    }
 }
 
 /// Caller expectation (6): a deletion set larger than linkcount::MAX_FILES_PER_GROUP gets

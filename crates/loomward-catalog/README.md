@@ -279,5 +279,10 @@ never a reclaimability estimate. The `agent_worktree` class means only that a `.
 marks a linked worktree, a submodule or a separate-git-dir checkout; names alone cannot tell
 which. Check `git worktree list` and `git submodule status` in the owning repository before
 removing anything; the marker does not prove ownership or disposability.
+Rules v4 add names-only Windows leftovers (classes `windows_leftover`, and `windows_manual_leftover` for crash dumps and driver extracts: `Windows.old` and its
+siblings, memory dumps, error reports, `Temp`, `CrashDumps`, shader caches, driver extracts and
+Delivery Optimization) and the `Package Cache` and `Windows\Installer` stores as `system_managed`
+(see docs/52 section 3). Root-relative paths are matched by the root query; `AppData` paths by their
+parent chain in the walk.
 Synthetic recognition, decoy, shielding, coverage and row-checksum tests are in
 `tests/machine_stores.rs`.
