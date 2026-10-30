@@ -326,7 +326,7 @@ impl Inner {
     /// incarnation and subtree revision, on a complete root with no scan in flight. A targeted or
     /// partial run moves `subtree_rev` without a generation bump (#970 review); any other row is
     /// not shown, so its candidate stays `RELIEF_UNOBSERVED`.
-    fn observed_relief(
+    pub(crate) fn observed_relief(
         &self,
         conn: &Connection,
         root: i64,

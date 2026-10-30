@@ -954,6 +954,40 @@ impl PlacementInput for Input<'_> {
         check(deadline)?;
         Ok(files)
     }
+
+    /// A reclaim verdict (#939) for this directory, still bound to its root's generation, active
+    /// grant, node incarnation and subtree revision in this read's own snapshot.
+    fn stored_relief(
+        &self,
+        subtree: &Subtree,
+        _: &[RootGeneration],
+        deadline: Instant,
+    ) -> EngineResult<Option<u64>> {
+        check(deadline)?;
+        let dir: i64 = subtree
+            .group_id
+            .strip_prefix("cg_")
+            .and_then(|s| s.parse().ok())
+            .expect("internal group");
+        let root: Option<i64> = self
+            .conn
+            .query_row("SELECT root_id FROM main.dir WHERE id=?1", [dir], |r| {
+                r.get(0)
+            })
+            .optional()
+            .map_err(sql)?;
+        let Some(root) = root else { return Ok(None) };
+        let Ok(stored) = self.inner.observed_relief(&self.conn, root) else {
+            // An unreadable verdict leaves this group's relief unknown, as before #939; a deadline still surfaces.
+            check(deadline)?;
+            return Ok(None);
+        };
+        check(deadline)?;
+        Ok(stored
+            .into_iter()
+            .find(|(node, _)| *node == loomward_catalog::NodeKey::Dir(dir))
+            .map(|(_, bytes)| bytes))
+    }
 }
 
 /// A catalogue file row's listed identity, as the link-count pass expects it (`linkcount::Entry`).
