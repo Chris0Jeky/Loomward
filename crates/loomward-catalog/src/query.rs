@@ -1076,10 +1076,16 @@ mod wal_reader_tests {
             })
             .collect();
         for round in 0..rounds {
-            // A fresh frame each round, so every reader snapshot uses a WAL read slot.
+            // A fresh frame each round, so every reader snapshot uses a WAL read slot. Only this write may
+            // wait out a transient writer (#1054); the checkpoint below keeps a zero timeout, so a leaked
+            // read lock (#390) still fails it.
+            state
+                .busy_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
             state
                 .execute("INSERT INTO wal_probe VALUES(?1)", [round as i64])
                 .unwrap();
+            state.busy_timeout(std::time::Duration::ZERO).unwrap();
             barrier.wait(); // readers open their snapshots
             barrier.wait(); // every reader is inside its transaction
             barrier.wait(); // every reader has committed
