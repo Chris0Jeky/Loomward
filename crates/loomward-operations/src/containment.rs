@@ -86,6 +86,34 @@ fn incomplete(tree: &Tree) -> bool {
         })
 }
 
+/// A file whose size, creation, last-write or change time differs between two reads of the same
+/// root (#1037): the digest taken in between no longer describes it.
+pub const CHANGED_DURING_COMPARE: &str = "changed_during_compare";
+
+/// Re-verifies A after every hashing read (#1037). `again` is a listing-only read of the same root;
+/// a file of `a` that is gone from it, or whose size or creation, last-write or change time moved,
+/// loses its content, so it reports `Unknown` instead of a verdict on bytes that may be gone.
+/// Files that appeared since are outside "A as read" and are not reported.
+pub fn recheck_source(a: &mut Tree, again: &Tree) {
+    use crate::tree::MetadataClass::{ChangeTime, CreationTime, LastWriteTime};
+    for (path, node) in &mut a.nodes {
+        let Ok(node) = node else { continue };
+        if node.kind != Kind::File {
+            continue;
+        }
+        let same = matches!(again.nodes.get(path), Some(Ok(now))
+        if now.kind == Kind::File
+            && now.size == node.size
+            && [CreationTime, LastWriteTime, ChangeTime].iter().all(|class| {
+                matches!((node.metadata.get(class), now.metadata.get(class)),
+                    (Some(Ok(before)), Some(Ok(after))) if before == after)
+            }));
+        if !same {
+            node.content = Err(CHANGED_DURING_COMPARE);
+        }
+    }
+}
+
 pub fn containment(a: &Tree, b: &Tree) -> Report {
     // Index B once (#1011 review): the first trusted path per (size, digest); per size, why some
     // same-size B file cannot vouch (unread, or under a directory that changed or failed during
@@ -172,6 +200,11 @@ pub fn containment(a: &Tree, b: &Tree) -> Report {
             // A was not read because B had no file of its size: only a complete B still lacking
             // that size proves it. Any other unread A file stays unknown.
             Err("not_requested") if !sizes.contains(&size) && !b_incomplete => Coverage::NotCovered,
+            // B gained a file of this size after its listing, so A was never asked for: the cause
+            // is drift in B, and only a fresh run can say (#1037).
+            Err("not_requested") if sizes.contains(&size) => {
+                unknown(Side::Destination, CHANGED_DURING_COMPARE)
+            }
             Err(reason) => unknown(Side::Source, reason),
         };
         report.items.push(Item {
@@ -186,7 +219,7 @@ pub fn containment(a: &Tree, b: &Tree) -> Report {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tree::{Node, Observation};
+    use crate::tree::{MetadataClass, Node, Observation};
 
     fn dir() -> Observation<Node> {
         Ok(Node {
@@ -458,6 +491,88 @@ mod tests {
             ),
             (1, 0, 1)
         );
+    }
+
+    #[test]
+    fn a_size_b_gained_after_its_listing_is_destination_drift_not_a_source_gap() {
+        // A was never hashed because B's listing had no file of its size; B's final read does.
+        let mut unread = file(30, 0).unwrap();
+        unread.content = Err("not_requested");
+        let a = tree(&[("late", Ok(unread))]);
+        let b = tree(&[("arrived", file(30, 4))]);
+        assert_eq!(
+            coverage(&containment(&a, &b)),
+            vec![(
+                "late".into(),
+                Coverage::Unknown {
+                    side: Side::Destination,
+                    reason: CHANGED_DURING_COMPARE
+                }
+            )]
+        );
+    }
+
+    fn stamped(size: u64, content: u8, write: &[u8]) -> Observation<Node> {
+        let mut node = file(size, content).unwrap();
+        for (class, value) in [
+            (MetadataClass::CreationTime, &b"c"[..]),
+            (MetadataClass::LastWriteTime, write),
+            (MetadataClass::ChangeTime, &b"x"[..]),
+        ] {
+            node.metadata.insert(class, Ok(value.to_vec()));
+        }
+        Ok(node)
+    }
+
+    #[test]
+    fn a_changed_or_vanished_source_file_loses_its_verdict_after_the_final_recheck() {
+        let read = tree(&[
+            ("same", stamped(4, 1, b"w1")),
+            ("rewritten", stamped(4, 2, b"w1")),
+            ("grown", stamped(4, 3, b"w1")),
+            ("gone", stamped(4, 4, b"w1")),
+            ("dir", dir()),
+        ]);
+        let again = tree(&[
+            ("same", stamped(4, 0, b"w1")),
+            ("rewritten", stamped(4, 0, b"w2")),
+            ("grown", stamped(5, 0, b"w1")),
+            ("dir", dir()),
+            ("new", stamped(4, 0, b"w1")),
+        ]);
+        let mut a = read.clone();
+        recheck_source(&mut a, &again);
+        let b = tree(&[
+            ("copy", file(4, 1)),
+            ("c2", file(4, 2)),
+            ("c3", file(4, 3)),
+            ("c4", file(4, 4)),
+        ]);
+        let drift = Coverage::Unknown {
+            side: Side::Source,
+            reason: CHANGED_DURING_COMPARE,
+        };
+        // Before the recheck every file is covered; after it only the untouched one stays so.
+        assert!(containment(&read, &b)
+            .items
+            .iter()
+            .all(|i| matches!(i.coverage, Coverage::Covered { .. })));
+        assert_eq!(
+            coverage(&containment(&a, &b)),
+            vec![
+                ("gone".into(), drift.clone()),
+                ("grown".into(), drift.clone()),
+                ("rewritten".into(), drift),
+                ("same".into(), covered("copy")),
+            ]
+        );
+        // A file whose times were never observed cannot be re-verified either.
+        let mut blind = tree(&[("same", file(4, 1))]);
+        recheck_source(&mut blind, &again);
+        assert!(matches!(
+            blind.nodes[Path::new("same")].as_ref().unwrap().content,
+            Err(CHANGED_DURING_COMPARE)
+        ));
     }
 
     #[test]
