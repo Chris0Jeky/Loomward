@@ -168,6 +168,29 @@ pub fn read_tree(
         Err(Reason::Unsupported)
     }
 }
+
+/// `read_tree` hashing only files whose size `want` accepts; every other file keeps its observed
+/// size and gets `content: Err("not_requested")` without spending read budget (#1011).
+#[cfg(any(feature = "content-read", test))]
+#[doc(hidden)]
+pub fn read_tree_wanting(
+    root: &Path,
+    expected: &OpenedIdentity,
+    budget: Budget,
+    max_entries: usize,
+    cancel: Arc<AtomicBool>,
+    want: &dyn Fn(u64) -> bool,
+) -> Result<(loomward_operations::tree::Tree, u64), Reason> {
+    #[cfg(windows)]
+    {
+        native::tree::read_tree_wanting(root, expected, budget, max_entries, cancel, want)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (root, expected, budget, max_entries, cancel, want);
+        Err(Reason::Unsupported)
+    }
+}
 #[cfg(all(windows, test))]
 fn inspect_with_hook(
     root: &Path,

@@ -2,7 +2,9 @@
 #![cfg(windows)]
 
 use loomward_lab::pathological::{generate, GeneratedTree, Profile};
-use loomward_protocol::{CallContext, DatasetClass, ResponseEnvelope, ViewService};
+use loomward_protocol::{
+    CallContext, DatasetClass, ErrorBody, ErrorCode, ResponseEnvelope, ViewService,
+};
 use loomward_service::{Config, Service};
 use rusqlite::Connection;
 use serde_json::{json, Value};
@@ -22,6 +24,10 @@ struct Lab {
 }
 
 fn call(service: &Service, command: &str, payload: Value) -> Value {
+    try_call(service, command, payload).unwrap_or_else(|error| panic!("{command}: {error:?}"))
+}
+
+fn try_call(service: &Service, command: &str, payload: Value) -> Result<Value, ErrorBody> {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let request = serde_json::from_value(json!({
@@ -30,8 +36,8 @@ fn call(service: &Service, command: &str, payload: Value) -> Value {
     }))
     .unwrap();
     match service.call(request, &CallContext::http()) {
-        ResponseEnvelope::Ok(reply) => reply.result.into(),
-        ResponseEnvelope::Err(reply) => panic!("{command}: {:?}", reply.error),
+        ResponseEnvelope::Ok(reply) => Ok(reply.result.into()),
+        ResponseEnvelope::Err(reply) => Err(reply.error),
     }
 }
 
@@ -144,12 +150,24 @@ impl Lab {
         done
     }
     fn slice(&self) -> Value {
-        call(
-            &self.service,
-            "tree.slice",
-            json!({"anchor": {"kind":"root", "root_id":self.root},
-            "depth":8, "max_nodes":256, "min_share":0.0, "basis":"logical", "include_files":true}),
-        )
+        // A completed scan may still be repairing aggregates: tree.slice answers a retryable
+        // PartialCoverage until they settle (the soak harness waits the same way). Bounded.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let payload = json!({"anchor": {"kind":"root", "root_id":self.root},
+            "depth":8, "max_nodes":256, "min_share":0.0, "basis":"logical", "include_files":true});
+            match try_call(&self.service, "tree.slice", payload) {
+                Ok(slice) => return slice,
+                Err(e)
+                    if e.code == ErrorCode::PartialCoverage
+                        && e.retryable
+                        && Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(50))
+                }
+                Err(e) => panic!("tree.slice: {e:?}"),
+            }
+        }
     }
     fn forget(&self) {
         call(
