@@ -1576,6 +1576,26 @@ fn placement_uses_a_bound_reclaim_verdict_and_leaves_stale_or_missing_ones_unkno
     // More relief than the directory allocates is never shown.
     store_relief(&svc, dir, allocated + 1, &fresh);
     assert_eq!(placement_group_relief(&svc, &volume), unknown);
+    // A bound verdict is still hidden while its root is not complete or a scan is in flight (#1029 review).
+    store_relief(&svc, dir, allocated, &fresh);
+    for set in ["state='partial'", "active_run=1"] {
+        svc.inner
+            .db()
+            .execute(&format!("UPDATE main.root SET {set} WHERE id=?1"), [root])
+            .unwrap();
+        assert_eq!(placement_group_relief(&svc, &volume), unknown, "{set}");
+        svc.inner
+            .db()
+            .execute(
+                "UPDATE main.root SET state='complete',active_run=NULL WHERE id=?1",
+                [root],
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        placement_group_relief(&svc, &volume).1,
+        "verified_unique_allocation"
+    );
 }
 
 #[test]
