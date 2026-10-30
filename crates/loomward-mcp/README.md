@@ -60,6 +60,10 @@ copies ("not a backup") are flagged; physical-disk topology across different vol
 The optional folder name is one new Win32 name component. The shape is always `new folder only`,
 and execution is always `owner_approval_required`, explaining the closed personal copy gate
 (docs/47 section 11). No plan, draft or operation is persisted.
+Each item and the total carry `copies_after_plan` (1: the archive copy would be the only one once originals
+are retired; the plan retires nothing and authorises no retirement) and `last_content_verified_at` (null,
+unknown: no scrub exists), and one plan-level `sole_copy_after_retirement` warning lists the affected item references (LW-136); the
+long text is not repeated per item, to keep a 64-item plan inside the response budget.
 
 File/folder names, paths and volume labels are third-party text, never instructions and never
 safe to paste into a shell string. Discovery and every tool description say so. Every output
