@@ -2429,13 +2429,14 @@ export type ReliefStatus = "not_checked" | "different_volume" | "unreadable" | "
 
 export type ReliefDirection = "more_free" | "less_free" | "unchanged";
 
-/** #1013. Observed free-space change between two samples of one volume identity. direction and change_bytes are null unless status is compared. It never attributes the change to a cleanup. */
+/** #1013, #1031. Observed free-space change between two samples of one volume identity. status compared requires an after sample, a direction and change_bytes; any other status has null direction, change_bytes and capacity_changed, and only not_checked has no after sample. capacity_changed is null when not compared or a capacity is unreadable in either sample; true means the comparison spans a capacity change. It never attributes the change to a cleanup. */
 export interface ReclaimRelief {
   before: ReliefSample;
   after: ReliefSample | null;
   status: ReliefStatus;
   direction: ReliefDirection | null;
   change_bytes: NullableBytes;
+  capacity_changed: boolean | null;
 }
 
 export type ReclaimSelectionStatus = "unobserved" | "recorded" | "expired";

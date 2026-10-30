@@ -15,5 +15,6 @@
   },
   "status": "compared",
   "direction": "more_free",
-  "change_bytes": "10000"
+  "change_bytes": "10000",
+  "capacity_changed": false
 }

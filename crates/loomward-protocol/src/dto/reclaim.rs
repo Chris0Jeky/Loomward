@@ -221,7 +221,7 @@ pub enum ReliefDirection {
 /// Observed free-space change between two samples. It says nothing about the cause: other writes
 /// happen between the samples, and a Recycle Bin move frees nothing until the bin is emptied.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, try_from = "ReclaimReliefWire")]
 pub struct ReclaimRelief {
     pub before: ReliefSample,
     #[serde(deserialize_with = "crate::types::required_nullable")]
@@ -231,4 +231,47 @@ pub struct ReclaimRelief {
     pub direction: Option<ReliefDirection>,
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub change_bytes: Option<Bytes>,
+    /// Whether the volume's capacity differs between the two compared samples. `null` is unknown:
+    /// not compared, or a capacity unreadable in either sample.
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub capacity_changed: Option<bool>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReclaimReliefWire {
+    before: ReliefSample,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    after: Option<ReliefSample>,
+    status: ReliefStatus,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    direction: Option<ReliefDirection>,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    change_bytes: Option<Bytes>,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    capacity_changed: Option<bool>,
+}
+
+/// #1031: `compared` carries an after sample, a direction and a change; every other status carries
+/// no direction, change or capacity flag, and only `not_checked` has no after sample.
+impl TryFrom<ReclaimReliefWire> for ReclaimRelief {
+    type Error = &'static str;
+    fn try_from(v: ReclaimReliefWire) -> Result<Self, Self::Error> {
+        let compared = v.status == ReliefStatus::Compared;
+        let comparison = (v.direction.is_some(), v.change_bytes.is_some());
+        if (compared && comparison != (true, true))
+            || (!compared && (comparison != (false, false) || v.capacity_changed.is_some()))
+            || v.after.is_none() != (v.status == ReliefStatus::NotChecked)
+        {
+            return Err("relief status disagrees with its sample, direction and change");
+        }
+        Ok(Self {
+            before: v.before,
+            after: v.after,
+            status: v.status,
+            direction: v.direction,
+            change_bytes: v.change_bytes,
+            capacity_changed: v.capacity_changed,
+        })
+    }
 }
