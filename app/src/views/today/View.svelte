@@ -20,7 +20,8 @@
   let jobs = $state<Job[] | null>(null);
   let reclaim = $state(new Map<string, ReclaimPlan | null>());
   let failedReclaim = $state(0);
-  let problems = $state<string[]>([]);
+  let loadProblems = $state<string[]>([]);
+  let reclaimProblems = $state<string[]>([]);
   let loaded = $state(false);
   let refreshed = $state(0); // bumped when a load ends, so the reclaim plans are read again with it
   let now = $state(Date.now());
@@ -40,7 +41,7 @@
     roots = r.status === 'fulfilled' ? r.value.result.roots : null;
     alerts = a.status === 'fulfilled' ? a.value.result : null;
     jobs = j.status === 'fulfilled' ? j.value.result.jobs : null;
-    problems = [r, a, j].flatMap((x) => (x.status === 'rejected' ? [session.handle(x.reason)] : []));
+    loadProblems = [r, a, j].flatMap((x) => (x.status === 'rejected' ? [session.handle(x.reason)] : []));
     loaded = true;
     refreshed++;
   }
@@ -49,19 +50,22 @@
     const c = session.client;
     const epoch = session.connectionEpoch; // the client object is constant across reconnects, the epoch is not
     const mine = ++reclaimTicket;
+    reclaimProblems = []; // each round replaces the last round's errors, they do not pile up
     if (!c || !ids.length) { reclaim = new Map(); failedReclaim = 0; return; }
     const settled = await Promise.allSettled(ids.map((id) => c.call('reclaim.plan', { volume_id: id, limit: 20 })));
     if (!alive || mine !== reclaimTicket || c !== session.client || epoch !== session.connectionEpoch) return;
-    reclaim =new Map(settled.map((s, i) => [ids[i]!, s.status === 'fulfilled' ? s.value.result : null] as const));
+    reclaim = new Map(settled.map((s, i) => [ids[i]!, s.status === 'fulfilled' ? s.value.result : null] as const));
     failedReclaim = settled.filter((s) => s.status === 'rejected').length;
-    for (const s of settled) if (s.status === 'rejected') problems = [...problems, session.handle(s.reason)];
+    reclaimProblems = settled.flatMap((s) => (s.status === 'rejected' ? [session.handle(s.reason)] : []));
   }
 
-  // The first read is immediate; later triggers (a scan end fires both scans.settled and job.state) coalesce into one read.
+  // The first read is immediate. Later triggers (a scan end fires both scans.settled and job.state, a running scan fires
+  // job.state about every 100 ms) share one pending timer: a throttle, so a long burst still reads once per window.
+  // A trigger inside the window is covered because the pending read starts after it.
   function refresh(): void {
     if (!started) { started = true; void load(); return; }
-    clearTimeout(timer);
-    timer = setTimeout(() => void load(), REFRESH_MS);
+    if (timer !== undefined) return;
+    timer = setTimeout(() => { timer = undefined; void load(); }, REFRESH_MS);
   }
   function onEvent(ev: { event: string }): void { if (ev.event === 'job.state') refresh(); }
 
@@ -85,6 +89,7 @@
     untrack(() => void loadReclaim(ids));
   });
 
+  const problems = $derived([...loadProblems, ...reclaimProblems]);
   const settled = $derived(loaded && (volumes.items !== null || volumes.error !== ''));
   const src = $derived<Sources>({ volumes: volumes.items, roots, alerts, jobs, reclaim });
   const rows = $derived(volumes.items ? volumeRows(volumes.items, roots, now) : []);

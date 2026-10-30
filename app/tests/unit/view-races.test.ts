@@ -429,7 +429,7 @@ function today(call: ReturnType<typeof vi.fn>) {
     scans: { settled: 0 }, untrack, alive: true, ticket: 0, reclaimTicket: 0, started: false, timer: undefined,
     JOBS_LIMIT: 100, REFRESH_MS: 250,
     roots: null as unknown, alerts: null as unknown, jobs: null as unknown, reclaim: new Map<string, unknown>(), failedReclaim: 0,
-    problems: [] as string[], loaded: false, refreshed: 0,
+    loadProblems: [] as string[], reclaimProblems: [] as string[], loaded: false, refreshed: 0,
   };
   return { state, code: viewScript('today', state, 'session.epoch') as unknown as TodayCode };
 }
@@ -484,6 +484,36 @@ describe('Today loads', () => {
     reply.resolve({ result: 'plan_from_the_old_engine' });
     await loading;
     expect(state.reclaim.size).toBe(0);
+  });
+
+  it('keeps reading during a long burst: job.state every 100 ms for 2 s still reads once per window', () => {
+    vi.useFakeTimers();
+    try {
+      const call = vi.fn(todayReply('rt_a'));
+      const { code } = today(call);
+      code.effect();
+      expect(call).toHaveBeenCalledTimes(3);
+      for (let t = 0; t < 2000; t += 100) {
+        code.onEvent({ event: 'job.state' });
+        vi.advanceTimersByTime(100);
+      }
+      const reads = (call.mock.calls.length - 3) / 3; // reads after the first, while the burst was still running
+      expect(reads).toBeGreaterThanOrEqual(5); // a trailing debounce would have read 0 times
+      expect(reads).toBeLessThanOrEqual(8); // about one per window, not one per event (19)
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('replaces reclaim errors each round instead of piling them up', async () => {
+    const call = vi.fn(async () => { throw new Error('plan unreadable'); });
+    const { state, code } = today(call);
+    await code.loadReclaim(['vo_a']);
+    await code.loadReclaim(['vo_a']);
+    expect(state.reclaimProblems).toEqual(['plan unreadable']);
+    call.mockImplementation(async () => ({ result: 'plan' }) as never);
+    await code.loadReclaim(['vo_a']);
+    expect(state.reclaimProblems).toEqual([]);
   });
 
   it('reads at once, then coalesces a burst of scan-end triggers into one more read', () => {
