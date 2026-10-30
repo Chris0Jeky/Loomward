@@ -1,6 +1,7 @@
 //! Synthetic catalogue fixtures and, for `reclaim.observe` (#939), synthetic lab trees whose
 //! names the metadata-only link-count pass opens. No cleanup anywhere.
 use super::*;
+use loomward_catalog::NodeKey;
 
 fn fixture(svc: &Service) -> String {
     scanned(
@@ -502,6 +503,284 @@ fn reclaim_limit_applies_per_group_after_grouping() {
     assert!(filled.contains(&"informational".to_owned()), "{plan}");
 }
 
+/// An npm cache (machine store) with the given project directories inside it.
+fn npm_cache(projects: Vec<Node>) -> Node {
+    let mut inside = vec![
+        dir("content-v2", &[("c.bin", 1000)], vec![]),
+        dir("index-v5", &[("i.bin", 100)], vec![]),
+    ];
+    inside.extend(projects);
+    dir("_cacache", &[], inside)
+}
+
+fn npm_project(name: &'static str) -> Node {
+    dir(
+        name,
+        &[("package.json", 10)],
+        vec![dir("node_modules", &[("m.js", 4000)], vec![])],
+    )
+}
+
+/// Every candidate in every group as (group kind, name, evidence).
+fn listed(plan: &Value) -> Vec<(String, String, Vec<String>)> {
+    plan["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|g| {
+            g["candidates"].as_array().unwrap().iter().map(|c| {
+                (
+                    g["kind"].as_str().unwrap().to_owned(),
+                    c["name"].as_str().unwrap_or_default().to_owned(),
+                    c["evidence"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|e| e.as_str().unwrap().to_owned())
+                        .collect(),
+                )
+            })
+        })
+        .collect()
+}
+
+/// #1076: a candidate inside another candidate is listed once, so a sum over a group (the Today
+/// headline) cannot count the same bytes twice.
+#[test]
+fn reclaim_lists_a_candidate_nested_in_another_only_under_the_outer_one() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    scanned(
+        &svc,
+        1,
+        &dir("", &[], vec![npm_cache(vec![npm_project("web")])]),
+    );
+    let plan = reclaim(&svc);
+    let all = listed(&plan);
+    assert_eq!(all.len(), 1, "{plan}");
+    let (group, name, evidence) = &all[0];
+    assert_eq!(
+        (group.as_str(), name.as_str()),
+        ("tool_owned_cleanup", "_cacache")
+    );
+    assert_eq!(
+        evidence.last().unwrap(),
+        "Contains 1 other recognised candidate, counted once here."
+    );
+    // The outer candidate's own size still includes the nested bytes: they are counted once, there.
+    assert_eq!(
+        plan["groups"][0]["candidates"][0]["allocated_bytes"],
+        "5110"
+    );
+    assert_eq!(plan["partial"], false, "{plan}");
+}
+
+#[test]
+fn reclaim_keeps_siblings_and_counts_every_candidate_a_store_absorbs() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    scanned(
+        &svc,
+        1,
+        &dir(
+            "",
+            &[],
+            vec![
+                npm_project("beside"),
+                npm_cache(vec![
+                    npm_project("web"),
+                    dir(
+                        "tool",
+                        &[("Cargo.toml", 10)],
+                        vec![dir("target", &[("t.bin", 700)], vec![])],
+                    ),
+                ]),
+            ],
+        ),
+    );
+    let all = listed(&reclaim(&svc));
+    let names: Vec<_> = all.iter().map(|(_, name, _)| name.as_str()).collect();
+    assert_eq!(names.len(), 2, "{all:?}");
+    assert!(
+        names.contains(&"_cacache") && names.contains(&"node_modules"),
+        "{all:?}"
+    );
+    for (_, name, evidence) in &all {
+        let note = evidence.iter().find(|e| e.starts_with("Contains "));
+        if name == "_cacache" {
+            assert_eq!(
+                note.unwrap(),
+                "Contains 2 other recognised candidates, counted once here."
+            );
+        } else {
+            assert!(note.is_none(), "a sibling absorbs nothing: {all:?}");
+        }
+    }
+}
+
+/// A hand-built plan over real catalogue rows: a, a/b, a/b/c and a file in c, spread over groups.
+/// The detectors shield nested stores, so a chain this deep needs the plan built directly.
+struct Chained {
+    dirs: [i64; 3],
+    file: i64,
+}
+
+fn chained(svc: &Service) -> Chained {
+    scanned(
+        svc,
+        1,
+        &dir(
+            "",
+            &[],
+            vec![dir(
+                "a",
+                &[],
+                vec![dir("b", &[], vec![dir("c", &[("f.bin", 5)], vec![])])],
+            )],
+        ),
+    );
+    let db = svc.inner.db();
+    let id = |name: &str| -> i64 {
+        db.query_row("SELECT id FROM main.dir WHERE name=?1", [name], |r| {
+            r.get(0)
+        })
+        .unwrap()
+    };
+    let file = db
+        .query_row("SELECT id FROM main.file WHERE name='f.bin'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    Chained {
+        dirs: [id("a"), id("b"), id("c")],
+        file,
+    }
+}
+
+fn candidate(node: Option<NodeKey>, name: &str) -> loomward_engine::reclaim::ReclaimCandidate {
+    loomward_engine::reclaim::ReclaimCandidate {
+        node_id: node.map(|n| n.reference()),
+        name: Some(name.into()),
+        class: "package_cache",
+        provider: "npm",
+        kind: None,
+        logical_bytes: None,
+        allocated_bytes: None,
+        reclaimable_bytes: None,
+        reclaimable_reason: None,
+        coverage: "complete".into(),
+        owner_step: "",
+        relocation: None,
+        evidence: vec!["fact".into()],
+        uncertainty: "",
+    }
+}
+
+fn hand_plan(
+    groups: Vec<Vec<loomward_engine::reclaim::ReclaimCandidate>>,
+) -> loomward_engine::reclaim::ReclaimPlan {
+    use loomward_engine::reclaim::{GroupKind, ReclaimGroup};
+    let kinds = [
+        GroupKind::ToolOwnedCleanup,
+        GroupKind::Relocate,
+        GroupKind::ArchiveCandidates,
+        GroupKind::Informational,
+    ];
+    loomward_engine::reclaim::ReclaimPlan {
+        volume: Default::default(),
+        covered_roots: Vec::new(),
+        groups: kinds
+            .into_iter()
+            .zip(groups)
+            .map(|(kind, candidates)| ReclaimGroup { kind, candidates })
+            .collect(),
+        unaccounted_bytes: None,
+        rules_version: loomward_engine::reclaim::RULES_VERSION,
+        partial: false,
+        truncated: true,
+        budget_hit: false,
+    }
+}
+
+fn nodes_of(keys: &[NodeKey]) -> std::collections::HashMap<String, NodeKey> {
+    keys.iter().map(|k| (k.reference(), *k)).collect()
+}
+
+#[test]
+fn reclaim_keeps_only_the_outermost_of_a_deep_nesting_across_groups() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let c = chained(&svc);
+    let [a, b, cc] = c.dirs.map(NodeKey::Dir);
+    let file = NodeKey::File(c.file);
+    let mut plan = hand_plan(vec![
+        vec![candidate(Some(b), "b")],
+        vec![candidate(Some(a), "a")],
+        vec![candidate(Some(cc), "c"), candidate(Some(file), "f.bin")],
+        // The Recycle Bin from the API has no catalogue node: untouched.
+        vec![candidate(None, "bin")],
+    ]);
+    let nodes = nodes_of(&[a, b, cc, file]);
+    crate::reclaim::nested::dedupe(&svc.inner.db(), &mut plan, &nodes).unwrap();
+    let names: Vec<Vec<_>> = plan
+        .groups
+        .iter()
+        .map(|g| {
+            g.candidates
+                .iter()
+                .map(|c| c.name.clone().unwrap())
+                .collect()
+        })
+        .collect();
+    assert_eq!(
+        names,
+        [vec![], vec!["a".to_owned()], vec![], vec!["bin".to_owned()]]
+    );
+    let kept = &plan.groups[1].candidates[0];
+    assert_eq!(
+        kept.evidence.last().unwrap(),
+        "Contains 3 other recognised candidates, counted once here."
+    );
+    assert_eq!(plan.groups[3].candidates[0].evidence, ["fact"]);
+    assert!(!plan.partial, "a readable chain adds no partial mark");
+    assert!(
+        plan.truncated,
+        "dedupe leaves the engine's truncated flag alone"
+    );
+}
+
+#[test]
+fn reclaim_keeps_a_candidate_whose_ancestry_cannot_be_read_and_marks_the_plan_partial() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let c = chained(&svc);
+    let [a, b, cc] = c.dirs.map(NodeKey::Dir);
+    // b's parent row is gone, so c's chain stops short of the root and proves nothing about a.
+    svc.inner
+        .db()
+        .execute_batch(&format!(
+            "PRAGMA foreign_keys=OFF;UPDATE main.dir SET parent_id=999999 WHERE id={};PRAGMA foreign_keys=ON",
+            c.dirs[1]
+        ))
+        .unwrap();
+    let mut plan = hand_plan(vec![
+        vec![candidate(Some(a), "a"), candidate(Some(cc), "c")],
+        vec![],
+        vec![],
+        vec![],
+    ]);
+    let nodes = nodes_of(&[a, b, cc]);
+    crate::reclaim::nested::dedupe(&svc.inner.db(), &mut plan, &nodes).unwrap();
+    let names: Vec<_> = plan.groups[0]
+        .candidates
+        .iter()
+        .map(|c| c.name.clone().unwrap())
+        .collect();
+    assert_eq!(names, ["a", "c"], "unreadable ancestry keeps the candidate");
+    assert!(plan.partial, "and says the dedupe is incomplete");
+    assert_eq!(plan.groups[0].candidates[0].evidence, ["fact"]);
+}
+
 #[cfg(windows)]
 fn observe_job(svc: &Service) -> String {
     let (job, _) = ok(
@@ -723,17 +1002,29 @@ fn reclaim_selection_rejects_duplicates_non_candidates_wrong_volumes_and_ancestr
     );
     let nested_row = svc.inner.root_row(&nested).unwrap();
     let nested_plan = reclaim(&svc);
-    let ids: Vec<_> = nested_plan["groups"]
+    // The plan lists the nested `target` only under `linked` (#1076), so its id is sealed by hand:
+    // the selection must still refuse the pair when a client names both.
+    let linked: Vec<_> = nested_plan["groups"]
         .as_array()
         .unwrap()
         .iter()
         .flat_map(|g| g["candidates"].as_array().unwrap())
-        .filter(|c| {
-            c["name"] == "linked" || (c["name"] == "target" && c["allocated_bytes"] == "20")
-        })
+        .filter(|c| c["name"] == "linked" || c["allocated_bytes"] == "20")
         .map(|c| c["node_id"].clone())
         .collect();
-    assert_eq!(ids.len(), 2, "{nested_plan}");
+    assert_eq!(linked.len(), 1, "{nested_plan}");
+    let inner: i64 = svc
+        .inner
+        .db()
+        .query_row(
+            "SELECT t.id FROM main.dir t JOIN main.dir p ON p.id=t.parent_id WHERE t.name='target' AND p.name='linked'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let mut inner_ref = json!({"node_id":format!("nd_dir_{inner}")});
+    svc.inner.seal(&mut inner_ref).unwrap();
+    let ids = vec![linked[0].clone(), inner_ref["node_id"].clone()];
     assert!(err(request(json!(ids)))
         .message
         .as_str()

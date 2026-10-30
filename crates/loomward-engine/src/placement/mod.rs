@@ -109,7 +109,8 @@ pub trait PlacementInput {
     /// Read volumes and, when present, directory headers on the source volume.
     fn snapshot(&self, source: Option<&VolumeId>, deadline: Instant) -> EngineResult<Snapshot>;
     /// Read at most 200,000 distinct names and identity-matched link observations for this subtree.
-    /// Missing observations are returned as unknown; stale generations return `StaleGeneration`.
+    /// Missing observations are returned as unknown; stale generations return `StaleGeneration`,
+    /// unless the implementation reads inside the snapshot's own transaction (the service does).
     fn files(
         &self,
         subtree: &Subtree,
@@ -1019,19 +1020,27 @@ fn candidates(
         } else {
             CoverageState::Partial
         };
+        let partial = coverage != CoverageState::Complete;
         groups.push(CandidateGroup {
             group_id: s.group_id.clone(),
             node_id: s.node_id.clone(),
             root_id: s.root_id.clone(),
             name: s.name.clone(),
-            source_bytes: entry_bytes(s),
-            destination_bytes: Bytes(if coverage == CoverageState::Complete {
-                destination
+            // A partial group has no per-file destination rounding (the listing is incomplete or
+            // not taken), so every byte figure falls back to the logical total and the label says so.
+            source_bytes: if partial {
+                s.totals.logical_bytes
             } else {
-                s.totals.logical_bytes.get()
-            }),
+                entry_bytes(s)
+            },
+            destination_bytes: if partial {
+                s.totals.logical_bytes
+            } else {
+                Bytes(destination)
+            },
             transfer_bytes: s.totals.logical_bytes,
-            estimate_basis: if s.totals.allocated_bytes.is_some()
+            estimate_basis: if !partial
+                && s.totals.allocated_bytes.is_some()
                 && s.totals.allocation_unknown_files.get() == 0
             {
                 CandidateGroupEstimateBasis::AllocatedEntries

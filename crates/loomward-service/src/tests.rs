@@ -838,6 +838,54 @@ fn placement_request(volume: &str, save: bool) -> Value {
     json!({"source_volume_id":volume,"target_free_bytes":"262144","max_transfer_bytes":"1048576","heat_policy":"unknown_is_ineligible","relief_policy":"verified_only","candidate_basis":"largest_dirs","max_groups":50,"overrides":[],"node_budget":1000,"save":save})
 }
 
+/// #954: the service's `files()` ignores its generation argument because every read sits in the
+/// one transaction opened with the snapshot. A commit made after that snapshot is invisible to it.
+#[test]
+fn placement_files_stay_inside_the_snapshot_transaction() {
+    use loomward_engine::placement::PlacementInput;
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let (root, _, _) = placement_fixture(&svc);
+    // The engine-facing input names volumes by catalogue row, not by the wire spelling.
+    let row: i64 = svc
+        .inner
+        .db()
+        .query_row("SELECT volume_id FROM main.root WHERE id=?1", [root], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let source = VolumeId::new(format!("vo_{row}")).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let input = crate::placement::Input::open(&svc.inner, deadline, None).unwrap();
+    let snapshot = input.snapshot(Some(&source), deadline).unwrap();
+    let subtree = snapshot
+        .subtrees
+        .iter()
+        .find(|s| s.totals.files.get() > 0)
+        .expect("fixture subtree with files");
+    let before = input
+        .files(subtree, &snapshot.root_generations, deadline)
+        .unwrap();
+    assert!(!before.is_empty());
+    svc.inner
+        .db()
+        .execute("UPDATE main.file SET logical=logical+1000", [])
+        .unwrap();
+    let after = input
+        .files(subtree, &snapshot.root_generations, deadline)
+        .unwrap();
+    assert_eq!(
+        before.iter().map(|f| f.logical_bytes).collect::<Vec<_>>(),
+        after.iter().map(|f| f.logical_bytes).collect::<Vec<_>>()
+    );
+    // A read opened after the commit sees it, so the equality above is the transaction, not luck.
+    let later = crate::placement::Input::open(&svc.inner, deadline, None).unwrap();
+    let fresh = later
+        .files(subtree, &snapshot.root_generations, deadline)
+        .unwrap();
+    assert_eq!(fresh[0].logical_bytes, before[0].logical_bytes + 1000);
+}
+
 #[test]
 fn volume_inventory_past_its_bound_is_refused_not_truncated() {
     // Codex P2 on #316: a 65th volume must surface as a resource bound, never vanish silently.

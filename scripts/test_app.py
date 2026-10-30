@@ -878,6 +878,13 @@ def main() -> None:
         nav = page.get_by_role('navigation', name='Views')
         check(nav.get_by_role('link').count() >= 2, 'views are discovered into the navigation')
         expect(nav.get_by_role('link', name='Today')).to_have_attribute('aria-current', 'page')
+        # Today links the find bar's cleanup searches: one opens Explorer with the query run (#1068 ?q=).
+        page.get_by_role('list', name='Cleanup searches').get_by_role('link', name='Files over 4 GB', exact=True).click()
+        expect(page.get_by_placeholder('Search names')).to_have_value('size:>4gb kind:file')
+        expect(page.get_by_text('Search results for')).to_be_visible()
+        print('PASS today: a cleanup search link opens Explorer with the query run')
+        nav.get_by_role('link', name='Today', exact=True).click()
+        expect(page.get_by_role('heading', name='Today', level=1)).to_be_visible()
         # #1092: one honest "new since" line per volume that holds a granted folder, linked to Explorer.
         new_since = page.get_by_role('region', name='New since the last scan')
         expect(new_since).to_contain_text('New since the scan on 2026-10-23')

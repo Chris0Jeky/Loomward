@@ -75,19 +75,14 @@ pub(super) fn prepare(
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .map_err(sql_error)?;
-        let chain = conn.prepare_cached(
-            "WITH RECURSIVE a(id,parent_id,depth) AS (SELECT id,parent_id,0 FROM main.dir WHERE id=?1
-             UNION ALL SELECT d.id,d.parent_id,a.depth+1 FROM main.dir d JOIN a ON d.id=a.parent_id WHERE a.depth<511)
-             SELECT id,parent_id FROM a",
-        ).map_err(sql_error)?.query_map([dir], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?)))
-            .map_err(sql_error)?.collect::<rusqlite::Result<Vec<_>>>().map_err(sql_error)?;
-        if !chain.iter().any(|(_, parent)| parent.is_none()) {
+        let chain = nested::ancestry(conn, dir)?;
+        if !chain.complete {
             return Err(fail(
                 ErrorCode::ResourceBudget,
                 "Candidate ancestry is incomplete.",
             ));
         }
-        if chain.iter().any(|(ancestor, _)| {
+        if chain.ids.iter().any(|ancestor| {
             NodeKey::Dir(*ancestor) != *node && nodes.contains(&NodeKey::Dir(*ancestor))
         }) {
             return Err(fail(
