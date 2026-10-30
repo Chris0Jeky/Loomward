@@ -1,0 +1,402 @@
+//! Path-independent containment (#1011): is every file of A present in B by content?
+//!
+//! Pure over two observed `Tree`s. Coverage is equal size and equal content digest on both sides,
+//! never a name, size or timestamp alone. It is not metadata fidelity, not an independent backup
+//! and never permission to delete.
+use crate::tree::{Kind, Side, Tree};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum Coverage {
+    /// One B file with the same size and content digest.
+    Covered {
+        by: PathBuf,
+    },
+    /// No B file of that size, or none of that content, and B's listing was complete.
+    NotCovered,
+    Unknown {
+        side: Side,
+        reason: &'static str,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Item {
+    pub path: PathBuf,
+    pub size: Option<u64>,
+    #[serde(flatten)]
+    pub coverage: Coverage,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+pub struct Total {
+    pub files: u64,
+    pub bytes: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+pub struct Totals {
+    pub covered: Total,
+    pub not_covered: Total,
+    pub unknown: Total,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Report {
+    /// One per A file, plus one per A entry whose kind or listing is unknown.
+    pub items: Vec<Item>,
+}
+
+impl Report {
+    pub fn totals(&self) -> Totals {
+        let mut totals = Totals::default();
+        for item in &self.items {
+            let total = match item.coverage {
+                Coverage::Covered { .. } => &mut totals.covered,
+                Coverage::NotCovered => &mut totals.not_covered,
+                Coverage::Unknown { .. } => &mut totals.unknown,
+            };
+            total.files += 1;
+            total.bytes += item.size.unwrap_or(0);
+        }
+        totals
+    }
+}
+
+/// B listing that could hide a file of any size: a missing or unreadable entry, an incomplete
+/// directory listing or a file of unknown size.
+fn incomplete(tree: &Tree) -> bool {
+    !matches!(tree.nodes.get(Path::new("")), Some(Ok(_)))
+        || tree.nodes.values().any(|node| match node {
+            Err(_) => true,
+            Ok(node) => match node.kind {
+                Kind::Directory => node.children.is_err(),
+                Kind::File => node.size.is_err(),
+            },
+        })
+}
+
+pub fn containment(a: &Tree, b: &Tree) -> Report {
+    // Every B file of known size, in path order: size -> (path, content digest).
+    let mut by_size = BTreeMap::<u64, Vec<_>>::new();
+    for (path, node) in &b.nodes {
+        if let Ok(node) = node {
+            if let (Kind::File, Ok(size)) = (node.kind, node.size) {
+                by_size.entry(size).or_default().push((path, &node.content));
+            }
+        }
+    }
+    let b_incomplete = incomplete(b);
+    let unknown = |side, reason| Coverage::Unknown { side, reason };
+    let mut report = Report::default();
+    if !a.nodes.contains_key(Path::new("")) {
+        report.items.push(Item {
+            path: PathBuf::new(),
+            size: None,
+            coverage: unknown(Side::Source, "root_not_observed"),
+        });
+    }
+    for (path, node) in &a.nodes {
+        let node = match node {
+            Err(reason) => {
+                report.items.push(Item {
+                    path: path.clone(),
+                    size: None,
+                    coverage: unknown(Side::Source, *reason),
+                });
+                continue;
+            }
+            Ok(node) => node,
+        };
+        if node.kind == Kind::Directory {
+            // Directories are not items, but an incomplete listing hides unknown A files.
+            if let Err(reason) = node.children {
+                report.items.push(Item {
+                    path: path.clone(),
+                    size: None,
+                    coverage: unknown(Side::Source, reason),
+                });
+            }
+            continue;
+        }
+        let size = match node.size {
+            Ok(size) => size,
+            Err(reason) => {
+                report.items.push(Item {
+                    path: path.clone(),
+                    size: None,
+                    coverage: unknown(Side::Source, reason),
+                });
+                continue;
+            }
+        };
+        let candidates = by_size.get(&size).map(Vec::as_slice).unwrap_or_default();
+        let coverage = match node.content {
+            Ok(hash) => {
+                if let Some((by, _)) = candidates.iter().find(|(_, c)| **c == Ok(hash)) {
+                    Coverage::Covered { by: (*by).clone() }
+                } else if let Some(Err(reason)) =
+                    candidates.iter().map(|(_, c)| **c).find(Result::is_err)
+                {
+                    unknown(Side::Destination, reason)
+                } else if b_incomplete {
+                    unknown(Side::Destination, "absence_unproven")
+                } else {
+                    Coverage::NotCovered
+                }
+            }
+            // A was not read because B had no file of its size: only a complete B still lacking
+            // that size proves it. Any other unread A file stays unknown.
+            Err("not_requested") if candidates.is_empty() && !b_incomplete => Coverage::NotCovered,
+            Err(reason) => unknown(Side::Source, reason),
+        };
+        report.items.push(Item {
+            path: path.clone(),
+            size: Some(size),
+            coverage,
+        });
+    }
+    report
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tree::{Node, Observation};
+
+    fn dir() -> Observation<Node> {
+        Ok(Node {
+            kind: Kind::Directory,
+            size: Ok(0),
+            content: Err("content_not_read"),
+            metadata: Default::default(),
+            children: Ok(()),
+        })
+    }
+    fn file(size: u64, content: u8) -> Observation<Node> {
+        Ok(Node {
+            kind: Kind::File,
+            size: Ok(size),
+            content: Ok([content; 32]),
+            metadata: Default::default(),
+            children: Err("not_a_directory"),
+        })
+    }
+    fn tree(entries: &[(&str, Observation<Node>)]) -> Tree {
+        let mut tree = Tree::default();
+        tree.nodes.insert(PathBuf::new(), dir());
+        for (path, node) in entries {
+            tree.nodes.insert(PathBuf::from(path), node.clone());
+        }
+        tree
+    }
+    fn coverage(report: &Report) -> Vec<(String, Coverage)> {
+        report
+            .items
+            .iter()
+            .map(|item| {
+                (
+                    item.path.to_string_lossy().replace('\\', "/"),
+                    item.coverage.clone(),
+                )
+            })
+            .collect()
+    }
+    fn covered(by: &str) -> Coverage {
+        Coverage::Covered { by: by.into() }
+    }
+
+    #[test]
+    fn renamed_moved_and_duplicated_files_are_covered_by_content() {
+        let a = tree(&[
+            ("photos", dir()),
+            ("photos/one.jpg", file(10, 1)),
+            ("two.txt", file(20, 2)),
+        ]);
+        let b = tree(&[
+            ("archive", dir()),
+            ("archive/renamed.jpg", file(10, 1)),
+            ("archive/deep", dir()),
+            ("archive/deep/two-copy.txt", file(20, 2)),
+            ("z-two-again.txt", file(20, 2)),
+            ("unrelated.bin", file(10, 9)),
+        ]);
+        let report = containment(&a, &b);
+        assert_eq!(
+            coverage(&report),
+            vec![
+                ("photos/one.jpg".into(), covered("archive/renamed.jpg")),
+                ("two.txt".into(), covered("archive/deep/two-copy.txt")),
+            ]
+        );
+        let totals = report.totals();
+        assert_eq!(
+            totals.covered,
+            Total {
+                files: 2,
+                bytes: 30
+            }
+        );
+        assert_eq!(totals.not_covered, Total::default());
+        assert_eq!(totals.unknown, Total::default());
+    }
+
+    #[test]
+    fn same_size_different_content_and_missing_sizes_are_not_covered() {
+        let a = tree(&[("same-size", file(10, 1)), ("missing", file(30, 3))]);
+        let b = tree(&[("other", file(10, 2))]);
+        let report = containment(&a, &b);
+        assert_eq!(
+            coverage(&report),
+            vec![
+                ("missing".into(), Coverage::NotCovered),
+                ("same-size".into(), Coverage::NotCovered),
+            ]
+        );
+        assert_eq!(
+            report.totals().not_covered,
+            Total {
+                files: 2,
+                bytes: 40
+            }
+        );
+        // A was never read for a size B lacks: still not covered while B is complete.
+        let mut unread = file(30, 0).unwrap();
+        unread.content = Err("not_requested");
+        let a = tree(&[("missing", Ok(unread))]);
+        assert_eq!(
+            coverage(&containment(&a, &b)),
+            vec![("missing".into(), Coverage::NotCovered)]
+        );
+    }
+
+    #[test]
+    fn incomplete_b_listing_makes_absence_unknown_never_not_covered() {
+        let a = tree(&[("missing", file(30, 3)), ("present", file(10, 1))]);
+        let mut unread = file(30, 0).unwrap();
+        unread.content = Err("not_requested");
+        let a_unread = tree(&[("missing", Ok(unread))]);
+        let absent = Coverage::Unknown {
+            side: Side::Destination,
+            reason: "absence_unproven",
+        };
+        let mut partial_root = tree(&[("present", file(10, 1))]);
+        partial_root
+            .nodes
+            .get_mut(Path::new(""))
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .children = Err("entry_budget");
+        let unreadable_entry = tree(&[("present", file(10, 1)), ("locked", Err("access_denied"))]);
+        let mut no_root = tree(&[("present", file(10, 1))]);
+        no_root.nodes.remove(Path::new(""));
+        for b in [partial_root, unreadable_entry, no_root] {
+            assert_eq!(
+                coverage(&containment(&a, &b)),
+                vec![
+                    ("missing".into(), absent.clone()),
+                    ("present".into(), covered("present")),
+                ]
+            );
+            assert_eq!(
+                coverage(&containment(&a_unread, &b)),
+                vec![(
+                    "missing".into(),
+                    Coverage::Unknown {
+                        side: Side::Source,
+                        reason: "not_requested"
+                    }
+                )]
+            );
+        }
+    }
+
+    #[test]
+    fn unreadable_a_and_unread_b_candidates_are_unknown() {
+        let mut denied = file(10, 1).unwrap();
+        denied.content = Err("access_denied");
+        let a = tree(&[
+            ("denied-content", Ok(denied)),
+            ("locked", Err("sharing_violation")),
+            ("sub", dir()),
+            ("needs-b", file(20, 2)),
+        ]);
+        let a = {
+            let mut a = a;
+            a.nodes
+                .get_mut(Path::new("sub"))
+                .unwrap()
+                .as_mut()
+                .unwrap()
+                .children = Err("incomplete_listing");
+            a
+        };
+        let mut budget = file(20, 0).unwrap();
+        budget.content = Err("byte_budget");
+        let b = tree(&[("copy", file(10, 1)), ("b-unread", Ok(budget))]);
+        let report = containment(&a, &b);
+        let source = |reason| Coverage::Unknown {
+            side: Side::Source,
+            reason,
+        };
+        assert_eq!(
+            coverage(&report),
+            vec![
+                ("denied-content".into(), source("access_denied")),
+                ("locked".into(), source("sharing_violation")),
+                (
+                    "needs-b".into(),
+                    Coverage::Unknown {
+                        side: Side::Destination,
+                        reason: "byte_budget"
+                    }
+                ),
+                ("sub".into(), source("incomplete_listing")),
+            ]
+        );
+        assert_eq!(
+            report.totals().unknown,
+            Total {
+                files: 4,
+                bytes: 30
+            }
+        );
+        assert_eq!(report.totals().covered, Total::default());
+    }
+
+    #[test]
+    fn empty_a_has_no_items_and_an_unobserved_a_root_is_unknown() {
+        let b = tree(&[("x", file(1, 1))]);
+        let report = containment(&tree(&[]), &b);
+        assert!(report.items.is_empty());
+        assert_eq!(report.totals(), Totals::default());
+        assert_eq!(
+            coverage(&containment(&Tree::default(), &b)),
+            vec![(
+                String::new(),
+                Coverage::Unknown {
+                    side: Side::Source,
+                    reason: "root_not_observed"
+                }
+            )]
+        );
+    }
+
+    #[test]
+    fn report_items_serialize_flat() {
+        let item = Item {
+            path: "a".into(),
+            size: Some(3),
+            coverage: covered("b"),
+        };
+        assert_eq!(
+            serde_json::to_value(item).unwrap(),
+            serde_json::json!({"path": "a", "size": 3, "state": "covered", "by": "b"})
+        );
+    }
+}

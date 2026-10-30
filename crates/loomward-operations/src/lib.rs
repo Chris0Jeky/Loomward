@@ -13,6 +13,7 @@
 //! Pure row-only replay cannot detect tail truncation; durable recovery must go through Store.
 #![forbid(unsafe_code)]
 
+pub mod containment;
 pub mod journal;
 pub mod manifest;
 pub mod receipt;
