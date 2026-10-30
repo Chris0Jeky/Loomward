@@ -977,13 +977,11 @@ impl PlacementInput for Input<'_> {
             .optional()
             .map_err(sql)?;
         let Some(root) = root else { return Ok(None) };
-        let stored =
-            self.inner
-                .observed_relief(&self.conn, root)
-                .map_err(|_| EngineError::Internal {
-                    message: "stored relief unreadable".into(),
-                    detail: None,
-                })?;
+        let Ok(stored) = self.inner.observed_relief(&self.conn, root) else {
+            // An unreadable verdict leaves this group's relief unknown, as before #939; a deadline still surfaces.
+            check(deadline)?;
+            return Ok(None);
+        };
         check(deadline)?;
         Ok(stored
             .into_iter()
