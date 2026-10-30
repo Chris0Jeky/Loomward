@@ -188,7 +188,7 @@ The plan is JSON the agent shows to the owner. It writes nothing: no draft in `s
   as `directories` entries `{path, root, reason}`. Each root is computed from the entries this run actually read and
   hashed (names as the native UTF-16 code units, the existing default-stream SHA-256, no second read). A folder gets
   `root: null` and a `reason` (`differing_entry`, `unknown_entry`, `listing_incomplete`, `entry_not_read`,
-  `content_not_hashed`, `size_unknown`, `descendant_not_rooted`, `name_not_representable`) when anything at or under it
+  `content_not_hashed`, `size_unknown`, `descendant_not_rooted`, `name_not_representable`, `duplicate_name`, `custody_refused`) when anything at or under it
   differs, is unknown, unread or unhashed; never a partial root. Metadata-class differences do not block a root (it
   covers names, kinds, sizes and content only; named streams and times are outside it). With `--only` no roots are
   emitted (`directories: null`, `reason: "selected_set"`): a selected set is not a whole folder. Directory `path`
