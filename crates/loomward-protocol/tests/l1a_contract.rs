@@ -736,6 +736,43 @@ fn duplicate_report_indices_must_refer_to_entries() {
     }
 }
 
+/// `candidate_space` is additive: an older report without it stays readable and means unknown (and
+/// is written back without it); null is refused; a present value is exact, and unknown fields or
+/// numeric bytes are refused.
+#[test]
+fn duplicate_report_candidate_space_is_additive_and_null_is_unknown() {
+    let mut report = duplicate_report(2, json!([[0, 1]]), json!([]), json!([]));
+    let old: DuplicateReport = serde_json::from_value(report.clone()).unwrap();
+    assert_eq!(old.candidate_space, None);
+    assert!(serde_json::to_value(&old)
+        .unwrap()
+        .get("candidate_space")
+        .is_none());
+
+    report["candidate_space"] = json!({"files": 41312, "bytes": "41000000000"});
+    let known: DuplicateReport = serde_json::from_value(report.clone()).unwrap();
+    let space = known.candidate_space.as_ref().unwrap();
+    assert_eq!(
+        (space.files.get(), space.bytes.get()),
+        (41312, 41_000_000_000)
+    );
+    assert_eq!(serde_json::to_value(&known).unwrap(), report);
+
+    for bad in [
+        json!(null),
+        json!({"files": 1}),
+        json!({"files": 1, "bytes": 5}),
+        json!({"files": -1, "bytes": "5"}),
+        json!({"files": 1, "bytes": "5", "extra": true}),
+    ] {
+        report["candidate_space"] = bad.clone();
+        assert!(
+            serde_json::from_value::<DuplicateReport>(report.clone()).is_err(),
+            "{bad} must be refused"
+        );
+    }
+}
+
 fn tree_slice_example() -> Value {
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),

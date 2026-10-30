@@ -208,6 +208,7 @@ pub fn roundtrip(def: &str, v: &Value) -> Option<Result<Value, String>> {
         "DuplicatesInspectRequest" => rt::<DuplicatesInspectRequest>(v),
         "DuplicateEntry" => rt::<DuplicateEntry>(v),
         "DuplicateSkip" => rt::<DuplicateSkip>(v),
+        "DuplicateCandidateSpace" => rt::<DuplicateCandidateSpace>(v),
         "DuplicateReport" => rt::<DuplicateReport>(v),
         "JobKind" => rt::<JobKind>(v),
         "JobState" => rt::<JobState>(v),
