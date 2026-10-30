@@ -199,7 +199,7 @@ mod native {
     /// holders of handles on the volume (target-device query-remove); the watch thread then
     /// closes its directory handle and pins before the answer, and reports the watch failed. The
     /// owner rebuilds it after its restart delay, by when the volume is gone (offline); if the
-    /// removal is refused instead (query-remove failed, #935), `removal_refused` tells the owner
+    /// removal is refused instead (query-remove failed, #935), `take_removal_refused` tells the owner
     /// to rebuild at once. Registration is best effort: a volume without device notifications
     /// keeps today's behaviour.
     #[derive(Default)]
@@ -656,8 +656,9 @@ mod native {
         }
         /// Windows asked this watch to let its volume go, then refused the removal (#935): the
         /// watch is already failed and the owner should rebuild it without the restart backoff.
-        pub fn removal_refused(&self) -> bool {
-            self.release.refused.load(Ordering::Acquire)
+        /// One-shot: the first call takes the refusal, so one veto buys one immediate attempt.
+        pub fn take_removal_refused(&self) -> bool {
+            self.release.refused.swap(false, Ordering::AcqRel)
         }
         /// Test seam: act as if Windows asked to remove the watched volume.
         #[cfg(any(test, feature = "fixtures"))]
@@ -1143,11 +1144,16 @@ mod native {
                 "released before the request is answered"
             );
             assert!(watcher.failed(), "the owner must rebuild the watch");
-            assert!(!watcher.removal_refused(), "released, not yet refused");
+            assert!(!watcher.take_removal_refused(), "released, not yet refused");
             watcher.simulate_removal_refused();
             assert!(
-                watcher.removal_refused(),
+                watcher.take_removal_refused(),
                 "a vetoed removal asks for a prompt rebuild"
+            );
+            // Taken once (#1028 review): a refused watch left in place must not re-arm every pump tick.
+            assert!(
+                !watcher.take_removal_refused(),
+                "one veto buys one immediate rebuild"
             );
             assert!(rx
                 .recv_timeout(Duration::from_secs(5))

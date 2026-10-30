@@ -743,7 +743,11 @@ fn ensure_roots_with_clock(inner: &Arc<Inner>, now: impl Fn() -> Instant) {
                     root.dirty(true);
                 }
                 // A vetoed Safely Remove left the volume in place: rebuild at once (#935).
-                if root.watch.as_ref().is_some_and(|w| w.removal_refused()) {
+                if root
+                    .watch
+                    .as_ref()
+                    .is_some_and(|w| w.take_removal_refused())
+                {
                     root.restart.after = Some(now());
                 }
                 if !root.restart.ready(now()) {
