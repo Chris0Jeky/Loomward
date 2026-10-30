@@ -960,6 +960,11 @@ impl PlacementInput for Input<'_> {
         })
     }
 
+    /// The generations argument is unused on purpose: `snapshot()` and every `files()` and
+    /// `stored_relief()` call read inside the one deferred read transaction opened in `open`
+    /// (`PRAGMA query_only=ON;BEGIN`), so these rows belong to the snapshot's generations by
+    /// construction and a newer generation cannot appear mid-call. A revocation or newer scan lands
+    /// in a later transaction and fences the next request, not this one (#954).
     fn files(
         &self,
         subtree: &Subtree,
