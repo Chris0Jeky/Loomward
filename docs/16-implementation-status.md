@@ -433,6 +433,20 @@ Commands, named skips, regression controls and suite results are in
 manual accessibility/field acceptance in #24/#101 remains separate. No new owner action was
 added to `HUMAN_TODO.md`.
 
+## Flagship wave, afternoon — 30 October 2026
+
+The same driver and research session continued after the morning checkpoint (#1053), under the same gate: green hosted CI (Ubuntu and Windows) at each exact head, at least three minutes of aging, and a fresh-context review (Codex alone only for very-low-risk changes), with a scoped verification pass after each fix round.
+
+- **Windows CI** (#1064, #1007): the 36 elevated-refusal tests run in their own elevated step and each must print its skip marker; the standard-user runner's cleanup is hardened. Flaky WAL test fixed in two steps (#1056, #1061, #1054).
+- **Disk health** (LW-137): `volumes.list` and Grants & health show storage-path facts and honest disk health (#1049); NVMe reliability counters, read unelevated and bounded by the request deadline (#1065, #876); Critical Warning, Available Spare, Media Errors and Unsafe Shutdowns mapped, and an offline volume never shows a stale reading (#1072, #1066); Today's volume rows carry the health line (#1062).
+- **Reclaim** (LW-131): relief-check follow-ups (#1052, #1031); stored verdicts show their age on Reclaim and Tiers (#1044, #1058, #1029); each candidate links to Explorer at its node (#1075, #1069); rules v4 for Windows leftovers (#1074, #1067, research session).
+- **Archive and custody** (LW-136): `verify-tree --only` lists but never hashes unplanned files (#1043); `--manifest-roots` emits destination custody roots (#1055, #875).
+- **Understanding files** (LW-138): `insight.folder`, an owner-only read-only folder insight (#1051, #877), shown as an About this folder panel in the Explorer inspector (#1060); renderer follow-ups (#1057, #1048).
+- **App**: Today reads future or unparsable times as unknown (#1059) and follows up #1024 (#1050); the Explorer find bar uses the docs/46 grammar with chips and cleanup searches (#1071, #1068, research session); applications sort largest first (#1077, #1070); the duplicates candidate-space count surfaces real errors and is pinned by parity and interruption tests (#1079, #1035 items 2-5).
+- **Tooling**: `verify.py --changed` tests only the crates a diff can affect; AGENTS.md names it a local-loop shortcut, never the proof of record (#1063, #1016).
+
+Closed in this half: #823, #1007, #1012, #1015, #1016, #1024, #1029, #1031, #1048, #1054, #1066 to #1070. Measured on Windows 11 build 26300, non-elevated: each PR's crate suites, fmt and clippy, and app check and unit tests where the app changed; browser e2e on hosted CI. Not verified here: NVMe counters on a real NVMe drive through the app, the About this folder panel and disk-health lines in the native window, and a real Safely Remove veto. Open at the time of writing: #1086 (`covers` follow-ups, #1037), #1089 (Explorer node follow-ups, #1082), #1090 (mock sort, #1081), the research session's #1083, #1085, #1087 and #1088; follow-ups #1026, #1033, #1035 (items 1 and 6), #1037, #954. C8 remains closed.
+
 ## Flagship wave — 30 October 2026
 
 One driver (Opus 5.5) with Sonnet and Haiku workers and a separate research session, under the estate's flagship push. Every merged PR had green hosted CI (Ubuntu and Windows) at its exact head and a fresh-context review (Codex alone only for the very low-risk ones); fix rounds got a scoped verification pass.

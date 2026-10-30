@@ -1049,5 +1049,77 @@
       "Today view in the native Tauri window"
     ],
     "c8": "closed"
+  },
+  "flagship_wave_2026_10_30_afternoon": {
+    "merged_prs": [
+      1043,
+      1044,
+      1049,
+      1050,
+      1051,
+      1052,
+      1055,
+      1056,
+      1057,
+      1058,
+      1059,
+      1060,
+      1061,
+      1062,
+      1063,
+      1064,
+      1065,
+      1071,
+      1072,
+      1074,
+      1075,
+      1077,
+      1079
+    ],
+    "closed": [
+      823,
+      1007,
+      1012,
+      1015,
+      1016,
+      1024,
+      1029,
+      1031,
+      1048,
+      1054,
+      1066,
+      1067,
+      1068,
+      1069,
+      1070
+    ],
+    "windows_ci": "elevated-refusal tests run in their own elevated step, each must print its skip marker (#1064)",
+    "disk_health_lw_137": "storage-path facts and disk health on volumes.list (#1049); NVMe counters unelevated and bounded (#1065); critical warning mapping and offline guard (#1072); Today health line (#1062)",
+    "reclaim": "verdict age (#1044, #1058); Inspect in Explorer (#1075); rules v4 Windows leftovers (#1074); relief follow-ups (#1052)",
+    "custody_lw_136": "verify-tree --only never hashes unplanned files (#1043); --manifest-roots (#1055)",
+    "lw_138": "insight.folder (#1051); About this folder panel (#1060); renderer follow-ups (#1057)",
+    "tooling": "verify.py --changed is a local-loop shortcut, never the proof of record (#1063)",
+    "open_at_checkpoint": [
+      1083,
+      1085,
+      1086,
+      1087,
+      1088,
+      1089,
+      1090
+    ],
+    "tracked": [
+      954,
+      1026,
+      1033,
+      1035,
+      1037
+    ],
+    "not_verified": [
+      "NVMe counters on a real NVMe drive through the app",
+      "About this folder panel and disk-health lines in the native window",
+      "real Safely Remove veto"
+    ],
+    "c8": "closed"
   }
 }
