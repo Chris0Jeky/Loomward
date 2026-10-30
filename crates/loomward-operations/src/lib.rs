@@ -23,7 +23,7 @@ pub mod state;
 pub mod store;
 pub mod tree;
 
-pub use custody::{manifest_root, CustodyEntry, EntryKind};
+pub use custody::{manifest_root, CustodyEntry, CustodyError, EntryKind, COLLATION_V1};
 pub use journal::{
     Entry, FenceCause, Invalid, ObjectId, Record, Refusal, Replay, Row, StagedItem,
     StagingDisposition, StopCause, StopKind, MAX_BATCH, MAX_ITEMS,

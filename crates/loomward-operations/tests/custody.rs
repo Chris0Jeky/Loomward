@@ -1,29 +1,38 @@
 //! LW-136 / LW-875: the per-directory manifest root (`custody` module). Pure function tests: no I/O.
 
-use loomward_operations::{manifest_root, CustodyEntry, EntryKind};
+use loomward_operations::{manifest_root, CustodyEntry, CustodyError, EntryKind};
 
 fn entry(name: &str, kind: EntryKind, size: u64, fill: u8) -> CustodyEntry {
+    CustodyEntry::from_utf8_name(name, kind, size, [fill; 32])
+}
+
+fn raw(units: &[u16], kind: EntryKind, size: u64, fill: u8) -> CustodyEntry {
     CustodyEntry {
-        name: name.to_owned(),
+        name: units.to_vec(),
         kind,
         size,
         digest: [fill; 32],
     }
 }
 
+fn root(entries: &[CustodyEntry]) -> [u8; 32] {
+    manifest_root(entries, 1).expect("valid fixture")
+}
+
 fn hex(root: [u8; 32]) -> String {
     root.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Mixed-case, non-ASCII and supplementary-plane names. The golden roots below pin the UTF-16 collation: in
-/// UTF-16 the U+1F600 surrogate pair (0xD83D) sorts before U+FFFD (0xFFFD), the reverse of UTF-8 byte order.
+/// Mixed-case, non-ASCII, supplementary-plane and unpaired-surrogate names. The golden root pins the ordinal
+/// UTF-16 collation: 0xD800 (unpaired) < 0xD83D (U+1F600 high surrogate) < 0xFFFD, and "Alpha" < "Zeta" < "alpha".
 fn fixture() -> Vec<CustodyEntry> {
     vec![
-        entry("\u{FFFD}", EntryKind::File, 1, 0x11),
-        entry("\u{1F600}", EntryKind::File, 2, 0x22),
+        raw(&[0xFFFD], EntryKind::File, 1, 0x11),
+        raw(&[0xD83D, 0xDE00], EntryKind::File, 2, 0x22),
         entry("Zeta", EntryKind::Directory, 0, 0x33),
         entry("alpha", EntryKind::File, 10, 0x44),
         entry("Alpha", EntryKind::File, 10, 0x55),
+        raw(&[0xD800], EntryKind::File, 3, 0x66),
     ]
 }
 
@@ -44,118 +53,122 @@ fn for_each_permutation(
 }
 
 const EMPTY_V1: &str = "4ba86c7fa60e2f9eb1b5bd2b78fd134b48a8f60c7d1b9175d6e1bd5f4f7bd48e";
-const FIXTURE_V1: &str = "0176108cc615cf5d3306674848ffde7a04c7f5f99a412e933660f16298263b79";
-const FIXTURE_V2: &str = "44d65749dd2b2fa33567ea4d047db7c6f3ea6abda35948fc1cef30b438b02f40";
+const FIXTURE_V1: &str = "c1202870b9d6808aeff1733777943a383f37e1d32e98141ebc43253bfb78bf48";
 
 #[test]
 fn empty_directory_has_defined_golden_root() {
-    assert_eq!(hex(manifest_root(&[], 1)), EMPTY_V1);
+    assert_eq!(hex(root(&[])), EMPTY_V1);
 }
 
 #[test]
-fn golden_roots_pin_the_encoding_and_utf16_collation() {
-    assert_eq!(hex(manifest_root(&fixture(), 1)), FIXTURE_V1);
-    assert_eq!(hex(manifest_root(&fixture(), 2)), FIXTURE_V2);
+fn golden_root_pins_the_encoding_and_ordinal_collation() {
+    assert_eq!(hex(root(&fixture())), FIXTURE_V1);
+}
+
+#[test]
+fn unknown_collation_versions_are_refused() {
+    for version in [0u32, 2, u32::MAX] {
+        assert_eq!(
+            manifest_root(&fixture(), version),
+            Err(CustodyError::UnknownCollation { version })
+        );
+    }
+    assert!(manifest_root(&[], 1).is_ok());
 }
 
 #[test]
 fn root_is_independent_of_input_order() {
-    let base = manifest_root(&fixture(), 1);
+    let base = root(&fixture());
     let mut items = fixture();
     let mut seen = 0usize;
     for_each_permutation(&mut items, 0, &mut |p| {
         seen += 1;
-        assert_eq!(manifest_root(p, 1), base, "order {seen} changed the root");
+        assert_eq!(root(p), base, "order {seen} changed the root");
     });
-    assert_eq!(seen, 120);
+    assert_eq!(seen, 720);
 }
 
 #[test]
-fn duplicate_exact_names_are_ordered_deterministically() {
-    let pair = || {
-        vec![
-            entry("x", EntryKind::File, 1, 0x01),
-            entry("x", EntryKind::File, 1, 0x02),
-        ]
-    };
-    let base = manifest_root(&pair(), 1);
-    let mut items = pair();
-    for_each_permutation(&mut items, 0, &mut |p| {
-        assert_eq!(manifest_root(p, 1), base)
-    });
-}
-
-#[test]
-fn one_byte_content_digest_difference_changes_the_root() {
-    let base = manifest_root(&fixture(), 1);
-    let mut changed = fixture();
-    changed[2].digest[31] ^= 0x01;
-    assert_ne!(manifest_root(&changed, 1), base);
-}
-
-#[test]
-fn rename_changes_the_root() {
-    let base = manifest_root(&fixture(), 1);
-    let mut renamed = fixture();
-    renamed[3].name = "alphb".to_owned();
-    assert_ne!(manifest_root(&renamed, 1), base);
-}
-
-#[test]
-fn case_only_rename_changes_the_root() {
-    let base = manifest_root(&[entry("Readme", EntryKind::File, 1, 0x01)], 1);
-    assert_ne!(
-        manifest_root(&[entry("readme", EntryKind::File, 1, 0x01)], 1),
-        base
+fn duplicate_exact_names_are_refused() {
+    let entries = [
+        entry("x", EntryKind::File, 1, 0x01),
+        entry("y", EntryKind::File, 1, 0x02),
+        entry("x", EntryKind::File, 1, 0x02),
+    ];
+    assert_eq!(
+        manifest_root(&entries, 1),
+        Err(CustodyError::DuplicateName {
+            name: "x".encode_utf16().collect()
+        })
     );
 }
 
 #[test]
+fn duplicate_check_is_exact_so_case_variants_are_not_duplicates() {
+    let entries = [
+        entry("Readme", EntryKind::File, 1, 0x01),
+        entry("readme", EntryKind::File, 1, 0x01),
+    ];
+    assert!(manifest_root(&entries, 1).is_ok());
+}
+
+#[test]
+fn directory_with_non_zero_size_is_refused() {
+    let entries = [entry("sub", EntryKind::Directory, 1, 0x01)];
+    assert_eq!(
+        manifest_root(&entries, 1),
+        Err(CustodyError::DirectorySize {
+            name: "sub".encode_utf16().collect(),
+            size: 1,
+        })
+    );
+}
+
+#[test]
+fn file_size_is_hashed_and_any_value_is_allowed() {
+    let base = root(&[entry("f", EntryKind::File, 0, 0x01)]);
+    assert_ne!(root(&[entry("f", EntryKind::File, 1, 0x01)]), base);
+}
+
+#[test]
+fn one_byte_content_digest_difference_changes_the_root() {
+    let base = root(&fixture());
+    let mut changed = fixture();
+    changed[2].digest[31] ^= 0x01;
+    assert_ne!(root(&changed), base);
+}
+
+#[test]
+fn rename_changes_the_root() {
+    let base = root(&fixture());
+    let mut renamed = fixture();
+    renamed[3] = entry("alphb", EntryKind::File, 10, 0x44);
+    assert_ne!(root(&renamed), base);
+}
+
+#[test]
+fn case_only_rename_changes_the_root() {
+    let base = root(&[entry("Readme", EntryKind::File, 1, 0x01)]);
+    assert_ne!(root(&[entry("readme", EntryKind::File, 1, 0x01)]), base);
+}
+
+#[test]
 fn kind_flip_changes_the_root() {
-    let base = manifest_root(&fixture(), 1);
+    let base = root(&fixture());
     let mut flipped = fixture();
     flipped[2].kind = EntryKind::File;
-    assert_ne!(manifest_root(&flipped, 1), base);
+    assert_ne!(root(&flipped), base);
 }
 
 #[test]
-fn collation_version_changes_the_root() {
-    assert_ne!(manifest_root(&fixture(), 1), manifest_root(&fixture(), 2));
-    assert_ne!(manifest_root(&[], 1), manifest_root(&[], 2));
-}
-
-#[test]
-fn length_prefix_stops_concatenation_collisions() {
-    let d = [0x07; 32];
-    let split_ab_c = vec![
-        CustodyEntry {
-            name: "ab".into(),
-            kind: EntryKind::File,
-            size: 0,
-            digest: d,
-        },
-        CustodyEntry {
-            name: "c".into(),
-            kind: EntryKind::File,
-            size: 0,
-            digest: d,
-        },
-    ];
-    let split_a_bc = vec![
-        CustodyEntry {
-            name: "a".into(),
-            kind: EntryKind::File,
-            size: 0,
-            digest: d,
-        },
-        CustodyEntry {
-            name: "bc".into(),
-            kind: EntryKind::File,
-            size: 0,
-            digest: d,
-        },
-    ];
-    assert_ne!(manifest_root(&split_ab_c, 1), manifest_root(&split_a_bc, 1));
+fn unpaired_surrogate_names_hash_distinctly() {
+    let lone_high = root(&[raw(&[0xD800], EntryKind::File, 0, 0x01)]);
+    let lone_low = root(&[raw(&[0xDC00], EntryKind::File, 0, 0x01)]);
+    // The lossy text form of both unpaired surrogates is U+FFFD, so a lossy name would collapse them.
+    let replacement = root(&[entry("\u{FFFD}", EntryKind::File, 0, 0x01)]);
+    assert_ne!(lone_high, lone_low);
+    assert_ne!(lone_high, replacement);
+    assert_ne!(lone_low, replacement);
 }
 
 #[test]
@@ -163,18 +176,15 @@ fn child_root_propagates_into_the_parent() {
     // A directory entry carries its child's root as its digest, so a one-byte change deep in the tree
     // reaches the parent root.
     let parent_of = |child_root: [u8; 32]| {
-        manifest_root(
-            &[CustodyEntry {
-                name: "sub".into(),
-                kind: EntryKind::Directory,
-                size: 0,
-                digest: child_root,
-            }],
-            1,
-        )
+        root(&[CustodyEntry {
+            name: "sub".encode_utf16().collect(),
+            kind: EntryKind::Directory,
+            size: 0,
+            digest: child_root,
+        }])
     };
-    let child_a = manifest_root(&[entry("f", EntryKind::File, 3, 0x09)], 1);
-    let child_b = manifest_root(&[entry("f", EntryKind::File, 3, 0x08)], 1);
+    let child_a = root(&[entry("f", EntryKind::File, 3, 0x09)]);
+    let child_b = root(&[entry("f", EntryKind::File, 3, 0x08)]);
     assert_ne!(child_a, child_b);
     assert_ne!(parent_of(child_a), parent_of(child_b));
 }
