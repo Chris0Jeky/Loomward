@@ -448,6 +448,27 @@ describe('Explorer linked node is applied once per value (#1082)', () => {
     code.effect();
     await vi.waitFor(() => expect(inspectedNodes()).toEqual(['nd_a', 'nd_b', 'nd_b']));
   });
+
+  it('inspects the linked node again when a reconnect aborts it before it settles', async () => {
+    const pending = deferred<{ result: unknown }>();
+    let first = true;
+    const call = vi.fn(async (command: string, params: { node_id?: string }) => {
+      if (command === 'node.inspect' && params.node_id?.startsWith('nd_') && first) { first = false; return pending.promise; }
+      return { result: command === 'tree.slice' ? roots(rootA)
+        : command === 'node.inspect' ? { display_path: { text: 'synthetic/a', truncated: false } } : children };
+    });
+    const inspectedNodes = () => (call.mock.calls as unknown as Array<[string, { node_id: string }]>)
+      .filter(args => args[0] === 'node.inspect' && args[1].node_id.startsWith('nd_')).map(args => args[1].node_id);
+    const { state, code } = explorer(call);
+    state.route.search = 'node=nd_a';
+    const cleanup = code.effect() as unknown as () => void;
+    await vi.waitFor(() => expect(inspectedNodes()).toEqual(['nd_a']));
+    cleanup(); // reconnect while node.inspect is in flight
+    state.session.epoch++;
+    code.effect();
+    await vi.waitFor(() => expect(inspectedNodes()).toEqual(['nd_a', 'nd_a']));
+    pending.resolve({ result: { display_path: { text: 'stale', truncated: false } } });
+  });
 });
 
 type TodayCode = { load(): Promise<void>; loadReclaim(ids: string[]): Promise<void>; effect(): void; onEvent(ev: { event: string }): void };
