@@ -90,7 +90,7 @@ class ReaderTests(unittest.TestCase):
     def test_a_doc_named_by_a_crate_selects_that_crate_and_its_dependents(self):
         reads = {"engine": ({"docs/47-copy-and-verify.md"}, False, False)}
         scope = select(["docs/47-copy-and-verify.md"], reads)
-        self.assertEqual((scope.full, scope.crates), (False, ("engine", "service")))
+        self.assertEqual((scope.full, scope.crates), (False, ("engine",)))  # a reader, not its dependents
 
     def test_cross_crate_include_str_selects_the_reader(self):
         reads = {"engine": ({scan_ref("../../windows/src/recycle_bin.rs")}, False, False)}
@@ -104,13 +104,13 @@ class ReaderTests(unittest.TestCase):
     def test_python_source_change_selects_crates_that_shell_out_to_python(self):
         reads = {"engine": (set(), False, True)}
         scope = select(["python/loomward/planner_v2.py"], reads)
-        self.assertEqual(scope.crates, ("engine", "service"))
+        self.assertEqual(scope.crates, ("engine",))
         self.assertTrue(scope.python)
 
     def test_tree_scanning_crate_joins_any_rust_change_but_not_a_docs_change(self):
         reads = {"windows": (set(), True, False)}
-        self.assertEqual(select(["crates/learn/src/a.rs"], reads).crates, ("engine", "learn", "service", "windows"))
-        self.assertEqual(select(["native/src/main.rs"], reads).crates, ("engine", "service", "windows"))
+        self.assertEqual(select(["crates/learn/src/a.rs"], reads).crates, ("learn", "windows"))
+        self.assertEqual(select(["native/src/main.rs"], reads).crates, ("windows",))
         self.assertEqual(select(["docs/a.md"], reads).crates, ())
 
 

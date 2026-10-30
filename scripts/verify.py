@@ -57,6 +57,9 @@ def names(lits,path):
 def select_scope(changed,packages,workspace_root,reads):
     """Map changed repo-relative files to workspace crates and close over dependents.
 
+    Only a crate that owns a changed file has its dependents added: a crate that merely reads
+    the file from disk (readers, tree scanners) sees the change itself, and its dependents do not.
+
     packages: `cargo metadata --no-deps` packages; reads: {crate: scan_sources(...)}."""
     root=PurePath(workspace_root)
     dirs={PurePath(p['manifest_path']).parent.relative_to(root).as_posix():p['name'] for p in packages}
@@ -65,7 +68,7 @@ def select_scope(changed,packages,workspace_root,reads):
         for d in p['dependencies']:
             if d.get('path') and d['name'] in members:rdeps[d['name']].add(p['name'])
     scanners=tuple(sorted(n for n,r in reads.items() if r[1]));pyrunners=sorted(n for n,r in reads.items() if r[2])
-    seeds=set();why=[];full=[];python=False;native=False;rust_text=False
+    seeds=set();extra=set();why=[];full=[];python=False;native=False;rust_text=False
     for f in (c.replace('\\','/') for c in changed):
         python=python or f.startswith(PYTHON_DIRS) or f in PYTHON_FILES
         native=native or f.startswith('native/')
@@ -79,14 +82,14 @@ def select_scope(changed,packages,workspace_root,reads):
         elif f.startswith(INERT_DIRS) or '/' not in f:why.append(f'{f} -> no crate reads it')
         else:full.append(f'{f}: cannot attribute this path to a crate')
         if owner and readers:why.append(f'{f} -> also read by crate {", ".join(readers)}')
-        seeds.update(readers)
-    if scanners and (seeds or rust_text):
-        seeds.update(scanners);why.append('tree-scanning crate(s) always join a Rust change: '+', '.join(scanners))
+        extra.update(readers)
+    if scanners and (seeds or extra or rust_text):
+        extra.update(scanners);why.append('tree-scanning crate(s) always join a Rust change: '+', '.join(scanners))
     todo=list(seeds)
     while todo:
         for dep in rdeps[todo.pop()]:
             if dep not in seeds:seeds.add(dep);todo.append(dep)
-    return Scope(bool(full),tuple(sorted(members if full else seeds)),tuple(full+why),python,native,scanners)
+    return Scope(bool(full),tuple(sorted(members if full else seeds|extra)),tuple(full+why),python,native,scanners)
 def gather_scope(base,run=subprocess.run,root=ROOT):
     """Real I/O for --changed: returns (Scope, None) or (None, why the scope could not be computed)."""
     def out(cmd):
