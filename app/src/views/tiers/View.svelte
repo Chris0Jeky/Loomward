@@ -11,7 +11,7 @@
   import VisibleName from '../../lib/ui/VisibleName.svelte';
   import VolumeStatus from '../../lib/ui/VolumeStatus.svelte';
   import { Say } from '../../lib/ui/say.svelte';
-  import { firstTrusted, isSound, type Outcome } from './plan';
+  import { firstTrusted, isSound, reliefAgeText, type Outcome } from './plan';
   import type { CandidateGroup, GroupOverride, PlacementCandidates, PlacementPlan, ProposalDetail, ProposalSummary, TierInfo, TierModel, TierVolume } from '../../lib/contracts.gen';
   import type { HeatPolicy, PreRejectReason, RejectReason, ReliefPolicy } from '../../lib/derived';
 
@@ -60,6 +60,7 @@
   let savedDetail = $state<ProposalDetail | null>(null);
   let savedError = $state('');
   const say = new Say(); // result announcements; the Simulate button keeps focus
+  let now = $state(Date.now());
   let modelTicket = 0;
   let savedTicket = 0;
   let candTicket = 0;
@@ -166,6 +167,14 @@
     assume = {};
     void loadCandidates();
   }
+
+  $effect(() => {
+    // The age of a stored verdict must keep moving while it is on screen.
+    if (!cands?.groups.some((g) => g.relief_observed_at)) return;
+    now = Date.now();
+    const timer = setInterval(() => { now = Date.now(); }, 10000);
+    return () => clearInterval(timer);
+  });
 
   $effect(() => {
     void session.epoch;
@@ -300,6 +309,7 @@
               <td class="r num">
                 {#if g.estimated_relief_bytes === null}<span class="unknown">unknown</span>{:else}{formatBytes(g.estimated_relief_bytes)}{/if}
                 <div class="small"><span class="tag" class:warn={g.relief_basis !== 'verified_unique_allocation'}>{g.relief_basis.replaceAll('_', ' ')}</span></div>
+                {#if g.relief_observed_at}<div class="small muted"><time datetime={g.relief_observed_at} title={g.relief_observed_at}>{reliefAgeText(g.relief_observed_at, now)}</time></div>{/if}
               </td>
               <td class="r num">{formatBytes(g.destination_bytes)}<div class="small muted">estimate</div></td>
               <td>{#if g.heat === null}<span class="unknown">unknown</span>{:else}<span class="num">{g.heat.toFixed(2)}</span>{/if} <span class="tag">{g.heat_basis.replaceAll('_', ' ')}</span></td>

@@ -260,7 +260,7 @@ class FakeEngine:
         if cmd == 'placement.candidates':
             self.candidate_sources.append(p['source_volume_id'])
             g = {'group_id': 'cg_a', 'node_id': 'nd_a', 'root_id': 'rt_a', 'name': 'group-a', 'source_bytes': '5000', 'destination_bytes': '5000', 'transfer_bytes': '5000', 'estimate_basis': 'allocated_entries',
-                 'estimated_relief_bytes': '5000', 'relief_basis': 'verified_unique_allocation', 'heat': None, 'heat_basis': 'unknown', 'newest_modified_at': None, 'pinned': False, 'active': False, 'protected': False, 'days_since_move': 30, 'coverage': 'complete'}
+                 'estimated_relief_bytes': '5000', 'relief_basis': 'verified_unique_allocation', 'relief_observed_at': None, 'heat': None, 'heat_basis': 'unknown', 'newest_modified_at': None, 'pinned': False, 'active': False, 'protected': False, 'days_since_move': 30, 'coverage': 'complete'}
             groups = self.placement_groups.get(p['source_volume_id'], [g])
             gate, self.candidate_gate = self.candidate_gate, None
             if gate:

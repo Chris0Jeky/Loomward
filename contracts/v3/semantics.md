@@ -181,6 +181,11 @@ pre-rejects those groups. Entry-allocation what-ifs remain explicitly labelled a
 reserve preferences are disclosed as an assumed zero reserve. Unknown target clusters and hidden
 descendants retain the engine's assumptions; `pre_rejected` and `excluded_volumes` are preserved.
 
+When a group's `estimated_relief_bytes` comes from a stored reclaim verdict (#1025) rather than a live link-count
+pass, `placement.candidates` carries the time of that observation as `relief_observed_at` (#1029); it is null when a
+live pass verified the figure or the relief is unknown. The verdict's bindings follow the catalogue, not the
+filesystem, so a hard link made since then is not reflected. There is no maximum age after which it is dropped.
+
 Both `placement.candidates` and `placement.simulate` expose `excluded_volumes`. Unusable observed
 physics (zero capacity, free or reserve above capacity, zero cluster size, or capacity/free/reserve/
 cluster above the planner's safe integer range) excludes only that volume with `physics_unusable`.
@@ -1108,7 +1113,8 @@ returns it to "not observed". Revoking, forgetting or losing a root's identity d
 Those bindings follow the catalogue, not the filesystem (a hard link made later changes neither), so
 every candidate whose `reclaimable_bytes` comes from a stored verdict carries `observed_at`, the time
 of the pass (a required nullable timestamp, null wherever the bytes are unknown). There is no maximum
-age after which a verdict is hidden. Placement's stored-relief use of the same rows carries no age.
+age after which a verdict is hidden. Placement's use of the same rows reports the time as `CandidateGroup.relief_observed_at`
+(required nullable; see "Placement reads and stored scenarios").
 
 The pass opens names through verbatim (`\\?\`) paths and first checks every directory from below the
 root through the candidate is still the catalogued, non-reparse directory; otherwise the candidate is

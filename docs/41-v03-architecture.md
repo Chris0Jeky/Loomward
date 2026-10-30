@@ -802,7 +802,8 @@ flowchart LR
   engine runs a budgeted **link-count pass** (metadata-only `FILE_READ_ATTRIBUTES` opens of non-placeholder files
   to read `FileStandardInfo.NumberOfLinks`; at most 200,000 files per group). `relief_basis` is
   `verified_unique_allocation` only if every entry has a native ID, every object's names are inside the group and
-  link counts were observed; otherwise `unknown` and `estimated_relief_bytes` is `null`.
+  link counts were observed; otherwise `unknown` and `estimated_relief_bytes` is `null`. When a stored reclaim verdict
+  supplies the figure instead of a live pass, `relief_observed_at` carries when it was observed (#1029; else `null`).
 - **Pre-rejection** (`pre_rejected`, before the planner): `relief_unknown`, `shares_objects_with_other_group`,
   `group_coverage_incomplete`. Under `entry_allocation_whatif` entry allocation is used as an assumed relief and
   written into `assumptions`; shared objects are still pre-rejected.

@@ -142,6 +142,7 @@
                   <VisibleName name={v.name} />
                   {#if !v.online}<span class="tag bad">Offline</span>{/if}
                   {#each v.unknowns as u (u)}<small>{u}</small>{/each}
+                  <small class="muted" class:unknown={v.healthUnknown}>{v.health}</small>
                 </th>
                 <td>
                   <div class="meter" class:blank={v.used === null} role="img"

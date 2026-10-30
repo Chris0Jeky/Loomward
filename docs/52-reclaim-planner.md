@@ -149,7 +149,8 @@ result.
   bound. Each candidate whose `reclaimable_bytes` comes from a stored verdict therefore carries `observed_at`, the time
   of that pass (null wherever the bytes are unknown), and the Reclaim view says "verified 3 hours ago" beside the
   figure. There is deliberately no maximum age after which the figure is dropped: that is a policy choice, left open.
-  Placement's tier DTO has no field for the age, so its `estimated_relief_bytes` from a stored verdict is unchanged.
+  Placement reports the same time as `relief_observed_at` on a candidate group whose `estimated_relief_bytes` came from
+  a stored verdict (null for a live link-count pass or unknown relief); the Tiers view words it like the Reclaim view.
 - **Not chosen.** An inline pass for small candidates is cheap, but it helps only small caches and makes plan latency
   depend on disk state. Placement's `PlacementInput::files` has the same deadline problem; it can read the same rows later.
 - **Acceptance.** Synthetic lab trees only. Hard links inside a candidate count once. Links crossing the candidate

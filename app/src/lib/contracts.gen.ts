@@ -1334,6 +1334,8 @@ export interface CandidateGroup {
   estimated_relief_bytes: NullableBytes;
   /** verified_unique_allocation: every entry has a native ID, every object's names are inside this group and link counts were observed; default stream only. */
   relief_basis: "verified_unique_allocation" | "entry_allocation_whatif" | "unknown";
+  /** When the stored link-count verdict behind estimated_relief_bytes was observed; null unless that figure came from a stored verdict (not a live link-count pass, not unknown). Hard links made since then are not reflected (#1029). */
+  relief_observed_at: NullableTimestamp;
   heat: NullableFraction;
   heat_basis: HeatBasis;
   newest_modified_at: NullableTimestamp;

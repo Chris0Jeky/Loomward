@@ -94,6 +94,16 @@ pub struct Snapshot {
     pub root_generations: Vec<RootGeneration>,
 }
 
+/// A bound earlier observation of a subtree's relief and when it was made (#1029).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredRelief {
+    /// Unique allocated bytes the observation verified.
+    pub bytes: u64,
+    /// When that observation was made. Bindings track the catalogue, not the filesystem, so a
+    /// hard link made since then is not reflected; this is the only sign the figure may be stale.
+    pub observed_at: Timestamp,
+}
+
 /// Narrow L2 integration boundary. Implementations must honour deadlines and generation bindings.
 pub trait PlacementInput {
     /// Read volumes and, when present, directory headers on the source volume.
@@ -106,7 +116,7 @@ pub trait PlacementInput {
         generations: &[RootGeneration],
         deadline: Instant,
     ) -> EngineResult<Vec<FileEntry>>;
-    /// Unique allocated bytes a bound earlier observation verified for this whole subtree (the
+    /// Unique allocated bytes, with the time observed, a bound earlier observation verified for this whole subtree (the
     /// service: a reclaim verdict still matching the root generation, node incarnation and
     /// subtree revision). It only stands in for a link-count pass the listing did not carry; the
     /// subtree must still be complete and its listed names must cover its totals. Absent, stale
@@ -116,7 +126,7 @@ pub trait PlacementInput {
         _subtree: &Subtree,
         _generations: &[RootGeneration],
         _deadline: Instant,
-    ) -> EngineResult<Option<u64>> {
+    ) -> EngineResult<Option<StoredRelief>> {
         Ok(None)
     }
 }
@@ -280,6 +290,16 @@ impl Engine {
         // Retain exclusions (including the candidate projection's empty member): they
         // explain the historical result and are part of the saved digest format since #350.
         let digest = if request.save {
+            // `relief_observed_at` annotates how old a stored verdict is (#1029); it never enters
+            // the plan, so it stays out of the digest. Saved digests and their dedupe are unchanged.
+            let mut candidates =
+                serde_json::to_value(&built.candidates).expect("serializable candidates");
+            for group in candidates["groups"].as_array_mut().expect("group array") {
+                group
+                    .as_object_mut()
+                    .expect("group object")
+                    .remove("relief_observed_at");
+            }
             let mut canonical_request = request.clone();
             let mut overrides = request.overrides.to_vec();
             overrides.sort_by(|a, b| a.group_id.as_str().cmp(b.group_id.as_str()));
@@ -288,7 +308,7 @@ impl Engine {
             Some(
                 Digest::new(
                     format!("sha256:{:x}", Sha256::digest(serde_json::to_vec(&json!({
-                "scenario": built.scenario, "request": canonical_request, "candidates": built.candidates,
+                "scenario": built.scenario, "request": canonical_request, "candidates": candidates,
                 "pre_rejected": built.pre_rejected, "excluded_volumes": built.excluded_volumes,
                 "assumptions": built.assumptions
             })).expect("serializable input"))),
@@ -974,18 +994,21 @@ fn candidates(
         }
         verified &= logical == s.totals.logical_bytes.get()
             && s.totals.allocated_bytes == Some(Bytes(allocated));
-        let relief = if verified {
+        let (relief, relief_observed_at) = if verified {
             match tally.relief()? {
-                Some(bytes) => Some(Bytes(bytes)),
+                Some(bytes) => (Some(Bytes(bytes)), None),
                 // Relief cannot exceed the subtree's own allocation, so a larger stored value is
                 // not trusted.
-                None => input
+                None => match input
                     .stored_relief(s, &snapshot.root_generations, deadline)?
-                    .filter(|bytes| *bytes <= allocated)
-                    .map(Bytes),
+                    .filter(|stored| stored.bytes <= allocated)
+                {
+                    Some(stored) => (Some(Bytes(stored.bytes)), Some(stored.observed_at)),
+                    None => (None, None),
+                },
             }
         } else {
-            None
+            (None, None)
         };
         let coverage = if s.totals.complete
             && files.len() as u64 == s.totals.files.get()
@@ -1016,6 +1039,7 @@ fn candidates(
                 CandidateGroupEstimateBasis::LogicalFallback
             },
             estimated_relief_bytes: relief,
+            relief_observed_at,
             relief_basis: if relief.is_some() {
                 CandidateGroupReliefBasis::VerifiedUniqueAllocation
             } else {

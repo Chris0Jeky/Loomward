@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { Client } from '../../src/lib/transport/client';
 import { createMockTransport } from '../../src/lib/transport/mock';
 import type { PlacementPlan } from '../../src/lib/contracts.gen';
-import { firstTrusted, isSound, type Outcome } from '../../src/views/tiers/plan';
+import { firstTrusted, isSound, reliefAgeText, type Outcome } from '../../src/views/tiers/plan';
 
 const GiB = 2 ** 30;
 async function plan(): Promise<PlacementPlan> {
@@ -65,5 +65,26 @@ describe('malformed plans are refused, never thrown on', () => {
     }
     expect(isSound(null as unknown as PlacementPlan)).toBe(false);
     expect(firstTrusted({ a: { plan: null as unknown as PlacementPlan } })).toBeNull();
+  });
+});
+
+describe('Tiers stored-verdict age (#1029)', () => {
+  const at = '2026-10-29T00:00:00Z';
+  it('words a stored verdict like the Reclaim view and warns that later hard links are not reflected', () => {
+    expect(reliefAgeText(at, Date.parse(at) + 3 * 3_600_000)).toBe('verified 3 hours ago \u00b7 hard links made since then are not reflected');
+    expect(reliefAgeText(at, Date.parse(at) + 2 * 86_400_000)).toBe('verified 2 days ago \u00b7 hard links made since then are not reflected');
+    expect(reliefAgeText('bad', Date.parse(at))).toContain('verified at an unknown time');
+  });
+  it('shows nothing when the figure is not from a stored verdict', () => {
+    expect(reliefAgeText(null, Date.parse(at))).toBeNull();
+  });
+  it('the mock carries a time only for relief that came from a stored verdict', async () => {
+    const c = new Client(createMockTransport());
+    const { result } = await c.call('placement.candidates', { source_volume_id: 'vo_c', basis: 'largest_dirs', max_groups: 50, min_bytes: '0' });
+    expect(result.groups.some((g) => g.relief_observed_at !== null)).toBe(true);
+    for (const g of result.groups) {
+      if (g.relief_basis !== 'verified_unique_allocation') expect(g.relief_observed_at).toBeNull();
+    }
+    expect(result.groups.some((g) => g.relief_basis === 'verified_unique_allocation' && g.relief_observed_at === null)).toBe(true);
   });
 });
