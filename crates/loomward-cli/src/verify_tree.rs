@@ -7,12 +7,12 @@ use std::{path::PathBuf, time::Duration};
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct Args {
-    source: PathBuf,
-    destination: PathBuf,
-    state_dir: PathBuf,
-    max_entries: usize,
-    budget_bytes: u64,
-    budget_secs: u64,
+    pub(super) source: PathBuf,
+    pub(super) destination: PathBuf,
+    pub(super) state_dir: PathBuf,
+    pub(super) max_entries: usize,
+    pub(super) budget_bytes: u64,
+    pub(super) budget_secs: u64,
 }
 
 pub(super) fn parse(args: &[String]) -> Result<Args, String> {
@@ -93,7 +93,7 @@ fn granted_root(
 }
 
 // These are the admitted identities compare_trees bound its pinned opens to, never new path probes.
-fn root_identity(root: &GrantedRoot) -> Result<serde_json::Value, String> {
+pub(super) fn root_identity(root: &GrantedRoot) -> Result<serde_json::Value, String> {
     use loomward_engine::scan::source::FileIdObs;
     let identity = root
         .expected_identity()
@@ -121,16 +121,23 @@ fn exit_status(report: &Report) -> u8 {
     }
 }
 
-pub(super) fn run(args: Args) -> Result<(serde_json::Value, u8), String> {
-    let roots = paths::validate_roots(&[args.source, args.destination], Some(&args.state_dir))
-        .map_err(|reason| {
-            if reason.contains("protected_profile_or_store") {
-                "whole user-profile folders and credential or browser stores are not eligible"
-                    .into()
-            } else {
-                reason
-            }
-        })?;
+/// Grants exactly the two explicit folders into the scratch `--state-dir` and resolves each to its
+/// durable grant (#1011 shares this with `covers`). No server or command transport starts.
+pub(super) fn admit(
+    args: &Args,
+    names: [&str; 2],
+) -> Result<(Engine, GrantedRoot, GrantedRoot), String> {
+    let roots = paths::validate_roots(
+        &[args.source.clone(), args.destination.clone()],
+        Some(&args.state_dir),
+    )
+    .map_err(|reason| {
+        if reason.contains("protected_profile_or_store") {
+            "whole user-profile folders and credential or browser stores are not eligible".into()
+        } else {
+            reason
+        }
+    })?;
     // The shared Windows fence uses OS known folders; also honour the explicit USERPROFILE folder.
     if let Some(profile) = std::env::var_os("USERPROFILE") {
         let profile = PathBuf::from(profile)
@@ -151,10 +158,19 @@ pub(super) fn run(args: Args) -> Result<(serde_json::Value, u8), String> {
         allow_identity_unverified: false,
     })?;
     drop(service);
-    let engine = Engine::open(EngineConfig::new(args.state_dir, DatasetClass::Personal))
-        .map_err(|e| e.to_string())?;
-    let source = granted_root(&engine, &roots[0], "rt_verify_source")?;
-    let destination = granted_root(&engine, &roots[1], "rt_verify_destination")?;
+    let engine = Engine::open(EngineConfig::new(
+        args.state_dir.clone(),
+        DatasetClass::Personal,
+    ))
+    .map_err(|e| e.to_string())?;
+    let source = granted_root(&engine, &roots[0], names[0])?;
+    let destination = granted_root(&engine, &roots[1], names[1])?;
+    Ok((engine, source, destination))
+}
+
+pub(super) fn run(args: Args) -> Result<(serde_json::Value, u8), String> {
+    let (engine, source, destination) =
+        admit(&args, ["rt_verify_source", "rt_verify_destination"])?;
     let report = engine
         .compare_trees(
             &source,
