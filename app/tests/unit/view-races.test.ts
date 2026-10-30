@@ -469,6 +469,28 @@ describe('Explorer linked node is applied once per value (#1082)', () => {
     await vi.waitFor(() => expect(inspectedNodes()).toEqual(['nd_a', 'nd_a']));
     pending.resolve({ result: { display_path: { text: 'stale', truncated: false } } });
   });
+
+  it('does not re-apply a pending link the reader superseded, even when the aborted call never settles', async () => {
+    const never = new Promise<never>(() => {}); // a transport that ignores AbortSignal (Tauri)
+    let first = true;
+    const call = vi.fn(async (command: string, params: { node_id?: string }) => {
+      if (command === 'node.inspect' && params.node_id === 'nd_a' && first) { first = false; return never; }
+      return { result: command === 'tree.slice' ? roots(rootA)
+        : command === 'node.inspect' ? { display_path: { text: 'synthetic/b', truncated: false } } : children };
+    });
+    const inspectedNodes = () => (call.mock.calls as unknown as Array<[string, { node_id: string }]>)
+      .filter(args => args[0] === 'node.inspect' && args[1].node_id.startsWith('nd_')).map(args => args[1].node_id);
+    const { state, code } = explorer(call);
+    state.route.search = 'node=nd_a';
+    const cleanup = code.effect() as unknown as () => void;
+    await vi.waitFor(() => expect(inspectedNodes()).toEqual(['nd_a']));
+    await code.evaluate("inspect('nd_b')"); // the reader inspects another row while the link is pending
+    cleanup(); // then a reconnect
+    state.session.epoch++;
+    code.effect();
+    await new Promise(resolve => setTimeout(resolve, 10));
+    expect(inspectedNodes()).toEqual(['nd_a', 'nd_b']);
+  });
 });
 
 type TodayCode = { load(): Promise<void>; loadReclaim(ids: string[]): Promise<void>; effect(): void; onEvent(ev: { event: string }): void };

@@ -375,6 +375,7 @@
   let appliedQ: string | null = null;
   let appliedNode: string | null = null;
   let linkedPending: Promise<void> | null = null;
+  let linkedAt = 0; // the inspection counter the linked inspection holds; any later inspect or navigation moves it
   $effect(() => {
     void session.epoch;
     const params = new URLSearchParams(route.search);
@@ -395,14 +396,15 @@
         if (current && node && node !== appliedNode) {
           appliedNode = node;
           const run = inspect(node, observed ?? undefined);
-          linkedPending = run;
+          linkedPending = run; linkedAt = inspection;
           void run.finally(() => { if (linkedPending === run) linkedPending = null; });
         }
       });
     });
     return () => {
       current = false;
-      if (linkedPending) { appliedNode = null; linkedPending = null; }
+      if (linkedPending && linkedAt === inspection) appliedNode = null; // still the current inspection: not consumed
+      linkedPending = null;
       inspection++; inspectAbort?.abort();
     };
   });
