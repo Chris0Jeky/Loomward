@@ -142,7 +142,7 @@
                   <VisibleName name={v.name} />
                   {#if !v.online}<span class="tag bad">Offline</span>{/if}
                   {#each v.unknowns as u (u)}<small>{u}</small>{/each}
-                  <small class="muted" class:unknown={v.healthUnknown}>{v.health}</small>
+                  <small class="muted" class:unknown={v.healthUnknown} class:warn={v.healthWarning}>{v.health}</small>
                 </th>
                 <td>
                   <div class="meter" class:blank={v.used === null} role="img"
@@ -200,6 +200,7 @@
 {/if}
 
 <style>
+  small.warn { font-weight: 600; }
   h3 { margin: var(--sp-4) 0 var(--sp-2); font-size: 1rem; }
   .needs { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--sp-2); }
   .needs li { max-width: var(--measure); }

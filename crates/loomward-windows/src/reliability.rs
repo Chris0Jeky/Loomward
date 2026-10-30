@@ -1,7 +1,7 @@
 //! Reliability counters for one volume (LW-137, #876): NVMe SMART / Health log through a
 //! non-elevated, metadata-only, time-bounded `IOCTL_STORAGE_QUERY_PROPERTY`. Evidence, never a
 //! health verdict. Device identity strings are not part of this log page and are never read.
-use crate::storage_path::ReliabilityCounters;
+use crate::storage_path::{CriticalWarning, ReliabilityCounters};
 use std::{
     io,
     sync::{
@@ -98,7 +98,7 @@ fn counter(page: &[u8], at: usize) -> Option<u64> {
 
 /// Map the NVMe SMART / Health log page to counters. Fields the log has no counterpart for stay
 /// `None`: the log reports one aggregate media-error count, not separate read and write errors, so
-/// that count is not presented as either.
+/// that count is carried as `media_errors` and not presented as either.
 pub(crate) fn counters_from_log(page: &[u8]) -> io::Result<ReliabilityCounters> {
     if page.len() < LOG_BYTES {
         return Err(invalid("short NVMe health log"));
@@ -116,6 +116,12 @@ pub(crate) fn counters_from_log(page: &[u8]) -> io::Result<ReliabilityCounters> 
         wear_percent: Some(u32::from(page[5])),
         // The nearest NVMe counterpart of start/stop cycles is Power Cycles.
         start_stop_cycles: counter(page, 112),
+        critical_warning: Some(CriticalWarning::from_byte(page[0])),
+        // Percent bytes, reported as is (a drive may report a value above 100).
+        available_spare_percent: Some(u32::from(page[3])),
+        available_spare_threshold_percent: Some(u32::from(page[4])),
+        media_errors: counter(page, 160),
+        unsafe_shutdowns: counter(page, 144),
         ..Default::default()
     })
 }
@@ -268,10 +274,13 @@ mod tests {
     fn page() -> [u8; LOG_BYTES] {
         let mut p = [0u8; LOG_BYTES];
         p[1..3].copy_from_slice(&310u16.to_le_bytes()); // 37 C
+        p[3] = 96; // available spare
+        p[4] = 10; // available spare threshold
         p[5] = 7;
         p[112..120].copy_from_slice(&41u64.to_le_bytes());
         p[128..136].copy_from_slice(&1234u64.to_le_bytes());
-        p[160..168].copy_from_slice(&9u64.to_le_bytes()); // media errors: deliberately unmapped
+        p[144..152].copy_from_slice(&5u64.to_le_bytes()); // unsafe shutdowns
+        p[160..168].copy_from_slice(&9u64.to_le_bytes()); // media and data integrity errors
         p
     }
 
@@ -295,6 +304,12 @@ mod tests {
                 power_on_hours: Some(1234),
                 wear_percent: Some(7),
                 start_stop_cycles: Some(41),
+                // A clear warning byte is a measured "no flag latched", not unknown and not healthy.
+                critical_warning: Some(CriticalWarning::default()),
+                available_spare_percent: Some(96),
+                available_spare_threshold_percent: Some(10),
+                media_errors: Some(9),
+                unsafe_shutdowns: Some(5),
                 ..Default::default()
             }
         );
@@ -323,9 +338,75 @@ mod tests {
     fn counters_too_large_for_the_field_are_unknown_not_saturated() {
         let mut p = page();
         p[128 + 8] = 1; // power-on hours above u64
+        p[144 + 8] = 1; // unsafe shutdowns above u64
+        p[160 + 8] = 1; // media errors above u64
         let c = counters_from_log(&p).unwrap();
-        assert_eq!(c.power_on_hours, None);
+        assert_eq!(
+            (c.power_on_hours, c.unsafe_shutdowns, c.media_errors),
+            (None, None, None)
+        );
         assert_eq!(c.start_stop_cycles, Some(41));
+        assert_eq!(c.available_spare_percent, Some(96));
+    }
+
+    #[test]
+    fn each_critical_warning_bit_maps_to_its_own_flag() {
+        let flags = |c: &CriticalWarning| {
+            [
+                c.available_spare_low,
+                c.temperature,
+                c.reliability_degraded,
+                c.read_only,
+                c.volatile_backup_failed,
+            ]
+        };
+        for bit in 0..5 {
+            let mut p = page();
+            p[0] = 1 << bit;
+            let w = counters_from_log(&p).unwrap().critical_warning.unwrap();
+            let mut want = [false; 5];
+            want[bit] = true;
+            assert_eq!(flags(&w), want, "bit {bit}");
+            assert_eq!(w.other_bits, 0);
+            assert!(w.any());
+        }
+        // Bits 5-7 are carried raw, not interpreted.
+        let mut p = page();
+        p[0] = 0b1110_0000;
+        let w = counters_from_log(&p).unwrap().critical_warning.unwrap();
+        assert_eq!((flags(&w), w.other_bits), ([false; 5], 0xE0));
+        assert!(w.any());
+        // Every flag together.
+        p[0] = 0xFF;
+        let w = counters_from_log(&p).unwrap().critical_warning.unwrap();
+        assert_eq!((flags(&w), w.other_bits), ([true; 5], 0xE0));
+        // No bit set: reported as no flag, never as unknown and never as a verdict.
+        p[0] = 0;
+        let w = counters_from_log(&p).unwrap().critical_warning.unwrap();
+        assert!(!w.any());
+    }
+
+    #[test]
+    fn spare_media_and_shutdown_fields_come_from_their_own_offsets() {
+        let mut p = [0u8; LOG_BYTES];
+        p[1..3].copy_from_slice(&300u16.to_le_bytes());
+        p[3] = 0; // a measured 0 % spare is kept, not unknown
+        p[4] = 255;
+        p[144..152].copy_from_slice(&u64::MAX.to_le_bytes());
+        p[160..168].copy_from_slice(&u64::MAX.to_le_bytes());
+        let c = counters_from_log(&p).unwrap();
+        assert_eq!(c.available_spare_percent, Some(0));
+        assert_eq!(c.available_spare_threshold_percent, Some(255));
+        assert_eq!(c.unsafe_shutdowns, Some(u64::MAX));
+        assert_eq!(c.media_errors, Some(u64::MAX));
+        // Neighbouring counters are not mistaken for them: unsafe shutdowns end at 159, media at 175.
+        let mut q = [0u8; LOG_BYTES];
+        q[1..3].copy_from_slice(&300u16.to_le_bytes());
+        q[159] = 0xFF; // top byte of the 128-bit unsafe shutdowns
+        q[175] = 0xFF; // top byte of the 128-bit media errors
+        let c = counters_from_log(&q).unwrap();
+        assert_eq!((c.unsafe_shutdowns, c.media_errors), (None, None));
+        assert_eq!((c.power_on_hours, c.start_stop_cycles), (Some(0), Some(0)));
     }
 
     #[test]

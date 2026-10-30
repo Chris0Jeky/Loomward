@@ -163,7 +163,15 @@ Mapping from the 512-byte NVMe log page (NVMe Base Specification, SMART / Health
 | `wear_percent` | Percentage Used (byte 5), reported as is (it may exceed 100) |
 | `power_on_hours` | Power On Hours (128-bit); a value above `u64` is unknown, not saturated |
 | `start_stop_cycles` | Power Cycles (128-bit), the nearest NVMe counterpart |
-| read/write error totals and uncorrected counts | Not mapped: the log has one aggregate Media Errors count, which is neither a read nor a write total |
+| `critical_warning` | Critical Warning (byte 0): bits 0-4 as named flags (available spare low, temperature, reliability degraded, read-only, volatile backup failed), bits 5-7 carried raw as `other_bits`; a clear byte is a measured "no flag latched", never a health verdict (#1066) |
+| `available_spare_percent`, `available_spare_threshold_percent` | Available Spare (byte 3) and its threshold (byte 4), percent as reported (#1066) |
+| `media_errors` | Media and Data Integrity Errors (bytes 160-175, 128-bit); above `u64` is unknown. One aggregate, neither a read nor a write total (#1066) |
+| `unsafe_shutdowns` | Unsafe Shutdowns (bytes 144-159, 128-bit); above `u64` is unknown (#1066) |
+| read/write error totals and uncorrected counts | Not mapped: the log has no separate read and write error counts |
+
+The app leads the Disk health line (Today, Grants & health) with "the drive reports a critical
+warning (...)" when a flag is latched, still followed by "counters reported, not a verdict"; the
+parser is covered by synthetic pages only, and no real drive has been seen to latch a warning.
 
 An all-zero page is treated as a driver stub, not a measurement. The query runs on a worker thread
 and waits at most the smaller of 2 s and what the request deadline leaves minus a 250 ms reserve

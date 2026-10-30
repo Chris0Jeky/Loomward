@@ -426,7 +426,7 @@
     "StorageCounters": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["temperature_celsius", "read_errors_total", "read_errors_uncorrected", "write_errors_total", "write_errors_uncorrected", "power_on_hours", "wear_percent", "start_stop_cycles"],
+      "required": ["temperature_celsius", "read_errors_total", "read_errors_uncorrected", "write_errors_total", "write_errors_uncorrected", "power_on_hours", "wear_percent", "start_stop_cycles", "critical_warning", "available_spare_percent", "available_spare_threshold_percent", "media_errors", "unsafe_shutdowns"],
       "properties": {
         "temperature_celsius": { "$ref": "#/$defs/NullableCount" },
         "read_errors_total": { "$ref": "#/$defs/NullableCount" },
@@ -435,9 +435,28 @@
         "write_errors_uncorrected": { "$ref": "#/$defs/NullableCount" },
         "power_on_hours": { "$ref": "#/$defs/NullableCount" },
         "wear_percent": { "$ref": "#/$defs/NullableCount" },
-        "start_stop_cycles": { "$ref": "#/$defs/NullableCount" }
+        "start_stop_cycles": { "$ref": "#/$defs/NullableCount" },
+        "critical_warning": { "anyOf": [{ "$ref": "#/$defs/StorageCriticalWarning" }, { "type": "null" }] },
+        "available_spare_percent": { "$ref": "#/$defs/NullableCount" },
+        "available_spare_threshold_percent": { "$ref": "#/$defs/NullableCount" },
+        "media_errors": { "$ref": "#/$defs/NullableCount" },
+        "unsafe_shutdowns": { "$ref": "#/$defs/NullableCount" }
       },
-      "$comment": "A reliability property the device did not report is null, never zero (invariant 4)."
+      "$comment": "A reliability property the device did not report is null, never zero (invariant 4). media_errors is the NVMe aggregate Media and Data Integrity Errors count, neither a read nor a write error total."
+    },
+    "StorageCriticalWarning": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["available_spare_low", "temperature", "reliability_degraded", "read_only", "volatile_backup_failed", "other_bits"],
+      "properties": {
+        "available_spare_low": { "type": "boolean" },
+        "temperature": { "type": "boolean" },
+        "reliability_degraded": { "type": "boolean" },
+        "read_only": { "type": "boolean" },
+        "volatile_backup_failed": { "type": "boolean" },
+        "other_bits": { "type": "integer", "minimum": 0, "maximum": 255 }
+      },
+      "$comment": "The NVMe Critical Warning byte as the device latched it (bits 0-4 named; other_bits is bits 5-7, unshifted and uninterpreted). A set flag is a device report, not a Loomward verdict, and a clear byte is not a healthy verdict either."
     },
     "StorageHealth": {
       "type": "object",

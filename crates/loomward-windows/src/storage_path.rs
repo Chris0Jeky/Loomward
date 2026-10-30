@@ -77,6 +77,37 @@ pub enum RemovalPolicy {
     ExpectSurpriseRemoval,
 }
 
+/// The NVMe Critical Warning byte (SMART / Health log, byte 0) as the device latched it. A set flag
+/// is a device report, not a Loomward verdict; an all-clear byte is not a healthy verdict either.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct CriticalWarning {
+    pub available_spare_low: bool,
+    pub temperature: bool,
+    pub reliability_degraded: bool,
+    pub read_only: bool,
+    pub volatile_backup_failed: bool,
+    /// Bits 5-7 of the byte, unshifted and uninterpreted (reserved or newer than this reader).
+    pub other_bits: u8,
+}
+
+impl CriticalWarning {
+    pub fn from_byte(byte: u8) -> Self {
+        Self {
+            available_spare_low: byte & 0x01 != 0,
+            temperature: byte & 0x02 != 0,
+            reliability_degraded: byte & 0x04 != 0,
+            read_only: byte & 0x08 != 0,
+            volatile_backup_failed: byte & 0x10 != 0,
+            other_bits: byte & 0xE0,
+        }
+    }
+
+    /// Whether the device latched any warning bit.
+    pub fn any(&self) -> bool {
+        *self != Self::default()
+    }
+}
+
 /// Individual absent MSFT_StorageReliabilityCounter properties stay unknown, not zero.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct ReliabilityCounters {
@@ -88,6 +119,12 @@ pub struct ReliabilityCounters {
     pub power_on_hours: Option<u64>,
     pub wear_percent: Option<u32>,
     pub start_stop_cycles: Option<u64>,
+    pub critical_warning: Option<CriticalWarning>,
+    pub available_spare_percent: Option<u32>,
+    pub available_spare_threshold_percent: Option<u32>,
+    /// NVMe "Media and Data Integrity Errors": one aggregate, neither a read nor a write count.
+    pub media_errors: Option<u64>,
+    pub unsafe_shutdowns: Option<u64>,
 }
 
 /// Presence of counters is evidence, not a health verdict or SMART passthrough claim.
@@ -233,6 +270,8 @@ mod tests {
             power_on_hours: Some(123),
             wear_percent: Some(4),
             start_stop_cycles: Some(9),
+            critical_warning: Some(CriticalWarning::from_byte(0x01)),
+            media_errors: Some(3),
             ..Default::default()
         };
         let observed = observe(&fixture(known(counters.clone())));
@@ -243,6 +282,11 @@ mod tests {
         let json = serde_json::to_value(observed).unwrap();
         assert!(json["health"]["counters"]["read_errors_uncorrected"].is_null());
         assert_eq!(json["health"]["counters"]["read_errors_total"], 0);
+        assert_eq!(
+            json["health"]["counters"]["critical_warning"]["available_spare_low"],
+            true
+        );
+        assert!(json["health"]["counters"]["available_spare_percent"].is_null());
     }
 
     #[test]

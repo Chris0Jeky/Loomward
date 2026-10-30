@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import type { Volume } from '../../src/lib/contracts.gen';
-import { diskHealthLine, volumeMarkers } from '../../src/lib/format/volume';
+import type { StorageCriticalWarning, Volume } from '../../src/lib/contracts.gen';
+import { diskHealthLine, hasDiskHealthWarning, volumeMarkers } from '../../src/lib/format/volume';
 import { volumes } from '../../src/lib/stores/volumes.svelte';
+import { healthReading } from '../../src/views/today/model';
 import { Client } from '../../src/lib/transport/client';
 import { createMockTransport } from '../../src/lib/transport/mock';
 
@@ -40,16 +41,89 @@ describe('disk health line (LW-137)', () => {
   it('shows reported counters as evidence, omits unreported ones and gives no verdict', async () => {
     const reported = (await load()).find((v) => v.storage_path?.health.state === 'counters_present')!;
     const line = diskHealthLine(reported);
-    expect(line).toBe('Disk health: counters reported, not a verdict (34 °C, 3% wear, 0 read errors, 0 write errors, 1200 h powered on)');
+    expect(line).toBe('Disk health: counters reported, not a verdict (34 °C, 3% wear, 100% spare (threshold 10%), 0 read errors, 0 write errors, 0 media errors, 3 unsafe shutdowns, 1200 h powered on)');
     expect(line).not.toMatch(NEVER_HEALTHY);
-    const sparse: Volume = { ...reported, storage_path: { ...reported.storage_path!, health: { state: 'counters_present', reason: null, counters: { ...reported.storage_path!.health.counters!, temperature_celsius: null, wear_percent: null, read_errors_total: null, write_errors_total: null, power_on_hours: null } } } };
+    const sparse: Volume = { ...reported, storage_path: { ...reported.storage_path!, health: { state: 'counters_present', reason: null, counters: { ...reported.storage_path!.health.counters!, temperature_celsius: null, wear_percent: null, read_errors_total: null, write_errors_total: null, power_on_hours: null, available_spare_percent: null, available_spare_threshold_percent: null, media_errors: null, unsafe_shutdowns: null } } } };
     expect(diskHealthLine(sparse)).toBe('Disk health: counters reported, not a verdict');
+    expect(hasDiskHealthWarning(reported)).toBe(false);
+  });
+
+  const withWarning = (volume: Volume, warning: Partial<StorageCriticalWarning> | null): Volume => ({
+    ...volume,
+    storage_path: {
+      ...volume.storage_path!,
+      health: {
+        state: 'counters_present', reason: null,
+        counters: {
+          ...volume.storage_path!.health.counters!,
+          critical_warning: warning && { available_spare_low: false, temperature: false, reliability_degraded: false, read_only: false, volatile_backup_failed: false, other_bits: 0, ...warning },
+        },
+      },
+    },
+  });
+
+  it('leads with a latched critical warning, as the drive\'s report and never a verdict', async () => {
+    const reported = (await load()).find((v) => v.storage_path?.health.state === 'counters_present')!;
+    const warned = withWarning(reported, { available_spare_low: true });
+    const line = diskHealthLine(warned);
+    expect(line).toBe('Disk health: the drive reports a critical warning (available spare below threshold) — counters reported, not a verdict (34 °C, 3% wear, 100% spare (threshold 10%), 0 read errors, 0 write errors, 0 media errors, 3 unsafe shutdowns, 1200 h powered on)');
+    expect(line).not.toMatch(NEVER_HEALTHY);
+    expect(hasDiskHealthWarning(warned)).toBe(true);
+    const many = diskHealthLine(withWarning(reported, { temperature: true, reliability_degraded: true, read_only: true, volatile_backup_failed: true, other_bits: 0xa0 }));
+    expect(many).toContain('the drive reports a critical warning (temperature outside its threshold, reliability degraded, media placed in read-only mode, volatile memory backup failed, other warning bits set (0xA0))');
+    expect(many).toContain('counters reported, not a verdict');
+  });
+
+  it('a clear or unreported warning byte neither warns nor reads as healthy', async () => {
+    const reported = (await load()).find((v) => v.storage_path?.health.state === 'counters_present')!;
+    for (const v of [reported, withWarning(reported, null)]) {
+      expect(hasDiskHealthWarning(v)).toBe(false);
+      expect(diskHealthLine(v)).toMatch(/^Disk health: counters reported, not a verdict/);
+      expect(diskHealthLine(v)).not.toMatch(/critical warning|healthy/i);
+    }
+    // A warning on a hidden or unobserved drive cannot appear: there are no counters to carry it.
+    const hidden = (await load()).find((v) => v.storage_path?.health.state === 'unsupported_or_hidden')!;
+    expect(hasDiskHealthWarning(hidden)).toBe(false);
+    expect(hasDiskHealthWarning({ ...reported, storage_path: undefined })).toBe(false);
   });
 
   it('an offline mock volume is not queried and so reads unknown', async () => {
     const offline = (await load()).find((v) => !v.online)!;
     expect(offline.storage_path).toBeUndefined();
     expect(diskHealthLine(offline)).toBe('Disk health: unknown (not observed)');
+  });
+});
+
+describe('an offline volume never shows a stale disk-health reading', () => {
+  const warnedOnline = async (): Promise<Volume> => {
+    const reported = (await new Client(createMockTransport()).call('volumes.list', {})).result.volumes.find((v) => v.storage_path?.health.state === 'counters_present')!;
+    const counters = { ...reported.storage_path!.health.counters!, critical_warning: { available_spare_low: true, temperature: false, reliability_degraded: false, read_only: false, volatile_backup_failed: false, other_bits: 0 } };
+    return { ...reported, online: true, storage_path: { ...reported.storage_path!, health: { state: 'counters_present', reason: null, counters } } };
+  };
+
+  it('the shared helpers read a volume that holds a warning but is offline as not observed', async () => {
+    const warned = await warnedOnline();
+    expect(hasDiskHealthWarning(warned)).toBe(true);
+    const offline = { ...warned, online: false };
+    expect(hasDiskHealthWarning(offline)).toBe(false);
+    expect(diskHealthLine(offline)).toBe('Disk health: unknown (not observed)');
+  });
+
+  it('an online to offline volumes.changed transition clears the warning for Today and Grants & health', async () => {
+    const warned = await warnedOnline();
+    volumes.items = [warned];
+    const { storage_path: _dropped, ...row } = warned;
+    volumes.changed([{ ...row, online: false } as Volume]);
+    const now = volumes.items![0]!;
+    expect(now.storage_path).toBeUndefined();
+    // Grants & health calls the helpers directly; Today goes through healthReading.
+    expect(hasDiskHealthWarning(now)).toBe(false);
+    expect(diskHealthLine(now)).toBe('Disk health: unknown (not observed)');
+    expect(healthReading(now)).toEqual({ text: 'Disk health: unknown (not observed)', unknown: true, warning: false });
+    // Coming back online keeps nothing stale either: it reads not observed until the next list.
+    volumes.changed([{ ...row, online: true } as Volume]);
+    expect(hasDiskHealthWarning(volumes.items![0]!)).toBe(false);
+    volumes.items = null;
   });
 });
 

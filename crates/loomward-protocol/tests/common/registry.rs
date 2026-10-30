@@ -167,6 +167,7 @@ pub fn roundtrip(def: &str, v: &Value) -> Option<Result<Value, String>> {
         "TierInfo" => rt::<TierInfo>(v),
         "VolumeFeatures" => rt::<VolumeFeatures>(v),
         "StorageCounters" => rt::<StorageCounters>(v),
+        "StorageCriticalWarning" => rt::<StorageCriticalWarning>(v),
         "StorageHealth" => rt::<StorageHealth>(v),
         "VolumeStoragePath" => rt::<VolumeStoragePath>(v),
         "Volume" => rt::<Volume>(v),
