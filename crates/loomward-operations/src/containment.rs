@@ -3,7 +3,7 @@
 //! Pure over two observed `Tree`s. Coverage is equal size and equal content digest on both sides,
 //! never a name, size or timestamp alone. It is not metadata fidelity, not an independent backup
 //! and never permission to delete.
-use crate::tree::{Kind, Side, Tree};
+use crate::tree::{Kind, Node, Side, Tree};
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
@@ -89,27 +89,71 @@ fn incomplete(tree: &Tree) -> bool {
 /// A file whose size, creation, last-write or change time differs between two reads of the same
 /// root (#1037): the digest taken in between no longer describes it.
 pub const CHANGED_DURING_COMPARE: &str = "changed_during_compare";
+/// The recheck could not say either way (its own listing was cut short, or times were not
+/// observed): the file is not known to have changed (#1037).
+pub const RECHECK_INCOMPLETE: &str = "recheck_incomplete";
 
-/// Re-verifies A after every hashing read (#1037). `again` is a listing-only read of the same root;
-/// a file of `a` that is gone from it, or whose size or creation, last-write or change time moved,
-/// loses its content, so it reports `Unknown` instead of a verdict on bytes that may be gone.
-/// Files that appeared since are outside "A as read" and are not reported.
-pub fn recheck_source(a: &mut Tree, again: &Tree) {
+enum Recheck {
+    Same,
+    Changed,
+    /// Could not re-verify, with the reason the recheck gives.
+    Unverified(&'static str),
+}
+
+fn recheck_file(path: &Path, node: &Node, again: &Tree) -> Recheck {
     use crate::tree::MetadataClass::{ChangeTime, CreationTime, LastWriteTime};
+    match again.nodes.get(path) {
+        Some(Err(reason)) => Recheck::Unverified(reason),
+        Some(Ok(now)) => {
+            if now.kind != Kind::File || now.size != node.size {
+                return Recheck::Changed;
+            }
+            let mut seen = true;
+            for class in [CreationTime, LastWriteTime, ChangeTime] {
+                match (node.metadata.get(&class), now.metadata.get(&class)) {
+                    (Some(Ok(before)), Some(Ok(after))) if before != after => {
+                        return Recheck::Changed
+                    }
+                    (Some(Ok(_)), Some(Ok(_))) => {}
+                    _ => seen = false,
+                }
+            }
+            if seen {
+                Recheck::Same
+            } else {
+                Recheck::Unverified(RECHECK_INCOMPLETE)
+            }
+        }
+        // Absent: gone only if its folder was listed completely; otherwise say why not.
+        None => match path.parent().and_then(|dir| again.nodes.get(dir)) {
+            Some(Ok(dir)) => match dir.children {
+                Ok(()) => Recheck::Changed,
+                Err(reason) => Recheck::Unverified(reason),
+            },
+            Some(Err(reason)) => Recheck::Unverified(reason),
+            None => Recheck::Unverified(RECHECK_INCOMPLETE),
+        },
+    }
+}
+
+/// Re-verifies A after every hashing read (#1037). `again` is a listing-only read of the same root.
+/// A file that is gone from a completely listed folder, or whose size or creation, last-write or
+/// change time moved, loses its content with `changed_during_compare`, replacing whatever it held:
+/// the report must not judge bytes that may be gone. A file the recheck could not reach (budget,
+/// cancel, a cut-short listing) is not known to have changed: a hashed file becomes unknown with
+/// the recheck's own reason, and any content verdict already `Err` is kept. Files that appeared
+/// since are outside "A as read" and are not reported.
+pub fn recheck_source(a: &mut Tree, again: &Tree) {
     for (path, node) in &mut a.nodes {
         let Ok(node) = node else { continue };
         if node.kind != Kind::File {
             continue;
         }
-        let same = matches!(again.nodes.get(path), Some(Ok(now))
-        if now.kind == Kind::File
-            && now.size == node.size
-            && [CreationTime, LastWriteTime, ChangeTime].iter().all(|class| {
-                matches!((node.metadata.get(class), now.metadata.get(class)),
-                    (Some(Ok(before)), Some(Ok(after))) if before == after)
-            }));
-        if !same {
-            node.content = Err(CHANGED_DURING_COMPARE);
+        match recheck_file(path, node, again) {
+            Recheck::Same => {}
+            Recheck::Changed => node.content = Err(CHANGED_DURING_COMPARE),
+            Recheck::Unverified(reason) if node.content.is_ok() => node.content = Err(reason),
+            Recheck::Unverified(_) => {}
         }
     }
 }
@@ -566,13 +610,81 @@ mod tests {
                 ("same".into(), covered("copy")),
             ]
         );
-        // A file whose times were never observed cannot be re-verified either.
+        // A file whose times were never observed cannot be re-verified, but is not known changed.
         let mut blind = tree(&[("same", file(4, 1))]);
         recheck_source(&mut blind, &again);
-        assert!(matches!(
-            blind.nodes[Path::new("same")].as_ref().unwrap().content,
-            Err(CHANGED_DURING_COMPARE)
-        ));
+        assert_eq!(content_of(&blind, "same"), Err(RECHECK_INCOMPLETE));
+    }
+
+    fn content_of(tree: &Tree, path: &str) -> Observation<[u8; 32]> {
+        tree.nodes[Path::new(path)].as_ref().unwrap().content
+    }
+
+    #[test]
+    fn a_recheck_that_could_not_look_never_blames_a_change() {
+        let mut read = tree(&[
+            ("ok", stamped(4, 1, b"w1")),
+            ("timed", stamped(4, 2, b"w1")),
+            ("sub", dir()),
+            ("sub/under-err", stamped(4, 3, b"w1")),
+            ("cut", dir()),
+            ("cut/short", stamped(4, 4, b"w1")),
+            ("lost", dir()),
+            ("lost/deep", stamped(4, 5, b"w1")),
+            ("gone", dir()),
+            ("gone/file", stamped(4, 6, b"w1")),
+            ("sub/budget-hit", stamped(4, 7, b"w1")),
+        ]);
+        // Verdicts already held stay: only a hashed file loses its digest.
+        read.nodes
+            .get_mut(Path::new("sub/budget-hit"))
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .content = Err("byte_budget");
+        let mut again = tree(&[
+            ("ok", stamped(4, 0, b"w1")),
+            ("timed", Err("time_budget")),
+            ("sub", Err("cancelled")),
+            ("cut", dir()),
+            ("gone", dir()),
+        ]);
+        again
+            .nodes
+            .get_mut(Path::new("cut"))
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .children = Err("entry_budget");
+        // `lost` is not in `again` at all, so nothing under it was observed.
+        recheck_source(&mut read, &again);
+        for (name, expect) in [
+            ("ok", Ok([1; 32])),
+            ("timed", Err("time_budget")),
+            ("sub/under-err", Err("cancelled")),
+            ("sub/budget-hit", Err("byte_budget")),
+            ("cut/short", Err("entry_budget")),
+            ("lost/deep", Err(RECHECK_INCOMPLETE)),
+            // The folder was listed completely and the file is not in it: really gone.
+            ("gone/file", Err(CHANGED_DURING_COMPARE)),
+        ] {
+            assert_eq!(content_of(&read, name), expect, "{name}");
+        }
+        // A real change replaces a held verdict, and an unchanged unread file keeps its own.
+        let mut unread = stamped(4, 0, b"w1").unwrap();
+        unread.content = Err("not_requested");
+        let mut moved = unread.clone();
+        moved
+            .metadata
+            .insert(MetadataClass::LastWriteTime, Ok(b"w2".to_vec()));
+        let mut a = tree(&[("still", Ok(unread)), ("moved", Ok(moved))]);
+        let again = tree(&[
+            ("still", stamped(4, 0, b"w1")),
+            ("moved", stamped(4, 0, b"w1")),
+        ]);
+        recheck_source(&mut a, &again);
+        assert_eq!(content_of(&a, "still"), Err("not_requested"));
+        assert_eq!(content_of(&a, "moved"), Err(CHANGED_DURING_COMPARE));
     }
 
     #[test]

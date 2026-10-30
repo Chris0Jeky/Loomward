@@ -208,9 +208,12 @@ across its reads.
 
 - It lists B without reading content, hashes only the A files whose size occurs in B, then hashes only the B files
   whose size occurs among those A files. A B file of a size no A file has is never read. It then lists A once more
-  (metadata only, no read budget): an A file that is gone, or whose size or creation, last-write or change time moved
-  since it was hashed, is `unknown` (source, `changed_during_compare`). A file that appeared in A since is outside
-  "A as read" and is not reported (#1037).
+  (metadata only, no read budget): an A file that is gone from a completely listed folder, or whose size or creation,
+  last-write or change time moved since it was hashed, is `unknown` (source, `changed_during_compare`). This is a
+  metadata heuristic (size and those three times, no file ID), not a content check. If that listing runs out of the
+  shared time budget, is cancelled or is cut short, a hashed file is `unknown` with the listing's own reason (or
+  `recheck_incomplete`), never blamed on a change. A file that appeared in A since is outside "A as read" and is not
+  reported. Windows remain: A after the recheck listing, and B after its own hashing (#1037).
 - Each A file is `covered` (with one B path of equal size and equal content digest), `not_covered` (B has no file of
   that size or content, and B's listing was complete), or `unknown` with a side and reason (unreadable, budget, an
   incomplete B listing that leaves absence unproven, B gaining a file of A's size after its listing, reported on the
