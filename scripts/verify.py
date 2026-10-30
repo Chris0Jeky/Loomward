@@ -30,13 +30,13 @@ ROOT=Path(__file__).resolve().parents[1]
 FALLBACK_DIRS=('contracts/','fixtures/','schemas/','.cargo/')  # read by crates from outside any crate
 FALLBACK_FILES=('Cargo.toml','Cargo.lock','rustfmt.toml','.rustfmt.toml','clippy.toml','.clippy.toml')
 INERT_DIRS=('app/','backlog/','bucket/','docs/','evidence/','experiments/','handoff/','native/','packaging/','python/','scripts/','tests/','.github/','.agent-harness/')
-PYTHON_DIRS=('python/','tests/','fixtures/','contracts/','scripts/','schemas/','backlog/','docs/','native/','packaging/','handoff/','app/')  # the Python tests read these (grep, 2026-10-30)
+PYTHON_DIRS=('python/','tests/','fixtures/','contracts/','scripts/','schemas/','backlog/','docs/','native/','packaging/','handoff/','app/','.github/','evidence/')  # the Python tests read these (grep, 2026-10-30; .github/ workflows, actions and release notes, evidence/v3)
 PYTHON_FILES=('pyproject.toml',)
 STRING=re.compile(r'"((?:[^"\\\n]|\\.)*)"')
 TREE_SCAN=re.compile(r'\.parent\(\)\s*\.unwrap\(\)\s*\.parent\(\)|join\("\.\./\.\."\)')
 PY_CALL=re.compile(r'Command::new\("(?:py|python3?)"\)')
 class Scope(NamedTuple):
-    full:bool;crates:tuple;reasons:tuple;python:bool;native:bool;scanners:tuple
+    full:bool;crates:tuple;reasons:tuple;python:tuple;native:bool;scanners:tuple
 def norm_ref(text):
     return re.sub(r'^(?:\.{1,2}/|/)+','',text.replace('\\','/'))
 def scan_sources(texts):
@@ -68,9 +68,9 @@ def select_scope(changed,packages,workspace_root,reads):
         for d in p['dependencies']:
             if d.get('path') and d['name'] in members:rdeps[d['name']].add(p['name'])
     scanners=tuple(sorted(n for n,r in reads.items() if r[1]));pyrunners=sorted(n for n,r in reads.items() if r[2])
-    seeds=set();extra=set();why=[];full=[];python=False;native=False;rust_text=False
+    seeds=set();extra=set();why=[];full=[];python=[];native=False;rust_text=False
     for f in (c.replace('\\','/') for c in changed):
-        python=python or f.startswith(PYTHON_DIRS) or f in PYTHON_FILES
+        if f.startswith(PYTHON_DIRS) or f in PYTHON_FILES:python.append(f)
         native=native or f.startswith('native/')
         rust_text=rust_text or f.endswith(('.rs','Cargo.toml'))
         owner=next((dirs[d] for d in sorted(dirs,key=len,reverse=True) if f.startswith(d+'/')),None)
@@ -89,7 +89,7 @@ def select_scope(changed,packages,workspace_root,reads):
     while todo:
         for dep in rdeps[todo.pop()]:
             if dep not in seeds:seeds.add(dep);todo.append(dep)
-    return Scope(bool(full),tuple(sorted(members if full else seeds|extra)),tuple(full+why),python,native,scanners)
+    return Scope(bool(full),tuple(sorted(members if full else seeds|extra)),tuple(full+why),tuple(python),native,scanners)
 def gather_scope(base,run=subprocess.run,root=ROOT):
     """Real I/O for --changed: returns (Scope, None) or (None, why the scope could not be computed)."""
     def out(cmd):
@@ -97,8 +97,8 @@ def gather_scope(base,run=subprocess.run,root=ROOT):
         if r.returncode:raise RuntimeError(f'{" ".join(cmd[:2])} failed: {(r.stderr or "").strip()[:200]}')
         return r.stdout
     try:
-        files=set(out(['git','diff','--name-only',f'{base}...HEAD']).split('\n'))
-        files|=set(out(['git','diff','--name-only','HEAD']).split('\n'))|set(out(['git','ls-files','--others','--exclude-standard']).split('\n'))
+        files=set(out(['git','diff','--no-renames','--name-only',f'{base}...HEAD']).split('\n'))
+        files|=set(out(['git','diff','--no-renames','--name-only','HEAD']).split('\n'))|set(out(['git','ls-files','--others','--exclude-standard']).split('\n'))
         meta=json.loads(out(['cargo','metadata','--no-deps','--format-version','1']))
         reads={}
         for p in meta['packages']:
@@ -110,7 +110,7 @@ def scope_summary(scope,base,why=None):
     """Lines that state exactly what a --changed run covered; a selection is never called the workspace."""
     if scope is None:return [f'SCOPE full workspace and Python suite (cannot compute the change scope: {why})']
     lines=[f'SELECTION against {base}:']+['  '+r for r in scope.reasons]
-    python='Python suite: '+('ran' if scope.python else 'not run (no Python input changed)')
+    python='Python suite: '+(f'ran (Python input changed: {", ".join(scope.python[:3])}{", ..." if len(scope.python)>3 else ""})' if scope.python else 'not run (no changed file is a Python input)')
     if scope.full:lines.append('SCOPE Rust: full workspace (fallback above); '+python)
     else:
         lines.append(f'SCOPE Rust: selected crates only ({", ".join(scope.crates) or "none"}); hosted CI runs the whole workspace. Only cargo fmt covered the whole workspace. '+python)

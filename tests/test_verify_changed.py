@@ -2,6 +2,8 @@
 import contextlib
 import importlib.util
 import io
+import json
+import tempfile
 import unittest
 from pathlib import Path
 from subprocess import CompletedProcess
@@ -57,7 +59,7 @@ class MappingTests(unittest.TestCase):
 
     def test_nothing_changed_selects_nothing(self):
         scope = select([])
-        self.assertEqual((scope.full, scope.crates, scope.python), (False, (), False))
+        self.assertEqual((scope.full, scope.crates, scope.python), (False, (), ()))
 
 
 class FallbackTests(unittest.TestCase):
@@ -120,9 +122,14 @@ def scan_ref(text):
 
 class PythonTriggerTests(unittest.TestCase):
     def test_python_runs_for_each_python_input(self):
-        for path in ["python/loomward/a.py", "tests/test_a.py", "fixtures/a.json", "contracts/v3/a.json", "scripts/a.py", "pyproject.toml"]:
+        for path in ["python/loomward/a.py", "tests/test_a.py", "fixtures/a.json", "contracts/v3/a.json", "scripts/a.py", "pyproject.toml",
+                     ".github/workflows/ci.yml", ".github/actions/x/action.yml", ".github/release/notes.md", "evidence/v3/README.md"]:
             with self.subTest(path=path):
                 self.assertTrue(select([path]).python)
+
+    def test_the_reason_lists_the_triggering_files(self):
+        self.assertEqual(select([".github/workflows/ci.yml", "crates/learn/src/a.rs"]).python, (".github/workflows/ci.yml",))
+        self.assertEqual(len(select(["tests/a.py", "tests/b.py"]).python), 2)
 
     def test_a_crate_only_change_does_not_run_python(self):
         self.assertFalse(select(["crates/learn/src/a.rs", "Cargo.lock"]).python)
@@ -149,9 +156,14 @@ class SummaryTests(unittest.TestCase):
     def test_selected_run_says_selection_only_and_never_a_workspace_pass(self):
         text = "\n".join(verify.scope_summary(select(["crates/learn/src/a.rs"]), "origin/main"))
         self.assertIn("selected crates only (learn); hosted CI runs the whole workspace", text)
-        self.assertIn("Python suite: not run", text)
+        self.assertIn("Python suite: not run (no changed file is a Python input)", text)
         self.assertNotIn("full workspace", text)
         self.assertIn("crates/learn/src/a.rs -> crate learn", text)
+
+    def test_python_run_names_what_triggered_it(self):
+        changed = ["tests/a.py", "scripts/b.py", "docs/c.md", "app/d.ts", "evidence/e.md"]
+        text = "\n".join(verify.scope_summary(select(changed), "origin/main"))
+        self.assertIn("Python suite: ran (Python input changed: tests/a.py, scripts/b.py, docs/c.md, ...)", text)
 
     def test_fallback_says_full_workspace_and_why(self):
         text = "\n".join(verify.scope_summary(select(["Cargo.lock"]), "origin/main"))
@@ -167,6 +179,79 @@ class SummaryTests(unittest.TestCase):
         text = "\n".join(verify.scope_summary(None, "origin/main", "git failed"))
         self.assertIn("full workspace and Python suite", text)
         self.assertIn("git failed", text)
+
+
+class GatherScopeTests(unittest.TestCase):
+    """gather_scope with an injected run(): three git listings, a real-shaped cargo metadata payload, failures."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        for name, text in [("a", 'include_str!("../../b/src/old.rs");'), ("b", "")]:
+            (self.root / "crates" / name / "src").mkdir(parents=True)
+            (self.root / "crates" / name / "src" / "lib.rs").write_text(text, encoding="utf-8")
+        self.meta = {"workspace_root": str(self.root), "packages": [
+            {"name": "a", "manifest_path": str(self.root / "crates/a/Cargo.toml"), "dependencies": [
+                {"name": "serde", "source": "registry+https://x", "kind": None, "path": None},
+                {"name": "b", "source": None, "kind": None, "path": str(self.root / "crates/b")}]},
+            {"name": "b", "manifest_path": str(self.root / "crates/b/Cargo.toml"), "dependencies": []}]}
+
+    def runner(self, outputs, fail=None):
+        calls = []
+
+        def run(cmd, **kwargs):
+            calls.append(list(cmd))
+            if fail and cmd[0] == fail:
+                return CompletedProcess(cmd, 1, stdout="", stderr="boom")
+            for key, text in outputs.items():
+                if key in " ".join(cmd):
+                    return CompletedProcess(cmd, 0, stdout=text, stderr="")
+            raise AssertionError(cmd)
+        run.calls = calls
+        return run
+
+    def outputs(self, committed="", dirty="", untracked=""):
+        return {"...HEAD": committed, "diff --no-renames --name-only HEAD": dirty, "ls-files": untracked,
+                "cargo metadata": json.dumps(self.meta)}
+
+    def test_union_of_committed_uncommitted_and_untracked_files(self):
+        run = self.runner(self.outputs("crates/b/src/lib.rs\n", "docs/x.md\n", "tests/test_new.py\n"))
+        scope, why = verify.gather_scope("origin/main", run=run, root=self.root)
+        self.assertIsNone(why)
+        self.assertEqual(scope.crates, ("a", "b"))  # b owns the file, a depends on b
+        self.assertEqual(scope.python, ("docs/x.md", "tests/test_new.py"))
+        self.assertTrue(any("origin/main...HEAD" in " ".join(c) for c in run.calls))
+
+    def test_renames_are_listed_as_delete_plus_add_so_the_old_path_is_seen(self):
+        run = self.runner(self.outputs("crates/b/src/new.rs\ncrates/b/src/old.rs\n"))
+        verify.gather_scope("origin/main", run=run, root=self.root)
+        diffs = [c for c in run.calls if c[:2] == ["git", "diff"]]
+        self.assertEqual(len(diffs), 2)
+        self.assertTrue(all("--no-renames" in c for c in diffs))
+
+    def test_an_old_path_reader_is_selected_when_the_old_path_is_listed(self):
+        # crate a names b's old.rs by include_str!; a rename lists old.rs, so a is selected as reader and dependent
+        run = self.runner(self.outputs("crates/b/src/old.rs\n"))
+        scope, _ = verify.gather_scope("HEAD~1", run=run, root=self.root)
+        self.assertIn("also read by crate a", " ".join(scope.reasons))
+
+    def test_git_failure_returns_no_scope_and_the_reason(self):
+        scope, why = verify.gather_scope("nope", run=self.runner(self.outputs(), fail="git"), root=self.root)
+        self.assertIsNone(scope)
+        self.assertIn("git diff failed: boom", why)
+
+    def test_cargo_metadata_failure_returns_no_scope(self):
+        scope, why = verify.gather_scope("origin/main", run=self.runner(self.outputs(), fail="cargo"), root=self.root)
+        self.assertIsNone(scope)
+        self.assertIn("cargo metadata failed", why)
+
+    def test_unparseable_metadata_returns_no_scope(self):
+        outputs = self.outputs()
+        outputs["cargo metadata"] = "not json"
+        scope, why = verify.gather_scope("origin/main", run=self.runner(outputs), root=self.root)
+        self.assertIsNone(scope)
+        self.assertTrue(why)
 
 
 class MainWiringTests(unittest.TestCase):
