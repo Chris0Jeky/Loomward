@@ -346,6 +346,16 @@ describe('new since the last scan', () => {
     expect(lines[0]!.notes).toEqual(['Logical size. Moved or recreated files count as new.']);
   });
 
+  it('never ranks a folder of unknown size as the largest: a known size wins, then a file, then a neutral link', () => {
+    const unknownFolder = folder('nd_unknown', null);
+    const known = newSinceLines([volume()], [root()], reads(['rt_1', answer({ largest_folders: [unknownFolder, folder('nd_small', '5')] })]));
+    expect(known[0]).toMatchObject({ href: '#/explorer?node=nd_small', linkText: 'Open the largest new folder in Explorer' });
+    const viaFile = newSinceLines([volume()], [root()], reads(['rt_1', answer({ largest_folders: [unknownFolder], largest_files: [file('nd_f', '9')] })]));
+    expect(viaFile[0]).toMatchObject({ href: '#/explorer?node=nd_f', linkText: 'Open the largest new file in Explorer' });
+    const only = newSinceLines([volume()], [root()], reads(['rt_1', answer({ largest_folders: [unknownFolder], largest_files: [] })]));
+    expect(only[0]).toMatchObject({ href: '#/explorer?node=nd_unknown', linkText: 'Open a new folder in Explorer' });
+  });
+
   it('falls back to the largest new file, encodes the link, and links nothing when nothing is new', () => {
     const files = newSinceLines([volume()], [root()], reads(['rt_1', answer({ largest_folders: [], largest_files: [file('nd_small', '5'), file('nd_big', '50')] })]));
     expect(files[0]).toMatchObject({ href: '#/explorer?node=nd_big', linkText: 'Open the largest new file in Explorer' });

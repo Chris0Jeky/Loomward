@@ -1227,7 +1227,7 @@ saw changes after the scan, so the figures describe an earlier state). Anything 
 list (denied, depth-limited, partial or failed scans) is born in the first run that lists it. `caveats`
 always travels with an `ok` result: a file moved across folders, or deleted and recreated, is a new row and
 counts as new (only a rename inside one folder, and any directory rename or move, keep their history); a
-folder first listed later counts as new; a file that existed and grew is not measured. The result is a count
+folder first listed later has its contents counted as new (the folder row itself was born earlier); a file that existed and grew is not measured. The result is a count
 of rows first listed after the baseline, never a claim about the disk, a recommendation or an approval.
 
 ## Reclaim relief check (#1013)

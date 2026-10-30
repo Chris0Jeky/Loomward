@@ -455,3 +455,35 @@ fn a_read_changes_nothing() {
         "new_since must not repair aggregates"
     );
 }
+
+#[test]
+fn a_budget_hit_or_an_expired_deadline_is_an_error_never_a_short_count() {
+    let lab = Lab::new();
+    let first = lab.run("full", "completed", Some(true));
+    let second = lab.run("full", "completed", Some(true));
+    lab.db.execute_batch("BEGIN").unwrap();
+    for i in 0..3000 {
+        lab.file(lab.dir, &format!("f{i}"), second, 1, Some(1));
+    }
+    lab.db.execute_batch("COMMIT").unwrap();
+    // Plenty of budget: all 3000 are counted.
+    let mut reader = lab.catalog.reader().unwrap();
+    let whole = reader
+        .new_since_within(lab.root, Some(first), 5, 32_000_000)
+        .unwrap();
+    assert_eq!(whole.totals.unwrap().new_files, 3000);
+    // A budget far below the pass: ResourceBudget, not partial totals.
+    assert!(matches!(
+        reader.new_since_within(lab.root, Some(first), 5, 1000),
+        Err(Error::ResourceBudget)
+    ));
+    // The reader is still usable afterwards (the progress handler was removed).
+    assert_eq!(lab.totals(Some(first)).new_files, 3000);
+    // An expired deadline is Cancelled.
+    let mut late = lab.catalog.reader().unwrap();
+    late.set_deadline(std::time::Instant::now());
+    assert!(matches!(
+        late.new_since(lab.root, Some(first), 5),
+        Err(Error::Cancelled)
+    ));
+}

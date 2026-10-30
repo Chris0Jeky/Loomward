@@ -98,6 +98,18 @@ impl Reader {
     /// ranked list. A bounded, index-free pass over the root's files: a budget hit is `ResourceBudget`,
     /// never a short count.
     pub fn new_since(&mut self, root: i64, baseline: Option<i64>, cap: usize) -> Result<NewSince> {
+        self.new_since_within(root, baseline, cap, WORK_BUDGET)
+    }
+
+    /// `new_since` with an explicit SQLite step budget: a test seam for the budget-hit path.
+    #[doc(hidden)]
+    pub fn new_since_within(
+        &mut self,
+        root: i64,
+        baseline: Option<i64>,
+        cap: usize,
+        work_budget: u64,
+    ) -> Result<NewSince> {
         if !(1..=50).contains(&cap) || baseline.is_some_and(|b| b < 1) {
             return Err(Error::Invalid("new since request"));
         }
@@ -106,7 +118,7 @@ impl Reader {
             return Err(Error::Cancelled);
         }
         let result = self.read_observations(|conn| {
-            let _guard = query::WorkGuard::new(conn, WORK_BUDGET, deadline)?;
+            let _guard = query::WorkGuard::new(conn, work_budget, deadline)?;
             read(conn, root, baseline, cap)
         });
         match result {

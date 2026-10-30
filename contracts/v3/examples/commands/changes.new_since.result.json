@@ -50,7 +50,7 @@
   "caveats": [
     { "topic": "moved_files_count_as_new", "note": "A file moved to another folder counts as new here: only a move inside one folder keeps its place in the history." },
     { "topic": "recreated_files_count_as_new", "note": "A file deleted and written again counts as new." },
-    { "topic": "first_listing_counts_as_new", "note": "A folder the earlier scan could not list (denied, depth-limited or partial) counts as new when a later scan first lists it." },
+    { "topic": "first_listing_counts_as_new", "note": "What the earlier scan could not list (a denied, depth-limited or partial folder) counts as new when a later scan first lists it; the folder itself is not new, its contents are." },
     { "topic": "existing_files_not_measured", "note": "A file that existed before and grew is not counted: sizes are not kept per scan." }
   ]
 }

@@ -345,18 +345,21 @@ export function newSinceLines(volumes: Volume[], roots: Root[], reads: NewSinceR
     }
     notes.push(MOVED_NOTE);
     // The largest new folder (else file) across the counted folders, for Explorer.
+    // Only a known size can be "the largest": an unknown-size folder is never ranked as zero, and is a last resort.
     const pick = (items: { node_id: string; logical_bytes: string | null }[]) =>
       items.reduce<{ node_id: string; size: bigint } | null>((best, i) => {
-        const size = parseBytes(i.logical_bytes) ?? 0n;
-        return !best || size > best.size ? { node_id: i.node_id, size } : best;
+        const size = parseBytes(i.logical_bytes);
+        return size !== null && (!best || size > best.size) ? { node_id: i.node_id, size } : best;
       }, null);
-    const folder = pick(counted.flatMap((a) => a.largest_folders));
+    const folders = counted.flatMap((a) => a.largest_folders);
+    const folder = pick(folders);
     const file = folder ? null : pick(counted.flatMap((a) => a.largest_files));
-    const target = folder ?? file;
+    const anyFolder = folder || file ? null : folders[0];
+    const target = folder ?? file ?? anyFolder;
     return [{
       ...base, text: `New since ${since}: ${formatBytes(String(bytes))} in ${plural(files, 'file')}.`, notes, unknown: false,
       href: target ? `#/explorer?node=${encodeURIComponent(target.node_id)}` : null,
-      linkText: folder ? 'Open the largest new folder in Explorer' : 'Open the largest new file in Explorer',
+      linkText: folder ? 'Open the largest new folder in Explorer' : file ? 'Open the largest new file in Explorer' : 'Open a new folder in Explorer',
     }];
   });
 }

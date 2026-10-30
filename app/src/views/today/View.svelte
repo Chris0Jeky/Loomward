@@ -33,6 +33,8 @@
   let ticket = 0;
   let reclaimTicket = 0;
   let newSinceTicket = 0;
+  let askedKey: string | null = null; // the folder-scan key and connection the last new-since read was made for
+  let askedConnection = -1;
   let alive = true;
   let started = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -66,7 +68,7 @@
   }
 
   // One bounded read per active granted folder: what first appeared since its previous scan. Asked again only when a folder's
-  // scan changes (not on every progress event), because each answer is a pass over that folder's catalogue rows.
+  // scan state or the connection changes (not on progress or tree events), because each answer is a pass over that folder's rows.
   async function loadNewSince(ids: string[]): Promise<void> {
     const c = session.client;
     const epoch = session.connectionEpoch;
@@ -116,12 +118,18 @@
   const newSinceKey = $derived(roots
     ? roots.filter((r) => r.grant_state === 'active').map((r) => [r.root_id, r.scan.state, r.scan.generation, r.scan.finished_at].join('|')).join('\n')
     : null);
+  // session.epoch also bumps on every tree.invalidated (about twice a second per root during a scan); it only wakes this
+  // effect. A read is made only when a folder's scan state or the connection (connectionEpoch) changed since the last one.
   $effect(() => {
     const key = newSinceKey;
-    void session.epoch; // a new connection or a restarted engine: the answers are asked again
+    void session.epoch;
     if (key === null) return;
-    const ids = key ? key.split('\n').map((k) => k.split('|')[0]!) : [];
-    untrack(() => void loadNewSince(ids));
+    untrack(() => {
+      if (key === askedKey && session.connectionEpoch === askedConnection) return;
+      askedKey = key;
+      askedConnection = session.connectionEpoch;
+      void loadNewSince(key ? key.split('\n').map((k) => k.split('|')[0]!) : []);
+    });
   });
 
   const problems = $derived([...loadProblems, ...reclaimProblems, ...newSinceProblems]);

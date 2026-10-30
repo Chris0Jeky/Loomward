@@ -18,7 +18,7 @@ const CAVEATS: [(&str, &str); 4] = [
     ),
     (
         "first_listing_counts_as_new",
-        "A folder the earlier scan could not list (denied, depth-limited or partial) counts as new when a later scan first lists it.",
+        "What the earlier scan could not list (a denied, depth-limited or partial folder) counts as new when a later scan first lists it; the folder itself is not new, its contents are.",
     ),
     (
         "existing_files_not_measured",

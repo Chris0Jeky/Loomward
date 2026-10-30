@@ -431,6 +431,7 @@ function today(call: ReturnType<typeof vi.fn>) {
     roots: null as unknown, alerts: null as unknown, jobs: null as unknown, reclaim: new Map<string, unknown>(), failedReclaim: 0,
     loadProblems: [] as string[], reclaimProblems: [] as string[], loaded: false, refreshed: 0,
     newSince: new Map<string, unknown>(), newSinceRead: false, failedNewSince: 0, newSinceProblems: [] as string[],
+    askedKey: null as string | null, askedConnection: -1, newSinceKey: null as string | null,
   };
   return { state, code: viewScript('today', state, 'session.epoch') as unknown as TodayCode };
 }
@@ -518,6 +519,30 @@ describe('Today loads', () => {
     expect([...state.newSince]).toEqual([['rt_a', 'new_answer']]);
     expect(state.newSinceRead).toBe(true);
     expect(call).toHaveBeenLastCalledWith('changes.new_since', { root_id: 'rt_a', baseline_run: null, limit: 1 });
+  });
+
+  it('re-reads what is new only when a folder scan or the connection changes, never on a plain tree invalidation', () => {
+    const call = vi.fn(async () => ({ result: 'answer' }));
+    const { state } = today(call);
+    const { effect } = viewScript('today', state, 'newSinceKey') as unknown as { effect(): void };
+    effect(); // folders not read yet: nothing to ask
+    expect(call).not.toHaveBeenCalled();
+    state.newSinceKey = 'rt_a|complete|1|t1';
+    effect();
+    expect(call).toHaveBeenCalledTimes(1);
+    for (let n = 0; n < 5; n++) { state.session.epoch++; effect(); } // tree.invalidated bumps the epoch about twice a second per root
+    expect(call).toHaveBeenCalledTimes(1);
+    state.newSinceKey = 'rt_a|scanning|1|t1'; // a scan starts
+    effect();
+    expect(call).toHaveBeenCalledTimes(2);
+    state.session.epoch++; effect();
+    expect(call).toHaveBeenCalledTimes(2);
+    state.newSinceKey = 'rt_a|complete|2|t2'; // and ends
+    effect();
+    expect(call).toHaveBeenCalledTimes(3);
+    state.session.connectionEpoch++; // a new connection or a restarted engine
+    state.session.epoch++; effect();
+    expect(call).toHaveBeenCalledTimes(4);
   });
 
   it('drops a new-since read that finishes after the connection changed, and stays unread', async () => {
