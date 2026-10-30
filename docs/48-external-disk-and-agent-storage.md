@@ -172,8 +172,33 @@ The plan is JSON the agent shows to the owner. It writes nothing: no draft in `s
   section 4).
 - Budgets: `--max-entries` (at most 200,000, the verifier's cap), `--budget-bytes`, `--budget-secs`. Exit 0 equal,
   1 differences (listed), 2 unknown (budget, cap, refusal or an unsupported class), which never counts as equal.
+- `--only LIST` (#1009) compares a selected set: LIST is a UTF-8 file (other encodings are refused) with one path per
+  line, relative to SOURCE, as the approved plan names them (a listed folder covers everything under it). Source entries not listed are ignored; every
+  destination entry still counts, so anything unplanned in the copy is a difference. Listed files keep every check;
+  the folders that only contain them are compared for kind and listing, not for their own times and attributes,
+  because the source folder also holds what the plan left behind. A listed path the source does not hold, an empty
+  list, or a path that is absolute or uses `..` is never equal. Unlisted source files are still read today (the
+  budget must cover the whole source folder); only the comparison is limited.
 - Its result is **observation-time evidence** (docs/47 section 11, C1): it says the two trees matched when read. It
   is not a durable read-back receipt and not by itself permission to retire a source (section 6).
+
+#### Checking that A is covered by B
+
+`loomward-native covers A B --state-dir DIR [--max-entries N] [--budget-bytes N] [--budget-secs N]` (#1011) asks
+whether every file of A is present somewhere in B **by content, whatever the paths**, for backups that were renamed
+or reorganised. It grants and admits both folders exactly as `verify-tree` does and takes the same budgets, shared
+across its reads.
+
+- It lists B without reading content, hashes only the A files whose size occurs in B, then hashes only the B files
+  whose size occurs among those A files. A B file of a size no A file has is never read.
+- Each A file is `covered` (with one B path of equal size and equal content digest), `not_covered` (B has no file of
+  that size or content, and B's listing was complete), or `unknown` with a side and reason (unreadable, budget, an
+  incomplete B listing that leaves absence unproven). Never `covered` without equal digests on both sides.
+- Stdout carries the totals (files and bytes per state), the `not_covered` and `unknown` lists (at most 1,000 each),
+  a sample of 100 covered pairs, `truncated` flags, `bytes_read`, both root identities and a fixed note. Exit 0 only
+  when every A file is covered and nothing is unknown, 1 when something is not covered, 2 when anything is unknown.
+- Coverage is not metadata fidelity, not an independent backup (B may share a failing disk) and not permission to
+  delete anything.
 
 ## 5. What may live on the external disk
 
@@ -218,14 +243,19 @@ the owner approves each plan.
     uniquely named subfolder, copied and verified as its own pair; two items with the same leaf name get distinct
     subfolder names. A robocopy exit
   code of 8 or more is a failed plan. A failed or interrupted run is never patched up: its folder is left and reported
-  to the owner, and a retry copies into another new folder. Then `verify-tree` must exit 0.
+  to the owner, and a retry copies into another new folder. Then `verify-tree` must exit 0; when the item copies only some
+  of a folder's files, the run uses `--only` with the plan's file list (section 4.5), never a hand-written rule over
+  a whole-folder report.
 - **Removing originals.** The removal re-checks the plan's own nodes by identity (volume and file ID), never paths an
   agent supplies. The owner's answer to `loomward-archive-originals` decides who removes them. Under every
   option, removal of a plan's originals needs a **second** `verify-tree` run that exits 0 after the owner safely
   removed the external disk and plugged it in again (the owner confirms the replug; it empties the system cache for
   that volume, while the device's own cache stays outside the proof, as in section 4.5), and the copy is never
   removed. The owner chose a Loomward Recycle Bin effect, which is not built: it needs its own LW issue and
-  safety gate after the copy gate (invariant 1). Until it exists, nothing removes an original.
+  safety gate after the copy gate (invariant 1): LW-135 (#874). Removal waits for it; any interim removal before
+  then needs the owner's explicit approval of that specific plan. Record (#1012): the first cleanup's originals
+  (27 to 28 October 2026; 97 files, 141.6 GiB) were sent to the Recycle Bin by an interim agent script, by file ID,
+  after both verify runs, outside the decided path; its journal is in the gitignored `.loomward/archive/`.
 - **Journal for the interim path.** Each approved plan, its robocopy log summary and both verifier reports are kept
   in the gitignored `.loomward/archive/` of the primary checkout, never in Git (no real names in this repository).
 

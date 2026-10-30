@@ -212,6 +212,76 @@ fn placement_relief_maps_entry_200_to_unique_100_and_planner_accepts() {
     assert_eq!(plan.proposals[0].source_bytes_relieved, 100);
 }
 
+/// `MemoryInput` plus a stored verdict per group, as the service reads from a reclaim row.
+struct StoredInput(MemoryInput, BTreeMap<String, u64>);
+impl PlacementInput for StoredInput {
+    fn snapshot(&self, source: Option<&VolumeId>, deadline: Instant) -> EngineResult<Snapshot> {
+        self.0.snapshot(source, deadline)
+    }
+    fn files(
+        &self,
+        subtree: &Subtree,
+        generations: &[RootGeneration],
+        deadline: Instant,
+    ) -> EngineResult<Vec<FileEntry>> {
+        self.0.files(subtree, generations, deadline)
+    }
+    fn stored_relief(
+        &self,
+        subtree: &Subtree,
+        _: &[RootGeneration],
+        _: Instant,
+    ) -> EngineResult<Option<u64>> {
+        Ok(self.1.get(subtree.group_id.as_str()).copied())
+    }
+}
+
+/// #939: the service lists names without link observations; a bound stored verdict supplies relief.
+fn unobserved_stored(stored: Option<u64>, mutate: impl FnOnce(&mut MemoryInput)) -> CandidateGroup {
+    let mut memory = input();
+    for f in memory.files.get_mut("cg_one").unwrap() {
+        f.link_observation = None;
+    }
+    mutate(&mut memory);
+    let stored = stored.map(|bytes| BTreeMap::from([("cg_one".to_string(), bytes)]));
+    let input = StoredInput(memory, stored.unwrap_or_default());
+    build_scenario(&input, &request(), deadline())
+        .unwrap()
+        .candidates
+        .groups
+        .to_vec()
+        .remove(0)
+}
+
+#[test]
+fn placement_stored_relief_is_verified_only_for_a_complete_covered_subtree() {
+    let known = unobserved_stored(Some(100), |_| {});
+    assert_eq!(known.estimated_relief_bytes, Some(Bytes(100)));
+    assert_eq!(
+        known.relief_basis,
+        CandidateGroupReliefBasis::VerifiedUniqueAllocation
+    );
+    // Missing verdict: unknown, never zero.
+    let missing = unobserved_stored(None, |_| {});
+    assert_eq!(missing.estimated_relief_bytes, None);
+    assert_eq!(missing.relief_basis, CandidateGroupReliefBasis::Unknown);
+    // More relief than the subtree allocates cannot be true.
+    assert_eq!(
+        unobserved_stored(Some(201), |_| {}).estimated_relief_bytes,
+        None
+    );
+    // Names that do not cover the totals leave a stored verdict unused.
+    let uncovered = unobserved_stored(Some(100), |m| {
+        m.files.get_mut("cg_one").unwrap().pop();
+    });
+    assert_eq!(uncovered.estimated_relief_bytes, None);
+    // An incomplete subtree is not verified by a stored verdict either.
+    let partial = unobserved_stored(Some(100), |m| {
+        m.snapshot.subtrees[0].totals.complete = false;
+    });
+    assert_eq!(partial.estimated_relief_bytes, None);
+}
+
 #[test]
 fn placement_antichain_property_on_random_trees_and_root_children() {
     let mut seed = 108u64;

@@ -346,6 +346,44 @@ fn tree_comparison_requires_both_durable_grants_and_final_cancellation_gate() {
             | loomward_operations::tree::DifferenceKind::Missing
             | loomward_operations::tree::DifferenceKind::Extra
     )));
+    // #1009: a file the plan left behind is Missing in a whole-tree run, ignored under --only.
+    std::fs::write(a.path().join("left_behind"), b"stays").unwrap();
+    let missing = |report: &loomward_operations::tree::Report| {
+        report
+            .differences
+            .iter()
+            .filter(|d| d.kind == loomward_operations::tree::DifferenceKind::Missing)
+            .map(|d| d.path.clone())
+            .collect::<Vec<_>>()
+    };
+    let whole = engine
+        .compare_trees(&left, &right, duplicate_budget(), 100)
+        .unwrap();
+    assert_eq!(missing(&whole), [std::path::PathBuf::from("left_behind")]);
+    let selected = engine
+        .compare_selected_trees(
+            &left,
+            &right,
+            duplicate_budget(),
+            100,
+            Some(&["fixture".into()].into()),
+        )
+        .unwrap();
+    // The two fixtures were written apart, so their own times may differ; a selected file keeps
+    // that check. The root's times changed with `left_behind` and are not compared.
+    assert!(selected.unknowns.is_empty(), "{selected:?}");
+    assert!(
+        selected
+            .differences
+            .iter()
+            .all(|d| d.path.as_os_str() == "fixture"
+                && matches!(
+                    d.kind,
+                    loomward_operations::tree::DifferenceKind::Metadata(_)
+                )),
+        "{selected:?}"
+    );
+    std::fs::remove_file(a.path().join("left_behind")).unwrap();
     for root in [&left, &right] {
         let cancel = engine.duplicate_read_admission(root).unwrap();
         cancel.store(true, Ordering::Release);

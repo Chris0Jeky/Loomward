@@ -87,6 +87,7 @@ def run_copy(page: Page, base: str, shots: Path | None = None):
     engine.start()
     try:
         page.goto(f'{engine.base}/#token={TOKEN}')
+        page.evaluate("location.hash = '#/explorer'")
         page.get_by_role('checkbox', name='Select', exact=False).first.check()
         page.get_by_role('button', name='Copy to…', exact=True).click()
         select_parent(page)
@@ -156,6 +157,7 @@ def run_copy(page: Page, base: str, shots: Path | None = None):
         engine.personal = True
         page.goto(f'{engine.base}/?personal-test=1#token={TOKEN}')
         expect(page.get_by_role('status', name='Session status')).to_contain_text('Dataset personal')
+        page.evaluate("location.hash = '#/explorer'")
         page.get_by_role('checkbox', name='Select', exact=False).first.check()
         page.get_by_role('button', name='Copy to…', exact=True).click()
         select_parent(page)

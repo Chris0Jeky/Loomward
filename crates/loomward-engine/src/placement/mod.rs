@@ -106,6 +106,19 @@ pub trait PlacementInput {
         generations: &[RootGeneration],
         deadline: Instant,
     ) -> EngineResult<Vec<FileEntry>>;
+    /// Unique allocated bytes a bound earlier observation verified for this whole subtree (the
+    /// service: a reclaim verdict still matching the root generation, node incarnation and
+    /// subtree revision). It only stands in for a link-count pass the listing did not carry; the
+    /// subtree must still be complete and its listed names must cover its totals. Absent, stale
+    /// or unbound stays `None`, never zero.
+    fn stored_relief(
+        &self,
+        _subtree: &Subtree,
+        _generations: &[RootGeneration],
+        _deadline: Instant,
+    ) -> EngineResult<Option<u64>> {
+        Ok(None)
+    }
 }
 
 /// L8's durable state boundary. Save is atomic and checks the deadline before its commit.
@@ -962,7 +975,15 @@ fn candidates(
         verified &= logical == s.totals.logical_bytes.get()
             && s.totals.allocated_bytes == Some(Bytes(allocated));
         let relief = if verified {
-            tally.relief()?.map(Bytes)
+            match tally.relief()? {
+                Some(bytes) => Some(Bytes(bytes)),
+                // Relief cannot exceed the subtree's own allocation, so a larger stored value is
+                // not trusted.
+                None => input
+                    .stored_relief(s, &snapshot.root_generations, deadline)?
+                    .filter(|bytes| *bytes <= allocated)
+                    .map(Bytes),
+            }
         } else {
             None
         };

@@ -1,12 +1,14 @@
-//! Native read-only CLI: metadata scans, tier simulation and admitted Windows tree verification.
+//! Native read-only CLI: metadata scans, tier simulation, admitted Windows tree verification and
+//! cross-root content containment.
 #![forbid(unsafe_code)]
 use std::io::{self, Read, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
+mod covers;
 mod verify_tree;
 
-const USAGE: &str = "Usage: loomward-native capabilities | scan ROOT [MAX_ENTRIES] | plan SCENARIO.json | receipt (copy.status JSON on stdin) | verify-tree SOURCE DESTINATION --state-dir DIR [--max-entries N] [--budget-bytes N] [--budget-secs N]";
+const USAGE: &str = "Usage: loomward-native capabilities | scan ROOT [MAX_ENTRIES] | plan SCENARIO.json | receipt (copy.status JSON on stdin) | verify-tree SOURCE DESTINATION --state-dir DIR [--max-entries N] [--budget-bytes N] [--budget-secs N] [--only LIST] | covers A B --state-dir DIR [--max-entries N] [--budget-bytes N] [--budget-secs N]";
 
 fn execute(args: &[String]) -> Result<serde_json::Value, String> {
     match args.first().map(String::as_str) {
@@ -72,6 +74,8 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = if args.first().is_some_and(|arg| arg == "verify-tree") {
         verify_tree::parse(&args[1..]).and_then(verify_tree::run)
+    } else if args.first().is_some_and(|arg| arg == "covers") {
+        covers::parse(&args[1..]).and_then(covers::run)
     } else {
         execute(&args).map(|v| (v, 0))
     }

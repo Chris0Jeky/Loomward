@@ -112,7 +112,7 @@
     </div>
   </section>
 {:else if report}
-  <section class="panel"><p class="empty">No granted folder yet, so there is nothing to check.</p></section>
+  <section class="panel"><p class="empty">No granted folder yet, so there is nothing to check. <a href="#/health">Add a folder in Grants &amp; health</a>.</p></section>
 {/if}
 
 {#if form && report}
