@@ -518,6 +518,7 @@ impl Inner {
             InsightFolder => self.insight_folder(req, work),
             ReclaimPlan => self.reclaim_plan(req, work),
             ReclaimObserve => self.reclaim_observe(req),
+            ReclaimSample => self.reclaim_sample(req),
             TiersModel | PlacementCandidates | PlacementSimulate | ProposalsList | ProposalsGet => {
                 self.placement_command(req, command, work)
             }
