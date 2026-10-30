@@ -1227,7 +1227,12 @@ fn windows_leftover_rules_are_recognised_with_their_own_owner_steps() {
         (dir(lab.dir, "$WINDOWS.~BT", 102), leftover, previous),
         (dir(lab.dir, "$WINDOWS.~WS", 103), leftover, previous),
         (NodeKey::File(dump), leftover, dumps),
-        (dir(windows, "Minidump", 201), leftover, dumps),
+        // Windows 11 lists minidumps as their own Disk Cleanup category (#1076).
+        (
+            dir(windows, "Minidump", 201),
+            leftover,
+            "System error minidump files",
+        ),
         (dir(windows, "LiveKernelReports", 202), leftover, dumps),
         (dir(windows, "Temp", 203), leftover, "Storage Sense"),
         (dir(local, "Temp", 204), leftover, "Storage Sense"),
