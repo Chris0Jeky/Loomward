@@ -23,15 +23,35 @@ struct Lab {
 
 fn call(service: &Service, command: &str, payload: Value) -> Value {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-    let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let request = serde_json::from_value(json!({
-        "protocol": "loomward/3", "request_id": format!("pathological-{id}"), "command": command,
-        "payload": payload
-    }))
-    .unwrap();
-    match service.call(request, &CallContext::http()) {
-        ResponseEnvelope::Ok(reply) => reply.result.into(),
-        ResponseEnvelope::Err(reply) => panic!("{command}: {:?}", reply.error),
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut retries = 0;
+    loop {
+        let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let request = serde_json::from_value(json!({
+            "protocol": "loomward/3", "request_id": format!("pathological-{id}"), "command": command,
+            "payload": payload
+        }))
+        .unwrap();
+        match service.call(request, &CallContext::http()) {
+            ResponseEnvelope::Ok(reply) => return reply.result.into(),
+            // Aggregate repair can overlap a completed scan (as in the lab soak, #605); only this
+            // read waits for it, and only while the service says it is retryable.
+            ResponseEnvelope::Err(reply)
+                if command == "tree.slice"
+                    && reply.error.code == loomward_protocol::ErrorCode::PartialCoverage
+                    && reply.error.retryable
+                    && Instant::now() < deadline =>
+            {
+                retries += 1;
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            ResponseEnvelope::Err(reply) => {
+                panic!(
+                    "{command} after {retries} repair retries: {:?}",
+                    reply.error
+                )
+            }
+        }
     }
 }
 
