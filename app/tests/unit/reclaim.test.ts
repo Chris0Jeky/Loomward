@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import { ScriptTarget, transpileModule } from 'typescript';
 import type { ReclaimPlan, ReclaimSelection, Volume } from '../../src/lib/contracts.gen';
 import { observationAge } from '../../src/lib/format/time';
-import { defaultVolume, GROUP_HEADINGS, selectionComparison, targetBytes, unaccountedText } from '../../src/views/reclaim/model';
+import { defaultVolume, explorerHref, GROUP_HEADINGS, selectionComparison, targetBytes, unaccountedText } from '../../src/views/reclaim/model';
 
 describe('mock reclaim transport', () => {
   it('serves the contract example for the selected listed volume, with unknown relief intact', async () => {
@@ -30,6 +30,17 @@ describe('mock reclaim transport', () => {
 });
 
 describe('reclaim display model', () => {
+  it('links a candidate with a catalogue node to Explorer by node alone, and offers no link without one', () => {
+    expect(explorerHref('nd_synthetic')).toBe('#/explorer?node=nd_synthetic');
+    expect(explorerHref('nd a&b')).toBe('#/explorer?node=nd%20a%26b');
+    expect(explorerHref(null)).toBeNull();
+    expect(explorerHref('')).toBeNull();
+    // Navigation only: the plan carries no generation, so none is invented.
+    expect(explorerHref('nd_synthetic')).not.toContain('generation');
+    const candidates = (resultFixture as ReclaimPlan).groups.flatMap((g) => g.candidates);
+    expect(candidates.some((c) => explorerHref(c.node_id))).toBe(true);
+  });
+
   it('compares exact byte targets and keeps unknown, expired and zero separate', () => {
     const result: ReclaimSelection = { members: ['nd_a'], status: 'recorded', observed_at: '2026-10-29T00:00:00Z', reclaimable_bytes: '9007199254740993', reason: null };
     expect(selectionComparison(result, '9007199254740992')).toContain('1 bytes above');
@@ -101,7 +112,13 @@ describe('reclaim view', () => {
     expect(source.match(/<input\b/g)).toHaveLength(2);
     expect(source).toContain('type="checkbox"');
     expect(source).toContain('inputmode="numeric"');
-    expect(source).not.toMatch(/<a\b|<form\b|{@html|clipboard|exec\(|invoke\(/);
+    expect(source).not.toMatch(/<form\b|{@html|clipboard|exec\(|invoke\(/);
+    // #1069: the one link is plain hash navigation to Explorer (no handler, target or download), and only for a candidate with a node.
+    const links = source.match(/<a\b[^>]*>/g) ?? [];
+    expect(links).toHaveLength(1);
+    expect(links[0]).toContain('href={explorerHref(candidate.node_id)}');
+    expect(links[0]).not.toMatch(/\bon\w+=|target=|download/);
+    expect(source).toContain('{#if explorerHref(candidate.node_id)}');
     expect([...source.matchAll(/c.call\('([^']+)'/g)].map((m) => m[1])).toEqual(['reclaim.plan', 'volumes.list', 'reclaim.sample']);
   });
 

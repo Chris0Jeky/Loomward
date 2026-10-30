@@ -26,6 +26,11 @@ export function unaccountedText(report: ReclaimPlan): string {
     : `Unaccounted: ${formatBytes(report.unaccounted_bytes)} of volume used is outside the covered roots.`;
 }
 
+/** Navigation only: the Explorer route that inspects a candidate's catalogue node, or null when it has none (no generation: the plan carries none). */
+export function explorerHref(nodeId: string | null): string | null {
+  return nodeId ? `#/explorer?node=${encodeURIComponent(nodeId)}` : null;
+}
+
 export const OBSERVE_EXPLAINER =
   'Observing reads only metadata (link counts) of the folders you granted to record an allocation estimate. It can take minutes and changes nothing. The estimate does not guarantee physical space recovery.';
 

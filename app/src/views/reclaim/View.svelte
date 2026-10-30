@@ -11,7 +11,7 @@
   import VisibleName from '../../lib/ui/VisibleName.svelte';
   import { COVERAGE_WORDS } from '../clutter/model';
   import { observationAge } from '../../lib/format/time';
-  import { defaultVolume, GROUP_HEADINGS, OBSERVE_EXPLAINER, observeLines, RELIEF_EXPLAINER, reliefEstimate, reliefSummary, sampleRefusal, selectionComparison, targetBytes, unaccountedText } from './model';
+  import { defaultVolume, GROUP_HEADINGS, OBSERVE_EXPLAINER, observeLines, RELIEF_EXPLAINER, explorerHref, reliefEstimate, reliefSummary, sampleRefusal, selectionComparison, targetBytes, unaccountedText } from './model';
 
   let volumes = $state<Volume[]>([]);
   let selected = $state('');
@@ -207,6 +207,9 @@
             {#each group.candidates as candidate}
               <li>
                 <h3><VisibleName name={candidate.name ?? 'Name unknown'} /></h3>
+                {#if explorerHref(candidate.node_id)}
+                  <p><a class="btn" href={explorerHref(candidate.node_id)} aria-label={`Inspect in Explorer: ${escapedName(candidate.name ?? 'Name unknown')}`}>Inspect in Explorer</a></p>
+                {/if}
                 {#if candidate.node_id}
                   <label class="selection-choice"><input type="checkbox" checked={members.includes(candidate.node_id)}
                     disabled={members.length === 12 && !members.includes(candidate.node_id)}
