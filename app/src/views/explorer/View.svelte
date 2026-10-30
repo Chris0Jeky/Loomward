@@ -382,7 +382,7 @@
       void reload().then(() => {
         if (!trail.length && starts[0]) trail = [starts[0]]; // so Clear search has a folder to go back to
         const node = params.get('node'), observed = params.get('generation');
-        if (current && node && observed) void inspect(node, observed);
+        if (current && node) void inspect(node, observed ?? undefined);
       });
     });
     return () => { current = false; inspection++; inspectAbort?.abort(); };
@@ -533,6 +533,7 @@
   <section class="panel" aria-label="Node inspector">
     <h2 tabindex="-1" bind:this={inspector}><VisibleName name={detail.row.name} /></h2>
     <p class="muted">Logical size {formatBytes(detail.row.logical_bytes)} · {detail.row.kind}</p>
+    <p class="muted small">Location: <VisibleName name={detail.display_path.text} />{#if detail.display_path.truncated} <span class="tag warn">path truncated</span>{/if}</p>
     <h3>Meaning thread</h3>
     <NodeMeaning nodeId={detail.row.node_id} />
     {#if detail.identity.durable_reference === 'available'}
