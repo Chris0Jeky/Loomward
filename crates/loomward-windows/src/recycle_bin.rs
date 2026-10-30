@@ -44,12 +44,19 @@ pub fn query(volume_root: &Path) -> Option<RecycleBinSize> {
         ..Default::default()
     };
     // `mount` is NUL-terminated at `length`.
-    if unsafe { SHQueryRecycleBinW(mount.as_ptr(), &mut info) } < 0 {
+    let hresult = unsafe { SHQueryRecycleBinW(mount.as_ptr(), &mut info) };
+    size_from(hresult, info.i64Size, info.i64NumItems)
+}
+
+/// A failed `HRESULT` (negative) or a negative size or count is unknown, never zero or a clamp.
+#[cfg(any(windows, test))]
+fn size_from(hresult: i32, bytes: i64, items: i64) -> Option<RecycleBinSize> {
+    if hresult < 0 {
         return None;
     }
     Some(RecycleBinSize {
-        bytes: u64::try_from(info.i64Size).ok()?,
-        items: u64::try_from(info.i64NumItems).ok()?,
+        bytes: u64::try_from(bytes).ok()?,
+        items: u64::try_from(items).ok()?,
     })
 }
 
@@ -90,6 +97,39 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         assert_eq!(query(temp.path()), None);
         assert_eq!(query(Path::new("synthetic\0name")), None);
+    }
+
+    #[test]
+    fn recycle_bin_failed_hresult_and_negative_sizes_are_unknown_never_zero() {
+        // E_FAIL and a generic failure code, even with plausible sizes beside them.
+        assert_eq!(size_from(-2147467259, 10, 1), None);
+        assert_eq!(size_from(-1, 0, 0), None);
+        // Each out-of-range field alone makes the whole answer unknown.
+        assert_eq!(size_from(0, -1, 0), None);
+        assert_eq!(size_from(0, 0, -1), None);
+        assert_eq!(size_from(0, i64::MIN, i64::MIN), None);
+        // A genuinely empty bin is a known zero, and S_FALSE (positive) is still a success code.
+        let empty = Some(RecycleBinSize { bytes: 0, items: 0 });
+        assert_eq!(size_from(0, 0, 0), empty);
+        assert_eq!(size_from(1, 0, 0), empty);
+        assert_eq!(
+            size_from(0, i64::MAX, 3),
+            Some(RecycleBinSize {
+                bytes: i64::MAX as u64,
+                items: 3
+            })
+        );
+    }
+
+    /// An elevated process never reaches the shell query, even for a real volume root.
+    #[cfg(windows)]
+    #[test]
+    fn recycle_bin_size_is_unknown_when_elevated() {
+        if crate::win::non_elevated().is_ok() {
+            return;
+        }
+        let root = std::env::var("SystemDrive").unwrap() + "\\";
+        assert_eq!(query(Path::new(&root)), None);
     }
 
     /// Reads only the system volume's bin totals; run by hand to prove the FFI shape.

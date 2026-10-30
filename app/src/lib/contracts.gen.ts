@@ -556,6 +556,8 @@ export interface DuplicateReport {
   stop: string | null;
   /** Optional and additive: absent means the candidate space is unknown, never zero. Never null. */
   candidate_space?: DuplicateCandidateSpace;
+  /** Optional and additive: absent means how many entries were content-compared is unknown, never zero. Never null. At most entries.length (semantics.md, Duplicate inspection). */
+  entries_compared?: Count;
 }
 
 /** placement.simulate is synchronous and bounded, never a job (semantics.md section 2). */
@@ -1833,6 +1835,13 @@ export interface LearningUpdated {
   status: LearningStatus;
 }
 
+export interface AppsListRequest {
+  limit: number;
+  cursor: Cursor | null;
+  /** registry (the default when absent) keeps the provider order; size_desc puts the largest provider-estimated size first, entries whose size is unknown last (never counted as zero), ties in registry order. The cursor is bound to the sort that issued it. */
+  sort?: "registry" | "size_desc";
+}
+
 export interface MetadataPageRequest {
   limit: number;
   cursor: Cursor | null;
@@ -2609,7 +2618,7 @@ export interface CommandMap {
   "insight.folder": { request: InsightFolderRequest; result: InsightFolder };
   "session.hello": { request: EmptyRequest; result: SessionInfo };
   "health.get": { request: EmptyRequest; result: Health };
-  "apps.list": { request: MetadataPageRequest; result: ApplicationPage };
+  "apps.list": { request: AppsListRequest; result: ApplicationPage };
   "desktop.contexts": { request: MetadataPageRequest; result: DesktopPage };
   "roots.list": { request: EmptyRequest; result: RootList };
   "roots.request_grant": { request: RootGrantRequest; result: RootGrantResult };

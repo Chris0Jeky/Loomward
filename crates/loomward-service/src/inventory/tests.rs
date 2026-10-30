@@ -605,3 +605,149 @@ fn metadata_modules_expose_no_effect_or_unbounded_filesystem_api() {
     assert!(registry.contains("\"EstimatedSize\""));
     assert!(!registry.contains("KEY_WRITE"));
 }
+
+/// Rows keyed `K0..`, each with the given provider-estimated size (`None` = unknown).
+struct Sized(Vec<Option<u64>>);
+impl Provider for Sized {
+    fn dataset(&self) -> DatasetClass {
+        DatasetClass::Synthetic
+    }
+    fn read(&self, command: Command, deadline: Instant) -> Result<Value, ErrorBody> {
+        let mut value = Fixtures.read(command, deadline)?;
+        let row = value["applications"][0].clone();
+        value["applications"] = Value::Array(
+            self.0
+                .iter()
+                .enumerate()
+                .map(|(i, size)| {
+                    let mut r = row.clone();
+                    r["registry_key"] = json!(format!("K{i}"));
+                    r["estimated_size_bytes"] = size.map_or(Value::Null, |n| json!(n.to_string()));
+                    r["size_reason"] = size.map_or(json!("synthetic unknown"), |_| Value::Null);
+                    r
+                })
+                .collect(),
+        );
+        Ok(value)
+    }
+}
+
+fn keys(page: &Value) -> Vec<String> {
+    page["result"]["applications"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["registry_key"].as_str().unwrap().to_string())
+        .collect()
+}
+
+fn page_all(s: &Service, sort: Option<&str>, limit: u32) -> Vec<Vec<String>> {
+    let mut pages = Vec::new();
+    let mut cursor = Value::Null;
+    loop {
+        let mut payload = json!({"limit": limit, "cursor": cursor});
+        if let Some(sort) = sort {
+            payload["sort"] = json!(sort);
+        }
+        let page = call(s, "apps.list", payload, 60_000);
+        assert_eq!(page["ok"], true, "{page}");
+        pages.push(keys(&page));
+        cursor = page["result"]["next_cursor"].clone();
+        if cursor.is_null() {
+            return pages;
+        }
+    }
+}
+
+fn sized_service(dir: &std::path::Path) -> Service {
+    // K0=5 K1=? K2=100 K3=5 K4=0 K5=? K6=100: ties, a known zero, and two unknowns.
+    open(
+        dir,
+        DatasetClass::Synthetic,
+        Some(Arc::new(Sized(vec![
+            Some(5),
+            None,
+            Some(100),
+            Some(5),
+            Some(0),
+            None,
+            Some(100),
+        ]))),
+    )
+}
+
+#[test]
+fn apps_size_desc_orders_known_sizes_first_ties_in_registry_order_and_unknown_last() {
+    let tmp = tempfile::tempdir().unwrap();
+    let s = sized_service(tmp.path());
+    // A known zero is still a size: it ranks above unknown, which is never counted as zero.
+    let all = page_all(&s, Some("size_desc"), 200);
+    assert_eq!(all, vec![["K2", "K6", "K0", "K3", "K4", "K1", "K5"]]);
+    // Page boundaries fall inside a tie (K2|K6) and inside the unknown tail (K1|K5).
+    for limit in 1..=7u32 {
+        let flat: Vec<String> = page_all(&s, Some("size_desc"), limit)
+            .into_iter()
+            .flatten()
+            .collect();
+        assert_eq!(flat, ["K2", "K6", "K0", "K3", "K4", "K1", "K5"], "{limit}");
+    }
+    let by3 = page_all(&s, Some("size_desc"), 3);
+    assert_eq!(by3.len(), 3);
+    assert_eq!(by3[1], ["K3", "K4", "K1"]);
+}
+
+#[test]
+fn apps_default_and_explicit_registry_sort_keep_provider_order() {
+    let tmp = tempfile::tempdir().unwrap();
+    let s = sized_service(tmp.path());
+    let registry = ["K0", "K1", "K2", "K3", "K4", "K5", "K6"];
+    for sort in [None, Some("registry")] {
+        let flat: Vec<String> = page_all(&s, sort, 3).into_iter().flatten().collect();
+        assert_eq!(flat, registry, "{sort:?}");
+    }
+}
+
+#[test]
+fn apps_sorted_cursor_is_bound_to_its_sort_and_the_sort_is_validated() {
+    let tmp = tempfile::tempdir().unwrap();
+    let s = sized_service(tmp.path());
+    let first = call(
+        &s,
+        "apps.list",
+        json!({"limit": 2, "cursor": null, "sort": "size_desc"}),
+        60_000,
+    );
+    let cursor = first["result"]["next_cursor"].clone();
+    for payload in [
+        json!({"limit": 2, "cursor": cursor}),
+        json!({"limit": 2, "cursor": cursor, "sort": "registry"}),
+    ] {
+        let refused = call(&s, "apps.list", payload, 60_000);
+        assert_eq!(refused["error"]["code"], "invalid_request", "{refused}");
+    }
+    // A refused resume does not spend the cursor.
+    let resumed = call(
+        &s,
+        "apps.list",
+        json!({"limit": 2, "cursor": cursor, "sort": "size_desc"}),
+        60_000,
+    );
+    assert_eq!(keys(&resumed), ["K0", "K3"]);
+    for bad in [json!("name"), json!("SIZE_DESC"), json!(null), json!(1)] {
+        let refused = call(
+            &s,
+            "apps.list",
+            json!({"limit": 2, "cursor": null, "sort": bad}),
+            60_000,
+        );
+        assert_eq!(refused["error"]["code"], "invalid_request", "{bad}");
+    }
+    // desktop.contexts has no sort.
+    let refused = call(
+        &s,
+        "desktop.contexts",
+        json!({"limit": 2, "cursor": null, "sort": "size_desc"}),
+        60_000,
+    );
+    assert_eq!(refused["error"]["code"], "invalid_request");
+}

@@ -53,6 +53,10 @@ pub struct DuplicateReport {
     /// Absent is unknown, never zero (an optional property that is never `null`, like `min_bytes`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub candidate_space: Option<DuplicateCandidateSpace>,
+    /// Entries whose content was read and compared with at least one other file. Absent is unknown,
+    /// never zero (same additive shape as `candidate_space`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entries_compared: Option<Count>,
 }
 
 impl<'de> Deserialize<'de> for DuplicateReport {
@@ -73,6 +77,8 @@ impl<'de> Deserialize<'de> for DuplicateReport {
             // Additive: reports from before the field existed stay readable (unknown).
             #[serde(default, deserialize_with = "crate::types::optional_present")]
             candidate_space: Option<DuplicateCandidateSpace>,
+            #[serde(default, deserialize_with = "crate::types::optional_present")]
+            entries_compared: Option<Count>,
         }
         let fields = Fields::deserialize(deserializer)?;
         // semantics.md (Duplicate inspection): groups, links and skipped.entry refer to indices in
@@ -91,6 +97,14 @@ impl<'de> Deserialize<'de> for DuplicateReport {
                 "group, link and skipped indices must refer to entries",
             ));
         }
+        if fields
+            .entries_compared
+            .is_some_and(|compared| compared.get() > count as u64)
+        {
+            return Err(serde::de::Error::custom(
+                "entries_compared cannot exceed the listed entries",
+            ));
+        }
         Ok(Self {
             entries: fields.entries,
             groups: fields.groups,
@@ -102,6 +116,7 @@ impl<'de> Deserialize<'de> for DuplicateReport {
             truncated: fields.truncated,
             stop: fields.stop,
             candidate_space: fields.candidate_space,
+            entries_compared: fields.entries_compared,
         })
     }
 }

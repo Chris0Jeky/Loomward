@@ -77,6 +77,26 @@ pub struct MetadataPageRequest {
     pub cursor: Option<Cursor>,
 }
 
+/// `registry` (the default when absent) keeps the provider order; `size_desc` puts the largest provider-estimated size first, entries whose size is unknown last (never counted as zero), ties in registry order. The cursor is bound to the sort that issued it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppsListRequestSort {
+    #[default]
+    Registry,
+    SizeDesc,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AppsListRequest {
+    pub limit: Int<1, 200>,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub cursor: Option<Cursor>,
+    /// `registry` (the default when absent) keeps the provider order; `size_desc` puts the largest provider-estimated size first, entries whose size is unknown last (never counted as zero), ties in registry order. The cursor is bound to the sort that issued it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sort: Option<AppsListRequestSort>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InventoryProvider {

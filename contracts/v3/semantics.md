@@ -245,7 +245,7 @@ not authority.
 
 | Read-only command | Idempotency | Deadline | Pagination and unknowns |
 |---|---|---|---|
-| `apps.list` | Safe to retry; no state or registry writes | 2,000 ms default; shares the eight-read admission pool | `limit` 1–200, required nullable `cursor`. First page observes at most 6,144 registry entries across three bounded views; provider coverage is explicit (packaged/portable remain unavailable). `estimated_size_bytes` is the registry's EstimatedSize in KiB converted to bytes, never a disk measurement; absent/malformed fields stay null with `size_reason`. Registry text stays literal, including expandable values. |
+| `apps.list` | Safe to retry; no state or registry writes | 2,000 ms default; shares the eight-read admission pool | `limit` 1–200, required nullable `cursor`, optional `sort`: `registry` (default; provider order) or `size_desc` (largest provider-estimated size first, unknown sizes last and never counted as zero, ties in registry order). The first page orders the whole snapshot once, so later pages cannot repeat or skip an entry; a cursor is bound to the sort that issued it, and another sort returns `invalid_request`. First page observes at most 6,144 registry entries across three bounded views; provider coverage is explicit (packaged/portable remain unavailable). `estimated_size_bytes` is the registry's EstimatedSize in KiB converted to bytes, never a disk measurement; absent/malformed fields stay null with `size_reason`. Registry text stays literal, including expandable values. |
 | `desktop.contexts` | Safe to retry; no file, icon, shortcut or process effects | 2,000 ms default; shares the eight-read admission pool | Five configured known folders, personal/public ownership and nullable redirection; configured paths establish neither existence nor online state. At most 200 shortcut entries per page. Synthetic sessions use injected fixtures only. Personal shortcut enumeration currently reports `desktop_enumeration_unavailable`: the existing safe reader requires an explicit path and exposes no bounded pinned-directory listing; pathname enumeration would weaken no-follow containment. It performs no desktop content or target reads. |
 
 Both commands have `effects: none`, no events, and null catalogue/state revisions. Cursors retain
@@ -641,9 +641,19 @@ candidate_space (optional, additive; absent is unknown, never zero, and never nu
 files and logical bytes in the root that share an exact size with another eligible file, by the same
 eligibility rules as candidate selection and before any cap, so a result can say how many candidate
 files it examined out of how many existed. It reads no content and is computed under its own bounded
-work budget; a count that cannot finish is omitted. Names the catalogue filters as unknown (unreadable,
+work budget; a count interrupted by that budget or the deadline is omitted, while any other catalogue
+failure (corruption, busy, overflow) fails the command and is never reported as a missing count.
+Additive means additive for lenient readers only: the report schema and DTO are closed
+(additionalProperties:false, deny_unknown_fields), so a reader built from an older contract rejects
+a report that carries the field and must be upgraded with it. Names the catalogue filters as unknown (unreadable,
 unrepresentable, identity-unverified) are not in it and keep partial=true, so a present count is the
 visible candidate space of the catalogue at selection time, not a proof about unscanned content.
+entries_compared (optional, additive on the same terms; absent is unknown, never zero, and never null) is the exact number
+of listed entries whose content was read (for a large file, its sampled ranges) and set against at least one other
+file, and that no later stage skipped: it excludes link sets, empty files, refused or skipped names, names left
+without a readable same-size partner, and anything a stop left unread, so it can be below listed minus skipped. It
+never exceeds entries.length. Compared is not equal: only groups claim equal content, and a stop after the sample
+can leave counted entries unconfirmed.
 No result authorises deleting, moving, renaming or creating links. No reclaim estimate is supplied.
 
 Personal content reads are open, local and read-only. Before resolving catalogue candidates or
