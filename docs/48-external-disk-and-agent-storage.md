@@ -254,7 +254,10 @@ the owner approves each plan.
   removed the external disk and plugged it in again (the owner confirms the replug; it empties the system cache for
   that volume, while the device's own cache stays outside the proof, as in section 4.5), and the copy is never
   removed. The owner chose a Loomward Recycle Bin effect, which is not built: it needs its own LW issue and
-  safety gate after the copy gate (invariant 1). Until it exists, nothing removes an original.
+  safety gate after the copy gate (invariant 1): LW-135 (#874). Removal waits for it; any interim removal before
+  then needs the owner's explicit approval of that specific plan. Record (#1012): the first cleanup's originals
+  (27 to 28 October 2026; 97 files, 141.6 GiB) were sent to the Recycle Bin by an interim agent script, by file ID,
+  after both verify runs, outside the decided path; its journal is in the gitignored `.loomward/archive/`.
 - **Journal for the interim path.** Each approved plan, its robocopy log summary and both verifier reports are kept
   in the gitignored `.loomward/archive/` of the primary checkout, never in Git (no real names in this repository).
 
