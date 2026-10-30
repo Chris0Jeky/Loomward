@@ -179,6 +179,39 @@ names for two NTFS objects: individually unknown, jointly 20,480 allocated bytes
 The production HTTP/Svelte qualification compares that complete case with PR1001's independent
 Python oracle in the test process only. Loomward never starts the Python experiment.
 
+### 6.3 Relief check: what a cleanup actually freed (#1013)
+
+The plan and `plan_archive` estimate relief before anything happens. The relief check closes the loop
+afterwards, read-only: the owner records a volume sample before a cleanup and another after it, and the Reclaim
+view shows the observed change beside the plan's estimate. Loomward never runs the cleanup.
+
+- **Command.** `reclaim.sample { volume_id, role: before | after, estimate_bytes? } -> ReclaimRelief`. Owner-only
+  (Tauri, HTTP), effects `none`: it reads the volume's metadata and writes one row to `state.db`. `reclaim.plan`
+  gains an optional `relief` block (absent until a before sample exists), so the view shows the stored check on load.
+  Chosen over a separate `reclaim.outcome` read because the outcome is a pure function of two stored rows, and the plan
+  is already the one read the view makes.
+- **A sample** is free bytes, total bytes, the Recycle Bin size where readable, the volume's identity (the catalogue's
+  volume key and the volume GUID recorded with the granted root) and the time. The bin is read exactly as the plan
+  reads it: only through a volume-root grant, metadata only; otherwise it is unknown, never zero. Free or total space
+  that cannot be read is `null` in the sample. A volume that is offline, or whose letter now holds another disk
+  (#910), is refused and nothing is recorded.
+- **Storage.** `st.reclaim_sample`, at most one `before` and one `after` per volume, keyed by volume and catalogue
+  instance. Recording a new `before` deletes the old `after` and starts a new check. `estimate_bytes` is the plan's
+  estimate as the owner saw it (the recorded union estimate of the current selection, when there is one), kept
+  beside the before sample; it is refused with `after`, and an `after` without a `before` is refused.
+- **Outcome.** A pure comparison of the two samples. Different volume identities (key or GUID) never compare
+  (`different_volume`). Free space unreadable on either side gives `unreadable`, not zero. Otherwise
+  `compared` carries `direction` (`more_free`, `less_free`, `unchanged`) and the unsigned `change_bytes`: a fall
+  in free space is reported as a fall, not as a negative or zero relief.
+- **Wording.** The view says "free space changed by X between T1 and T2; the plan estimated Y; the Recycle Bin held
+  Z at each sample and keeps taking space until emptied". It states that this is the whole volume's change: other
+  writes, an unemptied bin, hard links elsewhere and restore points all affect it, so it is not proof of what the
+  cleanup freed, and not a calibration of the estimate.
+- **Acceptance.** Unit tests for the arithmetic and the identity rule (different GUID, different key, negative
+  change, unreadable free space, unreadable bin, a before sample alone, the unsigned extremes); service tests for the
+  stored round trip, the refusals, and that only `st.reclaim_sample` changes; contract tests for the nullable fields.
+  Not exercised: a readable Recycle Bin (it needs a volume-root grant on a real volume).
+
 ## 7. Validation
 
 - **Synthetic fixtures** (`fixtures/reclaim/`, synthetic names only): one tree per class, plus hard-link groups that
@@ -208,6 +241,7 @@ Python oracle in the test process only. Loomward never starts the Python experim
 | R1f | proposed to the external-disk lane: MCP `reclaim_plan` tool | none | as docs/48 E4 |
 | R1g | `reclaim.observe` job: bounded link-count observation stored per candidate and root generation (section 6.1, #939) | none (metadata opens on granted roots) | section 6.1 acceptance |
 | R1h | selected-set inspection and exact target comparison (section 6.2, #1002) | none (metadata opens on granted roots) | native union, invalidation, budgets and real HTTP/Svelte journey |
+| R1i | relief check: before and after volume samples beside the plan's estimate (section 6.3, #1013) | none (volume metadata only; one `state.db` row per sample) | identity rule, unknown-not-zero and negative-change tests; the view's two buttons |
 
 ## 9. What this design deliberately does not do
 
