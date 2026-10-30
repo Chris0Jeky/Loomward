@@ -1,11 +1,14 @@
 //! LW-137 on the wire: `volumes.list` carries the storage-path facts the Windows provider observed.
 //! Unknown stays `null`, an unsupported or hidden health result is never healthy, and a provider
 //! that cannot answer leaves the field absent. Synthetic providers and invented identifiers only.
+#[cfg(windows)]
 use super::*;
 use crate::placement::wire_storage_path;
+#[cfg(windows)]
+use loomward_windows::storage_path::StorageQueryProvider;
 use loomward_windows::storage_path::{
     HealthObservation, ReliabilityCounters, RemovalPolicy, StorageObservation, StoragePath,
-    StorageQueryProvider, UsbTransport,
+    UsbTransport,
 };
 use loomward_windows::volumes::Fact;
 
@@ -18,7 +21,9 @@ fn unknown<T>() -> Fact<T> {
     }
 }
 
+#[cfg(windows)]
 struct Synthetic(Option<StorageObservation>);
+#[cfg(windows)]
 impl StorageQueryProvider for Synthetic {
     fn query(&self, _: &std::path::Path) -> std::io::Result<StorageObservation> {
         self.0
