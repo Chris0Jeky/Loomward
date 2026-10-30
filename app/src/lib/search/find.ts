@@ -112,6 +112,8 @@ export function planFind(input: string, controls: FindControls, nowMs: number): 
 
   if (p.modified_after) chips.push(`Modified ${when(p.modified_after, 'after')}`);
   if (p.modified_before) chips.push(`Modified ${when(p.modified_before, 'before')}`);
+  // The engine never matches an entry with no recorded modified time against a time bound (schema): say so.
+  if (p.modified_after || p.modified_before) notices.push('Entries with no recorded modified time are left out by a date filter.');
   const bounds = modifiedBounds(p, nowMs);
 
   if (p.kind !== 'any') {

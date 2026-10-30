@@ -260,11 +260,14 @@
 
   /** Freeze what the box says as the request to run. False (nothing is started) when it would match the whole catalogue. */
   function commit(): boolean {
-    if (plan.unconstrained) {
+    // Re-plan with the current clock: `plan` is only re-derived when the box or controls change,
+    // so a resubmitted `modified:<1h` would otherwise keep the earlier "now".
+    const fresh = planFind(query, { extension, kind, minBytes }, Date.now());
+    if (fresh.unconstrained) {
       notice = 'Nothing in that query can be searched yet, so no search was run.';
       return false;
     }
-    sent = plan.request;
+    sent = fresh.request;
     ran = query.trim();
     searching = true;
     return true;

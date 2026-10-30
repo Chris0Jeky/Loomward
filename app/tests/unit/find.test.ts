@@ -15,8 +15,9 @@ describe('find bar: query to request', () => {
       text: 'report', extension: 'pdf', min_bytes: String(100n * 2n ** 20n + 1n), max_bytes: null,
       modified_after: '2026-09-30T12:00:00.000Z', modified_before: null, kind: 'file',
     });
-    expect(p.notices).toEqual([]);
+    expect(p.notices).toEqual(['Entries with no recorded modified time are left out by a date filter.']);
     expect(p.chips).toEqual(['Extension: .pdf', 'Size: more than 100 MiB', 'Modified in the last 30 days', 'Kind: files']);
+    expect(plan('report ext:pdf').notices).toEqual([]);
   });
 
   it('resolves older-than against the injected now, and a fixed date to its period', () => {
@@ -100,7 +101,7 @@ describe('cleanup searches', () => {
     for (const { label, query } of PRESETS) {
       expect(parseQuery(query).issues, label).toEqual([]);
       const p = plan(query);
-      expect(p.notices, label).toEqual([]);
+      expect(p.notices, label).toEqual(/modified:/.test(query) ? ['Entries with no recorded modified time are left out by a date filter.'] : []);
       expect(p.unconstrained, label).toBe(false);
       expect(p.chips.length, label).toBeGreaterThan(0);
     }
