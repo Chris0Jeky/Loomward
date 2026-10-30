@@ -1,0 +1,152 @@
+{
+  "root_id": "rt_synthetic",
+  "node_id": "nd_synthetic",
+  "generation": "1",
+  "observed_at": "2026-10-30T09:00:00.000Z",
+  "coverage": "complete",
+  "partial": false,
+  "axes": [
+    {
+      "axis": "meaning",
+      "outcome": "label",
+      "label": "source_project",
+      "abstain_reason": null,
+      "votes": [
+        {
+          "function": "lf_source_manifest",
+          "label": "source_project"
+        }
+      ]
+    },
+    {
+      "axis": "lifecycle",
+      "outcome": "label",
+      "label": "historical",
+      "abstain_reason": null,
+      "votes": [
+        {
+          "function": "lf_quiet_years",
+          "label": "historical"
+        }
+      ]
+    },
+    {
+      "axis": "recreatability",
+      "outcome": "label",
+      "label": "mixed",
+      "abstain_reason": null,
+      "votes": [
+        {
+          "function": "lf_project_with_outputs",
+          "label": "mixed"
+        }
+      ]
+    }
+  ],
+  "lines": [
+    {
+      "text": "Coverage is complete.",
+      "trace": [
+        "/coverage"
+      ]
+    },
+    {
+      "text": "Folder name words: app.",
+      "trace": [
+        "/subject/name_tokens"
+      ]
+    },
+    {
+      "text": "Contents: 4 files; 3 folders; logical size 7.9 KiB; allocated size 7.9 KiB; deepest nesting 3.",
+      "trace": [
+        "/shape/allocated_bytes",
+        "/shape/files",
+        "/shape/folders",
+        "/shape/logical_bytes",
+        "/shape/max_depth"
+      ]
+    },
+    {
+      "text": "File types by share: none 100% of files (100% of bytes).",
+      "trace": [
+        "/families"
+      ]
+    },
+    {
+      "text": "Most common extensions: (no extension) 4 files.",
+      "trace": [
+        "/extensions"
+      ]
+    },
+    {
+      "text": "Markers seen: cargo target dir, cargo toml.",
+      "trace": [
+        "/markers"
+      ]
+    },
+    {
+      "text": "No activity evidence seen since January 2020 (newest content change, 2480 days before this packet was observed).",
+      "trace": [
+        "/observed_at",
+        "/time/git_dirty",
+        "/time/git_last_commit",
+        "/time/newest_content_write",
+        "/time/newest_generated_write",
+        "/time/newest_source_write"
+      ]
+    },
+    {
+      "text": "Newest source write: January 2020; newest generated write: January 2020.",
+      "trace": [
+        "/time/newest_generated_write",
+        "/time/newest_source_write"
+      ]
+    },
+    {
+      "text": "Git last commit: unknown; working tree: unknown.",
+      "trace": [
+        "/time/git_dirty",
+        "/time/git_last_commit"
+      ]
+    },
+    {
+      "text": "Last-access time is system-managed and is ignored as evidence.",
+      "trace": [
+        "/time/last_access"
+      ]
+    },
+    {
+      "text": "Duplicate bytes: unknown; duplicate groups: unknown.",
+      "trace": [
+        "/duplicates/duplicate_bytes",
+        "/duplicates/groups"
+      ]
+    },
+    {
+      "text": "No camera-file details are recorded.",
+      "trace": [
+        "/media"
+      ]
+    },
+    {
+      "text": "Meaning: rule evidence (lf_source_manifest) points to \"source project\". This is an inference from the facts above, not a recorded fact.",
+      "trace": [
+        "/markers"
+      ]
+    },
+    {
+      "text": "Lifecycle: rule evidence (lf_quiet_years) points to \"historical\". This is an inference from the facts above, not a recorded fact.",
+      "trace": [
+        "/observed_at",
+        "/time/newest_content_write",
+        "/time/newest_source_write"
+      ]
+    },
+    {
+      "text": "Recreatability: rule evidence (lf_project_with_outputs) points to \"mixed\". This is an inference from the facts above, not a recorded fact.",
+      "trace": [
+        "/markers"
+      ]
+    }
+  ]
+}

@@ -38,6 +38,31 @@ class V3ContractTests(unittest.TestCase):
         self.assertFalse(validator.is_valid(dict(request, path='Synthetic project')))
         self.assertFalse(validator.is_valid({'limit': 50, 'cursor': None}))
 
+    def test_folder_insight_is_owner_only_read_only_and_not_a_probability(self):
+        command = self.commands['commands']['insight.folder']
+        self.assertEqual(command['effects'], 'none')
+        self.assertEqual(command['adapters'], ['tauri', 'http'])
+        self.assertNotIn('client_result', command)
+        try:
+            import jsonschema
+        except ImportError:
+            self.skipTest('jsonschema not installed')
+        request = {'root_id': 'rt_1', 'node_id': 'nd_1'}
+        validator = jsonschema.Draft202012Validator({
+            '$defs': self.defs, '$ref': '#/$defs/' + command['request']})
+        validator.validate(request)
+        self.assertFalse(validator.is_valid(dict(request, limit=5)))
+        self.assertFalse(validator.is_valid({'root_id': 'rt_1'}))
+        result = jsonschema.Draft202012Validator({
+            '$defs': self.defs, '$ref': '#/$defs/' + command['result']})
+        example = load('examples/commands/insight.folder.result.json')
+        result.validate(example)
+        self.assertEqual([a['axis'] for a in example['axes']],
+                         ['meaning', 'lifecycle', 'recreatability'])
+        for field in ('probability', 'score', 'approved'):
+            self.assertFalse(result.is_valid(dict(example, **{field: True})))
+            self.assertNotIn(field, self.defs['InsightAxis']['properties'])
+
     def test_schema_is_valid_json_schema(self):
         try:
             import jsonschema

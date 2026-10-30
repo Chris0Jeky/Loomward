@@ -10,6 +10,8 @@ description = "Loomward v0.3 view service: the typed ViewService both adapters c
 loomward-protocol = { path = "../loomward-protocol" }
 loomward-engine = { path = "../loomward-engine" }
 loomward-catalog = { path = "../loomward-catalog" }
+# LW-138: the labelling rules and the fact-only explainer behind `insight.folder`.
+loomward-learn = { path = "../loomward-learn" }
 loomward-telemetry = { path = "../loomward-telemetry" }
 loomward-shell = { path = "../loomward-shell" }
 loomward-apps = { path = "../loomward-apps" }

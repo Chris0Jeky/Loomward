@@ -62,6 +62,13 @@ rule vote as an inference, never as a decision or advice. A category or
 summary is never an approval: the Recycle Bin effect still needs the owner's per-plan confirmation, and a learned
 score never pre-approves anything (invariant 3).
 
+Stage 1 is served by `insight.folder { root_id, node_id }` (LW-138, #877; `contracts/v3/semantics.md` "Folder
+insight"): an owner-only, read-only view-service command that builds a folder's evidence facts from the catalogue,
+validates the packet, runs `labelling::combine` and returns the three axes (a label with its agreeing rules, or an
+abstention with its reason) and the `explain` lines with their traces. A stale or partial root answers with its
+coverage and every axis abstains. It makes no teacher or model call, is not exposed to clients or MCP, and the app
+view is a later slice.
+
 ## 4. Where it is used first
 
 - **The archive-originals review.** Before a plan's originals go to the Recycle Bin, each group shows its summary,

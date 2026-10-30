@@ -15,6 +15,8 @@ mod backups;
 pub use backups::*;
 mod clutter;
 pub use clutter::*;
+mod insight;
+pub use insight::*;
 mod projects;
 pub use projects::*;
 mod reclaim;
