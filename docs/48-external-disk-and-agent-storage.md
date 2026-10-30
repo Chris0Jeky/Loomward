@@ -151,6 +151,10 @@ and an optional new folder name. Output, computed from the catalogue only:
 - warnings the catalogue can already see: offline sources, a destination on the same physical disk as a source
   ("not a backup", docs/09), more than 200,000 entries in one item (the verifier's cap: split it); with `attributes`,
   cloud placeholders and reparse points;
+- custody (LW-136): `copies_after_plan` and `last_content_verified_at` on every item and in the total, and one
+  plan-level `sole_copy_after_retirement` warning listing the item references. `copies_after_plan` is 1 (the archive copy is the only one once
+  originals are retired; the plan retires nothing and does not authorise it); `last_content_verified_at` is null
+  (unknown) until a scrub exists. Neither claims verification;
 - the destination identity (label, bus type, volume key) and the new-folder shape of docs/47 (Q3 defaulted to (a) on
   2026-10-24, no owner answer: a new folder only, never into an existing one);
 - `execution`: always `"owner_approval_required"`, with the reason the copy cannot run yet for personal data
