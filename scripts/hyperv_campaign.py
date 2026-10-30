@@ -837,9 +837,9 @@ if (Test-Path -LiteralPath $root) {{
             raise
         # Release the lab VM only when the last cycle finished cleanly (#944). A raised failure keeps it running,
         # and so does a kept-going infrastructure failure in the last cycle, as the per-cycle rule above does.
+        print(json.dumps(self.summary, sort_keys=True))  # before the off, so an off failure cannot hide it
         if consecutive == 0:
             self._ensure_off()
-        print(json.dumps(self.summary, sort_keys=True))
         return self.summary
 
 
