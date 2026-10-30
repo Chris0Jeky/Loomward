@@ -36,6 +36,7 @@ mod handlers;
 pub mod hostile;
 mod idem;
 mod ids;
+mod insight;
 mod inventory;
 pub mod lab;
 mod learning;

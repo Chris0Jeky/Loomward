@@ -1154,6 +1154,34 @@ selection changes, shows its age, and compares only recorded known bytes with th
 integer arithmetic. The estimate does not approve deletion or guarantee physical space recovery;
 Recycle Bin moves and same-volume renames do not immediately free this allocation.
 
+## Folder insight (LW-138, #877)
+
+`insight.folder { root_id, node_id }` reads what the catalogue records about one directory and says what
+the labelling rules infer from it. It is owner-only on Tauri and HTTP in personal and synthetic sessions;
+client principals (including MCP and Ask) are refused with `permission_denied`, and it is not an MCP tool.
+A malformed request and a file node are `invalid_request`. An unknown or revoked root, an unknown node and a
+node outside `root_id` are `not_found` (no oracle for which one failed). `expected_generation` is not accepted.
+
+The service builds the closed evidence packet (`loomward.evidence-packet.v1`) from catalogue rows alone:
+recorded names, sizes, dates and marker names. It reads no file contents, live paths, Git state or EXIF, makes
+no teacher or model call, and requests no aggregate repair. `last_access` is never evidence, Git fields stay
+unknown, and the duplicate fields stay unknown. The packet is validated before use; a failure is an
+`internal_error`, never a partial answer.
+
+The result holds exactly three axes in order (meaning, lifecycle, recreatability). Each axis either carries a
+`label` with the `votes` of the agreeing rules, or abstains with `abstain_reason`: `no_vote` (no rule had enough
+evidence), `conflict` (the disagreeing `votes` are listed) or `coverage` (coverage was not complete, so no rule
+runs). `lines` are the explainer's fact-only sentences, each with the packet fields (JSON pointers) it was read
+from; the wire adds no wording of its own. A label is an inference from recorded facts: not a probability (it
+is uncalibrated), not a decision, not advice, not an approval of any effect (invariant 3). Coldness reads "no
+activity evidence seen since <month>", never "unused since".
+
+`coverage` is the folder's catalogue coverage, or `stale` when the root's watcher saw unresolved changes since
+the scan, and `partial` is true unless it is `complete`; figures then describe an earlier state and every axis
+abstains on coverage. An unscanned, denied or excluded folder reports unknown figures, never zeros. A folder
+too large for the work budget is `resource_budget`; an expired deadline is `deadline_exceeded`.
+`observed_at` is the service clock when the facts were read.
+
 ## Reclaim relief check (#1013)
 
 `reclaim.sample { volume_id, role, estimate_bytes? }` is an owner-only mutation (Tauri and HTTP; clients are

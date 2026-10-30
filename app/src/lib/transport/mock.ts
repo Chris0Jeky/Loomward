@@ -11,6 +11,7 @@ import { createInventoryMock } from './mock-inventory';
 import { createAlertMock } from './mock-alerts';
 import { createClutterMock } from './mock-clutter';
 import { createReclaimMock } from './mock-reclaim';
+import { createInsightMock } from './mock-insight';
 import { createAskMock } from './mock-ask';
 import { createClientMock } from './mock-clients';
 import { createBackupMock } from './mock-backups';
@@ -40,7 +41,7 @@ const REVS: Partial<Record<string, 'c' | 's' | 'cs'>> = {
   'health.get': 'c', 'tree.children': 'c', 'search.query': 'c', 'stats.breakdown': 'c',
   'roots.list': 'cs', 'tree.slice': 'cs', 'placement.candidates': 'cs', 'placement.simulate': 'cs',
   'proposals.list': 'cs', 'proposals.get': 'cs', 'volumes.declare_tier': 'cs',
-  'roots.revoke': 'cs', 'roots.forget': 'cs', 'backups.list': 's', 'backups.forget': 's', 'alerts.list': 's', 'alerts.configure': 's', 'clutter.developer': 'cs', 'projects.find': 'cs', 'grants.list': 's', 'grants.revoke': 's', 'volumes.list': 's', 'tiers.model': 's',
+  'roots.revoke': 'cs', 'roots.forget': 'cs', 'backups.list': 's', 'backups.forget': 's', 'alerts.list': 's', 'alerts.configure': 's', 'clutter.developer': 'cs', 'projects.find': 'cs', 'insight.folder': 'cs', 'grants.list': 's', 'grants.revoke': 's', 'volumes.list': 's', 'tiers.model': 's',
 };
 
 class CommandFailure extends Error {
@@ -420,6 +421,11 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
     ...createBackupMock(now, fail),
     ...createAlertMock(now, fail),
     ...createClutterMock(fail, () => (handlers['roots.list']!({}) as RootList).roots, HOSTILE_ROOT_ID),
+    ...createInsightMock(fail, () => (handlers['roots.list']!({}) as RootList).roots, (id) => {
+      const n = byId.get(id);
+      const top = n ? topOf(n)[0] : undefined;
+      return n && top ? { kind: n.kind, root: rootId(top), coverage: n.coverage } : null;
+    }),
     ...createReclaimMock(failWith, () => (views.handlers['volumes.list']!({}) as import('../contracts.gen').VolumeList).volumes, scan.observe),
     // The contract's synthetic bundle, whose size and digest are those of its canonical text. Like HTTP, the mock
     // has no Rust-owned save dialog, so diagnostics.save answers capability_unavailable.

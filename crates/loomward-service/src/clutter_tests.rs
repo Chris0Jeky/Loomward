@@ -3,6 +3,8 @@
 use super::*;
 use loomward_catalog::{DirListing, Observation, WriteCommand, WriteReply};
 
+#[path = "insight_tests.rs"]
+mod insight_tests;
 #[path = "projects_tests.rs"]
 mod projects_tests;
 #[path = "reclaim_tests.rs"]
