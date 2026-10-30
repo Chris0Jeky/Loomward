@@ -63,6 +63,34 @@ class V3ContractTests(unittest.TestCase):
             self.assertFalse(result.is_valid(dict(example, **{field: True})))
             self.assertNotIn(field, self.defs['InsightAxis']['properties'])
 
+    def test_new_since_is_owner_only_read_only_and_never_zero_without_a_baseline(self):
+        command = self.commands['commands']['changes.new_since']
+        self.assertEqual(command['effects'], 'none')
+        self.assertEqual(command['adapters'], ['tauri', 'http'])
+        self.assertNotIn('client_result', command)
+        try:
+            import jsonschema
+        except ImportError:
+            self.skipTest('jsonschema not installed')
+        request = load('examples/commands/changes.new_since.request.json')
+        validator = jsonschema.Draft202012Validator({
+            '$defs': self.defs, '$ref': '#/$defs/' + command['request']})
+        validator.validate(request)
+        self.assertFalse(validator.is_valid({k: v for k, v in request.items() if k != 'baseline_run'}))
+        self.assertFalse(validator.is_valid(dict(request, limit=51)))
+        self.assertFalse(validator.is_valid(dict(request, node_id='nd_1')))
+        result = jsonschema.Draft202012Validator({
+            '$defs': self.defs, '$ref': '#/$defs/' + command['result']})
+        example = load('examples/commands/changes.new_since.result.json')
+        result.validate(example)
+        none = dict(example, outcome='no_baseline', baseline=None, new_files=None, new_dirs=None,
+                    logical_bytes=None, allocated_bytes=None, allocation_unknown_files=None,
+                    largest_files=[], largest_folders=[], partial=False, partial_reasons=[], caveats=[])
+        result.validate(none)
+        self.assertFalse(result.is_valid(dict(none, new_files=0, new_dirs='0')))
+        self.assertTrue({c['topic'] for c in example['caveats']} >= {
+            'moved_files_count_as_new', 'recreated_files_count_as_new'})
+
     def test_schema_is_valid_json_schema(self):
         try:
             import jsonschema

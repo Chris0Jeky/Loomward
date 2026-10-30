@@ -516,6 +516,7 @@ impl Inner {
             ClutterDeveloper => self.clutter_developer(req, work),
             ProjectsFind => self.projects_find(req, work),
             InsightFolder => self.insight_folder(req, work),
+            ChangesNewSince => self.changes_new_since(req, work),
             ReclaimPlan => self.reclaim_plan(req, work),
             ReclaimObserve => self.reclaim_observe(req),
             ReclaimSample => self.reclaim_sample(req),

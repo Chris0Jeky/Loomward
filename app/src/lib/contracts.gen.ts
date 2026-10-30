@@ -40,6 +40,69 @@ export interface ProjectsPage {
   next_cursor: Cursor | null;
 }
 
+/** baseline_run null: the scan before the newest completed full-root scan. */
+export interface ChangesNewSinceRequest {
+  root_id: RootId;
+  baseline_run: Generation | null;
+  limit: number;
+}
+
+export type NewSinceOutcome = "ok" | "no_baseline";
+
+export type NewSinceRunMode = "full" | "refresh" | "targeted";
+
+export interface NewSinceRun {
+  run: Generation;
+  mode: NewSinceRunMode;
+  finished_at: Timestamp | null;
+  complete: boolean;
+}
+
+export type NewSinceReason = "baseline_not_completed" | "baseline_incomplete" | "coverage_partial" | "scan_running" | "catalogue_repairing" | "changes_since_scan";
+
+export type NewSinceCaveatTopic = "moved_files_count_as_new" | "recreated_files_count_as_new" | "first_listing_counts_as_new" | "existing_files_not_measured";
+
+export interface NewSinceCaveat {
+  topic: NewSinceCaveatTopic;
+  note: string;
+}
+
+export interface NewSinceFile {
+  node_id: NodeId;
+  name: string;
+  path: DisplayPath;
+  logical_bytes: ByteCount;
+  allocated_bytes: ByteCount | null;
+}
+
+export interface NewSinceFolder {
+  node_id: NodeId;
+  name: string;
+  path: DisplayPath;
+  logical_bytes: ByteCount | null;
+  allocated_bytes: ByteCount | null;
+  coverage: CoverageState;
+}
+
+/** #1092. Rows first listed after the baseline scan run (born_run > baseline): not a claim about the disk. outcome no_baseline: baseline and every figure is null (never zero) and the lists are empty. allocated_bytes is null when any new file's allocation is unknown. A moved or recreated file counts as new (caveats). */
+export interface ChangesNewSince {
+  root_id: RootId;
+  generation: Generation | null;
+  outcome: NewSinceOutcome;
+  baseline: NewSinceRun | null;
+  latest: NewSinceRun | null;
+  new_files: Count | null;
+  new_dirs: Count | null;
+  logical_bytes: ByteCount | null;
+  allocated_bytes: ByteCount | null;
+  allocation_unknown_files: Count | null;
+  largest_files: NewSinceFile[];
+  largest_folders: NewSinceFolder[];
+  partial: boolean;
+  partial_reasons: NewSinceReason[];
+  caveats: NewSinceCaveat[];
+}
+
 export interface InsightFolderRequest {
   root_id: RootId;
   node_id: NodeId;
@@ -2615,6 +2678,7 @@ export const CLIENT_FIELDS = ["path", "size", "modified", "attributes", "volumes
 
 export interface CommandMap {
   "projects.find": { request: ProjectsRequest; result: ProjectsPage };
+  "changes.new_since": { request: ChangesNewSinceRequest; result: ChangesNewSince };
   "insight.folder": { request: InsightFolderRequest; result: InsightFolder };
   "session.hello": { request: EmptyRequest; result: SessionInfo };
   "health.get": { request: EmptyRequest; result: Health };
@@ -2711,6 +2775,7 @@ export type CommandKey = keyof CommandMap;
 /** Where each command exists (elsewhere: capability_unavailable), its wave and its events. */
 export const COMMANDS = {
   "projects.find": { adapters: ["tauri", "http"], wave: 2, events: [] },
+  "changes.new_since": { adapters: ["tauri", "http"], wave: 2, events: [] },
   "insight.folder": { adapters: ["tauri", "http"], wave: 2, events: [] },
   "session.hello": { adapters: ["tauri", "http"], wave: 1, events: [] },
   "health.get": { adapters: ["tauri", "http"], wave: 2, events: [] },

@@ -8,9 +8,9 @@
   import { session } from '../../lib/stores/session.svelte';
   import { volumes } from '../../lib/stores/volumes.svelte';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
-  import type { AlertReport, Job, ReclaimPlan, Root } from '../../lib/contracts.gen';
+  import type { AlertReport, ChangesNewSince, Job, ReclaimPlan, Root } from '../../lib/contracts.gen';
   import { findHref, PRESETS } from '../../lib/search/find';
-  import { linkName, missingSources, moreViews, needsEmptyText, needsYou, reclaimTargets, SECTION_TITLES, unevaluatedAlerts, unevaluatedLine, unplacedRoots, volumeRows, type Sources } from './model';
+  import { linkName, missingSources, moreViews, needsEmptyText, needsYou, newSinceLines, reclaimTargets, SECTION_TITLES, unevaluatedAlerts, unevaluatedLine, unplacedRoots, volumeRows, type Sources } from './model';
 
   const JOBS_LIMIT = 100;
   const SHOWN = 5; // per section; the rest is a link to each view that lists them
@@ -21,6 +21,10 @@
   let jobs = $state<Job[] | null>(null);
   let reclaim = $state(new Map<string, ReclaimPlan | null>());
   let failedReclaim = $state(0);
+  let newSince = $state(new Map<string, ChangesNewSince | null>());
+  let newSinceRead = $state(false); // true once the answers for the current set of granted folders arrived
+  let failedNewSince = $state(0);
+  let newSinceProblems = $state<string[]>([]);
   let loadProblems = $state<string[]>([]);
   let reclaimProblems = $state<string[]>([]);
   let loaded = $state(false);
@@ -28,6 +32,9 @@
   let now = $state(Date.now());
   let ticket = 0;
   let reclaimTicket = 0;
+  let newSinceTicket = 0;
+  let askedKey: string | null = null; // the folder-scan key and connection the last new-since read was made for
+  let askedConnection = -1;
   let alive = true;
   let started = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -60,6 +67,23 @@
     reclaimProblems = settled.flatMap((s) => (s.status === 'rejected' ? [session.handle(s.reason)] : []));
   }
 
+  // One bounded read per active granted folder: what first appeared since its previous scan. Asked again only when a folder's
+  // scan state or the connection changes (not on progress or tree events), because each answer is a pass over that folder's rows.
+  async function loadNewSince(ids: string[]): Promise<void> {
+    const c = session.client;
+    const epoch = session.connectionEpoch;
+    const mine = ++newSinceTicket;
+    newSinceProblems = [];
+    if (!c || !ids.length) { newSince = new Map(); newSinceRead = true; failedNewSince = 0; return; }
+    newSinceRead = false;
+    const settled = await Promise.allSettled(ids.map((id) => c.call('changes.new_since', { root_id: id, baseline_run: null, limit: 1 })));
+    if (!alive || mine !== newSinceTicket || c !== session.client || epoch !== session.connectionEpoch) return;
+    newSince = new Map(settled.map((s, i) => [ids[i]!, s.status === 'fulfilled' ? s.value.result : null] as const));
+    failedNewSince = settled.filter((s) => s.status === 'rejected').length;
+    newSinceProblems = settled.flatMap((s) => (s.status === 'rejected' ? [session.handle(s.reason)] : []));
+    newSinceRead = true;
+  }
+
   // The first read is immediate. Later triggers (a scan end fires both scans.settled and job.state, a running scan fires
   // job.state about every 100 ms) share one pending timer: a throttle, so a long burst still reads once per window.
   // A trigger inside the window is covered because the pending read starts after it.
@@ -70,7 +94,7 @@
   }
   function onEvent(ev: { event: string }): void { if (ev.event === 'job.state') refresh(); }
 
-  onMount(() => () => { alive = false; ticket++; reclaimTicket++; clearTimeout(timer); });
+  onMount(() => () => { alive = false; ticket++; reclaimTicket++; newSinceTicket++; clearTimeout(timer); });
   $effect(() => {
     void session.epoch;
     void scans.settled;
@@ -90,14 +114,33 @@
     untrack(() => void loadReclaim(ids));
   });
 
-  const problems = $derived([...loadProblems, ...reclaimProblems]);
+  // The active granted folders and the state of their last scan: the key changes when a scan starts or ends, not while it runs.
+  const newSinceKey = $derived(roots
+    ? roots.filter((r) => r.grant_state === 'active').map((r) => [r.root_id, r.scan.state, r.scan.generation, r.scan.finished_at].join('|')).join('\n')
+    : null);
+  // session.epoch also bumps on every tree.invalidated (about twice a second per root during a scan); it only wakes this
+  // effect. A read is made only when a folder's scan state or the connection (connectionEpoch) changed since the last one.
+  $effect(() => {
+    const key = newSinceKey;
+    void session.epoch;
+    if (key === null) return;
+    untrack(() => {
+      if (key === askedKey && session.connectionEpoch === askedConnection) return;
+      askedKey = key;
+      askedConnection = session.connectionEpoch;
+      void loadNewSince(key ? key.split('\n').map((k) => k.split('|')[0]!) : []);
+    });
+  });
+
+  const problems = $derived([...loadProblems, ...reclaimProblems, ...newSinceProblems]);
   const settled = $derived(loaded && (volumes.items !== null || volumes.error !== ''));
   const src = $derived<Sources>({ volumes: volumes.items, roots, alerts, jobs, reclaim });
   const rows = $derived(volumes.items ? volumeRows(volumes.items, roots, now) : []);
   const needs = $derived(needsYou(src, now));
   const unevaluated = $derived(unevaluatedAlerts(alerts));
   const unevaluatedNote = $derived(unevaluatedLine(unevaluated));
-  const missing = $derived(settled ? missingSources(src, failedReclaim) : []);
+  const missing = $derived(settled ? missingSources(src, failedReclaim, failedNewSince) : []);
+  const newSinceRows = $derived(volumes.items && roots && newSinceRead ? newSinceLines(volumes.items, roots, newSince) : []);
   const nothingRead = $derived(settled && !volumes.items && !roots && !alerts && !jobs);
   const noGrant = $derived(roots !== null && !roots.some((r) => r.grant_state === 'active'));
   const unplaced = $derived(volumes.items && roots ? unplacedRoots(volumes.items, roots) : 0);
@@ -165,6 +208,22 @@
     {/if}
   </section>
 
+  {#if newSinceRows.length}
+    <section class="panel" aria-labelledby="today-new">
+      <h2 id="today-new">New since the last scan</h2>
+      <ul class="needs">
+        {#each newSinceRows as n (n.volumeId)}
+          <li>
+            <strong><VisibleName name={n.name} /></strong>
+            <span class:unknown={n.unknown}>{n.text}</span>
+            {#if n.href}<a href={n.href}>{n.linkText}</a>{/if}
+            {#each n.notes as note, i (i)}<small class="muted note-line">{note}</small>{/each}
+          </li>
+        {/each}
+      </ul>
+    </section>
+  {/if}
+
   {#if noGrant}
     <section class="empty" aria-labelledby="today-empty">
       <h2 id="today-empty">No granted folder yet</h2>
@@ -213,6 +272,7 @@
   .needs { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--sp-2); }
   .needs li { max-width: var(--measure); }
   .needs a { margin-left: var(--sp-2); white-space: nowrap; }
+  .note-line { display: block; }
   .cleanup { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: var(--sp-2) var(--sp-4); }
   .meter { height: 10px; min-width: 9rem; border: 1px solid var(--control-line); border-radius: 5px; background: var(--raised); overflow: hidden; margin-bottom: var(--sp-1); }
   .meter.blank { border-style: dotted; border-color: var(--unknown); background: transparent; }

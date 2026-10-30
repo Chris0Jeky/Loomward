@@ -1,4 +1,4 @@
-import type { AlertItem, AlertReport, AlertSettings, GroupKind, Job, JobKind, ReclaimPlan, Root, Volume } from '../../lib/contracts.gen';
+import type { AlertItem, AlertReport, AlertSettings, ChangesNewSince, GroupKind, Job, JobKind, NewSinceReason, ReclaimPlan, Root, Volume } from '../../lib/contracts.gen';
 import { formatBytes, parseBytes } from '../../lib/format/bytes';
 import { diskHealthLine, hasDiskHealthWarning } from '../../lib/format/volume';
 import { measured, threshold } from '../alerts/model';
@@ -279,13 +279,99 @@ export function needsEmptyText(missingCount: number, unevaluatedCount: number): 
   return missingCount || unevaluatedCount ? 'Nothing needs you in what was read.' : 'Nothing needs you.';
 }
 
+/** What `changes.new_since` answered per granted folder; null is an answer that could not be read. */
+export type NewSinceReads = Map<string, ChangesNewSince | null>;
+
+export interface NewSinceLine {
+  volumeId: string;
+  /** The volume's name from the machine: always rendered through VisibleName. */
+  name: string;
+  /** "New since the scan on 2026-10-23: 12.3 GiB in 340 files." or what is not known. */
+  text: string;
+  /** Everything not clean about the figure, said plainly. */
+  notes: string[];
+  /** The Explorer route of the largest new folder (else file), or null when there is nothing to open. */
+  href: string | null;
+  linkText: string;
+  /** True when no figure is shown: no earlier scan, or the answer could not be read. */
+  unknown: boolean;
+}
+
+const REASON_WORDS: Record<NewSinceReason, string> = {
+  baseline_not_completed: 'the earlier scan did not finish',
+  baseline_incomplete: 'the earlier scan was not complete',
+  coverage_partial: 'the folder is only partly scanned',
+  scan_running: 'a scan is running',
+  catalogue_repairing: 'folder sizes are being repaired',
+  changes_since_scan: 'the folder changed after its last scan',
+};
+const MOVED_NOTE = 'Logical size. Moved or recreated files count as new.';
+
+/** UTC calendar date of a wire timestamp, or null when it is missing or unparsable. */
+const dateOf = (at: string | null | undefined): string | null => {
+  const t = at ? Date.parse(at) : NaN;
+  return Number.isNaN(t) ? null : new Date(t).toISOString().slice(0, 10);
+};
+
+/**
+ * One line per volume that holds a granted folder: what arrived since each folder's previous scan, summed over
+ * the folders that have one. A folder with no earlier scan or an unreadable answer adds nothing to the sum and is
+ * named, never counted as zero; a partial answer says why (invariant 4). Moved and recreated files count as new.
+ */
+export function newSinceLines(volumes: Volume[], roots: Root[], reads: NewSinceReads): NewSinceLine[] {
+  return volumes.flatMap((v): NewSinceLine[] => {
+    const mine = activeRoots(roots).filter((r) => r.volume_id === v.volume_id);
+    if (!mine.length) return [];
+    const answers = mine.map((r) => reads.get(r.root_id) ?? null);
+    const counted = answers.flatMap((a) => (a && a.outcome === 'ok' && a.new_files !== null && parseBytes(a.logical_bytes) !== null ? [a] : []));
+    const noBaseline = answers.filter((a) => a?.outcome === 'no_baseline').length;
+    const unread = answers.length - counted.length - noBaseline;
+    const notes: string[] = [];
+    if (noBaseline) notes.push(`${plural(noBaseline, 'granted folder')} ${noBaseline === 1 ? 'has' : 'have'} no earlier scan to compare with, so ${noBaseline === 1 ? 'it is' : 'they are'} not counted.`);
+    if (unread) notes.push(`${plural(unread, 'granted folder')} could not be read, so ${unread === 1 ? 'it is' : 'they are'} not counted.`);
+    const base = { volumeId: v.volume_id, name: v.display_name };
+    if (!counted.length) {
+      return [{ ...base, text: 'New since the last scan: not known.', notes, href: null, linkText: '', unknown: true }];
+    }
+    const files = counted.reduce((n, a) => n + (a.new_files ?? 0), 0);
+    const bytes = counted.reduce((n, a) => n + (parseBytes(a.logical_bytes) ?? 0n), 0n);
+    const dates = counted.flatMap((a) => dateOf(a.baseline?.finished_at) ?? []).sort();
+    const since = counted.length === 1
+      ? (dates[0] ? `the scan on ${dates[0]}` : 'an earlier scan (date unknown)')
+      : (dates[0] ? `each folder's previous scan (the oldest on ${dates[0]})` : "each folder's previous scan (dates unknown)");
+    const reasons = [...new Set(counted.flatMap((a) => a.partial_reasons))];
+    if (counted.some((a) => a.partial)) {
+      notes.unshift(reasons.length ? `Partial, so the figure may be off: ${reasons.map((x) => REASON_WORDS[x]).join('; ')}.` : 'Partial, so the figure may be off.');
+    }
+    notes.push(MOVED_NOTE);
+    // The largest new folder (else file) across the counted folders, for Explorer.
+    // Only a known size can be "the largest": an unknown-size folder is never ranked as zero, and is a last resort.
+    const pick = (items: { node_id: string; logical_bytes: string | null }[]) =>
+      items.reduce<{ node_id: string; size: bigint } | null>((best, i) => {
+        const size = parseBytes(i.logical_bytes);
+        return size !== null && (!best || size > best.size) ? { node_id: i.node_id, size } : best;
+      }, null);
+    const folders = counted.flatMap((a) => a.largest_folders);
+    const folder = pick(folders);
+    const file = folder ? null : pick(counted.flatMap((a) => a.largest_files));
+    const anyFolder = folder || file ? null : folders[0];
+    const target = folder ?? file ?? anyFolder;
+    return [{
+      ...base, text: `New since ${since}: ${formatBytes(String(bytes))} in ${plural(files, 'file')}.`, notes, unknown: false,
+      href: target ? `#/explorer?node=${encodeURIComponent(target.node_id)}` : null,
+      linkText: folder ? 'Open the largest new folder in Explorer' : file ? 'Open the largest new file in Explorer' : 'Open a new folder in Explorer',
+    }];
+  });
+}
+
 /** Sources that could not be read, by name. Empty means everything Today asked for arrived. */
-export function missingSources(src: Sources, failedReclaim: number): string[] {
+export function missingSources(src: Sources, failedReclaim: number, failedNewSince = 0): string[] {
   const out: string[] = [];
   if (src.volumes === null) out.push('volumes');
   if (src.roots === null) out.push('granted folders');
   if (src.alerts === null) out.push('alerts');
   if (src.jobs === null) out.push('jobs');
   if (failedReclaim) out.push(failedReclaim === 1 ? 'one reclaim plan' : `${failedReclaim} reclaim plans`);
+  if (failedNewSince) out.push(failedNewSince === 1 ? 'what is new in one granted folder' : `what is new in ${failedNewSince} granted folders`);
   return out;
 }

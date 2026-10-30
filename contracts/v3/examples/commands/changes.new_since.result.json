@@ -1,0 +1,56 @@
+{
+  "root_id": "rt_synthetic",
+  "generation": "7",
+  "outcome": "ok",
+  "baseline": {
+    "run": "4",
+    "mode": "full",
+    "finished_at": "2026-10-23T08:30:00.000Z",
+    "complete": true
+  },
+  "latest": {
+    "run": "7",
+    "mode": "full",
+    "finished_at": "2026-10-30T08:30:00.000Z",
+    "complete": true
+  },
+  "new_files": 340,
+  "new_dirs": 12,
+  "logical_bytes": "13204619264",
+  "allocated_bytes": null,
+  "allocation_unknown_files": 2,
+  "largest_files": [
+    {
+      "node_id": "nd_synthetic_file",
+      "name": "capture-0001.bin",
+      "path": { "text": "Synthetic root / projects / capture / capture-0001.bin", "truncated": false },
+      "logical_bytes": "4294967296",
+      "allocated_bytes": "4294971392"
+    },
+    {
+      "node_id": "nd_synthetic_file_2",
+      "name": "export.dat",
+      "path": { "text": "Synthetic root / exports / export.dat", "truncated": false },
+      "logical_bytes": "1073741824",
+      "allocated_bytes": null
+    }
+  ],
+  "largest_folders": [
+    {
+      "node_id": "nd_synthetic_dir",
+      "name": "capture",
+      "path": { "text": "Synthetic root / projects / capture", "truncated": false },
+      "logical_bytes": "9663676416",
+      "allocated_bytes": null,
+      "coverage": "complete"
+    }
+  ],
+  "partial": true,
+  "partial_reasons": ["scan_running"],
+  "caveats": [
+    { "topic": "moved_files_count_as_new", "note": "A file moved to another folder counts as new here: only a move inside one folder keeps its place in the history." },
+    { "topic": "recreated_files_count_as_new", "note": "A file deleted and written again counts as new." },
+    { "topic": "first_listing_counts_as_new", "note": "What the earlier scan could not list (a denied, depth-limited or partial folder) counts as new when a later scan first lists it; the folder itself is not new, its contents are." },
+    { "topic": "existing_files_not_measured", "note": "A file that existed before and grew is not counted: sizes are not kept per scan." }
+  ]
+}

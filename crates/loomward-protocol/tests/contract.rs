@@ -315,6 +315,129 @@ fn insight_folder_is_owner_only_closed_and_never_a_probability_or_approval() {
 }
 
 #[test]
+fn changes_new_since_is_owner_only_closed_and_keeps_unknowns_null() {
+    let mut schema = Schema::load();
+    let result = read(&contracts().join("examples/commands/changes.new_since.result.json"));
+    let request = read(&contracts().join("examples/commands/changes.new_since.request.json"));
+    // Every unknown is a required null, never an omitted field and never a zero.
+    for (def, value, fields) in [
+        (
+            "ChangesNewSince",
+            &result,
+            &[
+                "generation",
+                "baseline",
+                "latest",
+                "new_files",
+                "new_dirs",
+                "logical_bytes",
+                "allocated_bytes",
+                "allocation_unknown_files",
+            ][..],
+        ),
+        ("NewSinceRun", &result["baseline"], &["finished_at"][..]),
+        (
+            "NewSinceFile",
+            &result["largest_files"][0],
+            &["allocated_bytes"][..],
+        ),
+        (
+            "NewSinceFolder",
+            &result["largest_folders"][0],
+            &["logical_bytes", "allocated_bytes"][..],
+        ),
+    ] {
+        for field in fields {
+            let mut unknown = value.clone();
+            unknown[field] = Value::Null;
+            assert!(schema.errors(def, &unknown).is_empty(), "{def} {field}");
+            assert_eq!(roundtrip(def, &unknown).unwrap().unwrap(), unknown);
+            unknown.as_object_mut().unwrap().remove(*field);
+            assert!(!schema.errors(def, &unknown).is_empty(), "{def} {field}");
+            assert!(roundtrip(def, &unknown).unwrap().is_err(), "{def} {field}");
+        }
+    }
+    // No earlier scan: the outcome says so and nothing is a number.
+    let mut none = result.clone();
+    none["outcome"] = json!("no_baseline");
+    for field in [
+        "baseline",
+        "new_files",
+        "new_dirs",
+        "logical_bytes",
+        "allocated_bytes",
+        "allocation_unknown_files",
+    ] {
+        none[field] = Value::Null;
+    }
+    none["largest_files"] = json!([]);
+    none["largest_folders"] = json!([]);
+    none["partial_reasons"] = json!([]);
+    none["caveats"] = json!([]);
+    none["partial"] = json!(false);
+    assert!(schema.errors("ChangesNewSince", &none).is_empty());
+    assert_eq!(roundtrip("ChangesNewSince", &none).unwrap().unwrap(), none);
+    // Closed everywhere: no probability, score, approval or effect field can ride along.
+    for (def, value) in [
+        ("ChangesNewSince", &result),
+        ("NewSinceRun", &result["baseline"]),
+        ("NewSinceFile", &result["largest_files"][0]),
+        ("NewSinceFolder", &result["largest_folders"][0]),
+        ("NewSinceCaveat", &result["caveats"][0]),
+        ("ChangesNewSinceRequest", &request),
+    ] {
+        for extra in ["probability", "score", "approved", "execute"] {
+            let mut padded = value.clone();
+            padded[extra] = json!(true);
+            assert!(!schema.errors(def, &padded).is_empty(), "{def} {extra}");
+            assert!(roundtrip(def, &padded).unwrap().is_err(), "{def} {extra}");
+        }
+    }
+    // The reasons and caveats are closed vocabularies; a byte count is a decimal string, a count an integer.
+    let mut reason = result.clone();
+    reason["partial_reasons"] = json!(["looks_fine"]);
+    assert!(!schema.errors("ChangesNewSince", &reason).is_empty());
+    assert!(roundtrip("ChangesNewSince", &reason).unwrap().is_err());
+    let mut number = result.clone();
+    number["logical_bytes"] = json!(5);
+    assert!(!schema.errors("ChangesNewSince", &number).is_empty());
+    assert!(roundtrip("ChangesNewSince", &number).unwrap().is_err());
+    let mut text = result.clone();
+    text["new_files"] = json!("340");
+    assert!(!schema.errors("ChangesNewSince", &text).is_empty());
+    assert!(roundtrip("ChangesNewSince", &text).unwrap().is_err());
+    // The request: baseline_run is required (null is the default scan), the limit is 1..=50.
+    let mut named = request.clone();
+    named["baseline_run"] = json!("12");
+    assert!(schema.errors("ChangesNewSinceRequest", &named).is_empty());
+    assert_eq!(
+        roundtrip("ChangesNewSinceRequest", &named)
+            .unwrap()
+            .unwrap(),
+        named
+    );
+    for bad in [
+        json!({"root_id":"rt_synthetic","limit":5}),
+        json!({"root_id":"rt_synthetic","baseline_run":null,"limit":0}),
+        json!({"root_id":"rt_synthetic","baseline_run":null,"limit":51}),
+        json!({"root_id":"rt_synthetic","baseline_run":12,"limit":5}),
+        json!({"root_id":"rt_synthetic","baseline_run":"-1","limit":5}),
+        json!({"baseline_run":null,"limit":5}),
+        json!({"root_id":"rt_synthetic","baseline_run":null,"limit":5,"cursor":null}),
+    ] {
+        assert!(
+            !schema.errors("ChangesNewSinceRequest", &bad).is_empty(),
+            "{bad}"
+        );
+        assert!(
+            roundtrip("ChangesNewSinceRequest", &bad).unwrap().is_err(),
+            "{bad}"
+        );
+    }
+    assert_eq!(Command::ChangesNewSince.client_result_def(), None);
+}
+
+#[test]
 fn reclaim_relief_keeps_unknowns_null_and_refuses_extra_fields() {
     let mut schema = Schema::load();
     let result = read(&contracts().join("examples/commands/reclaim.sample.result.json"));
