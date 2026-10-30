@@ -43,5 +43,21 @@ class AppsDesktopContracts(unittest.TestCase):
         self.assertEqual(desktop['shortcuts'][0]['health'], 'missing')
 
 
+    def test_apps_list_sort_is_optional_and_closed(self):
+        commands = json.loads((V3 / 'commands.json').read_text())['commands']
+        defs = json.loads((V3 / 'view-service.schema.json').read_text())['$defs']
+        self.assertEqual(commands['apps.list']['request'], 'AppsListRequest')
+        apps = jsonschema.Draft202012Validator({'$defs': defs, '$ref': '#/$defs/AppsListRequest'})
+        desktop = jsonschema.Draft202012Validator({'$defs': defs, '$ref': '#/$defs/MetadataPageRequest'})
+        for sort in ('registry', 'size_desc'):
+            self.assertTrue(apps.is_valid({'limit': 200, 'cursor': None, 'sort': sort}))
+        self.assertTrue(apps.is_valid({'limit': 200, 'cursor': None}))
+        for bad in ('name', 'SIZE_DESC', None, 1):
+            self.assertFalse(apps.is_valid({'limit': 200, 'cursor': None, 'sort': bad}), bad)
+        self.assertFalse(apps.is_valid({'limit': 200}))
+        self.assertFalse(desktop.is_valid({'limit': 200, 'cursor': None, 'sort': 'size_desc'}))
+        self.assertEqual(commands['desktop.contexts']['request'], 'MetadataPageRequest')
+
+
 if __name__ == '__main__':
     unittest.main()

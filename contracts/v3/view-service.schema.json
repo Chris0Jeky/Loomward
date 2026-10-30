@@ -3205,6 +3205,7 @@
       "required": ["status"],
       "properties": { "status": { "$ref": "#/$defs/LearningStatus" } }
     },
+    "AppsListRequest": {"type": "object", "additionalProperties": false, "required": ["limit", "cursor"], "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 200}, "cursor": {"anyOf": [{"$ref": "#/$defs/Cursor"}, {"type": "null"}]}, "sort": {"enum": ["registry", "size_desc"], "$comment": "registry (the default when absent) keeps the provider order; size_desc puts the largest provider-estimated size first, entries whose size is unknown last (never counted as zero), ties in registry order. The cursor is bound to the sort that issued it."}}},
     "MetadataPageRequest": {"type": "object", "additionalProperties": false, "required": ["limit", "cursor"], "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 200}, "cursor": {"anyOf": [{"$ref": "#/$defs/Cursor"}, {"type": "null"}]}}},
     "InventoryProviderState": {"enum": ["available", "denied", "unavailable", "partial"]},
     "InventoryProvider": {"type": "object", "additionalProperties": false, "required": ["provider", "state", "reason"], "properties": {"provider": {"type": "string", "minLength": 1, "maxLength": 64}, "state": {"$ref": "#/$defs/InventoryProviderState"}, "reason": {"anyOf": [{"type": "string", "maxLength": 1024}, {"type": "null"}]}}},

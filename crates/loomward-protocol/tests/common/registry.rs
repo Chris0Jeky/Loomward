@@ -34,6 +34,7 @@ pub fn roundtrip(def: &str, v: &Value) -> Option<Result<Value, String>> {
         "ClientRootList" => rt::<ClientRootList>(v),
         "ClientEntryPage" => rt::<ClientEntryPage>(v),
         "MetadataPageRequest" => rt::<MetadataPageRequest>(v),
+        "AppsListRequest" => rt::<AppsListRequest>(v),
         "InventoryProviderState" => rt::<InventoryProviderState>(v),
         "InventoryProvider" => rt::<InventoryProvider>(v),
         "InventoryTextState" => rt::<InventoryTextState>(v),
