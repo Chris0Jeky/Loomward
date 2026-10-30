@@ -426,7 +426,7 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
       const top = n ? topOf(n)[0] : undefined;
       return n && top ? { kind: n.kind, root: rootId(top), coverage: n.coverage } : null;
     }),
-    ...createReclaimMock(fail, () => (views.handlers['volumes.list']!({}) as import('../contracts.gen').VolumeList).volumes, scan.observe),
+    ...createReclaimMock(failWith, () => (views.handlers['volumes.list']!({}) as import('../contracts.gen').VolumeList).volumes, scan.observe),
     // The contract's synthetic bundle, whose size and digest are those of its canonical text. Like HTTP, the mock
     // has no Rust-owned save dialog, so diagnostics.save answers capability_unavailable.
     'diagnostics.preview': (p) => {

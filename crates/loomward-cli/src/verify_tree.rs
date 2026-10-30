@@ -14,6 +14,8 @@ pub(super) struct Args {
     pub(super) budget_bytes: u64,
     pub(super) budget_secs: u64,
     pub(super) only: Option<PathBuf>,
+    /// `--manifest-roots` (#875): add the destination's custody manifest roots to the report.
+    pub(super) manifest_roots: bool,
 }
 
 pub(super) fn parse(args: &[String]) -> Result<Args, String> {
@@ -25,6 +27,13 @@ pub(super) fn parse(args: &[String]) -> Result<Args, String> {
     {
         return Err(usage());
     }
+    // The one option without a value; take it out before the value options are read in pairs.
+    let (flags, rest): (Vec<&String>, Vec<&String>) = args[2..]
+        .iter()
+        .partition(|arg| arg.as_str() == "--manifest-roots");
+    if flags.len() > 1 {
+        return Err(usage());
+    }
     let mut parsed = Args {
         source: args[0].clone().into(),
         destination: args[1].clone().into(),
@@ -33,9 +42,10 @@ pub(super) fn parse(args: &[String]) -> Result<Args, String> {
         budget_bytes: 1024 * 1024 * 1024,
         budget_secs: 60,
         only: None,
+        manifest_roots: flags.len() == 1,
     };
     let mut seen = std::collections::HashSet::new();
-    let mut options = args[2..].chunks_exact(2);
+    let mut options = rest.chunks_exact(2);
     for pair in &mut options {
         if !seen.insert(pair[0].as_str()) || pair[1].is_empty() {
             return Err(usage());
@@ -196,6 +206,42 @@ pub(super) fn admit(
     Ok((engine, source, destination))
 }
 
+/// Custody evidence (#875, docs/48 section 4.5): the destination's per-directory manifest roots over
+/// the entries this run read and hashed. A directory without a complete, equal listing reports `null`
+/// and a reason; a selected set (`--only`) is not a whole directory, so it reports no directories.
+/// Directory labels are display paths (lossy for a non-Unicode name); the roots hash the exact names.
+fn manifest_roots(
+    destination: &loomward_operations::tree::Tree,
+    report: &Report,
+    selected_set: bool,
+) -> serde_json::Value {
+    let mut out = serde_json::json!({
+        "collation_version": loomward_operations::COLLATION_V1,
+        "digest_algorithm": "sha256",
+    });
+    if selected_set {
+        out["directories"] = serde_json::Value::Null;
+        out["reason"] = "selected_set".into();
+        return out;
+    }
+    let hex = |root: &[u8; 32]| root.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    out["directories"] = loomward_operations::tree_manifest_roots(destination, report)
+        .into_iter()
+        .map(|d| {
+            let (root, reason) = match d.root {
+                Ok(root) => (serde_json::json!(hex(&root)), serde_json::Value::Null),
+                Err(reason) => (serde_json::Value::Null, reason.into()),
+            };
+            serde_json::json!({
+                "path": d.path.to_string_lossy(),
+                "root": root,
+                "reason": reason,
+            })
+        })
+        .collect();
+    out
+}
+
 pub(super) fn run(args: Args) -> Result<(serde_json::Value, u8), String> {
     let only = match &args.only {
         Some(list) => Some(selection(
@@ -205,8 +251,8 @@ pub(super) fn run(args: Args) -> Result<(serde_json::Value, u8), String> {
     };
     let (engine, source, destination) =
         admit(&args, ["rt_verify_source", "rt_verify_destination"])?;
-    let report = engine
-        .compare_selected_trees(
+    let (report, destination_tree) = engine
+        .compare_selected_trees_keeping_destination(
             &source,
             &destination,
             Budget {
@@ -225,6 +271,9 @@ pub(super) fn run(args: Args) -> Result<(serde_json::Value, u8), String> {
     });
     if let Some(paths) = &only {
         json["selection"] = serde_json::json!({ "paths": paths.len() });
+    }
+    if args.manifest_roots {
+        json["manifest_roots"] = manifest_roots(&destination_tree, &report, only.is_some());
     }
     let outcome = match status {
         0 => "equal",
@@ -288,6 +337,34 @@ mod tests {
         ]))
         .unwrap();
         assert_eq!(parsed.only, Some(PathBuf::from("plan.txt")));
+        assert!(!parsed.manifest_roots);
+        for words in [
+            [
+                "source",
+                "destination",
+                "--manifest-roots",
+                "--state-dir",
+                "state",
+            ],
+            [
+                "source",
+                "destination",
+                "--state-dir",
+                "state",
+                "--manifest-roots",
+            ],
+        ] {
+            assert!(parse(&args(&words)).unwrap().manifest_roots, "{words:?}");
+        }
+        let twice = args(&[
+            "source",
+            "destination",
+            "--state-dir",
+            "state",
+            "--manifest-roots",
+            "--manifest-roots",
+        ]);
+        assert!(parse(&twice).unwrap_err().starts_with("Usage:"));
     }
 
     #[test]

@@ -183,6 +183,17 @@ The plan is JSON the agent shows to the owner. It writes nothing: no draft in `s
   because the source folder also holds what the plan left behind. A listed path the source does not hold, an empty
   list, or a path that is absolute or uses `..` is never equal. Unlisted source files are still read today (the
   budget must cover the whole source folder); only the comparison is limited.
+- `--manifest-roots` (#875, LW-136) adds a `manifest_roots` object to the JSON: the **destination's** custody manifest
+  roots (`custody::manifest_root`, `collation_version` 1, `digest_algorithm` `sha256`) for the folder and each subfolder,
+  as `directories` entries `{path, root, reason}`. Each root is computed from the entries this run actually read and
+  hashed (names as the native UTF-16 code units, the existing default-stream SHA-256, no second read). A folder gets
+  `root: null` and a `reason` (`differing_entry`, `unknown_entry`, `listing_incomplete`, `entry_not_read`,
+  `content_not_hashed`, `size_unknown`, `descendant_not_rooted`, `name_not_representable`, `duplicate_name`, `custody_refused`) when anything at or under it
+  differs, is unknown, unread or unhashed; never a partial root. Metadata-class differences do not block a root (it
+  covers names, kinds, sizes and content only; named streams and times are outside it). With `--only` no roots are
+  emitted (`directories: null`, `reason: "selected_set"`): a selected set is not a whole folder. Directory `path`
+  labels are display text (lossy for a non-Unicode name); the roots hash the exact names. A root is the same
+  observation-time evidence as the rest of the report, not a stored receipt.
 - Its result is **observation-time evidence** (docs/47 section 11, C1): it says the two trees matched when read. It
   is not a durable read-back receipt and not by itself permission to retire a source (section 6).
 

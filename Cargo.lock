@@ -680,6 +680,7 @@ dependencies = [
  "loomward-windows",
  "rusqlite",
  "serde_json",
+ "sha2",
  "tempfile",
 ]
 

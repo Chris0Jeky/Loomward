@@ -118,6 +118,8 @@ mod tests {
         );
         for bad in [
             vec!["a", "b", "--state-dir", "s", "--only", "list.txt"],
+            vec!["a", "b", "--state-dir", "s", "--manifest-roots"],
+            vec!["a", "b", "--manifest-roots", "--state-dir", "s"],
             vec!["a", "b", "--state-dir", "s", "--unknown", "1"],
             vec!["a", "b"],
             vec!["a", "b", "--state-dir"],

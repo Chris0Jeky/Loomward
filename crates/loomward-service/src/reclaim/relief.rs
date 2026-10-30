@@ -46,6 +46,13 @@ pub(super) fn compare(
     )
 }
 
+/// Whether the capacity differs between the two compared samples (a resized or re-provisioned volume);
+/// `None` is unknown: not compared, or a capacity unreadable on either side.
+fn capacity_changed(before: &Sample, after: Option<&Sample>, status: ReliefStatus) -> Option<bool> {
+    let after = after.filter(|_| status == ReliefStatus::Compared)?;
+    Some(before.capacity? != after.capacity?)
+}
+
 fn wire(s: &Sample) -> Value {
     let bytes = |b: Option<u64>| b.map(Bytes);
     json!({"sampled_at": crate::ts_ns(s.at_ns), "capacity_bytes": bytes(s.capacity),
@@ -86,7 +93,8 @@ pub(super) fn relief(
     let (status, direction, change) = compare(&before, after.as_ref());
     Ok(Some(
         json!({"before": wire(&before), "after": after.as_ref().map(wire),
-        "status": status, "direction": direction, "change_bytes": change.map(Bytes)}),
+        "status": status, "direction": direction, "change_bytes": change.map(Bytes),
+        "capacity_changed": capacity_changed(&before, after.as_ref(), status)}),
     ))
 }
 
@@ -150,6 +158,10 @@ impl Inner {
             estimate: r.estimate_bytes.map(Bytes::get),
         };
         drop(input);
+        #[cfg(test)]
+        if let Some(hook) = self.hooks.after_root_gate.lock().unwrap().take() {
+            hook();
+        }
         let instance = self.instance.as_str();
         let _m = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
         let mut conn = self.db();
@@ -161,6 +173,42 @@ impl Inner {
         } else {
             "after"
         };
+        // The grant was checked before the lock was taken. A revoke landing in between has already
+        // purged, so a sample stored now would outlive its grant (#1031): check again in this transaction.
+        if tx
+            .query_row(
+                "SELECT 1 FROM st.root_grant WHERE volume_key=?1 AND state='active'",
+                params![sample.key],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(sql_error)?
+            .is_none()
+        {
+            return Err(fail(ErrorCode::InvalidRequest, "no_active_grant"));
+        }
+        if r.role == SampleRole::Before && sample.free.is_none() {
+            // A transient unreadable read must not erase a good check (#1031). An unreadable after
+            // sample is still recorded, as unreadable.
+            let readable_before = tx
+                .query_row(
+                    "SELECT 1 FROM st.reclaim_sample WHERE volume_id=?1 AND role='before' AND catalog_instance=?2 AND free_bytes IS NOT NULL",
+                    params![volume_row, instance],
+                    |_| Ok(()),
+                )
+                .optional()
+                .map_err(sql_error)?
+                .is_some();
+            if readable_before {
+                return Err(with_reason(
+                    fail(
+                        ErrorCode::DeviceOffline,
+                        "the volume's free space could not be read; the earlier check is kept",
+                    ),
+                    "volume_unreadable",
+                ));
+            }
+        }
         if r.role == SampleRole::After
             && tx
                 .query_row(

@@ -1180,10 +1180,14 @@ too large for the work budget is `resource_budget`; an expired deadline is `dead
 
 `reclaim.sample { volume_id, role, estimate_bytes? }` is an owner-only mutation (Tauri and HTTP; clients are
 refused) that records one metadata sample of a volume with an active grant and answers a `ReclaimRelief`. `role`
-is `before` or `after`. `estimate_bytes` (an exact decimal string) is the plan's estimate as the owner saw it; it is
-accepted only with `before`. An `after` without a stored `before` is `invalid_request` (reason `no_before_sample`);
+is `before` or `after`. `estimate_bytes` (an exact decimal string) is the plan's estimate as the owner saw it, attested by the client and
+stored as given (the service does not match it against the recorded selection); it is accepted only with `before`. An `after` without a stored `before` is `invalid_request` (reason `no_before_sample`);
 an offline volume, or one whose drive letter holds another disk, is `device_offline` (reason `volume_offline`);
-a volume without an active grant is `invalid_request` (`no_active_grant`). A refusal records nothing.
+a volume without an active grant, checked again inside the storing transaction so a revoke racing the request cannot
+leave a sample behind, is `invalid_request` (`no_active_grant`). A `before` sample whose free space cannot be read is
+refused with `device_offline` (reason `volume_unreadable`, retryable) while a readable `before` is stored, so
+a transient failure never erases a good check; an unreadable `after` is recorded as unreadable. A refusal records
+nothing.
 
 A sample holds the volume's capacity and free bytes, the Recycle Bin size, the estimate, and the time. Anything the
 service could not read is `null`, never zero; the bin is read only through a volume-root grant. The service stores at
@@ -1194,8 +1198,12 @@ carries no path or name. The catalogue and `state_rev` are unchanged.
 `ReclaimRelief.status` is `not_checked` (only the before sample exists), `different_volume` (the catalogue volume
 key or the volume GUID recorded with the granted root differs between the samples, so nothing is compared),
 `unreadable` (free bytes unknown in either sample) or `compared`. Only `compared` carries `direction`
-(`more_free`, `less_free`, `unchanged`) and `change_bytes`, the unsigned absolute change in free bytes. The change is
-the volume's whole change between the two samples and is never attributed to a cleanup. `reclaim.plan` returns the
+(`more_free`, `less_free`, `unchanged`) and `change_bytes`, the unsigned absolute change in free bytes; the schema
+requires both with `compared` and forbids them (and `capacity_changed`) with any other status, and an after sample with
+every status but `not_checked`. `capacity_changed` is `true` when the two compared samples record different capacities
+(the comparison then spans a resized volume), `false` when equal, and `null` when not compared or a capacity is
+unreadable in either sample. The change is the volume's whole change between the two samples and is never attributed
+to a cleanup. `reclaim.plan` returns the
 stored check as its optional `relief` block, absent until a before sample exists.
 
 ## Owner MCP client grants (docs/48 E6)

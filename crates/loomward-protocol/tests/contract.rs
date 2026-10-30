@@ -268,18 +268,79 @@ fn insight_folder_is_owner_only_closed_and_never_a_probability_or_approval() {
 fn reclaim_relief_keeps_unknowns_null_and_refuses_extra_fields() {
     let mut schema = Schema::load();
     let result = read(&contracts().join("examples/commands/reclaim.sample.result.json"));
-    for field in ["after", "direction", "change_bytes"] {
-        let mut unknown = result.clone();
+    // Not compared: every unknown is null, never zero, and each field is still required.
+    let mut unknown = result.clone();
+    for field in ["after", "direction", "change_bytes", "capacity_changed"] {
         unknown[field] = Value::Null;
-        assert!(schema.errors("ReclaimRelief", &unknown).is_empty());
-        assert_eq!(
-            roundtrip("ReclaimRelief", &unknown).unwrap().unwrap(),
-            unknown
-        );
-        unknown.as_object_mut().unwrap().remove(field);
-        assert!(!schema.errors("ReclaimRelief", &unknown).is_empty());
-        assert!(roundtrip("ReclaimRelief", &unknown).unwrap().is_err());
     }
+    unknown["status"] = json!("not_checked");
+    assert!(schema.errors("ReclaimRelief", &unknown).is_empty());
+    assert_eq!(
+        roundtrip("ReclaimRelief", &unknown).unwrap().unwrap(),
+        unknown
+    );
+    for field in ["after", "direction", "change_bytes", "capacity_changed"] {
+        let mut missing = unknown.clone();
+        missing.as_object_mut().unwrap().remove(field);
+        assert!(!schema.errors("ReclaimRelief", &missing).is_empty());
+        assert!(roundtrip("ReclaimRelief", &missing).unwrap().is_err());
+    }
+    // #1031: `compared` is tied to a direction, a change and an after sample; any other status to none of them.
+    let mut with = |edit: &dyn Fn(&mut Value)| {
+        let mut v = result.clone();
+        edit(&mut v);
+        schema.errors("ReclaimRelief", &v).is_empty()
+    };
+    assert!(with(&|_| {}));
+    assert!(with(&|v| v["capacity_changed"] = json!(true)));
+    assert!(with(&|v| v["capacity_changed"] = Value::Null));
+    for field in ["after", "direction", "change_bytes"] {
+        assert!(
+            !with(&|v| v[field] = Value::Null),
+            "compared without {field}"
+        );
+    }
+    for status in ["different_volume", "unreadable"] {
+        let other = |v: &mut Value| {
+            v["status"] = json!(status);
+            v["direction"] = Value::Null;
+            v["change_bytes"] = Value::Null;
+            v["capacity_changed"] = Value::Null;
+        };
+        assert!(with(&other), "{status}");
+        assert!(
+            !with(&|v| {
+                other(v);
+                v["after"] = Value::Null;
+            }),
+            "{status} needs the after sample that was refused"
+        );
+        for field in ["direction", "change_bytes", "capacity_changed"] {
+            let stray = if field == "direction" {
+                json!("more_free")
+            } else if field == "change_bytes" {
+                json!("1")
+            } else {
+                json!(false)
+            };
+            assert!(
+                !with(&|v| {
+                    other(v);
+                    v[field] = stray.clone();
+                }),
+                "{status} with {field}"
+            );
+        }
+    }
+    assert!(
+        !with(&|v| {
+            v["status"] = json!("not_checked");
+            v["direction"] = Value::Null;
+            v["change_bytes"] = Value::Null;
+            v["capacity_changed"] = Value::Null;
+        }),
+        "not_checked with an after sample"
+    );
     for field in [
         "capacity_bytes",
         "free_bytes",

@@ -11,9 +11,15 @@ describe('relief check display model', () => {
   it('reports a rise beside the estimate and the Recycle Bin, without crediting the cleanup', () => {
     const s = reliefSummary({ ...relief, before: { ...relief.before, estimate_bytes: '20480' } });
     expect(s.headline).toBe('Free space rose by 9.77 KiB (10000 bytes) between the two samples.');
-    expect(s.estimate).toContain('estimated 20.0 KiB (20480 bytes)');
+    expect(s.estimate).toContain('The recorded selection estimate kept with the before sample was 20.0 KiB (20480 bytes)');
     expect(s.bin).toBe('Recycle Bin: unknown (not read) at the before sample, 4.00 KiB at the second. Files sent to the Recycle Bin keep taking space on this volume until it is emptied.');
     expect(s.caveat).toContain('not proof of what a cleanup freed');
+  });
+
+  it('says so when the comparison spans a capacity change, and stays silent when capacity is equal or unknown', () => {
+    expect(reliefSummary({ ...relief, capacity_changed: true }).caveat).toContain('spans a capacity change');
+    expect(reliefSummary({ ...relief, capacity_changed: false }).caveat).not.toContain('capacity');
+    expect(reliefSummary({ ...relief, capacity_changed: null }).caveat).not.toContain('capacity');
   });
 
   it('reports a fall as a fall, and no change as no change', () => {
@@ -23,7 +29,7 @@ describe('relief check display model', () => {
 
   it('never turns an unknown into a number: no estimate, no bin, unreadable space, a different volume', () => {
     const none = reliefSummary({ ...relief, before: { ...relief.before, estimate_bytes: null } });
-    expect(none.estimate).toBe('No plan estimate was recorded with the before sample.');
+    expect(none.estimate).toBe('No recorded selection estimate was kept with the before sample.');
     expect(reliefSummary({ ...relief, after: null, status: 'not_checked', direction: null, change_bytes: null }).bin)
       .toBe('Recycle Bin: unknown (not read) at the before sample. Files sent to the Recycle Bin keep taking space on this volume until it is emptied.');
     const unreadable = reliefSummary({ ...relief, status: 'unreadable', direction: null, change_bytes: null });
@@ -45,6 +51,9 @@ describe('relief check display model', () => {
 
   it('puts refusals in plain words and says nothing was recorded', () => {
     expect(sampleRefusal(new LoomwardError({ code: 'device_offline', message: 'the volume is offline', retryable: false, detail: null }))).toContain('Nothing was recorded');
+    const unreadable = sampleRefusal(new LoomwardError({ code: 'device_offline', message: 'could not be read', retryable: true, detail: { reason: 'volume_unreadable' } }));
+    expect(unreadable).toContain('earlier before sample was kept');
+    expect(unreadable).not.toContain('offline');
     expect(sampleRefusal(new LoomwardError({ code: 'invalid_request', message: 'record a before sample first', retryable: false, detail: null }))).toContain('Record a before sample first');
     expect(sampleRefusal(new LoomwardError({ code: 'invalid_request', message: 'no_active_grant', retryable: false, detail: null }))).toContain('active grant');
     expect(sampleRefusal(new LoomwardError({ code: 'internal_error', message: 'state store error', retryable: false, detail: null }))).toBe('state store error');
