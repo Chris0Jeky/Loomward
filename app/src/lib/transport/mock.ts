@@ -420,7 +420,7 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
     ...createBackupMock(now, fail),
     ...createAlertMock(now, fail),
     ...createClutterMock(fail, () => (handlers['roots.list']!({}) as RootList).roots, HOSTILE_ROOT_ID),
-    ...createReclaimMock(fail, () => (views.handlers['volumes.list']!({}) as import('../contracts.gen').VolumeList).volumes, scan.observe),
+    ...createReclaimMock(failWith, () => (views.handlers['volumes.list']!({}) as import('../contracts.gen').VolumeList).volumes, scan.observe),
     // The contract's synthetic bundle, whose size and digest are those of its canonical text. Like HTTP, the mock
     // has no Rust-owned save dialog, so diagnostics.save answers capability_unavailable.
     'diagnostics.preview': (p) => {

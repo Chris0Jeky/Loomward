@@ -12,7 +12,7 @@ import { prng } from './synth';
 // mock transport. Volumes follow the owner's machine in shape only (fast local, fast local, slow local); no real path or
 // process is named. TODO(L1): serve contracts/v3/examples/ once lane L1 lands them.
 
-export type Fail = (code: ErrorCode, message: string) => never;
+export type Fail = (code: ErrorCode, message: string, detail?: Record<string, unknown> | null) => never;
 type Handler = (payload: Record<string, unknown>) => unknown;
 
 const GiB = 2n ** 30n;

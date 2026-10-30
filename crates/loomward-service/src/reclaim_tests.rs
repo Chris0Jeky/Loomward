@@ -1862,3 +1862,109 @@ fn relief_check_is_closed_to_clients() {
     }
     assert_eq!(sample_rows(&svc), 0);
 }
+
+#[test]
+fn an_unreadable_before_never_replaces_a_readable_one_but_an_unreadable_after_is_recorded() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    fixture(&svc);
+    let unreadable = || {
+        svc.inner
+            .db()
+            .execute("UPDATE main.volume SET capabilities_json='{}'", [])
+            .unwrap();
+    };
+    // With nothing recorded there is nothing to protect: the unreadable before is stored as such.
+    unreadable();
+    assert!(relief(&svc, "before", json!({}))["before"]["free_bytes"].is_null());
+    set_space(&svc, 100_000);
+    relief(&svc, "before", json!({"estimate_bytes": "20480"}));
+    let after = relief(&svc, "after", json!({}));
+    unreadable();
+    let refused = err(sample(&svc, "before", json!({})));
+    assert_eq!(refused.code, ErrorCode::DeviceOffline);
+    assert!(refused.retryable);
+    assert_eq!(reason(&refused), Some("volume_unreadable"));
+    assert_eq!(
+        reclaim(&svc)["relief"],
+        after,
+        "the readable before, its estimate and the after sample are all kept"
+    );
+    assert_eq!(sample_rows(&svc), 2);
+    // An unreadable after is still recorded, as unreadable.
+    let unknown = relief(&svc, "after", json!({}));
+    assert_eq!(unknown["status"], "unreadable");
+    assert!(unknown["after"]["free_bytes"].is_null());
+    assert_eq!(unknown["before"]["free_bytes"], "100000");
+    // A readable before replaces everything, as before.
+    set_space(&svc, 120_000);
+    let fresh = relief(&svc, "before", json!({}));
+    assert_eq!(fresh["status"], "not_checked");
+    assert_eq!(fresh["before"]["free_bytes"], "120000");
+}
+
+#[test]
+fn a_revoke_landing_after_the_grant_check_leaves_no_sample_behind() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    fixture(&svc);
+    set_space(&svc, 100_000);
+    // The last grant is revoked and its samples purged after the request passed its grant check
+    // and before it took the mutation lock.
+    let state = loomward_catalog::sqlite_dir(&svc.inner.state_dir).join("state.db");
+    *svc.inner.hooks.after_root_gate.lock().unwrap() = Some(Box::new(move || {
+        let conn = rusqlite::Connection::open(state).unwrap();
+        conn.execute("UPDATE root_grant SET state='revoked'", [])
+            .unwrap();
+        conn.execute(&crate::db::PURGE_ORPHAN_SAMPLES.replace("st.", ""), [])
+            .unwrap();
+    }));
+    let refused = err(sample(&svc, "before", json!({})));
+    assert!(svc.inner.hooks.after_root_gate.lock().unwrap().is_none());
+    assert_eq!(refused.code, ErrorCode::InvalidRequest);
+    assert_eq!(refused.message.as_str(), "no_active_grant");
+    assert_eq!(
+        sample_rows(&svc),
+        0,
+        "nothing lingers to be shown after a re-grant"
+    );
+}
+
+#[test]
+fn a_capacity_change_between_samples_is_flagged_and_unknown_capacity_is_not() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    fixture(&svc);
+    set_space(&svc, 100_000);
+    let before = relief(&svc, "before", json!({}));
+    assert!(
+        before["capacity_changed"].is_null(),
+        "nothing to compare yet"
+    );
+    let same = relief(&svc, "after", json!({}));
+    assert_eq!(same["capacity_changed"], false);
+    let set_capacity = |capacity: Option<&str>| {
+        let space = capacity.map_or(
+            json!({"free_bytes": "100000"}),
+            |c| json!({"capacity_bytes": c, "free_bytes": "100000"}),
+        );
+        svc.inner
+            .db()
+            .execute(
+                "UPDATE main.volume SET capabilities_json=?1",
+                [json!({"space": space}).to_string()],
+            )
+            .unwrap();
+    };
+    set_capacity(Some("300000"));
+    let grown = relief(&svc, "after", json!({}));
+    assert_eq!(grown["status"], "compared");
+    assert_eq!(grown["capacity_changed"], true);
+    set_capacity(None);
+    let unknown = relief(&svc, "after", json!({}));
+    assert_eq!(unknown["status"], "compared");
+    assert!(
+        unknown["capacity_changed"].is_null(),
+        "an unreadable capacity is unknown, not unchanged"
+    );
+}

@@ -23,6 +23,8 @@ export function createReclaimMock(fail: Fail, volumes: () => Volume[], observe: 
       status: !pair.after ? 'not_checked' : compared ? 'compared' : 'unreadable',
       direction: compared ? (now > was ? 'more_free' : now < was ? 'less_free' : 'unchanged') : null,
       change_bytes: compared ? String(now > was ? now - was : was - now) : null,
+      capacity_changed: compared && pair.before.capacity_bytes !== null && pair.after!.capacity_bytes !== null
+        ? pair.before.capacity_bytes !== pair.after!.capacity_bytes : null,
     };
   };
   const selectionOf = (p: Record<string, unknown>): string[] | undefined => {
@@ -80,6 +82,10 @@ export function createReclaimMock(fail: Fail, volumes: () => Volume[], observe: 
       };
       drift += 10240n;
       const saved = samples.get(volume_id);
+      // Like the service: a transient unreadable read never replaces a readable before sample.
+      if (role === 'before' && free === null && saved && saved.before.free_bytes !== null) {
+        fail('device_offline', "the volume's free space could not be read; the earlier check is kept", { reason: 'volume_unreadable' });
+      }
       if (role === 'before') samples.set(volume_id, { before: sample, after: null });
       else if (!saved) fail('invalid_request', 'record a before sample first');
       else saved!.after = sample;

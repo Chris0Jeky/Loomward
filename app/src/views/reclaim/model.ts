@@ -108,7 +108,7 @@ export function observeLines(o: { job: Job | null; problem: string; pending: boo
 }
 
 export const RELIEF_EXPLAINER =
-  'Recording a sample reads only this volume\'s free and total space and, where Loomward may read it, the Recycle Bin size. It changes no file. Recording a new before sample replaces the earlier check. The estimate kept with a before sample is the recorded union estimate of the current selection, if there is one.';
+  'Recording a sample reads only this volume\'s free and total space and, where Loomward may read it, the Recycle Bin size. It changes no file. Recording a new before sample replaces the earlier check. The recorded selection estimate (the union estimate of the current selection), if there is one, is kept with a before sample as this app supplied it.';
 
 /** The plan's estimate to keep with a before sample: only a recorded, known selection estimate; otherwise none. */
 export function reliefEstimate(selection: ReclaimSelection | null): string | undefined {
@@ -118,6 +118,7 @@ export function reliefEstimate(selection: ReclaimSelection | null): string | und
 /** Plain words for a refused or failed sample request. Nothing is recorded on a refusal. */
 export function sampleRefusal(e: unknown): string {
   if (!(e instanceof LoomwardError)) return e instanceof Error ? e.message : 'unexpected failure';
+  if (e.code === 'device_offline' && e.detail?.reason === 'volume_unreadable') return 'The free space of this volume could not be read just now, so the earlier before sample was kept. Try again. Nothing was recorded.';
   if (e.code === 'device_offline') return 'This volume is offline, or another disk is using its drive letter. Nothing was recorded.';
   if (e.code === 'invalid_request' && (e.detail?.reason === 'no_before_sample' || e.message.includes('before sample'))) return 'Record a before sample first. Nothing was recorded.';
   if (e.code === 'invalid_request' && (e.message === 'no_active_grant' || e.detail?.reason === 'no_active_grant')) {
@@ -141,9 +142,10 @@ export function reliefSummary(relief: ReclaimRelief): { headline: string; estima
       : `Free space fell by ${change} between the two samples.`,
   }[relief.status];
   const estimate = relief.before.estimate_bytes === null
-    ? 'No plan estimate was recorded with the before sample.'
-    : `The plan estimated ${formatBytes(relief.before.estimate_bytes)} (${relief.before.estimate_bytes} bytes) when the before sample was recorded.`;
+    ? 'No recorded selection estimate was kept with the before sample.'
+    : `The recorded selection estimate kept with the before sample was ${formatBytes(relief.before.estimate_bytes)} (${relief.before.estimate_bytes} bytes). The app supplied it; the service stored it as given and did not recheck it.`;
   const bin = `Recycle Bin: ${binText(relief.before.recycle_bin_bytes)} at the before sample${relief.after ? `, ${binText(relief.after.recycle_bin_bytes)} at the second` : ''}. Files sent to the Recycle Bin keep taking space on this volume until it is emptied.`;
-  const caveat = 'This is the whole volume\'s change between the samples, not proof of what a cleanup freed: other writes, an unemptied Recycle Bin, hard links elsewhere and restore points all affect it.';
+  const spansCapacity = relief.capacity_changed === true ? 'The total size of the volume differs between the two samples, so this comparison spans a capacity change. ' : '';
+  const caveat = spansCapacity + 'This is the whole volume\'s change between the samples, not proof of what a cleanup freed: other writes, an unemptied Recycle Bin, hard links elsewhere and restore points all affect it.';
   return { headline, estimate, bin, caveat };
 }
