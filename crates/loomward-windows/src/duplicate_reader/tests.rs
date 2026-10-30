@@ -459,6 +459,74 @@ fn core_unverified_identity_is_never_read() {
         [Reason::Unsupported, Reason::Unsupported]
     );
 }
+/// `compared` counts only entries whose content was read and set against at least one other file:
+/// not links, empty files, refused names, a size left alone by them, or a pair where one hash failed.
+#[test]
+fn core_compared_counts_only_entries_read_against_another() {
+    let mut link = synthetic_entry(4, "1", 4);
+    link.expected.link_count = 2;
+    let mut unverified = synthetic_entry(6, "1", 5);
+    unverified.expected.object.quality = crate::identity::IdentityQuality::Legacy64 {
+        reason: "fixture".into(),
+    };
+    let entries = [
+        synthetic_entry(1, "1", 4),
+        synthetic_entry(2, "1", 4),
+        synthetic_entry(3, "1", 4),
+        link,
+        synthetic_entry(5, "1", 5),
+        unverified,
+        synthetic_entry(7, "1", 0),
+        synthetic_entry(8, "1", 9),
+    ];
+    let report = group(&entries, &mut Collision, &mut Meter::new(Budget::test()));
+    assert_eq!(report.links, vec![vec![3]]);
+    assert_eq!(
+        report.compared, 3,
+        "only the three size-4 files were compared"
+    );
+    let empty = group(&[], &mut Collision, &mut Meter::new(Budget::test()));
+    assert_eq!(empty.compared, 0);
+}
+/// A hash that fails leaves its partner alone: one readable file compared with nobody is not compared.
+struct FailsFirstHash;
+impl ContentReader for FailsFirstHash {
+    fn validate(&mut self, index: usize, entry: &Entry, meter: &Meter) -> Result<(), Reason> {
+        Collision.validate(index, entry, meter)
+    }
+    fn hash(
+        &mut self,
+        index: usize,
+        entry: &Entry,
+        partial: bool,
+        meter: &mut Meter,
+    ) -> Result<[u8; 32], Reason> {
+        if index == 0 {
+            return Err(Reason::AccessDenied);
+        }
+        Collision.hash(index, entry, partial, meter)
+    }
+    fn equal(
+        &mut self,
+        left: usize,
+        right: usize,
+        entries: &[Entry],
+        meter: &mut Meter,
+    ) -> Result<bool, Skip> {
+        Collision.equal(left, right, entries, meter)
+    }
+}
+#[test]
+fn core_compared_excludes_a_partner_whose_read_failed() {
+    let entries = [synthetic_entry(1, "1", 4), synthetic_entry(2, "1", 4)];
+    let report = group(
+        &entries,
+        &mut FailsFirstHash,
+        &mut Meter::new(Budget::test()),
+    );
+    assert_eq!(report.skipped.len(), 1);
+    assert_eq!(report.compared, 0);
+}
 #[test]
 fn core_identity_is_volume_scoped_and_empty_files_claim_nothing() {
     let entries = [

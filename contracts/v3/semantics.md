@@ -648,6 +648,10 @@ Additive means additive for lenient readers only: the report schema and DTO are 
 a report that carries the field and must be upgraded with it. Names the catalogue filters as unknown (unreadable,
 unrepresentable, identity-unverified) are not in it and keep partial=true, so a present count is the
 visible candidate space of the catalogue at selection time, not a proof about unscanned content.
+entries_compared (optional, additive on the same terms; absent is unknown, never zero, and never null) is the exact number
+of listed entries whose content was read and set against at least one other file: it excludes link sets,
+empty files, refused or skipped names, names left without a readable same-size partner, and anything a
+stop left unread, so it can be below listed minus skipped. It never exceeds entries.length.
 No result authorises deleting, moving, renaming or creating links. No reclaim estimate is supplied.
 
 Personal content reads are open, local and read-only. Before resolving catalogue candidates or
