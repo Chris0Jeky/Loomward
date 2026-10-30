@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import { ScriptTarget, transpileModule } from 'typescript';
 import type { ReclaimPlan, ReclaimSelection, Volume } from '../../src/lib/contracts.gen';
 import { observationAge } from '../../src/lib/format/time';
-import { defaultVolume, explorerHref, GROUP_HEADINGS, selectionComparison, targetBytes, unaccountedText } from '../../src/views/reclaim/model';
+import { candidateAccessibleName, defaultVolume, explorerHref, GROUP_HEADINGS, selectionComparison, targetBytes, unaccountedText } from '../../src/views/reclaim/model';
 
 describe('mock reclaim transport', () => {
   it('serves the contract example for the selected listed volume, with unknown relief intact', async () => {
@@ -159,5 +159,22 @@ describe('reclaim view', () => {
     expect(calls).toBe(0);
     await view.read('missing');
     expect(view.state()).toEqual({ report: null, loading: false, error: 'Error: plan refused' });
+  });
+});
+
+describe('candidate accessible names (#1082)', () => {
+  it('gives two same-named candidates, and two unnamed ones, distinct names in one group', () => {
+    const group = GROUP_HEADINGS.tool_owned_cleanup;
+    const sameName = [0, 1].map(i => candidateAccessibleName('target', group, 'cargo', i, 2));
+    const unnamed = [0, 1].map(i => candidateAccessibleName(null, group, 'cargo', i, 2));
+    expect(new Set([...sameName, ...unnamed]).size).toBe(4);
+    expect(sameName[0]).toBe('target (Tool-owned cleanup, cargo, candidate 1 of 2)');
+    expect(unnamed[1]).toBe('Name unknown (Tool-owned cleanup, cargo, candidate 2 of 2)');
+  });
+
+  it('keeps the same name in two groups distinct', () => {
+    const cleanup = candidateAccessibleName('target', GROUP_HEADINGS.tool_owned_cleanup, 'cargo', 0, 1);
+    const relocate = candidateAccessibleName('target', GROUP_HEADINGS.relocate, 'cargo', 0, 1);
+    expect(cleanup).not.toBe(relocate);
   });
 });
