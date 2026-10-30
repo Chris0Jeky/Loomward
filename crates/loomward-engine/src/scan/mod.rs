@@ -264,6 +264,82 @@ impl Engine {
         #[cfg(test)]
         tree_gate_tests::point(tree_gate_tests::TreePoint::AfterDestinationRead);
         let report = loomward_operations::tree::compare(&left, &right);
+        self.finish_tree_reads(source, destination, left_cancel, right_cancel)?;
+        Ok(report)
+    }
+
+    /// Read-only #1011 evidence for `containment(a, b)`: the same q-10 admission and final gate as
+    /// `compare_trees`, under one shared budget. B is listed without content first; A is hashed
+    /// only for sizes B has; B is then hashed only for sizes among A's hashed files, so a B file
+    /// of a size no A file has is never read. Returns (A, B, bytes read).
+    pub fn observe_coverage(
+        &self,
+        a: &GrantedRoot,
+        b: &GrantedRoot,
+        budget: loomward_windows::duplicate_reader::Budget,
+        max_entries: usize,
+    ) -> EngineResult<(
+        loomward_operations::tree::Tree,
+        loomward_operations::tree::Tree,
+        u64,
+    )> {
+        use loomward_operations::tree::{Kind, Tree};
+        use loomward_windows::duplicate_reader::{read_tree_wanting, Budget};
+        use std::{collections::BTreeSet, time::Instant};
+        let a_cancel = self.duplicate_read_admission(a)?;
+        let b_cancel = self.duplicate_read_admission(b)?;
+        let started = Instant::now();
+        let mut remaining_bytes = budget.bytes;
+        let mut read = |side: &str, root: &GrantedRoot, cancel, want: &dyn Fn(u64) -> bool| {
+            let (tree, bytes) = read_tree_wanting(
+                root.path(),
+                root.expected.as_ref().unwrap(),
+                Budget {
+                    bytes: remaining_bytes,
+                    time: budget.time.saturating_sub(started.elapsed()),
+                },
+                max_entries,
+                cancel,
+                want,
+            )
+            .map_err(|reason| EngineError::PermissionDenied {
+                message: tree_refusal(reason, side, root.path()),
+            })?;
+            remaining_bytes = remaining_bytes.saturating_sub(bytes);
+            Ok::<_, EngineError>(tree)
+        };
+        let sizes = |tree: &Tree, hashed: bool| -> BTreeSet<u64> {
+            tree.nodes
+                .values()
+                .filter_map(|node| node.as_ref().ok())
+                .filter(|node| node.kind == Kind::File && (!hashed || node.content.is_ok()))
+                .filter_map(|node| node.size.ok())
+                .collect()
+        };
+        let listed = read("destination", b, b_cancel.clone(), &|_| false)?;
+        let b_sizes = sizes(&listed, false);
+        let a_tree = read("source", a, a_cancel.clone(), &|size| {
+            b_sizes.contains(&size)
+        })?;
+        let a_sizes = sizes(&a_tree, true);
+        let b_tree = read("destination", b, b_cancel.clone(), &|size| {
+            a_sizes.contains(&size)
+        })?;
+        let bytes = budget.bytes - remaining_bytes;
+        self.finish_tree_reads(a, b, a_cancel, b_cancel)?;
+        Ok((a_tree, b_tree, bytes))
+    }
+
+    /// The final q-10 gate after a two-root tree read: both durable grants and cancellations are
+    /// rechecked, then both root gates are taken in one order and must be neither revoked nor
+    /// cancelled.
+    fn finish_tree_reads(
+        &self,
+        source: &GrantedRoot,
+        destination: &GrantedRoot,
+        left_cancel: Arc<AtomicBool>,
+        right_cancel: Arc<AtomicBool>,
+    ) -> EngineResult<()> {
         // Recheck both durable grants and cancellation after both observations, as in q-10.
         for (root, cancel) in [(source, left_cancel), (destination, right_cancel)] {
             self.duplicate_read_admission(root)?;
@@ -297,7 +373,7 @@ impl Engine {
                 message: "cancelled".into(),
             });
         }
-        Ok(report)
+        Ok(())
     }
 
     /// Content equality evidence under a freshly checked active grant of this engine's dataset
