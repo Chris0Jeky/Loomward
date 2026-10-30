@@ -97,17 +97,20 @@
     const files = space && Number.isSafeInteger(space.files) && space.files >= 0 ? space.files : null;
     const stop = report.stop;
     const why = stop ? (STOP_WHY[stop] ?? `the run stopped (${stop})`) : null;
-    // A byte, time or cancel stop can end the run before every listed name was read, so the examined count is an upper bound.
+    // A byte, time or cancel stop can end the run before every listed name was read (or even reached), so such a run
+    // claims only what it listed, never what it examined (review of #1032).
     const early = stop === 'byte_budget' || stop === 'time_budget' || stop === 'cancelled';
+    const verb = early ? 'Listed' : 'Examined';
+    const count = early ? listed : examined;
     const parts: string[] = [];
     let heading: string;
     if (files === null) {
-      heading = `Examined ${n(examined)} candidate files. The size of the candidate space is unknown, so how much of the root this covers is unknown.`;
+      heading = `${verb} ${n(count)} candidate files. The size of the candidate space is unknown, so how much of the root this covers is unknown.`;
     } else {
       const bytes = parseBytes(space?.bytes) === null ? 'unknown size' : formatBytes(space?.bytes);
-      heading = `Examined ${n(examined)} of ${n(files)} candidate files (${bytes}).`;
-      const rest = Math.max(0, files - examined);
-      if (rest > 0) parts.push(`${n(rest)} candidate ${rest === 1 ? 'file was' : 'files were'} not examined${why ? `: ${why}` : ''}.`);
+      heading = `${verb} ${n(count)} of ${n(files)} candidate files (${bytes}).`;
+      const rest = Math.max(0, files - count);
+      if (rest > 0) parts.push(`${n(rest)} candidate ${rest === 1 ? 'file was' : 'files were'} not ${early ? 'listed' : 'examined'}${why ? `: ${why}` : ''}.`);
     }
     if (early) parts.push('Some listed files may not have been read before the run stopped.');
     if (files === null && why) parts.push(`The run ended because ${why}.`);

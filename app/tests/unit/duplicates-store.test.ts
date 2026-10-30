@@ -238,6 +238,8 @@ describe('duplicates candidate coverage', () => {
   });
   it('names the byte and time budgets and warns that listed files may be unread', () => {
     const bytes = candidateCoverage(report({ stop: 'byte_budget' }));
+    // An early stop never claims files as examined: unreached entries are neither read nor skipped.
+    expect(bytes.heading).toBe('Listed 200 of 41,312 candidate files (38.2 GiB).');
     expect(bytes.detail).toContain('the byte budget was spent');
     expect(bytes.detail).toContain('Some listed files may not have been read');
     expect(candidateCoverage(report({ stop: 'time_budget' })).detail).toContain('the time budget ran out');
