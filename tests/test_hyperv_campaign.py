@@ -274,14 +274,15 @@ class CampaignTests(unittest.TestCase):
             self.assertEqual((config.anchor, config.keep_going), ("launch", 2))
 
     def test_keep_going_bounds_consecutive_infrastructure_failures(self):
+        # off_last: the campaign ends by turning the VM off (#944) only when its last cycle finished cleanly.
         cases = (
-            (1, [True, False], False, 2, 1, 1),
-            (1, [True, True, False], True, 2, 2, 1),
-            (1, [True, False, True, False], False, 4, 2, 2),
-            (0, [True, False], True, 1, 1, 0),
-            (1, [True], False, 1, 1, 0),
+            (1, [True, False], False, 2, 1, 1, True),
+            (1, [True, True, False], True, 2, 2, 1, False),
+            (1, [True, False, True, False], False, 4, 2, 2, True),
+            (0, [True, False], True, 1, 1, 0, False),
+            (1, [True], False, 1, 1, 0, False),
         )
-        for budget, failures, stops, cycles, infra, offs in cases:
+        for budget, failures, stops, cycles, infra, offs, off_last in cases:
             with self.subTest(budget=budget, failures=failures):
                 c = self.make(command="campaign", cycles=len(failures), keep_going=budget)
                 boot = []
@@ -301,10 +302,12 @@ class CampaignTests(unittest.TestCase):
                 self.assertEqual([r["cycle"] for r in self.ps.records], list(range(1, cycles + 1)))
                 self.assertTrue(all(r["anchor"] == "progress" for r in self.ps.records))
                 operations = self.operations()
-                self.assertEqual(operations.count("ensure_off"), offs)
-                for index, operation in enumerate(operations):
+                self.assertEqual(operations[-1] == "ensure_off", off_last)
+                between = operations[:-1] if off_last else operations
+                self.assertEqual(between.count("ensure_off"), offs)
+                for index, operation in enumerate(between):
                     if operation == "ensure_off":
-                        self.assertEqual(operations[index - 1:index + 3],
+                        self.assertEqual(between[index - 1:index + 3],
                                          ["append", "ensure_off", "preflight", "start"])
                 for operation, script, _ in self.ps.calls:
                     if operation == "ensure_off":
@@ -322,7 +325,9 @@ class CampaignTests(unittest.TestCase):
                 self.assertEqual((summary["cycles"], summary["failures"], summary["infrastructure_failures"]),
                                  (2, 1, 1))
                 self.assertEqual(self.ps.records[0]["failure"], operation + ":synthetic failure")
-                self.assertEqual(self.operations().count("ensure_off"), 1)
+                # One off between the two cycles, and one after the clean last cycle (#944).
+                self.assertEqual(self.operations().count("ensure_off"), 2)
+                self.assertEqual(self.operations()[-1], "ensure_off")
 
     def test_keep_going_exact_infrastructure_failures(self):
         for failure in ("guest_boot_failed", "powershell_unavailable_or_timeout", "guest_direct_connection_timeout"):
@@ -455,6 +460,46 @@ class CampaignTests(unittest.TestCase):
                     self.assertGreaterEqual(self.time.now, 300)
                     self.assertEqual(self.ps.records[-1]["failure"], "guest_boot_failed")
                     self.assertNotIn("cut", self.operations())
+
+    def test_clean_campaign_turns_the_vm_off_last(self):
+        # #944: a campaign that completes without a raised failure must not leave the lab VM running.
+        c = self.make(command="campaign", cycles=2)
+        with contextlib.redirect_stdout(io.StringIO()):
+            c.run()
+        self.assertEqual(c.summary["failures"], 0)
+        self.assertEqual(self.operations()[-1], "ensure_off")
+
+    def test_clean_negative_campaign_with_caught_mutants_turns_the_vm_off_last(self):
+        # A caught mutant is the control working, not a failure path: the VM is still released.
+        c = self.make(command="negative", cycles=2, exe=r"C:\lw\mutant.exe")
+        response = json.loads(self.ps.run("# lw-hv:recover", 1))
+        self.ps.calls.clear()
+        response["result"]["ok"] = False
+        response["result"]["failure"] = "mutant caught"
+        response["exit_code"] = 101
+        self.ps.responses["recover"] = response
+        with contextlib.redirect_stdout(io.StringIO()):
+            summary = c.run()
+        self.assertEqual(summary["caught"], 2)
+        self.assertEqual(self.operations()[-1], "ensure_off")
+
+    def test_failed_campaign_keeps_the_vm_running_for_diagnosis(self):
+        # #944: the failure path must not turn the VM off; its last script is not the off script.
+        for defect in ("oracle", "heartbeat"):
+            with self.subTest(defect=defect):
+                c = self.make(command="campaign", cycles=2)
+                if defect == "oracle":
+                    response = json.loads(self.ps.run("# lw-hv:recover", 1))
+                    self.ps.calls.clear()
+                    response["result"]["ok"] = False
+                    self.ps.responses["recover"] = response
+                else:
+                    self.ps.responses["boot"] = {"heartbeat": "NoContact"}
+                with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(CampaignError):
+                    c.run()
+                self.assertEqual(c.summary["failures"], 1)
+                self.assertNotIn("ensure_off", self.operations())
+                self.assertNotEqual(self.operations()[-1], "ensure_off")
 
     def test_every_session_proves_its_guest_identity(self):
         # PowerShell Direct can return the previous session's identity (measured 2026-10-26).
@@ -623,7 +668,7 @@ foreach ($script in $scripts) {
 @{ problems = @($problems) } | ConvertTo-Json -Compress
 
 """.replace("PAYLOAD", ("(" + encoded(json.dumps(scripts)) + ")"))
-        result = json.loads(PowerShell().run(parser, 30))
+        result = json.loads(PowerShell().run(parser, 300))
         self.assertEqual(result["problems"], [])
 
     def test_python_311_grammar(self):
@@ -794,7 +839,9 @@ $answers = @(foreach ($case in (ConvertFrom-Json PAYLOAD)) {
 @{ answers = $answers } | ConvertTo-Json -Depth 5 -Compress
 
 """.replace("PAYLOAD", "(" + encoded(json.dumps(cases)) + ")").replace("CHECK", check)
-        answers = json.loads(PowerShell().run(harness, 30))["answers"]
+        # Real PowerShell is the point of this test (it executes the pre-scan fragment), so it cannot be
+        # stubbed; a cold hosted Windows runner can exceed a short launch timeout (#987).
+        answers = json.loads(PowerShell().run(harness, 300))["answers"]
         self.assertEqual(answers, [{key: case[key] for key in ("dirty", "scan", "repairs")} for case in cases])
 
     @unittest.skipUnless(sys.platform == "win32" and shutil.which("powershell"), "Windows PowerShell required")
@@ -812,7 +859,7 @@ $answers = @(foreach ($case in (ConvertFrom-Json PAYLOAD)) {
             target.write_text("live")
             temporary.write_text("pristine")
             pairs = "$pairs = @(@{ temporary = %s; target = %s })\n" % (quote(str(temporary)), quote(str(target)))
-            PowerShell().run("$ErrorActionPreference = 'Stop'\n" + pairs + loop + "\n'{}'\n\n", 30)
+            PowerShell().run("$ErrorActionPreference = 'Stop'\n" + pairs + loop + "\n'{}'\n\n", 300)
             self.assertEqual(target.read_text(), "pristine")
             self.assertFalse(temporary.exists())
 
@@ -935,7 +982,7 @@ function Refused([string]$path) {
             for path in (str(junction / "x"), str(folder) + r"\..\..\..\escape", LAB_ROOT + r"-other\x"):
                 script += f"if (-not (Refused {quote(path)})) {{ throw 'guard_accepted_escape' }}\n"
             script += f"Resolve-LabPath {quote(str(folder / 'plain-child'))} | Out-Null\n'{{}}'\n\n"
-            self.assertEqual(json.loads(PowerShell().run(script, 30)), {})
+            self.assertEqual(json.loads(PowerShell().run(script, 300)), {})
         finally:
             # Remove the junction itself before traversing the disposable folder.
             if junction.is_junction():
