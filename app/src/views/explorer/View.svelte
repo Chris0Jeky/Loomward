@@ -11,6 +11,7 @@
   import { fallbackStep, onRefetchError, resolveTrail, type Crumb } from './refetch';
   import { session } from '../../lib/stores/session.svelte';
   import { route } from '../../lib/stores/route.svelte';
+  import { planFind, PRESETS, type FindRequest } from '../../lib/search/find';
   import NodeMeaning from '../../lib/ui/NodeMeaning.svelte';
   import AddToCollection from '../../lib/ui/AddToCollection.svelte';
   import CopyTo from '../../lib/ui/CopyTo.svelte';
@@ -58,6 +59,12 @@
   let extension = $state('');
   let minBytes = $state('');
   let searching = $state(false);
+  /** The request of the search that is showing, frozen when it started so Load more repeats it (relative times included). */
+  let sent: FindRequest | null = null;
+  /** The box text of the search that is showing. */
+  let ran = $state('');
+  /** The box text as it is being typed, parsed on every keystroke: chips and notices follow it. */
+  const plan = $derived(planFind(query, { extension, kind, minBytes }, Date.now()));
   /** Per-row search facts (match tier, highlights, root-relative path), by node ID. */
   let found = $state(new Map<NodeId, SearchHit>());
   /** The honesty flags of the last search page: never an empty page passed off as proof of absence. */
@@ -93,11 +100,7 @@
   async function fetchPage(cursor: string | null, signal: AbortSignal): Promise<{ result: Page }> {
     const c = session.client!;
     if (searching) {
-      const ext = extension.trim().replace(/^\./, '').toLowerCase();
-      const { result } = await c.call('search.query', {
-        root_id: null, text: query.trim(), extension: ext || null, min_bytes: minBytes || null, max_bytes: null,
-        modified_after: null, modified_before: null, kind, limit: PAGE, cursor,
-      }, { signal });
+      const { result } = await c.call('search.query', { root_id: null, ...sent!, limit: PAGE, cursor }, { signal });
       // No generation: a search cursor is a keyset over the live index, so a root's generation moving
       // between pages (every watcher run) is no reason to restart the results from the top.
       return { result: { generation: null, items: result.hits.map((h) => h.row), next_cursor: result.next_cursor, total: null, budget_hit: result.budget_hit, search: result } };
@@ -255,10 +258,27 @@
     }
   }
 
+  /** Freeze what the box says as the request to run. False (nothing is started) when it would match the whole catalogue. */
+  function commit(): boolean {
+    if (plan.unconstrained) {
+      notice = 'Nothing in that query can be searched yet, so no search was run.';
+      return false;
+    }
+    sent = plan.request;
+    ran = query.trim();
+    searching = true;
+    return true;
+  }
+
   function search() {
     if (!query.trim() && !extension.trim()) return clearSearch();
-    searching = true;
-    void show();
+    if (commit()) void show();
+  }
+
+  /** A cleanup search fills the box and runs; the separate controls reset so the preset means exactly what it says. */
+  function preset(text: string) {
+    query = text; extension = ''; kind = 'any'; minBytes = '';
+    search();
   }
 
   function clearSearch() {
@@ -340,6 +360,9 @@
 
   // The session starts, or the engine says data may be stale (reconnect, tree.invalidated, roots.changed):
   // keep the user's place and ask again; the first time, find the starting points.
+  // `?q=` in the route (a link from another view) fills the box and searches once, when the session is
+  // ready; a later reconnect keeps whatever the reader has searched since.
+  let appliedQ: string | null = null;
   $effect(() => {
     void session.epoch;
     const params = new URLSearchParams(route.search);
@@ -347,7 +370,14 @@
     let current = true;
     untrack(() => {
       inspection++; inspectAbort?.abort(); detail = null;
+      const linked = params.get('q');
+      if (linked && linked !== appliedQ) {
+        appliedQ = linked;
+        query = linked.slice(0, 256);
+        commit();
+      }
       void reload().then(() => {
+        if (!trail.length && starts[0]) trail = [starts[0]]; // so Clear search has a folder to go back to
         const node = params.get('node'), observed = params.get('generation');
         if (current && node && observed) void inspect(node, observed);
       });
@@ -365,7 +395,7 @@
 <section class="panel">
   <form class="bar form" onsubmit={(e) => { e.preventDefault(); search(); }}>
     <label class="field stack grow"><span class="lbl">Search names</span>
-      <input type="search" placeholder="Search names" bind:value={query} bind:this={searchEl} maxlength="256" onkeydown={searchKeys} />
+      <input type="search" placeholder="Search names" bind:value={query} bind:this={searchEl} maxlength="256" onkeydown={searchKeys} aria-describedby="find-hint find-notes" />
     </label>
     <label class="field stack"><span class="lbl">Extension</span>
       <input type="text" placeholder="ext" bind:value={extension} maxlength="32" size="6" />
@@ -379,6 +409,19 @@
     <button class="btn" type="submit" disabled={!query.trim() && !extension.trim()}>Search</button>
     {#if searching}<button class="btn" type="button" onclick={clearSearch}>Clear search</button>{/if}
   </form>
+
+  <p id="find-hint" class="muted small hint">Filters in the box: <code>ext:pdf</code> <code>size:&gt;100mb</code> <code>modified:&lt;30d</code> (newer) <code>modified:&gt;1y</code> (older) <code>kind:dir</code>. The Extension, Kind and Size boxes fill in only what the query leaves out.</p>
+  <div class="bar" role="group" aria-label="Cleanup searches">
+    {#each PRESETS as p (p.label)}<button class="btn" type="button" title={p.query} onclick={() => preset(p.query)}>{p.label}</button>{/each}
+  </div>
+  <div id="find-notes">
+    {#if plan.chips.length}
+      <ul class="chips" aria-label="Search filters">{#each plan.chips as c, i (i)}<li class="chip">{c}</li>{/each}</ul>
+    {/if}
+    {#if plan.notices.length}
+      <ul class="scope muted small" aria-label="Search notes">{#each plan.notices as n, i (i)}<li>{n}</li>{/each}</ul>
+    {/if}
+  </div>
 
   <div class="bar">
     <div role="group" aria-label="Size basis">
@@ -402,7 +445,7 @@
   {/if}
 
   {#if searching}
-    <p class="where">Search results {#if query.trim()}for <q><VisibleName name={query.trim()} /></q>{/if}</p>
+    <p class="where">Search results {#if ran}for <q><VisibleName name={ran} /></q>{/if}</p>
     {#if scope && (scope.index_state !== 'current' || scope.partial || !scope.substring_searched)}
       <ul class="scope muted small" aria-label="Search coverage">
         {#if scope.index_state === 'building'}<li class="bad">A searched folder is still being scanned, so more results may appear.</li>{/if}
@@ -507,6 +550,9 @@
   .grow input { width: 100%; }
   .starts { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
   .where { margin: 0 0 8px; }
+  .hint { margin: 0 0 8px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; padding: 0; list-style: none; }
+  .chip { padding: 2px 10px; border: 1px solid var(--accent); border-radius: 999px; font-size: 0.85rem; }
   .scope { margin: 0 0 8px; padding-left: 1.2rem; }
   mark { background: color-mix(in srgb, var(--accent) 25%, transparent); color: inherit; border-radius: 2px; }
   @media (forced-colors: active) { mark { background: Mark; color: MarkText; } }
