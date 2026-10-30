@@ -34,8 +34,13 @@ const job = (over: Partial<Job> = {}): Job => ({
 
 describe('ageText', () => {
   it('says unknown for a missing or unparsable time, never "just now"', () => {
-    expect(ageText(null, NOW)).toBe('unknown');
-    expect(ageText('not a time', NOW)).toBe('unknown');
+    expect(ageText(null, NOW)).toBe('at an unknown time');
+    expect(ageText('not a time', NOW)).toBe('at an unknown time');
+  });
+  it('reads a time ahead of this clock as unknown, never as fresh (clock skew)', () => {
+    expect(ageText(iso(-5), NOW)).toBe('at an unknown time (clock ahead)');
+    expect(ageText(new Date(NOW + 1_000).toISOString(), NOW)).toBe('at an unknown time (clock ahead)');
+    expect(ageText(iso(0), NOW)).toBe('just now');
   });
   it('steps from minutes to hours to days', () => {
     expect(ageText(iso(0), NOW)).toBe('just now');
@@ -92,6 +97,20 @@ describe('volume rows', () => {
     const two = volumeRows(v, [root(), root({ root_id: 'rt_2', scan: { finished_at: iso(10), coverage: 'partial', state: 'partial' } }), root({ root_id: 'rt_3', scan: { state: 'never_scanned', finished_at: null } })], NOW)[0]!;
     expect(two.scan).toBe('10 min ago');
     expect(two.unknowns).toEqual(['1 granted folder not scanned yet.', '1 granted folder scanned only in part.']);
+  });
+
+  it('never reads a future scan or observation time as a fresh age', () => {
+    const [row] = volumeRows([volume({ online: false, observed_at: iso(-5) })], [root({ scan: { finished_at: iso(-5) } })], NOW);
+    expect(row!.scan).toBe('at an unknown time (clock ahead)');
+    expect(row!.unknowns).toEqual(['Offline: space figures are from the last observation, at an unknown time (clock ahead).']);
+  });
+
+  it('takes Last scan only from finished_at, which the service sets for completed scans alone', () => {
+    // A failed, cancelled or partial run carries no finished_at (db.rs: max(finished_at_ns) WHERE state = 'completed'),
+    // so it can never show as "Last scan: N min ago"; the partial run is still named in the unknowns.
+    const [row] = volumeRows([volume()], [root({ scan: { state: 'partial', coverage: 'partial', finished_at: null } })], NOW);
+    expect(row!.scan).toBe('Never scanned');
+    expect(row!.unknowns).toEqual(['1 granted folder scanned only in part.']);
   });
 
   it('counts granted folders that sit on no listed volume', () => {

@@ -17,11 +17,17 @@ export interface Sources {
 
 const MINUTE = 60_000;
 
-/** "5 min ago"; an unparsable time is "unknown", never "just now". */
+/**
+ * "5 min ago". A missing or unparsable time, and a time ahead of this clock (clock skew), are
+ * "at an unknown time" (the clock-ahead form says so): never "just now" and never a fresh age (invariant 4).
+ * Same wording and rule as reclaim/model.ts observationAge.
+ */
 export function ageText(at: string | null | undefined, now: number): string {
   const t = at ? Date.parse(at) : NaN;
-  if (Number.isNaN(t)) return 'unknown';
-  const m = Math.floor((now - t) / MINUTE);
+  if (Number.isNaN(t)) return 'at an unknown time';
+  const elapsed = now - t;
+  if (elapsed < 0) return 'at an unknown time (clock ahead)';
+  const m = Math.floor(elapsed / MINUTE);
   if (m < 1) return 'just now';
   if (m < 60) return `${m} min ago`;
   const h = Math.floor(m / 60);
