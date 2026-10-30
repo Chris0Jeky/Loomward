@@ -214,6 +214,8 @@ across its reads.
   shared time budget, is cancelled or is cut short, a hashed file is `unknown` with the listing's own reason (or
   `recheck_incomplete`), never blamed on a change. A file that appeared in A since is outside "A as read" and is not
   reported. Windows remain: A after the recheck listing, and B after its own hashing (#1037).
+- Only each file's default data stream is read; named streams (for example `Zone.Identifier`) are ignored and cost
+  no read budget, whereas `verify-tree` still compares them (#1037).
 - Each A file is `covered` (with one B path of equal size and equal content digest), `not_covered` (B has no file of
   that size or content, and B's listing was complete), or `unknown` with a side and reason (unreadable, budget, an
   incomplete B listing that leaves absence unproven, B gaining a file of A's size after its listing, reported on the

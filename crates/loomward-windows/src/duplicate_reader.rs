@@ -175,8 +175,11 @@ pub fn read_tree(
 
 /// `read_tree` hashing only files whose root-relative path and size `want` accepts; every other
 /// file keeps its observed size and gets `content: Err("not_requested")` without spending read budget (#1011).
+/// A wanted file's named streams are read only when `want_streams` also accepts it; otherwise they are
+/// `Err("not_requested")` and cost nothing (#1037).
 #[cfg(any(feature = "content-read", test))]
 #[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
 pub fn read_tree_wanting(
     root: &Path,
     expected: &OpenedIdentity,
@@ -184,14 +187,31 @@ pub fn read_tree_wanting(
     max_entries: usize,
     cancel: Arc<AtomicBool>,
     want: &dyn Fn(&Path, u64) -> bool,
+    want_streams: &dyn Fn(&Path, u64) -> bool,
 ) -> Result<(loomward_operations::tree::Tree, u64), Reason> {
     #[cfg(windows)]
     {
-        native::tree::read_tree_wanting(root, expected, budget, max_entries, cancel, want)
+        native::tree::read_tree_wanting(
+            root,
+            expected,
+            budget,
+            max_entries,
+            cancel,
+            want,
+            want_streams,
+        )
     }
     #[cfg(not(windows))]
     {
-        let _ = (root, expected, budget, max_entries, cancel, want);
+        let _ = (
+            root,
+            expected,
+            budget,
+            max_entries,
+            cancel,
+            want,
+            want_streams,
+        );
         Err(Reason::Unsupported)
     }
 }
