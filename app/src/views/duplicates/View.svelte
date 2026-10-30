@@ -111,6 +111,8 @@
       heading = `${verb} ${n(count)} of ${n(files)} candidate files (${bytes}).`;
       const rest = Math.max(0, files - count);
       if (rest > 0) parts.push(`${n(rest)} candidate ${rest === 1 ? 'file was' : 'files were'} not ${early ? 'listed' : 'examined'}${why ? `: ${why}` : ''}.`);
+      // The catalogue leaves these names out of the total; a partial report is where they can exist.
+      if (report.partial === true) parts.push('Unreadable or unrepresentable names are not in this count.');
     }
     if (early) parts.push('Some listed files may not have been read before the run stopped.');
     if (files === null && why) parts.push(`The run ended because ${why}.`);
