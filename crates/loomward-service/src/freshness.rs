@@ -742,6 +742,10 @@ fn ensure_roots_with_clock(inner: &Arc<Inner>, now: impl Fn() -> Instant) {
                 if root.restart.after.is_none() {
                     root.dirty(true);
                 }
+                // A vetoed Safely Remove left the volume in place: rebuild at once (#935).
+                if root.watch.as_ref().is_some_and(|w| w.removal_refused()) {
+                    root.restart.after = Some(now());
+                }
                 if !root.restart.ready(now()) {
                     continue;
                 }
@@ -2345,6 +2349,41 @@ mod restart_tests {
             )
             .unwrap();
         assert_eq!(bytes, 137, "refresh skipped the retiring watch's change");
+    }
+
+    /// #935 item 3: a plain release waits out the restart backoff; a refused removal does not.
+    #[test]
+    fn f3_refused_removal_rebuilds_the_watch_without_waiting_for_backoff() {
+        let Some(lab) = lab() else { return };
+        let svc = &lab.svc;
+        settle(svc, &start(svc, &lab.root, "full"));
+        f3_wait_live(svc);
+        svc.inner.freshness.pause_pump();
+        let old = svc.inner.freshness.roots.lock().unwrap()[&1]
+            .watch
+            .clone()
+            .unwrap();
+        old.simulate_removal_request();
+        let held = |inner: &Inner| {
+            inner.freshness.roots.lock().unwrap()[&1]
+                .watch
+                .as_ref()
+                .is_some_and(|w| Arc::ptr_eq(w, &old))
+        };
+        let now = Instant::now();
+        tick(&svc.inner, now);
+        assert!(
+            held(&svc.inner),
+            "a released watch restarted before backoff"
+        );
+        old.simulate_removal_refused();
+        tick(&svc.inner, now);
+        assert!(
+            !held(&svc.inner),
+            "a refused removal still waited for backoff"
+        );
+        let roots = svc.inner.freshness.roots.lock().unwrap();
+        assert!(!roots[&1].watch.as_ref().unwrap().failed());
     }
 
     #[test]

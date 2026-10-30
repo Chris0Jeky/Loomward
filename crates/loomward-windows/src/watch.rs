@@ -198,16 +198,25 @@ mod native {
     /// #888 item 4: a watch must never veto Safely Remove of its volume. Windows first asks the
     /// holders of handles on the volume (target-device query-remove); the watch thread then
     /// closes its directory handle and pins before the answer, and reports the watch failed. The
-    /// owner rebuilds it after its restart delay: by then the volume is gone (offline) or the
-    /// removal was refused and the root is watched again. Registration is best effort: a volume
-    /// without device notifications keeps today's behaviour.
+    /// owner rebuilds it after its restart delay, by when the volume is gone (offline); if the
+    /// removal is refused instead (query-remove failed, #935), `removal_refused` tells the owner
+    /// to rebuild at once. Registration is best effort: a volume without device notifications
+    /// keeps today's behaviour.
     #[derive(Default)]
     struct Release {
         requested: AtomicBool,
         closed: Mutex<bool>,
         closed_cv: Condvar,
+        /// The removal this watch released for was refused (query-remove failed).
+        refused: AtomicBool,
     }
     impl Release {
+        /// Record a refused removal; meaningful only after the handles were released for it.
+        fn refused(&self) {
+            if self.requested.load(Ordering::Acquire) {
+                self.refused.store(true, Ordering::Release);
+            }
+        }
         fn close(&self) {
             *self.closed.lock().unwrap_or_else(|e| e.into_inner()) = true;
             self.closed_cv.notify_all();
@@ -221,6 +230,24 @@ mod native {
                 .wait_timeout_while(closed, Duration::from_secs(10), |closed| !*closed);
         }
     }
+    /// What a device notification asks of the watch.
+    #[derive(Debug, PartialEq, Eq)]
+    enum DeviceSignal {
+        /// Windows is taking the volume: close the handles first.
+        Release,
+        /// Windows refused or abandoned the removal: the owner must rebuild the watch at once.
+        Rebuild,
+        Ignore,
+    }
+    fn device_signal(action: CM_NOTIFY_ACTION) -> DeviceSignal {
+        match action {
+            CM_NOTIFY_ACTION_DEVICEQUERYREMOVE
+            | CM_NOTIFY_ACTION_DEVICEREMOVEPENDING
+            | CM_NOTIFY_ACTION_DEVICEREMOVECOMPLETE => DeviceSignal::Release,
+            CM_NOTIFY_ACTION_DEVICEQUERYREMOVEFAILED => DeviceSignal::Rebuild,
+            _ => DeviceSignal::Ignore,
+        }
+    }
     unsafe extern "system" fn on_device_event(
         _: HCMNOTIFICATION,
         context: *const core::ffi::c_void,
@@ -228,15 +255,13 @@ mod native {
         _: *const CM_NOTIFY_EVENT_DATA,
         _: u32,
     ) -> u32 {
-        if matches!(
-            action,
-            CM_NOTIFY_ACTION_DEVICEQUERYREMOVE
-                | CM_NOTIFY_ACTION_DEVICEREMOVEPENDING
-                | CM_NOTIFY_ACTION_DEVICEREMOVECOMPLETE
-        ) {
-            // SAFETY: the context is the registration's own Arc, live until unregistration,
-            // which waits for in-flight callbacks.
-            unsafe { &*context.cast::<Release>() }.release();
+        // SAFETY: the context is the registration's own Arc, live until unregistration,
+        // which waits for in-flight callbacks.
+        let release = unsafe { &*context.cast::<Release>() };
+        match device_signal(action) {
+            DeviceSignal::Release => release.release(),
+            DeviceSignal::Rebuild => release.refused(),
+            DeviceSignal::Ignore => (),
         }
         ERROR_SUCCESS // Never veto the removal.
     }
@@ -629,10 +654,20 @@ mod native {
                 .unwrap_or_else(|e| e.into_inner())
                 .is_some()
         }
+        /// Windows asked this watch to let its volume go, then refused the removal (#935): the
+        /// watch is already failed and the owner should rebuild it without the restart backoff.
+        pub fn removal_refused(&self) -> bool {
+            self.release.refused.load(Ordering::Acquire)
+        }
         /// Test seam: act as if Windows asked to remove the watched volume.
         #[cfg(any(test, feature = "fixtures"))]
         pub fn simulate_removal_request(&self) {
             self.release.release();
+        }
+        /// Test seam: act as if Windows then refused that removal.
+        #[cfg(any(test, feature = "fixtures"))]
+        pub fn simulate_removal_refused(&self) {
+            self.release.refused();
         }
     }
     impl Drop for Watcher {
@@ -1108,12 +1143,52 @@ mod native {
                 "released before the request is answered"
             );
             assert!(watcher.failed(), "the owner must rebuild the watch");
+            assert!(!watcher.removal_refused(), "released, not yet refused");
+            watcher.simulate_removal_refused();
+            assert!(
+                watcher.removal_refused(),
+                "a vetoed removal asks for a prompt rebuild"
+            );
             assert!(rx
                 .recv_timeout(Duration::from_secs(5))
                 .unwrap()
                 .contains(&Change::RootDirty));
             watcher.stop();
             assert!(!watcher.releases_on_removal(), "stop unregisters");
+        }
+        /// #935 item 3: every query-remove outcome has one pinned decision.
+        #[test]
+        fn device_notifications_map_to_release_rebuild_or_ignore() {
+            assert_eq!(
+                device_signal(CM_NOTIFY_ACTION_DEVICEQUERYREMOVE),
+                DeviceSignal::Release
+            );
+            assert_eq!(
+                device_signal(CM_NOTIFY_ACTION_DEVICEREMOVEPENDING),
+                DeviceSignal::Release
+            );
+            assert_eq!(
+                device_signal(CM_NOTIFY_ACTION_DEVICEREMOVECOMPLETE),
+                DeviceSignal::Release
+            );
+            assert_eq!(
+                device_signal(CM_NOTIFY_ACTION_DEVICEQUERYREMOVEFAILED),
+                DeviceSignal::Rebuild
+            );
+            assert_eq!(
+                device_signal(CM_NOTIFY_ACTION_DEVICEINTERFACEARRIVAL),
+                DeviceSignal::Ignore
+            );
+        }
+        /// A refusal only counts for a watch that actually released its handles.
+        #[test]
+        fn refused_removal_is_recorded_only_after_a_release() {
+            let release = Release::default();
+            release.refused();
+            assert!(!release.refused.load(Ordering::Acquire));
+            release.requested.store(true, Ordering::Release);
+            release.refused();
+            assert!(release.refused.load(Ordering::Acquire));
         }
         fn fixture() -> tempfile::TempDir {
             tempfile::tempdir_in(std::fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap()
