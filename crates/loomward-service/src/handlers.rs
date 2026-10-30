@@ -478,6 +478,8 @@ impl Inner {
             CollectionsMembers => self.collections_members(req, work),
             DuplicatesInspect => self.duplicates_inspect(req, work),
             DuplicatesCancel => self.duplicates_cancel(req.decode_payload()?),
+            CoverageStart => self.coverage_start(req),
+            CoverageResult => self.coverage_result(req.decode_payload()?),
             ScanStart => self.scan_start(req.decode_payload()?, work),
             ScanCancel => engine(
                 self.engine

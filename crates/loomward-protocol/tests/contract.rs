@@ -443,10 +443,17 @@ fn coverage_report_keeps_unknowns_null_bounds_its_lists_and_is_owner_only() {
     let mut schema = Schema::load();
     let report = read(&contracts().join("examples/commands/coverage.result.result.json"));
     // A path the catalogue does not hold and a size nobody could read are null, never a guess.
-    for (list, field) in [("not_covered", "node_id"), ("unknown", "node_id"), ("unknown", "bytes")] {
+    for (list, field) in [
+        ("not_covered", "node_id"),
+        ("unknown", "node_id"),
+        ("unknown", "bytes"),
+    ] {
         let mut value = report.clone();
         value[list][if list == "unknown" { 0 } else { 1 }][field] = Value::Null;
-        assert!(schema.errors("CoverageReport", &value).is_empty(), "{list}.{field}");
+        assert!(
+            schema.errors("CoverageReport", &value).is_empty(),
+            "{list}.{field}"
+        );
         assert_eq!(roundtrip("CoverageReport", &value).unwrap().unwrap(), value);
         value[list][if list == "unknown" { 0 } else { 1 }]
             .as_object_mut()
@@ -467,8 +474,14 @@ fn coverage_report_keeps_unknowns_null_bounds_its_lists_and_is_owner_only() {
         for (key, value) in bad.as_object().unwrap() {
             invalid[key] = value.clone();
         }
-        assert!(!schema.errors("CoverageReport", &invalid).is_empty(), "{bad}");
-        assert!(roundtrip("CoverageReport", &invalid).unwrap().is_err(), "{bad}");
+        assert!(
+            !schema.errors("CoverageReport", &invalid).is_empty(),
+            "{bad}"
+        );
+        assert!(
+            roundtrip("CoverageReport", &invalid).unwrap().is_err(),
+            "{bad}"
+        );
     }
     let mut full = report.clone();
     let item = report["not_covered"][0].clone();
@@ -487,12 +500,20 @@ fn coverage_report_keeps_unknowns_null_bounds_its_lists_and_is_owner_only() {
         json!({"a_root_id": "rt_a", "b_root_id": "rt_b", "budget_bytes": null}),
         json!({"a_root_id": "rt_a", "b_root_id": "rt_b", "path": "C:\\"}),
     ] {
-        assert!(!schema.errors("CoverageStartRequest", &bad).is_empty(), "{bad}");
-        assert!(roundtrip("CoverageStartRequest", &bad).unwrap().is_err(), "{bad}");
+        assert!(
+            !schema.errors("CoverageStartRequest", &bad).is_empty(),
+            "{bad}"
+        );
+        assert!(
+            roundtrip("CoverageStartRequest", &bad).unwrap().is_err(),
+            "{bad}"
+        );
     }
     assert!(schema.errors("CoverageStartRequest", &request).is_empty());
     assert_eq!(
-        roundtrip("CoverageStartRequest", &request).unwrap().unwrap(),
+        roundtrip("CoverageStartRequest", &request)
+            .unwrap()
+            .unwrap(),
         request
     );
     // Owner-only: no client projection exists for either command.

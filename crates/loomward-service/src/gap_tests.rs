@@ -207,6 +207,7 @@ fn only_the_listed_commands_change_state() {
         JobsCancel,
         DuplicatesInspect,
         DuplicatesCancel,
+        CoverageStart,
         ReclaimObserve,
         ReclaimSample,
         FeedbackRecord,

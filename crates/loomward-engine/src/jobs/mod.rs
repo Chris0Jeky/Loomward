@@ -171,19 +171,25 @@ pub(crate) struct Registry {
     last_scan: Mutex<HashMap<RootId, JobId>>,
 }
 impl Registry {
-    /// One live scan or duplicates job per root and one live refit or reclaim observation
-    /// overall: `busy` with `detail.job_id`.
+    /// One live scan or duplicates job per root and one live refit, reclaim observation or
+    /// coverage check overall: `busy` with `detail.job_id`.
     fn conflict(records: &HashMap<JobId, Record>, spec: &JobSpec) -> EngineResult<()> {
         if !matches!(
             spec.kind,
-            JobKind::Scan | JobKind::Duplicates | JobKind::Refit | JobKind::Reclaim
+            JobKind::Scan
+                | JobKind::Duplicates
+                | JobKind::Refit
+                | JobKind::Reclaim
+                | JobKind::Coverage
         ) {
             return Ok(());
         }
         let Some(r) = records.values().find(|r| {
             r.job.kind == spec.kind
-                && (matches!(spec.kind, JobKind::Refit | JobKind::Reclaim)
-                    || r.job.root_id == spec.root_id)
+                && (matches!(
+                    spec.kind,
+                    JobKind::Refit | JobKind::Reclaim | JobKind::Coverage
+                ) || r.job.root_id == spec.root_id)
                 && r.terminal.is_none()
         }) else {
             return Ok(());
@@ -193,6 +199,7 @@ impl Registry {
                 JobKind::Duplicates => "root already inspecting duplicates",
                 JobKind::Refit => "refit already running",
                 JobKind::Reclaim => "reclaim observation already running",
+                JobKind::Coverage => "coverage check already running",
                 _ => "root already scanning",
             }
             .into(),

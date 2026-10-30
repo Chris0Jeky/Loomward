@@ -25,6 +25,7 @@ mod clients;
 mod clutter;
 mod collections;
 mod copy;
+mod covers;
 mod cursors;
 mod db;
 mod desktop;
@@ -153,6 +154,8 @@ pub(crate) struct Inner {
     metadata_cursors: cursors::Cursors,
     /// LW-118: the latest Ask turn and the provider factory.
     pub(crate) ask: ask::Asks,
+    /// #1106: the newest finished `coverage.result` reports (covers.rs).
+    covers: covers::Results,
     /// Three-second display hints only; native admission never trusts this cache.
     root_presence_cache: Mutex<handlers::RootPresenceCache>,
     #[cfg(test)]
@@ -386,6 +389,7 @@ impl Service {
                 .unwrap_or_else(|| inventory::provider(config.dataset)),
             metadata_cursors: cursors::Cursors::new(16),
             ask: Default::default(),
+            covers: Default::default(),
             root_presence_cache: Default::default(),
             #[cfg(test)]
             hooks: Default::default(),
@@ -482,6 +486,7 @@ pub(crate) fn is_mutation(c: Command) -> bool {
             | JobsCancel
             | DuplicatesInspect
             | DuplicatesCancel
+            | CoverageStart
             | ReclaimObserve
             | ReclaimSample
             | FeedbackRecord
