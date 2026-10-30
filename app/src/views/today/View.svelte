@@ -151,7 +151,7 @@
                   <span class="num" class:unknown={v.used === null}>{v.space}</span>
                 </td>
                 <td><span class="tag" class:unk={v.tier === 'Tier unknown'}>{v.tier}</span></td>
-                <td class:unknown={v.scan === 'unknown' || v.scan === 'Never scanned' || v.scan === 'No granted folder'}>{v.scan}</td>
+                <td class:unknown={v.scan.startsWith('at an unknown time') || v.scan === 'unknown' || v.scan === 'Never scanned' || v.scan === 'No granted folder'}>{v.scan}</td>
               </tr>
             {/each}
           </tbody>
