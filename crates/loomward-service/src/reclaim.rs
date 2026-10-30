@@ -24,6 +24,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod relief;
 mod selection;
 
 /// Detectors cap all classes together, so they read their maximum; the planner applies the
@@ -38,6 +39,31 @@ fn root_path(path: &str) -> String {
     path.replace('/', "\\")
         .trim_end_matches('\\')
         .to_lowercase()
+}
+
+/// The outermost active roots on a volume, so covered allocation is never counted twice.
+fn active_roots(conn: &Connection, volume: i64) -> Result<Vec<db::RootRow>, ErrorBody> {
+    let mut roots: Vec<_> = db::roots(conn, None)
+        .map_err(sql_error)?
+        .into_iter()
+        .filter(|r| r.grant_state == "active" && r.volume == Some(volume))
+        .collect();
+    let paths: Vec<_> = roots
+        .iter()
+        .map(|r| (r.root, root_path(&r.display_path)))
+        .collect();
+    roots.retain(|r| {
+        let path = root_path(&r.display_path);
+        !paths.iter().any(|(id, outer)| {
+            *id != r.root
+                && (path.starts_with(&format!("{outer}\\")) || (path == *outer && *id < r.root))
+        })
+    });
+    // Like placement: with no active grant there is nothing to read, and an empty plan would read as nothing found.
+    if roots.is_empty() {
+        return Err(fail(ErrorCode::InvalidRequest, "no_active_grant"));
+    }
+    Ok(roots)
 }
 
 /// The plan's inputs for one volume, read once and shared by `reclaim.plan` and `reclaim.observe`.
@@ -97,26 +123,7 @@ impl Inner {
             .into_iter()
             .find(|v| v.volume.volume_id.as_str() == format!("vo_{}", volume.id))
             .ok_or_else(|| fail(ErrorCode::NotFound, "unknown volume"))?;
-        let mut roots: Vec<_> = db::roots(&input.conn, None)
-            .map_err(sql_error)?
-            .into_iter()
-            .filter(|r| r.grant_state == "active" && r.volume == Some(volume.id))
-            .collect();
-        let paths: Vec<_> = roots
-            .iter()
-            .map(|r| (r.root, root_path(&r.display_path)))
-            .collect();
-        roots.retain(|r| {
-            let path = root_path(&r.display_path);
-            !paths.iter().any(|(id, outer)| {
-                *id != r.root
-                    && (path.starts_with(&format!("{outer}\\")) || (path == *outer && *id < r.root))
-            })
-        });
-        // Like placement: with no active grant there is nothing to read, and an empty plan would read as nothing found.
-        if roots.is_empty() {
-            return Err(fail(ErrorCode::InvalidRequest, "no_active_grant"));
-        }
+        let roots = active_roots(&input.conn, volume.id)?;
         // Offline also covers a foreign disk on the root's letter (#910): its bin is not this volume's.
         let online = observed.volume.online;
         let mut planner = ReclaimInput {
@@ -279,6 +286,7 @@ impl Inner {
                 bin_unknown = planner.recycle_bin.is_none();
             }
         }
+        let relief = relief::relief(&input.conn, &self.instance, volume_row)?;
         let mut plan = reclaim::plan(planner)?;
         plan.budget_hit |= budget_hit;
         plan.partial |= budget_hit || bin_unknown;
@@ -309,6 +317,9 @@ impl Inner {
         });
         if let Some(selection) = selection {
             wire["selection"] = selection;
+        }
+        if let Some(relief) = relief {
+            wire["relief"] = relief;
         }
         let dto: ReclaimPlan = serde_json::from_value(wire)
             .map_err(|_| fail(ErrorCode::ResourceBudget, "reclaim projection bounds"))?;

@@ -1437,3 +1437,142 @@ fn reclaim_inspect_budget_is_explicit_and_partial() {
         "inspection refusal is one-shot and read-only"
     );
 }
+
+fn set_space(svc: &Service, free: u64) {
+    svc.inner
+        .db()
+        .execute(
+            "UPDATE main.volume SET capabilities_json=?1",
+            [
+                json!({"space":{"capacity_bytes":"200000", "free_bytes":free.to_string()}})
+                    .to_string(),
+            ],
+        )
+        .unwrap();
+}
+
+fn sample(svc: &Service, role: &str, extra: Value) -> ResponseEnvelope {
+    let mut payload = json!({"volume_id": volume_id(svc), "role": role});
+    if let (Some(p), Some(e)) = (payload.as_object_mut(), extra.as_object()) {
+        p.extend(e.clone());
+    }
+    call(svc, "reclaim.sample", payload)
+}
+
+fn relief(svc: &Service, role: &str, extra: Value) -> Value {
+    json!(ok("reclaim.sample", sample(svc, role, extra)).0)
+}
+
+#[test]
+fn relief_check_reports_the_observed_change_beside_the_estimate() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    fixture(&svc);
+    assert!(
+        reclaim(&svc).get("relief").is_none(),
+        "nothing recorded yet"
+    );
+    set_space(&svc, 100_000);
+    let before = relief(&svc, "before", json!({"estimate_bytes": "20480"}));
+    assert_eq!(before["status"], "not_checked");
+    assert!(before["after"].is_null() && before["change_bytes"].is_null());
+    assert_eq!(before["before"]["free_bytes"], "100000");
+    assert_eq!(before["before"]["estimate_bytes"], "20480");
+    assert!(
+        before["before"]["recycle_bin_bytes"].is_null(),
+        "a bin that was not read is unknown, not zero"
+    );
+    assert_eq!(
+        reclaim(&svc)["relief"],
+        before,
+        "the plan shows the stored check"
+    );
+    set_space(&svc, 130_000);
+    let after = relief(&svc, "after", json!({}));
+    assert_eq!(after["status"], "compared");
+    assert_eq!(after["direction"], "more_free");
+    assert_eq!(after["change_bytes"], "30000");
+    assert_eq!(after["before"]["estimate_bytes"], "20480");
+    assert!(after["after"]["estimate_bytes"].is_null());
+    assert_eq!(reclaim(&svc)["relief"], after);
+    // Free space that fell is reported as such, not as a negative or zero relief.
+    set_space(&svc, 90_000);
+    let worse = relief(&svc, "after", json!({}));
+    assert_eq!(worse["direction"], "less_free");
+    assert_eq!(worse["change_bytes"], "10000");
+}
+
+#[test]
+fn relief_check_needs_a_before_sample_and_keeps_the_estimate_with_it() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    fixture(&svc);
+    set_space(&svc, 100_000);
+    let refused = err(sample(&svc, "after", json!({})));
+    assert_eq!(refused.code, ErrorCode::InvalidRequest);
+    assert!(reclaim(&svc).get("relief").is_none());
+    relief(&svc, "before", json!({}));
+    let refused = err(sample(&svc, "after", json!({"estimate_bytes": "1"})));
+    assert_eq!(refused.code, ErrorCode::InvalidRequest);
+    relief(&svc, "after", json!({}));
+    // A new before sample starts a new check: the old after sample is gone.
+    let restarted = relief(&svc, "before", json!({}));
+    assert_eq!(restarted["status"], "not_checked");
+    assert!(restarted["after"].is_null());
+}
+
+#[test]
+fn relief_check_does_not_compare_a_different_volume_identity_or_unreadable_space() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    fixture(&svc);
+    set_space(&svc, 100_000);
+    relief(&svc, "before", json!({}));
+    svc.inner
+        .db()
+        .execute(
+            "UPDATE st.root_grant SET volume_guid='00000000000000000000000000000001'",
+            [],
+        )
+        .unwrap();
+    set_space(&svc, 150_000);
+    let other = relief(&svc, "after", json!({}));
+    assert_eq!(other["status"], "different_volume");
+    assert!(other["direction"].is_null() && other["change_bytes"].is_null());
+    assert_eq!(
+        other["after"]["free_bytes"], "150000",
+        "the sample is kept, only the comparison is refused"
+    );
+    // Free space the service could not read is unknown on that side, not zero.
+    svc.inner
+        .db()
+        .execute("UPDATE st.root_grant SET volume_guid=NULL", [])
+        .unwrap();
+    relief(&svc, "before", json!({}));
+    svc.inner
+        .db()
+        .execute("UPDATE main.volume SET capabilities_json='{}'", [])
+        .unwrap();
+    let unreadable = relief(&svc, "after", json!({}));
+    assert_eq!(unreadable["status"], "unreadable");
+    assert!(unreadable["after"]["free_bytes"].is_null());
+    assert!(unreadable["change_bytes"].is_null());
+}
+
+#[test]
+fn relief_check_writes_only_its_own_sample_rows() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    fixture(&svc);
+    set_space(&svc, 100_000);
+    let catalogue = row_checksums(&svc.inner.db());
+    relief(&svc, "before", json!({}));
+    relief(&svc, "after", json!({}));
+    let rows: i64 = svc
+        .inner
+        .db()
+        .query_row("SELECT count(*) FROM st.reclaim_sample", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(rows, 2, "at most one before and one after per volume");
+    assert_eq!(row_checksums(&svc.inner.db()), catalogue);
+}

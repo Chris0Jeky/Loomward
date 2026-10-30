@@ -1,0 +1,19 @@
+{
+  "before": {
+    "sampled_at": "2026-10-29T00:00:00Z",
+    "capacity_bytes": "200000",
+    "free_bytes": "100000",
+    "recycle_bin_bytes": null,
+    "estimate_bytes": "20480"
+  },
+  "after": {
+    "sampled_at": "2026-10-29T01:00:00Z",
+    "capacity_bytes": "200000",
+    "free_bytes": "110000",
+    "recycle_bin_bytes": "4096",
+    "estimate_bytes": null
+  },
+  "status": "compared",
+  "direction": "more_free",
+  "change_bytes": "10000"
+}
