@@ -421,6 +421,35 @@ describe('Explorer starting points after invalidation', () => {
   });
 });
 
+describe('Explorer linked node is applied once per value (#1082)', () => {
+  it('does not re-inspect a linked node after a reconnect, but applies a different or re-followed link', async () => {
+    const call = vi.fn(async (command: string) => ({ result: command === 'tree.slice' ? roots(rootA)
+      : command === 'node.inspect' ? { display_path: { text: 'synthetic/a', truncated: false } } : children }));
+    // The root binding also reads node.inspect for the starting root (background bookkeeping): count only linked nodes.
+    const inspectedNodes = () => (call.mock.calls as unknown as Array<[string, { node_id: string }]>)
+      .filter(args => args[0] === 'node.inspect' && args[1].node_id.startsWith('nd_')).map(args => args[1].node_id);
+    const settle = () => new Promise(resolve => setTimeout(resolve, 10));
+    const { state, code } = explorer(call);
+    state.route.search = 'node=nd_a';
+    code.effect();
+    await vi.waitFor(() => expect(inspectedNodes()).toEqual(['nd_a']));
+    await settle();
+    state.session.epoch++; // reconnect: the reader may have inspected something else since
+    code.effect();
+    await settle();
+    expect(inspectedNodes()).toEqual(['nd_a']);
+    state.route.search = 'node=nd_b';
+    code.effect();
+    await vi.waitFor(() => expect(inspectedNodes()).toEqual(['nd_a', 'nd_b']));
+    state.route.search = '';
+    code.effect();
+    await settle();
+    state.route.search = 'node=nd_b';
+    code.effect();
+    await vi.waitFor(() => expect(inspectedNodes()).toEqual(['nd_a', 'nd_b', 'nd_b']));
+  });
+});
+
 type TodayCode = { load(): Promise<void>; loadReclaim(ids: string[]): Promise<void>; effect(): void; onEvent(ev: { event: string }): void };
 
 function today(call: ReturnType<typeof vi.fn>) {
