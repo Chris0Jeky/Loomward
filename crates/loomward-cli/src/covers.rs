@@ -11,7 +11,7 @@ const LIST_CAP: usize = 1_000;
 const COVERED_SAMPLE: usize = 100;
 const NOTE: &str = "Content coverage only: every covered A file has a B file of equal size and \
 equal content digest. It is not metadata fidelity (timestamps, attributes, ACLs, streams), not an \
-independent backup (B may share a failing disk) and not permission to delete anything.";
+independent backup (B may share a failing disk) and not permission to delete anything. It holds as read: either side may change afterwards. Unknown bytes are a lower bound when size_unknown is above zero.";
 
 pub(super) fn parse(args: &[String]) -> Result<Args, String> {
     // verify-tree may grow options (#1019 `--only`) that mean nothing here; refuse any but these.

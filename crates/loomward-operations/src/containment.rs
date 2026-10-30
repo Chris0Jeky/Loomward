@@ -5,7 +5,7 @@
 //! and never permission to delete.
 use crate::tree::{Kind, Side, Tree};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
 };
 
@@ -34,8 +34,11 @@ pub struct Item {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
 pub struct Total {
+    /// Items: files, plus unknown A entries whose kind or listing could not be read.
     pub files: u64,
+    /// A lower bound whenever `size_unknown` is above zero.
     pub bytes: u64,
+    pub size_unknown: u64,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
@@ -61,7 +64,10 @@ impl Report {
                 Coverage::Unknown { .. } => &mut totals.unknown,
             };
             total.files += 1;
-            total.bytes += item.size.unwrap_or(0);
+            match item.size {
+                Some(size) => total.bytes += size,
+                None => total.size_unknown += 1,
+            }
         }
         totals
     }
@@ -81,12 +87,29 @@ fn incomplete(tree: &Tree) -> bool {
 }
 
 pub fn containment(a: &Tree, b: &Tree) -> Report {
-    // Every B file of known size, in path order: size -> (path, content digest).
-    let mut by_size = BTreeMap::<u64, Vec<_>>::new();
+    // Index B once (#1011 review): the first trusted path per (size, digest); per size, why some
+    // same-size B file cannot vouch (unread, or under a directory that changed or failed during
+    // the read, so its digest may describe a file that is gone); and every size B listed.
+    let mut matches = BTreeMap::<(u64, [u8; 32]), &PathBuf>::new();
+    let mut unread = BTreeMap::<u64, &'static str>::new();
+    let mut sizes = BTreeSet::<u64>::new();
     for (path, node) in &b.nodes {
-        if let Ok(node) = node {
-            if let (Kind::File, Ok(size)) = (node.kind, node.size) {
-                by_size.entry(size).or_default().push((path, &node.content));
+        let Ok(node) = node else { continue };
+        let (Kind::File, Ok(size)) = (node.kind, node.size) else {
+            continue;
+        };
+        sizes.insert(size);
+        let ancestor = path.ancestors().skip(1).find_map(|a| match b.nodes.get(a) {
+            Some(Ok(_)) => None,
+            Some(Err(reason)) => Some(*reason),
+            None => Some("ancestor_not_observed"),
+        });
+        match (ancestor, node.content) {
+            (None, Ok(hash)) => {
+                matches.entry((size, hash)).or_insert(path);
+            }
+            (Some(reason), _) | (None, Err(reason)) => {
+                unread.entry(size).or_insert(reason);
             }
         }
     }
@@ -134,14 +157,11 @@ pub fn containment(a: &Tree, b: &Tree) -> Report {
                 continue;
             }
         };
-        let candidates = by_size.get(&size).map(Vec::as_slice).unwrap_or_default();
         let coverage = match node.content {
             Ok(hash) => {
-                if let Some((by, _)) = candidates.iter().find(|(_, c)| **c == Ok(hash)) {
+                if let Some(by) = matches.get(&(size, hash)) {
                     Coverage::Covered { by: (*by).clone() }
-                } else if let Some(Err(reason)) =
-                    candidates.iter().map(|(_, c)| **c).find(Result::is_err)
-                {
+                } else if let Some(reason) = unread.get(&size) {
                     unknown(Side::Destination, reason)
                 } else if b_incomplete {
                     unknown(Side::Destination, "absence_unproven")
@@ -151,7 +171,7 @@ pub fn containment(a: &Tree, b: &Tree) -> Report {
             }
             // A was not read because B had no file of its size: only a complete B still lacking
             // that size proves it. Any other unread A file stays unknown.
-            Err("not_requested") if candidates.is_empty() && !b_incomplete => Coverage::NotCovered,
+            Err("not_requested") if !sizes.contains(&size) && !b_incomplete => Coverage::NotCovered,
             Err(reason) => unknown(Side::Source, reason),
         };
         report.items.push(Item {
@@ -238,7 +258,8 @@ mod tests {
             totals.covered,
             Total {
                 files: 2,
-                bytes: 30
+                bytes: 30,
+                size_unknown: 0
             }
         );
         assert_eq!(totals.not_covered, Total::default());
@@ -261,7 +282,8 @@ mod tests {
             report.totals().not_covered,
             Total {
                 files: 2,
-                bytes: 40
+                bytes: 40,
+                size_unknown: 0
             }
         );
         // A was never read for a size B lacks: still not covered while B is complete.
@@ -295,12 +317,21 @@ mod tests {
         let unreadable_entry = tree(&[("present", file(10, 1)), ("locked", Err("access_denied"))]);
         let mut no_root = tree(&[("present", file(10, 1))]);
         no_root.nodes.remove(Path::new(""));
-        for b in [partial_root, unreadable_entry, no_root] {
+        // A file under an unobserved root cannot vouch for its digest (#1011 review).
+        let unvouched = Coverage::Unknown {
+            side: Side::Destination,
+            reason: "ancestor_not_observed",
+        };
+        for (b, present) in [
+            (partial_root, covered("present")),
+            (unreadable_entry, covered("present")),
+            (no_root, unvouched),
+        ] {
             assert_eq!(
                 coverage(&containment(&a, &b)),
                 vec![
                     ("missing".into(), absent.clone()),
-                    ("present".into(), covered("present")),
+                    ("present".into(), present),
                 ]
             );
             assert_eq!(
@@ -363,7 +394,8 @@ mod tests {
             report.totals().unknown,
             Total {
                 files: 4,
-                bytes: 30
+                bytes: 30,
+                size_unknown: 2
             }
         );
         assert_eq!(report.totals().covered, Total::default());
@@ -384,6 +416,47 @@ mod tests {
                     reason: "root_not_observed"
                 }
             )]
+        );
+    }
+
+    #[test]
+    fn a_digest_under_a_directory_that_changed_during_the_read_never_covers() {
+        // Sol review of #1011: the copy was hashed, then deleted before the folder's final check.
+        let a = tree(&[("keep", file(4, 7))]);
+        let mut b = tree(&[("d/copy", file(4, 7)), ("d", dir())]);
+        b.nodes.insert("d".into(), Err("changed_during_read"));
+        assert_eq!(
+            coverage(&containment(&a, &b)),
+            vec![(
+                "keep".into(),
+                Coverage::Unknown {
+                    side: Side::Destination,
+                    reason: "changed_during_read"
+                }
+            )]
+        );
+        // A trusted copy elsewhere still covers it.
+        b.nodes.insert("elsewhere".into(), file(4, 7));
+        assert_eq!(
+            coverage(&containment(&a, &b)),
+            vec![("keep".into(), covered("elsewhere"))]
+        );
+    }
+
+    #[test]
+    fn unknown_sizes_are_counted_so_unknown_bytes_read_as_a_lower_bound() {
+        let mut a = tree(&[("big", file(9, 1))]);
+        if let Ok(node) = a.nodes.get_mut(Path::new("big")).unwrap() {
+            node.size = Err("metadata_unreadable");
+        }
+        let totals = containment(&a, &tree(&[])).totals();
+        assert_eq!(
+            (
+                totals.unknown.files,
+                totals.unknown.bytes,
+                totals.unknown.size_unknown
+            ),
+            (1, 0, 1)
         );
     }
 
