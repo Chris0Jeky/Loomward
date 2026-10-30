@@ -152,6 +152,21 @@ fn warning(warnings: &mut Vec<Value>, reference: &Value, code: &str, message: &s
     warnings.push(json!({"reference":reference,"code":code,"message":message}));
 }
 
+/// Custody facts for one plan item (LW-136, docs/51 section 4.3). `copies_after_plan` counts
+/// archive copies once originals are retired: the plan retires nothing and verifies nothing.
+/// `last_content_verified_at` stays null (unknown) because no scrub exists yet. Each item is a
+/// sole copy until a second copy exists (owner accepted one copy for now: loomward-archive-second-copy).
+fn custody(item: &mut Value, warnings: &mut Vec<Value>, reference: &Value) {
+    item["copies_after_plan"] = json!(1);
+    item["last_content_verified_at"] = Value::Null;
+    warning(
+        warnings,
+        reference,
+        "sole_copy_after_retirement",
+        "Only one archive copy is planned and no second copy exists. If the originals were later retired, this would be the only copy. This plan retires nothing and does not authorise retiring originals; content has not been verified.",
+    );
+}
+
 impl Host {
     pub(super) fn plan_archive(&mut self, args: &Map<String, Value>) -> Result<Value, String> {
         self.service()
@@ -283,6 +298,7 @@ impl Host {
                 );
             }
             details.output(&mut item);
+            custody(&mut item, &mut warnings, reference);
             total_details.modified |= details.modified;
             total_details.attributes |= details.attributes;
             total_details.complete &= details.complete;
@@ -308,6 +324,8 @@ impl Host {
         }
         let mut total = json!({"bytes":byte_value(total_bytes),"files":total_files,"coverage":if coverage_complete {"complete"} else {"partial"},"freshness":freshness});
         total_details.output(&mut total);
+        total["copies_after_plan"] = json!(1);
+        total["last_content_verified_at"] = Value::Null;
         if destination["online"] == false {
             warning(
                 &mut warnings,
@@ -316,7 +334,7 @@ impl Host {
                 "Destination volume is offline; its free space is a stored observation.",
             );
         }
-        let mut out = json!({"items":items,"total":total,"destination":destination,"space":space(total_bytes,&destination),"warnings":warnings,"shape":"new folder only","execution":"owner_approval_required","reason":"Personal copy gate C8 is closed: docs/47 section 11 requires C6, G5, G9 and the owner's Q1-Q3 decisions and approval. MCP cannot approve or execute a copy.","totals_basis":"sum of selected items; overlapping selections count separately"});
+        let mut out = json!({"items":items,"total":total,"destination":destination,"space":space(total_bytes,&destination),"warnings":warnings,"shape":"new folder only","execution":"owner_approval_required","reason":"Personal copy gate C8 is closed: docs/47 section 11 requires C6, G5, G9 and the owner's Q1-Q3 decisions and approval. MCP cannot approve or execute a copy.","totals_basis":"sum of selected items; overlapping selections count separately","custody_basis":"copies_after_plan counts archive copies once originals are retired; the plan itself retires nothing. The count is planned, not verified, and last_content_verified_at is null (unknown) because no scrub exists."});
         if let Some(name) = args.get("folder_name") {
             out["folder_name"] = name.clone();
         }
@@ -328,6 +346,31 @@ impl Host {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn custody_states_a_sole_copy_without_claiming_verification_or_authorising_retirement() {
+        let reference = json!("r1");
+        let (mut item, mut warnings) = (json!({"reference":"r1"}), Vec::new());
+        custody(&mut item, &mut warnings, &reference);
+        assert_eq!(item["copies_after_plan"], 1);
+        assert!(item["last_content_verified_at"].is_null());
+        assert_eq!(
+            item.as_object().unwrap().len(),
+            3,
+            "no other custody field: {item}"
+        );
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0]["reference"], reference);
+        assert_eq!(warnings[0]["code"], "sole_copy_after_retirement");
+        let message = warnings[0]["message"].as_str().unwrap();
+        assert!(message.contains("only copy"), "{message}");
+        assert!(message.contains("retires nothing"), "{message}");
+        assert!(
+            message.contains("does not authorise retiring originals"),
+            "{message}"
+        );
+        assert!(message.contains("has not been verified"), "{message}");
+    }
 
     #[test]
     fn ranges_order_exact_seconds_before_fractional_times_and_keep_missing_values_unknown() {
