@@ -124,7 +124,7 @@ impl Inner {
             declaration_rev: declaration_rev(&input.conn)?,
         };
         let mut result = match command {
-            Command::VolumesList => Ok(json!({"volumes":input.volumes(deadline, true)?.into_iter().map(|v|v.volume).collect::<Vec<_>>()})),
+            Command::VolumesList => Ok(json!({"volumes":input.volumes(deadline, true, true)?.into_iter().map(|v|v.volume).collect::<Vec<_>>()})),
             Command::TiersModel => {
                 let mut model = self.engine.placement_model(&input, deadline)?;
                 let inactive = inactive_volumes(&input.conn)?;
@@ -486,11 +486,13 @@ impl<'a> Input<'a> {
     /// `observe_personal_grants` is set only by `volumes.list` and the alerts report (#519): a
     /// personal volume holding an active owner grant gets a read-only space observation through that
     /// grant's own root. Placement and tier models share live presence but keep catalogue physics,
-    /// so their personal refusal still holds.
+    /// so their personal refusal still holds. `with_storage_path` (LW-137) is set only by `volumes.list`,
+    /// the one caller that reports the storage-path query; the others pay nothing for it.
     pub(crate) fn volumes(
         &self,
         deadline: Instant,
         observe_personal_grants: bool,
+        with_storage_path: bool,
     ) -> EngineResult<Vec<VolumeObservation>> {
         let rows = db::volumes(&self.conn, None).map_err(sql)?;
         if rows.len() > 64 {
@@ -544,7 +546,7 @@ impl<'a> Input<'a> {
                     .ok();
                 }
                 // LW-137: the same granted online root, one read-only query, no scan of other disks.
-                if storage.is_none() {
+                if with_storage_path && storage.is_none() {
                     storage = self.query_storage(std::path::Path::new(&root.display_path));
                 }
             }
@@ -712,7 +714,7 @@ struct Dir {
 impl PlacementInput for Input<'_> {
     fn snapshot(&self, source: Option<&VolumeId>, deadline: Instant) -> EngineResult<Snapshot> {
         check(deadline)?;
-        let mut volumes = self.volumes(deadline, false)?;
+        let mut volumes = self.volumes(deadline, false, false)?;
         let Some(source) = source else {
             return Ok(Snapshot {
                 volumes,

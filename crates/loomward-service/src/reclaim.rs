@@ -93,7 +93,7 @@ impl Inner {
             .find(|v| v.id == volume_row)
             .ok_or_else(|| fail(ErrorCode::NotFound, "unknown volume"))?;
         let observed = input
-            .volumes(deadline, true)?
+            .volumes(deadline, true, false)?
             .into_iter()
             .find(|v| v.volume.volume_id.as_str() == format!("vo_{}", volume.id))
             .ok_or_else(|| fail(ErrorCode::NotFound, "unknown volume"))?;

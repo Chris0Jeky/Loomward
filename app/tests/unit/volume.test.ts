@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Volume } from '../../src/lib/contracts.gen';
 import { diskHealthLine, volumeMarkers } from '../../src/lib/format/volume';
+import { volumes } from '../../src/lib/stores/volumes.svelte';
 import { Client } from '../../src/lib/transport/client';
 import { createMockTransport } from '../../src/lib/transport/mock';
 
@@ -39,7 +40,7 @@ describe('disk health line (LW-137)', () => {
   it('shows reported counters as evidence, omits unreported ones and gives no verdict', async () => {
     const reported = (await load()).find((v) => v.storage_path?.health.state === 'counters_present')!;
     const line = diskHealthLine(reported);
-    expect(line).toBe('Disk health: counters reported, not a verdict (34 °C, 3% wear, 0 read errors, 0 write errors, 1200 h powered on)');
+    expect(line).toBe('Disk health: counters reported, not a verdict (34 Â°C, 3% wear, 0 read errors, 0 write errors, 1200 h powered on)');
     expect(line).not.toMatch(NEVER_HEALTHY);
     const sparse: Volume = { ...reported, storage_path: { ...reported.storage_path!, health: { state: 'counters_present', reason: null, counters: { ...reported.storage_path!.health.counters!, temperature_celsius: null, wear_percent: null, read_errors_total: null, write_errors_total: null, power_on_hours: null } } } };
     expect(diskHealthLine(sparse)).toBe('Disk health: counters reported, not a verdict');
@@ -49,5 +50,23 @@ describe('disk health line (LW-137)', () => {
     const offline = (await load()).find((v) => !v.online)!;
     expect(offline.storage_path).toBeUndefined();
     expect(diskHealthLine(offline)).toBe('Disk health: unknown (not observed)');
+  });
+});
+
+describe('volumes.changed keeps observed storage paths', () => {
+  it('merges the previous storage_path by volume_id until the next list, and never invents one', async () => {
+    const listed = (await new Client(createMockTransport()).call('volumes.list', {})).result.volumes;
+    const observed = listed.find((v) => v.storage_path)!;
+    const stripped = listed.map(({ storage_path: _dropped, ...rest }) => rest as Volume);
+    volumes.items = listed;
+    volumes.changed(stripped);
+    expect(volumes.items!.find((v) => v.volume_id === observed.volume_id)!.storage_path).toEqual(observed.storage_path);
+    // A volume that was never observed stays unobserved, and a row's own storage_path wins.
+    const never = listed.find((v) => !v.storage_path)!;
+    expect(volumes.items!.find((v) => v.volume_id === never.volume_id)!.storage_path).toBeUndefined();
+    const fresh = { ...observed.storage_path!, bus_type: 'sata' };
+    volumes.changed(stripped.map((v) => (v.volume_id === observed.volume_id ? { ...v, storage_path: fresh } : v)));
+    expect(volumes.items!.find((v) => v.volume_id === observed.volume_id)!.storage_path!.bus_type).toBe('sata');
+    volumes.items = null;
   });
 });

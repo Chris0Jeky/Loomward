@@ -21,7 +21,7 @@ export function diskHealthLine(volume: Volume): string {
   }
   const c = health.counters;
   const parts = [
-    c.temperature_celsius !== null ? `${c.temperature_celsius} °C` : null,
+    c.temperature_celsius !== null ? `${c.temperature_celsius} Â°C` : null,
     c.wear_percent !== null ? `${c.wear_percent}% wear` : null,
     c.read_errors_total !== null ? `${c.read_errors_total} read errors` : null,
     c.write_errors_total !== null ? `${c.write_errors_total} write errors` : null,
