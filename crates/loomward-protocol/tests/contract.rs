@@ -439,6 +439,68 @@ fn reclaim_relief_keeps_unknowns_null_and_refuses_extra_fields() {
 }
 
 #[test]
+fn coverage_report_keeps_unknowns_null_bounds_its_lists_and_is_owner_only() {
+    let mut schema = Schema::load();
+    let report = read(&contracts().join("examples/commands/coverage.result.result.json"));
+    // A path the catalogue does not hold and a size nobody could read are null, never a guess.
+    for (list, field) in [("not_covered", "node_id"), ("unknown", "node_id"), ("unknown", "bytes")] {
+        let mut value = report.clone();
+        value[list][if list == "unknown" { 0 } else { 1 }][field] = Value::Null;
+        assert!(schema.errors("CoverageReport", &value).is_empty(), "{list}.{field}");
+        assert_eq!(roundtrip("CoverageReport", &value).unwrap().unwrap(), value);
+        value[list][if list == "unknown" { 0 } else { 1 }]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        assert!(!schema.errors("CoverageReport", &value).is_empty());
+        assert!(roundtrip("CoverageReport", &value).unwrap().is_err());
+    }
+    for bad in [
+        json!({"outcome": "safe_to_delete"}),
+        json!({"reasons": ["cancelled"]}),
+        json!({"reasons": ["budget", "budget"]}),
+        json!({"bytes_read": 5}),
+        json!({"totals": {"covered": {"files": 1, "bytes": "1"}}}),
+        json!({"verdict": "covered"}),
+    ] {
+        let mut invalid = report.clone();
+        for (key, value) in bad.as_object().unwrap() {
+            invalid[key] = value.clone();
+        }
+        assert!(!schema.errors("CoverageReport", &invalid).is_empty(), "{bad}");
+        assert!(roundtrip("CoverageReport", &invalid).unwrap().is_err(), "{bad}");
+    }
+    let mut full = report.clone();
+    let item = report["not_covered"][0].clone();
+    full["not_covered"] = Value::Array(vec![item.clone(); 200]);
+    assert!(schema.errors("CoverageReport", &full).is_empty());
+    assert_eq!(roundtrip("CoverageReport", &full).unwrap().unwrap(), full);
+    full["not_covered"] = Value::Array(vec![item; 201]);
+    assert!(!schema.errors("CoverageReport", &full).is_empty());
+    assert!(roundtrip("CoverageReport", &full).unwrap().is_err());
+    let request = read(&contracts().join("examples/commands/coverage.start.request.json"));
+    for bad in [
+        json!({"a_root_id": "rt_a"}),
+        json!({"a_root_id": "rt_a", "b_root_id": "rt_b", "budget_secs": 0}),
+        json!({"a_root_id": "rt_a", "b_root_id": "rt_b", "budget_secs": 3601}),
+        json!({"a_root_id": "rt_a", "b_root_id": "rt_b", "budget_bytes": 5}),
+        json!({"a_root_id": "rt_a", "b_root_id": "rt_b", "budget_bytes": null}),
+        json!({"a_root_id": "rt_a", "b_root_id": "rt_b", "path": "C:\\"}),
+    ] {
+        assert!(!schema.errors("CoverageStartRequest", &bad).is_empty(), "{bad}");
+        assert!(roundtrip("CoverageStartRequest", &bad).unwrap().is_err(), "{bad}");
+    }
+    assert!(schema.errors("CoverageStartRequest", &request).is_empty());
+    assert_eq!(
+        roundtrip("CoverageStartRequest", &request).unwrap().unwrap(),
+        request
+    );
+    // Owner-only: no client projection exists for either command.
+    assert_eq!(Command::CoverageStart.client_result_def(), None);
+    assert_eq!(Command::CoverageResult.client_result_def(), None);
+}
+
+#[test]
 fn diagnostics_elevated_session_refusal_roundtrips_through_schema_and_dto() {
     let value = json!({
         "outcome": "refused", "bytes_written": null, "refusal": "elevated_session"

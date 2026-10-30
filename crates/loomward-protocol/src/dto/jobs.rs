@@ -12,6 +12,8 @@ pub enum JobKind {
     Duplicates,
     /// `reclaim.observe` (#939): the bounded link-count pass whose results `reclaim.plan` reads.
     Reclaim,
+    /// `coverage.start` (#1106): the read-only A-in-B content check; its report is `coverage.result`.
+    Coverage,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -180,7 +182,7 @@ pub struct JobListRequest {
         deserialize_with = "crate::types::optional_present",
         skip_serializing_if = "Option::is_none"
     )]
-    pub kinds: Option<UniqueVec<JobKind, 0, 5>>,
+    pub kinds: Option<UniqueVec<JobKind, 0, 6>>,
     pub limit: Int<1, 50>,
 }
 

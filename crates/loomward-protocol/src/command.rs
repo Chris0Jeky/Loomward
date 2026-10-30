@@ -86,6 +86,8 @@ commands! {
     ScanStart = "scan.start", ScanStartRequest, JobResult, [Tauri, Http], 2, [JobState, ScanProgress, TreeInvalidated];
     DuplicatesInspect = "duplicates.inspect", DuplicatesInspectRequest, JobResult, [Tauri, Http], 2, [JobState];
     DuplicatesCancel = "duplicates.cancel", JobRefRequest, JobResult, [Tauri, Http], 2, [JobState];
+    CoverageStart = "coverage.start", CoverageStartRequest, JobResult, [Tauri, Http], 2, [JobState];
+    CoverageResult = "coverage.result", JobRefRequest, CoverageReport, [Tauri, Http], 2, [];
     ScanCancel = "scan.cancel", JobRefRequest, JobResult, [Tauri, Http], 2, [JobState];
     JobsGet = "jobs.get", JobRefRequest, JobResult, [Tauri, Http], 2, [];
     JobsList = "jobs.list", JobListRequest, JobList, [Tauri, Http], 2, [];

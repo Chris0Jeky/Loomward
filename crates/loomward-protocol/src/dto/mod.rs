@@ -28,6 +28,8 @@ pub use inventory::*;
 mod common;
 mod copy;
 pub use copy::*;
+mod coverage;
+pub use coverage::*;
 mod diagnostics;
 pub use diagnostics::*;
 mod duplicates;

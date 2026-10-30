@@ -722,7 +722,7 @@
       }
     },
 
-    "JobKind": { "enum": ["scan", "refit", "teacher", "duplicates", "reclaim"], "$comment": "placement.simulate is synchronous and bounded, never a job (semantics.md section 2)." },
+    "JobKind": { "enum": ["scan", "refit", "teacher", "duplicates", "reclaim", "coverage"], "$comment": "placement.simulate is synchronous and bounded, never a job (semantics.md section 2)." },
     "JobState": { "enum": ["queued", "running", "cancel_requested", "cancelled", "failed", "completed"] },
     "ScanBudget": {
       "type": "object",
@@ -803,7 +803,7 @@
       "additionalProperties": false,
       "required": ["limit"],
       "properties": {
-        "kinds": { "type": "array", "maxItems": 5, "uniqueItems": true, "items": { "$ref": "#/$defs/JobKind" } },
+        "kinds": { "type": "array", "maxItems": 6, "uniqueItems": true, "items": { "$ref": "#/$defs/JobKind" } },
         "limit": { "type": "integer", "minimum": 1, "maximum": 50 }
       }
     },
@@ -812,6 +812,84 @@
       "additionalProperties": false,
       "required": ["jobs"],
       "properties": { "jobs": { "type": "array", "maxItems": 50, "items": { "$ref": "#/$defs/Job" } } }
+    },
+    "CoverageStartRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["a_root_id", "b_root_id"],
+      "properties": {
+        "a_root_id": { "$ref": "#/$defs/RootId" },
+        "b_root_id": { "$ref": "#/$defs/RootId" },
+        "budget_bytes": { "$ref": "#/$defs/ByteCount", "$comment": "Default-stream bytes read across all passes of both folders. Absent means 1 GiB." },
+        "budget_secs": { "type": "integer", "minimum": 1, "maximum": 3600, "$comment": "Wall-clock seconds shared by all passes. Absent means 60." }
+      },
+      "$comment": "#1106. Two distinct active granted roots; the same root twice, or overlapping roots, is invalid_request."
+    },
+    "CoverageOutcome": { "enum": ["complete", "partial"] },
+    "CoverageStop": { "enum": ["budget", "refused", "changed_during_read"], "$comment": "Why a result is partial. refused covers every other unreadable or unprovable case. A cancelled job has no result, so cancellation is a job state." },
+    "CoverageSide": { "enum": ["a", "b"] },
+    "CoverageTotal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["files", "bytes", "size_unknown"],
+      "properties": {
+        "files": { "$ref": "#/$defs/Count" },
+        "bytes": { "$ref": "#/$defs/ByteCount", "$comment": "A lower bound whenever size_unknown is above zero." },
+        "size_unknown": { "$ref": "#/$defs/Count" }
+      }
+    },
+    "CoverageTotals": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["covered", "not_covered", "unknown"],
+      "properties": {
+        "covered": { "$ref": "#/$defs/CoverageTotal" },
+        "not_covered": { "$ref": "#/$defs/CoverageTotal" },
+        "unknown": { "$ref": "#/$defs/CoverageTotal" }
+      }
+    },
+    "CoverageNotCovered": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "node_id", "bytes"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1, "maxLength": 32768, "$comment": "Display path below folder A, . for A itself; lossy for a non-Unicode name." },
+        "node_id": { "anyOf": [{ "$ref": "#/$defs/NodeId" }, { "type": "null" }], "$comment": "The catalogue row of this path; null when the catalogue does not hold it. Viewing only (invariant 5)." },
+        "bytes": { "$ref": "#/$defs/NullableBytes" }
+      }
+    },
+    "CoverageUnknown": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "node_id", "bytes", "side", "reason"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1, "maxLength": 32768 },
+        "node_id": { "anyOf": [{ "$ref": "#/$defs/NodeId" }, { "type": "null" }] },
+        "bytes": { "$ref": "#/$defs/NullableBytes" },
+        "side": { "$ref": "#/$defs/CoverageSide" },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 64 }
+      }
+    },
+    "CoverageReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["job_id", "a_root_id", "b_root_id", "outcome", "reasons", "bytes_read", "totals", "not_covered", "not_covered_truncated", "unknown", "unknown_truncated", "observed_at", "note"],
+      "properties": {
+        "job_id": { "$ref": "#/$defs/JobId" },
+        "a_root_id": { "$ref": "#/$defs/RootId" },
+        "b_root_id": { "$ref": "#/$defs/RootId" },
+        "outcome": { "$ref": "#/$defs/CoverageOutcome" },
+        "reasons": { "type": "array", "maxItems": 3, "uniqueItems": true, "items": { "$ref": "#/$defs/CoverageStop" }, "$comment": "Empty exactly when outcome is complete." },
+        "bytes_read": { "$ref": "#/$defs/ByteCount" },
+        "totals": { "$ref": "#/$defs/CoverageTotals" },
+        "not_covered": { "type": "array", "maxItems": 200, "items": { "$ref": "#/$defs/CoverageNotCovered" } },
+        "not_covered_truncated": { "type": "boolean" },
+        "unknown": { "type": "array", "maxItems": 200, "items": { "$ref": "#/$defs/CoverageUnknown" } },
+        "unknown_truncated": { "type": "boolean" },
+        "observed_at": { "$ref": "#/$defs/Timestamp" },
+        "note": { "type": "string", "minLength": 1, "maxLength": 1024 }
+      },
+      "$comment": "#1106, docs/48 section 4.5. Observation-time evidence that each covered A file had a B file of equal size and content digest when read. Not metadata fidelity, not an independent backup, never permission to delete. Per-file detail is kept only for not-covered and unknown files; covered files are counts only."
     },
 
     "MeaningThread": {
