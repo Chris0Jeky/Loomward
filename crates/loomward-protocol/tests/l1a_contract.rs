@@ -773,6 +773,33 @@ fn duplicate_report_candidate_space_is_additive_and_null_is_unknown() {
     }
 }
 
+/// `entries_compared` is additive like `candidate_space`: absent is unknown and is written back absent;
+/// null, a negative or string count and a count above the listed entries are refused.
+#[test]
+fn duplicate_report_entries_compared_is_additive_and_bounded_by_entries() {
+    let mut report = duplicate_report(2, json!([[0, 1]]), json!([]), json!([]));
+    let old: DuplicateReport = serde_json::from_value(report.clone()).unwrap();
+    assert_eq!(old.entries_compared, None);
+    assert!(serde_json::to_value(&old)
+        .unwrap()
+        .get("entries_compared")
+        .is_none());
+
+    for ok in [0, 1, 2] {
+        report["entries_compared"] = json!(ok);
+        let known: DuplicateReport = serde_json::from_value(report.clone()).unwrap();
+        assert_eq!(known.entries_compared.unwrap().get(), ok);
+        assert_eq!(serde_json::to_value(&known).unwrap(), report);
+    }
+    for bad in [json!(null), json!(-1), json!("2"), json!(1.5), json!(3)] {
+        report["entries_compared"] = bad.clone();
+        assert!(
+            serde_json::from_value::<DuplicateReport>(report.clone()).is_err(),
+            "{bad} must be refused"
+        );
+    }
+}
+
 fn tree_slice_example() -> Value {
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),

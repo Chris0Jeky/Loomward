@@ -50,7 +50,7 @@ def run(ctx) -> dict:
     expect(cleanup).not_to_contain_text('hard links outside the candidate, or not observed')
     expect(page.get_by_role('button', name='Cancel observation')).to_have_count(0)
     read_only()
-    choice = page.get_by_role('checkbox', name='Include target in selection', exact=True)
+    choice = page.get_by_role('checkbox', name='Include target (Tool-owned cleanup, cargo, candidate 1 of 1) in selection', exact=True)
     target = page.get_by_label('Space target (bytes)', exact=True)
     estimate = page.get_by_label('Selection estimate', exact=True)
     target.fill('6145')

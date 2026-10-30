@@ -365,7 +365,13 @@
   // keep the user's place and ask again; the first time, find the starting points.
   // `?q=` in the route (a link from another view) fills the box and searches once, when the session is
   // ready; a later reconnect keeps whatever the reader has searched since.
+  // `?node=` is applied once per distinct value for the same reason (#1082): a reconnect must not
+  // re-inspect the linked node over whatever the reader has inspected since. A route without `?node=`
+  // forgets the applied value, so the same link followed again inspects again. A reconnect that aborts the
+  // linked inspection before it settles un-applies it, so the link is not consumed unseen.
   let appliedQ: string | null = null;
+  let appliedNode: string | null = null;
+  let linkedPending: Promise<void> | null = null;
   $effect(() => {
     void session.epoch;
     const params = new URLSearchParams(route.search);
@@ -379,13 +385,23 @@
         query = linked.slice(0, 256);
         commit();
       }
+      const node = params.get('node'), observed = params.get('generation');
+      if (!node) appliedNode = null;
       void reload().then(() => {
         if (!trail.length && starts[0]) trail = [starts[0]]; // so Clear search has a folder to go back to
-        const node = params.get('node'), observed = params.get('generation');
-        if (current && node) void inspect(node, observed ?? undefined);
+        if (current && node && node !== appliedNode) {
+          appliedNode = node;
+          const run = inspect(node, observed ?? undefined);
+          linkedPending = run;
+          void run.finally(() => { if (linkedPending === run) linkedPending = null; });
+        }
       });
     });
-    return () => { current = false; inspection++; inspectAbort?.abort(); };
+    return () => {
+      current = false;
+      if (linkedPending) { appliedNode = null; linkedPending = null; }
+      inspection++; inspectAbort?.abort();
+    };
   });
 </script>
 

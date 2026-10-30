@@ -1,5 +1,6 @@
 import type { GroupKind, Job, ReclaimObserveProgress, ReclaimPlan, ReclaimRelief, ReclaimSelection, Volume } from '../../lib/contracts.gen';
 import { formatBytes, parseBytes } from '../../lib/format/bytes';
+import { escapedName } from '../../lib/format/names';
 import { LoomwardError } from '../../lib/transport/client';
 
 export const GROUP_HEADINGS: Record<GroupKind, string> = {
@@ -29,6 +30,13 @@ export function unaccountedText(report: ReclaimPlan): string {
 /** Navigation only: the Explorer route that inspects a candidate's catalogue node, or null when it has none (no generation: the plan carries none). */
 export function explorerHref(nodeId: string | null): string | null {
   return nodeId ? `#/explorer?node=${encodeURIComponent(nodeId)}` : null;
+}
+
+/** The accessible name detail of one candidate's Inspect link and selection checkbox (#1082). Candidates with
+ * the same name, or none, differ only by group, provider and place in the group, so those go in the name too;
+ * the visible text stays short. */
+export function candidateAccessibleName(name: string | null, group: string, provider: string, index: number, total: number): string {
+  return `${escapedName(name ?? 'Name unknown')} (${group}, ${provider}, candidate ${index + 1} of ${total})`;
 }
 
 export const OBSERVE_EXPLAINER =

@@ -1264,6 +1264,8 @@ fn report_dangles(report: &Value) -> bool {
             .into_iter()
             .flatten()
             .any(|skip| dangling(&skip["entry"]))
+        // entries_compared counts listed entries, so it cannot exceed them.
+        || report["entries_compared"].as_u64().is_some_and(|c| c > count)
 }
 
 /// A node may not be both added and removed in one update (semantics.md, Collections).
