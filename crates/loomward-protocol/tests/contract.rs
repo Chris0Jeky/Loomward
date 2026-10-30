@@ -162,6 +162,60 @@ fn reclaim_selection_is_additive_bounded_and_preserves_exact_bytes() {
 }
 
 #[test]
+fn insight_folder_is_owner_only_closed_and_never_a_probability_or_approval() {
+    let mut schema = Schema::load();
+    let result = read(&contracts().join("examples/commands/insight.folder.result.json"));
+    for (def, value, fields) in [
+        ("InsightFolder", &result, &["generation"][..]),
+        (
+            "InsightAxis",
+            &result["axes"][0],
+            &["label", "abstain_reason"][..],
+        ),
+    ] {
+        for field in fields {
+            let mut unknown = value.clone();
+            unknown[field] = Value::Null;
+            assert!(schema.errors(def, &unknown).is_empty());
+            assert_eq!(roundtrip(def, &unknown).unwrap().unwrap(), unknown);
+            unknown.as_object_mut().unwrap().remove(*field);
+            assert!(!schema.errors(def, &unknown).is_empty());
+            assert!(roundtrip(def, &unknown).unwrap().is_err());
+        }
+    }
+    // Closed everywhere: no probability, score, approval or effect field can ride along.
+    for (def, value) in [
+        ("InsightFolder", &result),
+        ("InsightAxis", &result["axes"][0]),
+        ("InsightVote", &result["axes"][0]["votes"][0]),
+        ("InsightLine", &result["lines"][0]),
+    ] {
+        for extra in ["probability", "score", "approved", "execute"] {
+            let mut padded = value.clone();
+            padded[extra] = json!(true);
+            assert!(!schema.errors(def, &padded).is_empty(), "{def} {extra}");
+            assert!(roundtrip(def, &padded).unwrap().is_err(), "{def} {extra}");
+        }
+    }
+    // Exactly the three axes.
+    let mut two = result.clone();
+    two["axes"].as_array_mut().unwrap().pop();
+    assert!(!schema.errors("InsightFolder", &two).is_empty());
+    assert!(roundtrip("InsightFolder", &two).unwrap().is_err());
+    for request in [
+        json!({"root_id":"rt_synthetic"}),
+        json!({"node_id":"nd_synthetic"}),
+        json!({"root_id":"rt_synthetic","node_id":"nd_synthetic","limit":5}),
+    ] {
+        assert!(!schema.errors("InsightFolderRequest", &request).is_empty());
+        assert!(roundtrip("InsightFolderRequest", &request)
+            .unwrap()
+            .is_err());
+    }
+    assert_eq!(Command::InsightFolder.client_result_def(), None);
+}
+
+#[test]
 fn diagnostics_elevated_session_refusal_roundtrips_through_schema_and_dto() {
     let value = json!({
         "outcome": "refused", "bytes_written": null, "refusal": "elevated_session"

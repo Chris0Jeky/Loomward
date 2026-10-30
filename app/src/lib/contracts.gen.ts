@@ -40,6 +40,49 @@ export interface ProjectsPage {
   next_cursor: Cursor | null;
 }
 
+export interface InsightFolderRequest {
+  root_id: RootId;
+  node_id: NodeId;
+}
+
+export type InsightAxisName = "meaning" | "lifecycle" | "recreatability";
+
+export type InsightOutcome = "label" | "abstain";
+
+export type InsightAbstainReason = "no_vote" | "conflict" | "coverage";
+
+export interface InsightVote {
+  function: string;
+  label: string;
+}
+
+/** label is set exactly when outcome is label; abstain_reason exactly when it is abstain. A rule vote is an inference from recorded facts, never a probability or an approval. */
+export interface InsightAxis {
+  axis: InsightAxisName;
+  outcome: InsightOutcome;
+  label: string | null;
+  abstain_reason: InsightAbstainReason | null;
+  votes: InsightVote[];
+}
+
+/** One fact-only sentence and the evidence-packet fields (JSON pointers) it was read from. */
+export interface InsightLine {
+  text: string;
+  trace: string[];
+}
+
+/** LW-138 (#877). Rule inference over one folder's catalogue facts: the three axes in order (meaning, lifecycle, recreatability) and the explainer's sentences. Not a probability, a decision, an approval or advice; no effects. */
+export interface InsightFolder {
+  root_id: RootId;
+  node_id: NodeId;
+  generation: Generation | null;
+  observed_at: Timestamp;
+  coverage: CoverageState;
+  partial: boolean;
+  axes: InsightAxis[];
+  lines: InsightLine[];
+}
+
 export type Protocol = "loomward/3";
 
 export type RequestId = string;
@@ -2479,6 +2522,7 @@ export const CLIENT_FIELDS = ["path", "size", "modified", "attributes", "volumes
 
 export interface CommandMap {
   "projects.find": { request: ProjectsRequest; result: ProjectsPage };
+  "insight.folder": { request: InsightFolderRequest; result: InsightFolder };
   "session.hello": { request: EmptyRequest; result: SessionInfo };
   "health.get": { request: EmptyRequest; result: Health };
   "apps.list": { request: MetadataPageRequest; result: ApplicationPage };
@@ -2573,6 +2617,7 @@ export type CommandKey = keyof CommandMap;
 /** Where each command exists (elsewhere: capability_unavailable), its wave and its events. */
 export const COMMANDS = {
   "projects.find": { adapters: ["tauri", "http"], wave: 2, events: [] },
+  "insight.folder": { adapters: ["tauri", "http"], wave: 2, events: [] },
   "session.hello": { adapters: ["tauri", "http"], wave: 1, events: [] },
   "health.get": { adapters: ["tauri", "http"], wave: 2, events: [] },
   "apps.list": { adapters: ["tauri", "http"], wave: 2, events: [] },

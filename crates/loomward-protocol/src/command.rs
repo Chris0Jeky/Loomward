@@ -98,6 +98,7 @@ commands! {
     StatsBreakdown = "stats.breakdown", BreakdownRequest, Breakdown, [Tauri, Http], 2, [];
     ClutterDeveloper = "clutter.developer", DeveloperClutterRequest, DeveloperClutterReport, [Tauri, Http], 2, [];
     ProjectsFind = "projects.find", ProjectsRequest, ProjectsPage, [Tauri, Http], 2, [];
+    InsightFolder = "insight.folder", InsightFolderRequest, InsightFolder, [Tauri, Http], 2, [];
     ReclaimPlan = "reclaim.plan", ReclaimPlanRequest, ReclaimPlan, [Tauri, Http], 2, [];
     ReclaimObserve = "reclaim.observe", ReclaimObserveRequest, JobResult, [Tauri, Http], 2, [JobState];
     TaxonomyGet = "taxonomy.get", EmptyRequest, Taxonomy, [Tauri, Http], 3, [];
