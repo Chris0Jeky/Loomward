@@ -280,7 +280,7 @@ mod native {
         let unknown = || Fact::Unknown {
             reason: "not queried by the IOCTL storage provider".into(),
         };
-        let bus_type = Fact::from_result(
+        let bus = Fact::from_result(
             property::<STORAGE_DEVICE_DESCRIPTOR>(&handle, StorageDeviceProperty).and_then(|d| {
                 if d.BusType == BusTypeUnknown {
                     Err(io::Error::other("device reports unknown bus type"))
@@ -323,12 +323,13 @@ mod native {
                     }
                 }),
         );
+        let health = observe_health(&bus, &guid);
         Ok(StorageObservation {
             storage_path: StoragePath {
                 volume_guid: guid,
                 disk_model: unknown(),
                 firmware: unknown(),
-                bus_type,
+                bus_type: bus.clone(),
                 usb_vid: Fact::Unknown {
                     reason: "USB/PnP discovery not implemented".into(),
                 },
@@ -351,12 +352,29 @@ mod native {
                 },
             },
             mount_paths: Fact::from_result(mounts(&volume[..=len])),
-            // shortcut: no WMI/COM provider yet; add MSFT_StorageReliabilityCounter when that provider lands.
-            health: HealthObservation::UnsupportedOrHidden {
-                reason: "MSFT_StorageReliabilityCounter not queried; USB SMART may be hidden"
-                    .into(),
-            },
+            health,
         })
+    }
+
+    /// #876: NVMe health log where a non-elevated query exists; every other bus keeps its reason.
+    fn observe_health(bus: &Fact<String>, guid: &str) -> crate::storage_path::HealthObservation {
+        use crate::{reliability, storage_path::HealthObservation};
+        match bus {
+            Fact::Known { value } if value == "nvme" => {
+                HealthObservation::from_counters(match reliability::nvme_counters(guid) {
+                    Ok(value) => Fact::Known { value },
+                    Err(error) => Fact::Unknown {
+                        reason: reliability::failure_reason(&error),
+                    },
+                })
+            }
+            Fact::Known { value } => HealthObservation::UnsupportedOrHidden {
+                reason: reliability::no_query_reason(value),
+            },
+            Fact::Unknown { .. } => HealthObservation::UnsupportedOrHidden {
+                reason: reliability::no_query_reason("unknown"),
+            },
+        }
     }
 
     pub(super) fn classify(mount: &[u16], kind: u32) -> io::Result<Classification> {

@@ -157,11 +157,20 @@ fn volumes_list_carries_the_storage_path_from_the_provider() {
     *svc.inner.hooks.storage.lock().unwrap() = Some(Box::new(Synthetic(None)));
     let volumes = list(svc);
     assert!(volumes["volumes"][0].get("storage_path").is_none());
-    // The real provider reports no health source yet, so whatever it observed is unsupported_or_hidden.
+    // The real provider reads NVMe counters where Windows allows it (#876); either way the wire is
+    // consistent: counters only with counters_present, a reason only without.
     *svc.inner.hooks.storage.lock().unwrap() = None;
     let volumes = list(svc);
     if let Some(storage) = volumes["volumes"][0].get("storage_path") {
-        assert_eq!(storage["health"]["state"], "unsupported_or_hidden");
-        assert!(storage["health"]["counters"].is_null());
+        let health = &storage["health"];
+        match health["state"].as_str() {
+            Some("counters_present") => {
+                assert!(health["counters"].is_object() && health["reason"].is_null());
+            }
+            Some("unsupported_or_hidden") => {
+                assert!(health["counters"].is_null() && health["reason"].is_string());
+            }
+            other => panic!("unexpected health state {other:?}"),
+        }
     }
 }

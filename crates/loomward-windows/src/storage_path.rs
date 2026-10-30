@@ -399,15 +399,34 @@ mod tests {
             observation.storage_path.bridge,
             Fact::Unknown { .. }
         ));
-        assert!(matches!(
-            observation.health,
-            HealthObservation::UnsupportedOrHidden { .. }
-        ));
         if let (Fact::Known { value: logical }, Fact::Known { value: physical }) = (
             observation.storage_path.logical_sector_bytes,
             observation.storage_path.physical_sector_bytes,
         ) {
             sector_alignment(logical, physical).unwrap();
+        }
+    }
+
+    /// #876: whatever this host's disk exposes, the health field is evidence or a reason, within
+    /// the query budget. No value, serial or model is asserted or printed.
+    #[cfg(windows)]
+    #[test]
+    fn real_provider_reports_counters_or_a_reason_within_the_query_bound() {
+        if crate::enumerate::skip_elevated_test() {
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let started = std::time::Instant::now();
+        let observation = WindowsStorageQueryProvider.query(root.path()).unwrap();
+        let bound = crate::reliability::QUERY_BUDGET + std::time::Duration::from_secs(3);
+        assert!(started.elapsed() < bound);
+        match observation.health {
+            HealthObservation::CountersPresent { counters } => {
+                assert_ne!(counters, ReliabilityCounters::default());
+            }
+            HealthObservation::UnsupportedOrHidden { reason } => {
+                assert!(!reason.is_empty() && !reason.contains("Volume{"));
+            }
         }
     }
 

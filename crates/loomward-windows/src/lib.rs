@@ -20,6 +20,8 @@ pub mod fixtures;
 
 #[cfg(all(windows, any(feature = "content-read", test)))]
 mod noncached;
+#[cfg(any(windows, test))]
+mod reliability;
 
 #[cfg(windows)]
 mod win;

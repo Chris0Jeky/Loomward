@@ -28,7 +28,7 @@ This is observation data and never authorises an operation.
 | USB VID/PID, bridge, BOT/UAS | Unknown: USB/PnP discovery is not implemented |
 | Removal policy | Unknown: no existing PnP removal-policy query; `RemovableMedia` is deliberately not substituted for policy |
 | Windows build | Unknown: not queried by this minimal IOCTL provider |
-| Health | `unsupported_or_hidden`: no WMI/COM reliability-counter provider exists yet |
+| Health | NVMe: `counters_present` from the NVMe SMART / Health log page (#876, section below). Every other bus: `unsupported_or_hidden` with a bus-specific reason |
 
 The write-cache mapping follows Microsoft's
 [STORAGE_WRITE_CACHE_PROPERTY contract](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntddstor/ns-ntddstor-_storage_write_cache_property).
@@ -136,12 +136,56 @@ The complete logs remain outside Git in the assigned build target directory:
 Driver resume: investigate the listed service failures before accepting a green
 workspace gate; retain the current storage implementation for review under #876.
 
+## Reliability counters without elevation (#876)
+
+Windows 11, 2026-10-30, non-elevated token, aggregate only (no serials, models or paths).
+Probe: a scratch program opened each fixed or removable volume with access 0 (the provider's own
+open path) and its physical drive with access 0, then sent read-only
+`IOCTL_STORAGE_QUERY_PROPERTY` queries. Six volumes on three buses were probed:
+
+| Bus (count) | NVMe health log (property 50, log page 2) | `StorageDeviceTemperatureProperty` (52) | `StorageDeviceEnduranceProperty` (62) |
+| --- | --- | --- | --- |
+| NVMe (3) | succeeded, 560 bytes, under 15 ms | succeeded | error 1117 (I/O device error) |
+| SATA (2) | error 1 (invalid function) | error 1 | error 1 |
+| USB (1) | error 87 (invalid parameter) | error 87 | error 87 |
+
+The volume handle and the physical-drive handle gave identical results, so the provider keeps
+using the volume handle it already opens (no disk-number lookup). `StorageDeviceUnsafeShutdownCount`
+returned error 1 everywhere. Nothing needed elevation. `MSFT_StorageReliabilityCounter` (WMI,
+`root\Microsoft\Windows\Storage`) and ATA SMART pass-through were not attempted: both are outside
+the no-elevation, no-new-dependency slice, and neither is claimed to work or to be refused.
+
+Mapping from the 512-byte NVMe log page (NVMe Base Specification, SMART / Health Information):
+
+| `ReliabilityCounters` field | Log page source |
+| --- | --- |
+| `temperature_celsius` | Composite Temperature (Kelvin, bytes 1-2) minus 273; 0 K or below 273 K is unknown |
+| `wear_percent` | Percentage Used (byte 5), reported as is (it may exceed 100) |
+| `power_on_hours` | Power On Hours (128-bit); a value above `u64` is unknown, not saturated |
+| `start_stop_cycles` | Power Cycles (128-bit), the nearest NVMe counterpart |
+| read/write error totals and uncorrected counts | Not mapped: the log has one aggregate Media Errors count, which is neither a read nor a write total |
+
+An all-zero page is treated as a driver stub, not a measurement. The query runs on a worker thread
+with a 2 s budget; on timeout the worker is detached and the row reports `unsupported_or_hidden`
+("exceeded 2 s"). At most four such stuck workers are allowed at once, after which queries are
+refused without spawning. Reasons never include identifiers. Through the real provider on this
+host (one query per volume): NVMe volumes reported `counters_present` with temperature, wear,
+power-on hours and power cycles all present (2 to 12 ms each); SATA volumes reported the "no
+unelevated health query" reason (under 2 ms); the USB volume reported the bridge reason (14 ms).
+Specific values are deliberately not recorded here.
+
+Sources: Microsoft Learn,
+[Working with NVMe Drives](https://learn.microsoft.com/en-us/windows/win32/fileio/working-with-nvme-devices)
+(protocol-specific queries, health log page, temperature queries) and
+[IOCTL_STORAGE_QUERY_PROPERTY](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntddstor/ni-ntddstor-ioctl_storage_query_property).
+
 ## Limits
 
-Real WMI counters, USB bridges/BOT/UAS, disk strings, PnP policy, Windows build,
+WMI counters, SATA/SAS health, other NVMe drivers or controllers, USB bridges/BOT/UAS, disk strings, PnP policy, Windows build,
 physical enclosure swaps and real drive-letter reassignment remain unverified.
 The non-Windows fallback test was not executed on this Windows host.
 The latter tuple behaviors are proven only through the synthetic provider. The
 minimal native provider intentionally cannot qualify an unchanged physical path
-while those observations are unknown. There is no health UI or service endpoint.
+while those observations are unknown. (Written before #1049; `volumes.list` now surfaces the
+storage path and health read-only.)
 `HUMAN_TODO.md` is unchanged; no owner action or personal-copy authority is inferred.
