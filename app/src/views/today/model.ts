@@ -1,6 +1,6 @@
 import type { AlertItem, AlertReport, AlertSettings, GroupKind, Job, JobKind, ReclaimPlan, Root, Volume } from '../../lib/contracts.gen';
 import { formatBytes, parseBytes } from '../../lib/format/bytes';
-import { diskHealthLine } from '../../lib/format/volume';
+import { diskHealthLine, hasDiskHealthWarning } from '../../lib/format/volume';
 import { measured, threshold } from '../alerts/model';
 
 /**
@@ -60,6 +60,8 @@ export interface VolumeRow {
   health: string;
   /** True when the health line is unknown: not observed, hidden behind a bridge, or not reported. Never a healthy reading. */
   healthUnknown: boolean;
+  /** True when the drive itself reported a critical warning; shown prominently, still as the drive's report. */
+  healthWarning: boolean;
   /** Everything not known or not current about the row, said plainly. */
   unknowns: string[];
 }
@@ -72,11 +74,11 @@ export function tierText(v: Volume): string {
  * The Disk health line for a Today row: diskHealthLine() unchanged. An offline volume was not queried (its
  * storage path is not read), so it reads not observed whatever it last held. Unknown is never healthy (invariant 4).
  */
-export function healthReading(v: Volume): { text: string; unknown: boolean } {
+export function healthReading(v: Volume): { text: string; unknown: boolean; warning: boolean } {
   const queried: Volume = v.online ? v : { ...v, storage_path: undefined };
   const health = queried.storage_path?.health;
   const unknown = health?.state !== 'counters_present' || !health.counters;
-  return { text: diskHealthLine(queried), unknown };
+  return { text: diskHealthLine(queried), unknown, warning: hasDiskHealthWarning(queried) };
 }
 
 const activeRoots = (roots: Root[]) => roots.filter((r) => r.grant_state === 'active');
@@ -114,7 +116,7 @@ export function volumeRows(volumes: Volume[], roots: Root[] | null, now: number)
     return {
       id: v.volume_id, name: v.display_name, online: v.online, used: v.online ? usedFraction(v) : null,
       space: v.online ? space : `Last observed: ${space}`,
-      tier: tierText(v), scan, health: health.text, healthUnknown: health.unknown, unknowns,
+      tier: tierText(v), scan, health: health.text, healthUnknown: health.unknown, healthWarning: health.warning, unknowns,
     };
   });
 }

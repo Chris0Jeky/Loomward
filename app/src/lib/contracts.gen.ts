@@ -436,7 +436,7 @@ export interface VolumeFeatures {
   usn_journal: boolean | null;
 }
 
-/** A reliability property the device did not report is null, never zero (invariant 4). */
+/** A reliability property the device did not report is null, never zero (invariant 4). media_errors is the NVMe aggregate Media and Data Integrity Errors count, neither a read nor a write error total. */
 export interface StorageCounters {
   temperature_celsius: NullableCount;
   read_errors_total: NullableCount;
@@ -446,6 +446,21 @@ export interface StorageCounters {
   power_on_hours: NullableCount;
   wear_percent: NullableCount;
   start_stop_cycles: NullableCount;
+  critical_warning: StorageCriticalWarning | null;
+  available_spare_percent: NullableCount;
+  available_spare_threshold_percent: NullableCount;
+  media_errors: NullableCount;
+  unsafe_shutdowns: NullableCount;
+}
+
+/** The NVMe Critical Warning byte as the device latched it (bits 0-4 named; other_bits is bits 5-7, unshifted and uninterpreted). A set flag is a device report, not a Loomward verdict, and a clear byte is not a healthy verdict either. */
+export interface StorageCriticalWarning {
+  available_spare_low: boolean;
+  temperature: boolean;
+  reliability_degraded: boolean;
+  read_only: boolean;
+  volatile_backup_failed: boolean;
+  other_bits: number;
 }
 
 /** LW-137. Reported counters are evidence, not a verdict: there is no healthy state. unsupported_or_hidden (including SMART behind a USB bridge) is unknown and is never shown as healthy. */

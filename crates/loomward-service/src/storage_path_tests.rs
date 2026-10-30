@@ -7,10 +7,11 @@ use crate::placement::wire_storage_path;
 #[cfg(windows)]
 use loomward_windows::storage_path::StorageQueryProvider;
 use loomward_windows::storage_path::{
-    HealthObservation, ReliabilityCounters, RemovalPolicy, StorageObservation, StoragePath,
-    UsbTransport,
+    CriticalWarning, HealthObservation, ReliabilityCounters, RemovalPolicy, StorageObservation,
+    StoragePath, UsbTransport,
 };
 use loomward_windows::volumes::Fact;
+use serde_json::json;
 
 fn known<T>(value: T) -> Fact<T> {
     Fact::Known { value }
@@ -128,6 +129,65 @@ fn wire_form_keeps_known_values_and_leaves_every_unobserved_fact_null() {
     // Nothing identifying travels: no GUID, no mount path.
     let text = wire.to_string();
     assert!(!text.contains("Volume{") && !text.contains("Q:"), "{text}");
+    // Unreported NVMe fields are null, not a clear warning or a zero.
+    for field in [
+        "critical_warning",
+        "available_spare_percent",
+        "available_spare_threshold_percent",
+        "media_errors",
+        "unsafe_shutdowns",
+    ] {
+        assert!(wire["health"]["counters"][field].is_null(), "{field}");
+    }
+}
+
+#[test]
+fn nvme_critical_warning_spare_media_and_shutdowns_reach_the_wire_as_reported() {
+    let mut observed = supported();
+    observed.health = HealthObservation::CountersPresent {
+        counters: ReliabilityCounters {
+            critical_warning: Some(CriticalWarning::from_byte(0b1010_0101)),
+            available_spare_percent: Some(0),
+            available_spare_threshold_percent: Some(10),
+            media_errors: Some(0),
+            unsafe_shutdowns: Some(u64::MAX),
+            ..Default::default()
+        },
+    };
+    // The wire form parses as the protocol type, so it cannot drift from the contract.
+    let parsed: loomward_protocol::VolumeStoragePath =
+        serde_json::from_value(wire_storage_path(&observed)).unwrap();
+    assert_eq!(
+        parsed
+            .health
+            .counters
+            .and_then(|c| c.critical_warning)
+            .map(|w| (w.available_spare_low, w.reliability_degraded, w.other_bits)),
+        Some((true, true, 0xA0))
+    );
+    let counters = wire_storage_path(&observed)["health"]["counters"].clone();
+    assert_eq!(
+        counters["critical_warning"],
+        json!({
+            "available_spare_low": true, "temperature": false, "reliability_degraded": true,
+            "read_only": false, "volatile_backup_failed": false, "other_bits": 0xA0,
+        })
+    );
+    // Measured zeros stay zero; a count past the wire's exact-integer range is clamped like the rest.
+    assert_eq!(counters["available_spare_percent"], 0);
+    assert_eq!(counters["available_spare_threshold_percent"], 10);
+    assert_eq!(counters["media_errors"], 0);
+    assert_eq!(counters["unsafe_shutdowns"], 9_007_199_254_740_991u64);
+    // A clear byte is an object of false flags, distinct from the null of an unreported byte.
+    observed.health = HealthObservation::CountersPresent {
+        counters: ReliabilityCounters {
+            critical_warning: Some(CriticalWarning::default()),
+            ..Default::default()
+        },
+    };
+    let clear = wire_storage_path(&observed)["health"]["counters"]["critical_warning"].clone();
+    assert_eq!(clear["available_spare_low"], false);
+    assert_eq!(clear["other_bits"], 0);
 }
 
 #[test]

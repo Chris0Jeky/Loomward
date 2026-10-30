@@ -1300,6 +1300,18 @@ pub(crate) fn wire_storage_path(observed: &StorageObservation) -> Value {
                 "power_on_hours": count(c.power_on_hours),
                 "wear_percent": count(c.wear_percent.map(u64::from)),
                 "start_stop_cycles": count(c.start_stop_cycles),
+                "critical_warning": c.critical_warning.map(|w| json!({
+                    "available_spare_low": w.available_spare_low,
+                    "temperature": w.temperature,
+                    "reliability_degraded": w.reliability_degraded,
+                    "read_only": w.read_only,
+                    "volatile_backup_failed": w.volatile_backup_failed,
+                    "other_bits": w.other_bits,
+                })),
+                "available_spare_percent": count(c.available_spare_percent.map(u64::from)),
+                "available_spare_threshold_percent": count(c.available_spare_threshold_percent.map(u64::from)),
+                "media_errors": count(c.media_errors),
+                "unsafe_shutdowns": count(c.unsafe_shutdowns),
             },
         }),
         HealthObservation::UnsupportedOrHidden { reason } => json!({

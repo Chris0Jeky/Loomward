@@ -125,13 +125,13 @@ describe('disk health on volume rows', () => {
   });
   const reporting = health({
     state: 'counters_present', reason: null,
-    counters: { temperature_celsius: 34, read_errors_total: 0, read_errors_uncorrected: null, write_errors_total: 0, write_errors_uncorrected: null, power_on_hours: 1200, wear_percent: 3, start_stop_cycles: null },
+    counters: { temperature_celsius: 34, read_errors_total: 0, read_errors_uncorrected: null, write_errors_total: 0, write_errors_uncorrected: null, power_on_hours: 1200, wear_percent: 3, start_stop_cycles: null, critical_warning: null, available_spare_percent: null, available_spare_threshold_percent: null, media_errors: null, unsafe_shutdowns: null },
   });
   const hidden = health({ state: 'unsupported_or_hidden', reason: 'not reported through this USB bridge', counters: null });
 
   it('reads a volume hidden behind a USB bridge as unknown, never healthy', () => {
     const r = healthReading(volume({ storage_path: hidden }));
-    expect(r).toEqual({ text: 'Disk health: unknown (not reported through this USB bridge)', unknown: true });
+    expect(r).toEqual({ text: 'Disk health: unknown (not reported through this USB bridge)', unknown: true, warning: false });
     expect(r.text).not.toMatch(/healthy/i);
   });
 
@@ -141,12 +141,26 @@ describe('disk health on volume rows', () => {
     expect(r.text).toContain('34 °C');
     expect(r.text).not.toMatch(/healthy/i);
     expect(r.unknown).toBe(false);
+    expect(r.warning).toBe(false);
+  });
+
+  it('flags a drive-reported critical warning on the row, and an offline volume is not flagged', () => {
+    const warned = health({
+      state: 'counters_present', reason: null,
+      counters: { ...reporting!.health.counters!, critical_warning: { available_spare_low: true, temperature: false, reliability_degraded: false, read_only: false, volatile_backup_failed: false, other_bits: 0 } },
+    });
+    const r = healthReading(volume({ storage_path: warned }));
+    expect(r).toMatchObject({ unknown: false, warning: true });
+    expect(r.text).toMatch(/^Disk health: the drive reports a critical warning \(available spare below threshold\) — counters reported, not a verdict/);
+    expect(r.text).not.toMatch(/healthy/i);
+    expect(volumeRows([volume({ storage_path: warned })], [], NOW)[0]).toMatchObject({ healthWarning: true, healthUnknown: false });
+    expect(healthReading(volume({ online: false, storage_path: warned })).warning).toBe(false);
   });
 
   it('reads an absent storage path as not observed, and an offline volume as not observed whatever it held', () => {
-    expect(healthReading(volume())).toEqual({ text: 'Disk health: unknown (not observed)', unknown: true });
+    expect(healthReading(volume())).toEqual({ text: 'Disk health: unknown (not observed)', unknown: true, warning: false });
     const offline = healthReading(volume({ online: false, storage_path: reporting }));
-    expect(offline).toEqual({ text: 'Disk health: unknown (not observed)', unknown: true });
+    expect(offline).toEqual({ text: 'Disk health: unknown (not observed)', unknown: true, warning: false });
   });
 
   it('carries the health line and its unknown flag on each volume row, unchanged from diskHealthLine', () => {

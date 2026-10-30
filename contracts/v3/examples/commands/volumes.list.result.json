@@ -52,8 +52,20 @@
             "write_errors_total": 0,
             "write_errors_uncorrected": null,
             "power_on_hours": 1200,
-            "wear_percent": 3,
-            "start_stop_cycles": null
+            "wear_percent": 97,
+            "start_stop_cycles": null,
+            "critical_warning": {
+              "available_spare_low": true,
+              "temperature": false,
+              "reliability_degraded": false,
+              "read_only": false,
+              "volatile_backup_failed": false,
+              "other_bits": 0
+            },
+            "available_spare_percent": 8,
+            "available_spare_threshold_percent": 10,
+            "media_errors": 0,
+            "unsafe_shutdowns": 4
           }
         }
       },
