@@ -14,6 +14,7 @@
   import NodeMeaning from '../../lib/ui/NodeMeaning.svelte';
   import AddToCollection from '../../lib/ui/AddToCollection.svelte';
   import CopyTo from '../../lib/ui/CopyTo.svelte';
+  import FolderInsight from '../../lib/ui/FolderInsight.svelte';
   import type { CopyItem } from '../../lib/stores/copy.svelte';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
   import type { Basis, EntryPage, EntryRow, NodeId, NodeDetail, SearchHit, SearchPage } from '../../lib/contracts.gen';
@@ -491,6 +492,7 @@
     {#if detail.identity.durable_reference === 'available'}
       {#key detail.row.node_id}<AddToCollection nodeId={detail.row.node_id} expectedGeneration={detailGeneration} />{/key}
     {:else}<p class="muted">This node has no durable identity, so it cannot join a collection.</p>{/if}
+    {#key detail.row.node_id}<FolderInsight rootId={detail.root_id} nodeId={detail.row.node_id} kind={detail.row.kind} />{/key}
   </section>
 {/if}
 
