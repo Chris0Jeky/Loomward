@@ -281,7 +281,7 @@ mod native {
     }
 
     #[test]
-    fn revocation_after_plain_scan_finish_preserves_admitted_completion() {
+    fn revocation_after_plain_scan_finish_withdraws_admitted_completion() {
         let Some((_temp, root, engine)) = fixture() else {
             return;
         };
@@ -294,8 +294,8 @@ mod native {
         reached_finish
             .recv_timeout(Duration::from_secs(10))
             .unwrap();
-        // Admission and MemorySink::finish_run have already succeeded. Root revocation may not
-        // acknowledge cancellation of that historical result, but must fence all future work.
+        // Admission and MemorySink::finish_run have already succeeded. Root revocation still
+        // withdraws the job's coverage (ADR-V3-22, d215fa44) and fences all future work.
         let published = sink.memory.sweep_allowed(root.root_id());
         let revoked = revoke_plain_while_paused(&engine, &root, resume);
         assert!(
@@ -304,10 +304,9 @@ mod native {
         );
         assert_eq!(revoked.len(), 1);
         assert_eq!(revoked[0].job_id, job.job_id);
-        assert_eq!(revoked[0].state, JobState::Running);
-        let terminal = wait_for(&engine, &job.job_id, |job| job.state == JobState::Completed);
-        assert_eq!(terminal.coverage, Some(CoverageState::Complete));
-        assert!(terminal.error.is_none());
+        assert_eq!(revoked[0].state, JobState::CancelRequested);
+        let terminal = wait_for(&engine, &job.job_id, |job| job.state == JobState::Cancelled);
+        assert_eq!(terminal.coverage, Some(CoverageState::Cancelled));
         assert_revoked_root_is_fenced(&engine, &root, &sink);
     }
 

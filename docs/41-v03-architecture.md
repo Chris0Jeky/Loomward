@@ -983,7 +983,7 @@ separately; state on G: unless stated.
 | File ID reused for a new object | Continuity key includes creation time: old labels become `unresolved`, not reattached |
 | `catalog.db` corrupt | Renamed aside; roots recreated from active grants in `state.db`; rescans rebuild; no grant is minted |
 | `state.db` corrupt | That dataset class refuses to start; owner restores a `VACUUM INTO` backup |
-| Revocation during a scan | Grant revocation commits first, hides the root's catalogue observations, and rejects later writer messages. An accepted cancellation yields a cancelled job; an already admitted plain job reports its actual completion or failure. A historical job outcome never restores the revoked grant |
+| Revocation during a scan | Grant revocation commits first, hides the root's catalogue observations, and rejects later writer messages. Revocation cancels any nonterminal scan, even after a plain scan's final publication admission (ADR-V3-22); ordinary `scan.cancel` cannot. A historical job outcome never restores the revoked grant |
 | Volume offline | `device_offline`; volume `online: false`; existing rows kept, coverage `stale` |
 | Writer slower than enumeration | Byte semaphore backpressure; `scan_throttled`; memory bounded |
 | UI slow to read events | Per-subscriber overflow: `stream.lagged`; engine never blocks |
