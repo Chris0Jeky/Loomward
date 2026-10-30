@@ -87,12 +87,25 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
     };
   };
   const exclusion = (v: VolumeSeed) => v.exclusion ?? (tierInfo(v).tier === null ? 'tier_unknown' : null);
+  // LW-137: USB and SATA seeds hide their reliability counters; NVMe seeds report some. Unreported facts stay null.
+  const storagePath = (v: VolumeSeed): NonNullable<Volume['storage_path']> => {
+    const hidden = v.bus === 'usb' || v.bus === 'sata' || v.bus === 'unknown';
+    return {
+      bus_type: v.bus === 'unknown' ? null : v.bus, bridge: v.bus === 'usb' ? 'Synthetic enclosure A' : null, usb_transport: v.bus === 'usb' ? 'uas' : null,
+      logical_sector_bytes: v.bus === 'unknown' ? null : 512, physical_sector_bytes: v.bus === 'unknown' ? null : 4096,
+      removal_policy: v.bus === 'usb' ? 'expect_surprise_removal' : null, write_cache_enabled: v.bus === 'nvme' ? true : null,
+      health: hidden
+        ? { state: 'unsupported_or_hidden', reason: v.bus === 'usb' ? 'not reported through this USB bridge' : 'no reliability counters reported', counters: null }
+        : { state: 'counters_present', reason: null, counters: { temperature_celsius: 34, read_errors_total: 0, read_errors_uncorrected: null, write_errors_total: 0, write_errors_uncorrected: null, power_on_hours: 1200, wear_percent: 3, start_stop_cycles: null } },
+    };
+  };
   const volumeRow = (v: VolumeSeed): Volume => ({
     volume_id: v.id, display_name: v.name, mount_points: [`${v.name}\\`], filesystem: v.fs, label: null, online: v.exclusion !== 'offline', read_only: false, removable: v.removable,
     capacity_bytes: v.exclusion === 'capacity_unknown' ? null : str(v.capacity),
     free_bytes: v.exclusion === 'capacity_unknown' ? null : str(v.exclusion === 'physics_unusable' ? v.capacity + 1n : free(v)),
     device: { bus_type: v.bus, seek_penalty: v.seek, multiple_disks: v.bus === 'usb' ? null : false, basis: v.bus === 'usb' ? 'unavailable' : 'ioctl_storage_query_property' },
     tier: tierInfo(v), features: { file_ids_128: null, hard_links: null, sparse_files: null, compression: null, reparse_points: null, usn_journal: null }, // unknown, not invented
+    ...(v.exclusion === 'offline' ? {} : { storage_path: storagePath(v) }), // an offline volume is not queried
     observed_at: iso(),
   });
 

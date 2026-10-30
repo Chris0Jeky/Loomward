@@ -423,6 +423,49 @@
         "usn_journal": { "type": ["boolean", "null"] }
       }
     },
+    "StorageCounters": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["temperature_celsius", "read_errors_total", "read_errors_uncorrected", "write_errors_total", "write_errors_uncorrected", "power_on_hours", "wear_percent", "start_stop_cycles"],
+      "properties": {
+        "temperature_celsius": { "$ref": "#/$defs/NullableCount" },
+        "read_errors_total": { "$ref": "#/$defs/NullableCount" },
+        "read_errors_uncorrected": { "$ref": "#/$defs/NullableCount" },
+        "write_errors_total": { "$ref": "#/$defs/NullableCount" },
+        "write_errors_uncorrected": { "$ref": "#/$defs/NullableCount" },
+        "power_on_hours": { "$ref": "#/$defs/NullableCount" },
+        "wear_percent": { "$ref": "#/$defs/NullableCount" },
+        "start_stop_cycles": { "$ref": "#/$defs/NullableCount" }
+      },
+      "$comment": "A reliability property the device did not report is null, never zero (invariant 4)."
+    },
+    "StorageHealth": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "reason", "counters"],
+      "properties": {
+        "state": { "enum": ["counters_present", "unsupported_or_hidden"] },
+        "reason": { "type": ["string", "null"], "maxLength": 256 },
+        "counters": { "anyOf": [{ "$ref": "#/$defs/StorageCounters" }, { "type": "null" }] }
+      },
+      "$comment": "LW-137. Reported counters are evidence, not a verdict: there is no healthy state. unsupported_or_hidden (including SMART behind a USB bridge) is unknown and is never shown as healthy."
+    },
+    "VolumeStoragePath": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bus_type", "bridge", "usb_transport", "logical_sector_bytes", "physical_sector_bytes", "removal_policy", "write_cache_enabled", "health"],
+      "properties": {
+        "bus_type": { "type": ["string", "null"], "maxLength": 32 },
+        "bridge": { "type": ["string", "null"], "maxLength": 64 },
+        "usb_transport": { "enum": ["bot", "uas", null] },
+        "logical_sector_bytes": { "$ref": "#/$defs/NullableCount" },
+        "physical_sector_bytes": { "$ref": "#/$defs/NullableCount" },
+        "removal_policy": { "enum": ["expect_no_removal", "expect_orderly_removal", "expect_surprise_removal", null] },
+        "write_cache_enabled": { "type": ["boolean", "null"] },
+        "health": { "$ref": "#/$defs/StorageHealth" }
+      },
+      "$comment": "LW-137 storage-path facts. Every null is unknown, never a default. The volume GUID, device serial and mount paths are not carried. Observation only, never authority."
+    },
     "Volume": {
       "type": "object",
       "additionalProperties": false,
@@ -441,6 +484,7 @@
         "device": { "$ref": "#/$defs/DeviceHint" },
         "tier": { "$ref": "#/$defs/TierInfo" },
         "features": { "$ref": "#/$defs/VolumeFeatures" },
+        "storage_path": { "$ref": "#/$defs/VolumeStoragePath", "$comment": "Optional and additive: absent means the storage path was not observed, which is unknown and never healthy." },
         "observed_at": { "$ref": "#/$defs/Timestamp" }
       }
     },

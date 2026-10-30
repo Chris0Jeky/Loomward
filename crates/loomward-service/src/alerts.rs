@@ -77,7 +77,7 @@ impl Inner {
             .collect::<rusqlite::Result<_>>()
             .map_err(sql_error)?;
         let volumes: Vec<VolumeInput> = input
-            .volumes(deadline, true)?
+            .volumes(deadline, true, false)?
             .into_iter()
             .filter_map(|o| {
                 let row: i64 = o.volume.volume_id.strip_prefix("vo_")?.parse().ok()?;

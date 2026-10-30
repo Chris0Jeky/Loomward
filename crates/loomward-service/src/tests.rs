@@ -74,6 +74,9 @@ pub(crate) struct Hooks {
     pub probe_error: Mutex<Option<loomward_windows::enumerate::SourceError>>,
     /// #519 review: a personal space read for one volume key answers this instead of the OS.
     pub space: Mutex<Vec<(String, SpaceFake)>>,
+    /// LW-137: a synthetic storage-query provider answers `volumes.list` instead of the OS.
+    pub storage:
+        Mutex<Option<Box<dyn loomward_windows::storage_path::StorageQueryProvider + Send>>>,
     /// #530: the personal space read budget a test sets instead of the production 500 ms.
     pub personal_space_wait: Mutex<Option<Duration>>,
     /// #569: the next explicit scan.start that has just cancelled an automatic run fails on retry.
@@ -9979,6 +9982,8 @@ mod gap_tests;
 #[cfg(test)]
 #[path = "alerts_tests.rs"]
 mod alerts_tests;
+#[path = "storage_path_tests.rs"]
+mod storage_path_tests;
 
 #[cfg(test)]
 #[path = "clutter_tests.rs"]

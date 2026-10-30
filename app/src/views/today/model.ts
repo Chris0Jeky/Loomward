@@ -44,7 +44,7 @@ export interface VolumeRow {
   name: string;
   online: boolean;
   used: number | null;
-  /** "212 GiB free of 2.00 TiB", or what is unknown. */
+  /** "212 GiB free of 2.00 TiB", or what is unknown; "Last observed: ..." for an offline volume. */
   space: string;
   tier: string;
   /** Last scan of the granted folders on this volume, in words. */
@@ -86,9 +86,11 @@ export function volumeRows(volumes: Volume[], roots: Root[] | null, now: number)
       const partial = mine.filter((r) => r.scan.state === 'partial' || r.scan.coverage === 'partial').length;
       if (partial) unknowns.push(`${plural(partial, 'granted folder')} scanned only in part.`);
     }
+    // An offline volume's figures are old: they are worded as such and draw no fill level (never shown as current).
+    const space = `${formatBytes(v.free_bytes)} free of ${formatBytes(v.capacity_bytes)}`;
     return {
-      id: v.volume_id, name: v.display_name, online: v.online, used: usedFraction(v),
-      space: `${formatBytes(v.free_bytes)} free of ${formatBytes(v.capacity_bytes)}`,
+      id: v.volume_id, name: v.display_name, online: v.online, used: v.online ? usedFraction(v) : null,
+      space: v.online ? space : `Last observed: ${space}`,
       tier: tierText(v), scan, unknowns,
     };
   });
@@ -130,6 +132,17 @@ export const SECTION_TITLES: Record<Section, string> = {
   alerts: 'Alerts', roots: 'Granted folders', jobs: 'Unfinished work', reclaim: 'Reclaim on a nearly full volume',
 };
 
+/** The human name of every view Today links to; a view with no entry falls back to its slug. */
+const VIEW_NAMES: Record<string, string> = {
+  alerts: 'Alerts', health: 'Grants & health', duplicates: 'Duplicates', reclaim: 'Reclaim', review: 'Learning review',
+};
+export const linkName = (view: string): string => VIEW_NAMES[view] ?? view;
+
+/** Where "and N more" points: every distinct view among the items not shown (jobs of mixed kinds live in several views). */
+export function moreViews(items: Need[], shown: number): string[] {
+  return [...new Set(items.slice(shown).map((i) => i.view))];
+}
+
 export function rootNeed(r: Root): Need | null {
   if (r.grant_state === 'identity_changed') {
     return { key: `root-${r.root_id}`, section: 'roots', name: r.display_path.text, text: 'now looks like a different folder, so its grant no longer applies. Grant it again to use it.', view: 'health', linkText: 'Open Grants & health' };
@@ -141,7 +154,10 @@ export function rootNeed(r: Root): Need | null {
     failed: 'failed its last scan.',
     partial: 'was only partly scanned, so its numbers are incomplete.',
   };
-  const text = why[r.scan.state];
+  // A finished scan whose coverage is not complete is not a clean result either (invariant 4).
+  const incompleteCoverage = r.scan.state === 'complete' && r.scan.coverage !== 'complete'
+    ? `finished, but its coverage is ${r.scan.coverage}, so its numbers may be incomplete.` : undefined;
+  const text = why[r.scan.state] ?? incompleteCoverage;
   return text ? { key: `root-${r.root_id}`, section: 'roots', name: r.display_path.text, text, view: 'health', linkText: 'Rescan in Grants & health' } : null;
 }
 

@@ -433,6 +433,20 @@ Commands, named skips, regression controls and suite results are in
 manual accessibility/field acceptance in #24/#101 remains separate. No new owner action was
 added to `HUMAN_TODO.md`.
 
+## Flagship wave — 30 October 2026
+
+One driver (Opus 5.5) with Sonnet and Haiku workers and a separate research session, under the estate's flagship push. Every merged PR had green hosted CI (Ubuntu and Windows) at its exact head and a fresh-context review (Codex alone only for the very low-risk ones); fix rounds got a scoped verification pass.
+
+- **Windows native CI runs unelevated** (#814, adopted from the 29 October Codex draft): hosted Windows runs the native gates under a disposable standard user, so the ~87 tests that returned early on elevated runners now execute, and a run that prints an elevated-skip marker fails. Exposed and fixed a `tree.slice` repair race in the pathological suite (#1042). The #738 witness is aligned with ADR-V3-22 (root revocation overrides admission). Follow-ups #1007.
+- **Reclaim** (LW-131): selection validates against every gathered candidate (#1017, #1003); placement uses stored reclaim verdicts as verified relief (#1025, #939); a before/after relief check with volume-GUID binding, purge on revoke and honest unknowns (#1030, #1013); rules v3 for ComfyUI/A1111 model stores and Steam libraries (#1023, #1010).
+- **Archive and custody** (LW-136): `verify-tree --only` for selected-file plans (#1019, #1009); `covers A B` content containment (#1036, #1011); `plan_archive` states one planned copy and a plan-level sole-copy warning, never verification (#1046); a durable per-directory manifest root over raw UTF-16 names with a versioned collation (#1047). docs/48 §6 records the first cleanup and that removal waits for LW-135 (#1040, #1012).
+- **Understanding files** (LW-138): a fact-only explanation renderer whose coldness line uses the newest dated activity and never claims inactivity over a dirty tree (#1045).
+- **App**: a Today landing view (#1022) with alert-evaluability honesty (#1038); no-grant empty states link to Grants & health (#1021); duplicates say how much of the candidate space a run examined (#1032, #1014).
+- **Fixes**: the lab VM is turned off after a clean campaign (#1008, #944, #987); the folder watch rebuilds at once when Safely Remove is refused, one veto buying one attempt (#1028, #935 item 3); local `lab_copy` tests use `%ProgramData%` roots (#1034, #1027); rustls 0.23.46 (#1039); docs and mock fixes (#1018, #1020).
+- **Closed as already fixed or declined after a re-check:** #515, #840 items 1/4/5, #954 three reclaim items, #762 items, #437 code items.
+
+Measured on Windows 11 build 26300, non-elevated: each PR's crate suites, fmt and clippy, app check and unit tests where the app changed; browser e2e on hosted CI. Not verified here: a real Safely Remove veto, a real-disk relief check, the Today view in the native window. Open at the time of writing: #1044 (relief age), #1049 (storage path on volumes.list), #1050, #1051 (`insight.folder`), #1052; follow-ups #1024, #1029, #1031, #1033, #1048.
+
 ## Evening wave — 27 October 2026
 
 The same driver (Opus 5.5) worked the open issues with two Sol peers (LW-132, #954 code items), a Haiku worker (#821) and Sonnet helpers (reviews, a stale-issue scan). Every merged PR had green hosted CI (Ubuntu and Windows) at its exact head, after at least three minutes of aging, and a review: Codex alone for very-low-risk docs and tests, and one fresh-context reviewer for the rest, with a second round where a fix changed logic (#996).

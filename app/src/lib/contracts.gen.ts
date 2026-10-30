@@ -436,6 +436,37 @@ export interface VolumeFeatures {
   usn_journal: boolean | null;
 }
 
+/** A reliability property the device did not report is null, never zero (invariant 4). */
+export interface StorageCounters {
+  temperature_celsius: NullableCount;
+  read_errors_total: NullableCount;
+  read_errors_uncorrected: NullableCount;
+  write_errors_total: NullableCount;
+  write_errors_uncorrected: NullableCount;
+  power_on_hours: NullableCount;
+  wear_percent: NullableCount;
+  start_stop_cycles: NullableCount;
+}
+
+/** LW-137. Reported counters are evidence, not a verdict: there is no healthy state. unsupported_or_hidden (including SMART behind a USB bridge) is unknown and is never shown as healthy. */
+export interface StorageHealth {
+  state: "counters_present" | "unsupported_or_hidden";
+  reason: string | null;
+  counters: StorageCounters | null;
+}
+
+/** LW-137 storage-path facts. Every null is unknown, never a default. The volume GUID, device serial and mount paths are not carried. Observation only, never authority. */
+export interface VolumeStoragePath {
+  bus_type: string | null;
+  bridge: string | null;
+  usb_transport: "bot" | "uas" | null;
+  logical_sector_bytes: NullableCount;
+  physical_sector_bytes: NullableCount;
+  removal_policy: "expect_no_removal" | "expect_orderly_removal" | "expect_surprise_removal" | null;
+  write_cache_enabled: boolean | null;
+  health: StorageHealth;
+}
+
 export interface Volume {
   volume_id: VolumeId;
   display_name: string;
@@ -450,6 +481,8 @@ export interface Volume {
   device: DeviceHint;
   tier: TierInfo;
   features: VolumeFeatures;
+  /** Optional and additive: absent means the storage path was not observed, which is unknown and never healthy. */
+  storage_path?: VolumeStoragePath;
   observed_at: Timestamp;
 }
 
