@@ -527,6 +527,9 @@ impl Inner {
     /// Forgetting, revoking or losing a root's identity deletes its relief verdicts, and the relief
     /// samples of a volume left with no active grant (#1013).
     pub(crate) fn drop_reclaim_relief(&self, grant: i64) -> Result<(), ErrorBody> {
+        // A coverage report names the files of both its folders, so it ends with either grant (#1106).
+        // Before the state lock: `store_coverage` takes the reports lock, then the state lock.
+        self.covers.forget_grant(grant);
         let conn = self.db();
         conn.execute("DELETE FROM st.reclaim_selection WHERE EXISTS(SELECT 1 FROM json_each(members) WHERE json_extract(value,'$.grant')=?1)", [grant]).map_err(sql_error)?;
         conn.execute("DELETE FROM st.reclaim_relief WHERE grant_id=?1", [grant])

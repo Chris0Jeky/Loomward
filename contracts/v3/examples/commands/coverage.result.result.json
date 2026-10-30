@@ -1,0 +1,24 @@
+{
+  "job_id": "jb_0011",
+  "a_root_id": "rt_synth1",
+  "b_root_id": "rt_synth2",
+  "outcome": "partial",
+  "reasons": ["budget"],
+  "bytes_read": "1073741824",
+  "totals": {
+    "covered": { "files": 1204, "bytes": "3412001792", "size_unknown": 0 },
+    "not_covered": { "files": 2, "bytes": "9437184", "size_unknown": 0 },
+    "unknown": { "files": 1, "bytes": "0", "size_unknown": 1 }
+  },
+  "not_covered": [
+    { "path": "photos/2019/raw-0042.cr2", "node_id": "nd_synthfile_0042", "bytes": "8388608" },
+    { "path": "notes/draft.txt", "node_id": null, "bytes": "1048576" }
+  ],
+  "not_covered_truncated": false,
+  "unknown": [
+    { "path": "scans/locked.bin", "node_id": null, "bytes": null, "side": "a", "reason": "sharing_violation" }
+  ],
+  "unknown_truncated": false,
+  "observed_at": "2026-10-30T09:13:10Z",
+  "note": "Covered by content when read: every covered file of A had a file in B of equal size and equal content digest. Observation-time evidence, not a receipt: it is not metadata fidelity, not an independent backup and not permission to delete anything. Unknown bytes are a lower bound when size_unknown is above zero."
+}

@@ -272,7 +272,7 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
     const ev: EventEnvelope = { protocol: 'loomward/3', epoch: EPOCH, seq: ++seq, event, at: now().toISOString(), catalog_rev: event === 'tree.invalidated' ? views.catalogRev() : null, state_rev: null, data: data as unknown as EventEnvelope['data'] };
     for (const l of listeners) l(ev);
   };
-  const scan = createScanMock({ now, fail: failWith, emit, isRevoked: (id) => views.revokedRoots.has(id) });
+  const scan = createScanMock({ now, fail: failWith, emit, isRevoked: (id) => views.revokedRoots.has(id), fileNodes: () => tree.nodes.filter((n) => n.kind === 'file').slice(0, 2).map((n) => n.id) });
   // Synthetic GPU and disk channels for the Observatory (L10), layered on the view mock's system and
   // engine channels (L13), so one telemetry.snapshot serves both. A deterministic random walk with
   // periodic "build" and "render" episodes; rates are null on the first sample, as the contract requires.

@@ -1266,6 +1266,56 @@ unreadable in either sample. The change is the volume's whole change between the
 to a cleanup. `reclaim.plan` returns the
 stored check as its optional `relief` block, absent until a before sample exists.
 
+## Coverage check (#1106)
+
+`coverage.start { a_root_id, b_root_id, budget_bytes?, budget_secs? }` asks whether every file of granted
+folder A is present somewhere in granted folder B by content, whatever the paths (docs/48 section 4.5, the
+app side of `loomward-native covers`). It starts a `coverage` job (`JobResult`, `job.state` events,
+`jobs.get`, `jobs.cancel`; `job.root_id` is A's) and is owner-only on Tauri and HTTP: client principals are
+refused, and neither command is in any client allowlist. It is a mutation of the job registry, so
+`request_id` is idempotent for ten minutes like `duplicates.inspect`. One coverage read runs at a time:
+a start while a job is live is `busy` with `detail.job_id`, and a start while a cancelled job's read is
+still finishing in the background is `busy` with reason `read_still_finishing` (retryable, no `job_id`).
+
+Both roots must be distinct, active, granted roots of the session's own dataset class, admitted exactly as
+a duplicates inspection admits one (q-10: registered lab roots in a synthetic session, owner-granted
+folders in a personal one; liveness and, for personal roots, today's path fences). The same root twice is
+`invalid_request` (reason `roots_must_differ`). Overlapping grants are refused when granted; one folder
+inside the other is `invalid_request` (reason `roots_overlap`) should it ever be seen. The job calls the
+engine's `observe_coverage` and `loomward_operations::containment::containment` unchanged: B is listed
+without content, then A is hashed only for sizes B has, then B only for sizes among A's hashed files, and
+A is listed once more so that a file that moved meanwhile loses its verdict. Only each file's default data
+stream is read. `budget_bytes` (default 1 GiB) and `budget_secs` (default 60, at most 3600) are shared by
+all passes; at most 200,000 entries per folder are listed. The job reports no phase progress: it is
+`queued`, `running`, then terminal.
+
+`jobs.cancel` ends the job `cancelled` at once and it keeps no result. The read already in progress cannot
+be interrupted (the engine call takes no per-job cancel flag), so it keeps reading until it finishes or
+spends its time budget and its output is discarded; the slot stays busy until it ends. A refused read (an unsupported volume, a revoked grant, an identity change) fails the
+job with the reason only, never a path.
+
+`coverage.result { job_id }` answers the finished job's `CoverageReport`, kept for ten minutes (newest
+eight). A job that is not `completed` (running, cancelled, failed) or has expired answers `not_found`. Revoking, forgetting or
+losing the identity of either root deletes the report, since it names files of both. Each A file is
+`covered` (one B file of equal size and equal content digest), `not_covered` (B has no file of that size or
+content, and B's listing was complete) or `unknown` (an unreadable file or folder, a spent budget, a file
+that changed during the read, an incomplete B listing that leaves absence unproven). The report carries
+exact totals per verdict (`files`, `bytes`, `size_unknown`; bytes are a lower bound while `size_unknown` is
+above zero) and bounded lists, at most 200 each and largest first with unknown sizes last, of the
+`not_covered` and `unknown` files only (`*_truncated` says when more exist). Covered files are counts, never
+listed. Each listed file has a display `path` below A (`.` for A itself), `bytes` (null when its size is
+unknown) and a sealed `node_id`, null when the catalogue holds no row under that exact path (a file newer
+than A's last scan): the id selects the catalogue's last observation for viewing only (invariant 5), not the
+bytes just read.
+
+`outcome` is `partial` exactly when any file is `unknown`, and `reasons` then names why: `budget` (byte,
+time or entry budget), `changed_during_read` (a file moved between its hashing and the recheck, or B gained
+a file of its size) and `refused` (every other unreadable or unprovable case). A `complete` outcome with
+`not_covered` files is a finished answer that some files are not in B; a `partial` outcome is never a clean
+verdict in either direction. The result is observation-time evidence, not a receipt: it is not metadata
+fidelity, not an independent backup and never says a file is safe to delete. Either folder may change
+afterwards.
+
 ## Owner MCP client grants (docs/48 E6)
 
 `clients.grant`, `clients.list` and `clients.revoke` accept the owner principal only, on the desktop

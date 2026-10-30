@@ -225,6 +225,11 @@ across its reads.
   when every A file is covered and nothing is unknown, 1 when something is not covered, 2 when anything is unknown.
 - Coverage is not metadata fidelity, not an independent backup (B may share a failing disk) and not permission to
   delete anything.
+- The app asks the same question (#1106): Duplicates, "Is this folder already in another?" runs `coverage.start`
+  between two granted folders and shows `coverage.result`: totals per verdict and the largest uncovered files with
+  Explorer links where the catalogue holds them. It is owner-only (no client or MCP access), never calls a run
+  complete when anything is unknown, and shows nothing per covered file. See `contracts/v3/semantics.md`, "Coverage
+  check".
 
 ## 5. What may live on the external disk
 

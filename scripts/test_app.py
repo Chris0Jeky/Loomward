@@ -932,6 +932,26 @@ def main() -> None:
         page.get_by_role('button', name='Cancel inspection').click()
         expect(page.get_by_role('status').filter(has_text='Inspection cancelled')).to_be_visible()
         print('PASS duplicates: verified sizes, link sets, skip reasons, evidence, focus and cancellation')
+
+        # Covers (#1106): is folder A already in folder B, by content. A partial run is never a clean verdict.
+        expect(page.get_by_role('heading', name='Is this folder already in another?', level=2)).to_be_visible()
+        page.get_by_role('button', name='Start check').click()
+        expect(page.get_by_role('button', name='Cancel check')).to_be_enabled()
+        expect(page.get_by_text('Partial result: this is not a complete answer.')).to_be_visible(timeout=15000)
+        expect(page.locator('#covers-results')).to_be_focused()
+        expect(page.get_by_role('rowheader', name='photos/2019/raw-0042.cr2')).to_be_visible()
+        expect(page.get_by_role('link', name='Open in Explorer: photos/2019/raw-0042.cr2')).to_be_visible()
+        expect(page.get_by_text('Not in the catalogue yet')).to_have_count(2)  # the second uncovered file, and the unknown one
+        expect(page.get_by_text('Files that were covered are counted, not listed.')).to_be_visible()
+        check('safe to delete' not in page.locator('main').inner_text().lower(), 'covers never says safe to delete')
+        page.set_viewport_size({'width': 375, 'height': 800})
+        check(page.evaluate('document.documentElement.scrollWidth <= window.innerWidth'), 'covers reflows at 375 px')
+        shot('covers-mobile.png')
+        page.set_viewport_size({'width': 1360, 'height': 900})
+        page.get_by_role('button', name='Start check').click()
+        page.get_by_role('button', name='Cancel check').click()
+        expect(page.get_by_text('Cancelled. No verdict was produced and nothing was changed.')).to_be_visible()
+        print('PASS covers: partial run labelled partial, uncovered list with Explorer link, unknown files, cancellation')
         nav.get_by_role('link', name='Explorer', exact=True).click()
 
         # search pages with a keyset cursor: 'delta' matches far more than one page

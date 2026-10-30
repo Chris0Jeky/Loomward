@@ -189,6 +189,7 @@ const JOB_WORDS: Record<JobKind, { what: string; view: string; link: string }> =
   scan: { what: 'Scan', view: 'health', link: 'Open Grants & health' },
   duplicates: { what: 'Duplicate inspection', view: 'duplicates', link: 'Open Duplicates' },
   reclaim: { what: 'Reclaim observation', view: 'reclaim', link: 'Open Reclaim' },
+  coverage: { what: 'Coverage check', view: 'duplicates', link: 'Open Duplicates' },
   refit: { what: 'Model refit', view: 'review', link: 'Open Learning review' },
   teacher: { what: 'Teacher request', view: 'review', link: 'Open Learning review' },
 };

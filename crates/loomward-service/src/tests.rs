@@ -9418,6 +9418,8 @@ fn followup_inspect_uses_the_roots_actual_grant() {
     assert_eq!(result["display_path"]["text"], "Synthetic root");
 }
 
+#[path = "covers_tests.rs"]
+mod covers_tests;
 #[path = "crash_sweep_tests.rs"]
 mod crash_sweep_tests;
 #[path = "duplicates_tests.rs"]

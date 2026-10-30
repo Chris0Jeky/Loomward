@@ -1,5 +1,6 @@
+import coverageFixture from '../../../../contracts/v3/examples/commands/coverage.result.result.json';
 import type {
-  DuplicateReport, CoverageState, ErrorBody, ErrorCode, EventKey, EventMap, Job, JobList, JobResult, Root, RootScanState, ScanProgress, SubtreeTotals,
+  CoverageReport, DuplicateReport, CoverageState, ErrorBody, ErrorCode, EventKey, EventMap, Job, JobList, JobResult, Root, RootScanState, ScanProgress, SubtreeTotals,
 } from '../contracts.gen';
 
 // Invented, contract-shaped scan jobs for the mock transport: two synthetic lab roots the mock "service"
@@ -30,6 +31,7 @@ const RUN_MS = 4000;
 const CANCEL_MS = 600;
 const QUEUE_MS = 150;
 const OBSERVE_MS = 1200;
+const COVERS_MS = 1500;
 
 export interface ScanMockOptions {
   now: () => Date;
@@ -38,6 +40,8 @@ export interface ScanMockOptions {
   isRevoked: (rootId: string) => boolean;
   /** How long a mock scan "runs" before it finishes. */
   runMs?: number;
+  /** Catalogue file node ids the mock coverage report may name, so its Explorer links open. */
+  fileNodes?: () => string[];
 }
 
 export interface ScanMock {
@@ -173,6 +177,46 @@ export function createScanMock(o: ScanMockOptions): ScanMock {
     return { job: { ...job } };
   }
 
+  /** `coverage.start` (#1106): one at a time, as the engine. From the first lab to the second the report is partial (a spent budget); the other way round it is a finished answer with two files not found. Nothing is read. */
+  const reports = new Map<string, CoverageReport>();
+  function coverStart(p: Record<string, unknown>): JobResult {
+    const known = ['a_root_id', 'b_root_id', 'budget_bytes', 'budget_secs'];
+    if (Object.keys(p).some((k) => !known.includes(k))) o.fail('invalid_request', 'Unexpected field.');
+    const [a, b] = [p.a_root_id, p.b_root_id];
+    if (typeof a !== 'string' || typeof b !== 'string') o.fail('invalid_request', 'a_root_id and b_root_id must be strings');
+    if (a === b) o.fail('invalid_request', 'choose two different folders to compare', { reason: 'roots_must_differ' });
+    for (const id of [a, b] as string[]) {
+      if (o.isRevoked(id)) o.fail('permission_denied', 'grant_not_active');
+      if (!LAB_ROOT_IDS.includes(id)) o.fail('permission_denied', 'Synthetic coverage requires registered lab roots.');
+    }
+    const bytes = p.budget_bytes, secs = p.budget_secs;
+    if ((bytes !== undefined && !(typeof bytes === 'string' && /^(0|[1-9][0-9]{0,19})$/.test(bytes) && BigInt(bytes) <= 18446744073709551615n))
+      || (secs !== undefined && !(Number.isInteger(secs) && (secs as number) >= 1 && (secs as number) <= 3600))) o.fail('invalid_request', 'coverage budget');
+    const running = jobs.find((j) => j.kind === 'coverage' && active(j));
+    if (running) o.fail('busy', 'coverage check already running', { job_id: running.job_id });
+    const job: Job = { job_id: `jb_mock_${++n}`, seq: n, rev: 0, kind: 'coverage', state: 'queued', root_id: a as string, created_at: iso(), started_at: null, finished_at: null, progress: null, coverage: null, error: null };
+    jobs.unshift(job);
+    o.emit('job.state', { job: { ...job } });
+    later(QUEUE_MS, () => {
+      if (job.state !== 'queued') return;
+      set(job, { state: 'running', started_at: iso() });
+      later(COVERS_MS, () => {
+        if (job.state !== 'running') return; // cancelled meanwhile: no result is kept
+        if (o.isRevoked(a as string) || o.isRevoked(b as string)) { set(job, { state: 'failed', finished_at: iso(), error: { code: 'permission_denied', message: 'cancelled', retryable: false, detail: null } }); return; }
+        const report = structuredClone(coverageFixture) as CoverageReport;
+        report.job_id = job.job_id; report.a_root_id = a as string; report.b_root_id = b as string; report.observed_at = iso();
+        const files = o.fileNodes?.() ?? [];
+        report.not_covered.forEach((item, i) => { item.node_id = i === 0 ? files[0] ?? null : null; }); // the second stays 'not in the catalogue yet'
+        if (a === LAB_ROOT_IDS[1]) {
+          report.outcome = 'complete'; report.reasons = []; report.unknown = []; report.totals.unknown = { files: 0, bytes: '0', size_unknown: 0 };
+        }
+        reports.set(job.job_id, report);
+        set(job, { state: 'completed', finished_at: iso(), coverage: report.outcome === 'complete' ? 'complete' : 'partial' });
+      });
+    });
+    return { job: { ...job } };
+  }
+
   const scanState = (s: LabSeed): { scan: RootScanState; totals: SubtreeTotals | null } => {
     const last = done.get(s.id);
     const running = jobs.some((j) => j.kind === 'scan' && j.root_id === s.id && active(j));
@@ -195,6 +239,8 @@ export function createScanMock(o: ScanMockOptions): ScanMock {
     handlers: {
       'duplicates.inspect': inspect,
       'duplicates.cancel': (p) => { if (find(p.job_id).kind !== 'duplicates') o.fail('invalid_request', 'not a duplicates job'); return { job: { ...cancel(p).job, duplicates: undefined } }; },
+      'coverage.start': coverStart,
+      'coverage.result': (p): CoverageReport => reports.get(String(p.job_id)) ?? o.fail('not_found', 'no coverage result for this job'),
       'scan.start': start,
       'scan.cancel': cancel,
       'jobs.cancel': cancel,
@@ -207,6 +253,8 @@ export function createScanMock(o: ScanMockOptions): ScanMock {
     },
     observe,
     revoke: (rootId) => {
+      for (const [id, report] of reports) if (report.a_root_id === rootId || report.b_root_id === rootId) reports.delete(id);
+      for (const job of jobs.filter((j) => j.kind === 'coverage' && active(j))) cancel({ job_id: job.job_id });
       for (const job of jobs.filter((j) => j.root_id === rootId && j.kind === 'duplicates')) {
         if (job.duplicates) set(job, { duplicates: undefined });
         if (active(job)) cancel({ job_id: job.job_id });
