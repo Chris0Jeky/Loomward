@@ -182,6 +182,24 @@ The plan is JSON the agent shows to the owner. It writes nothing: no draft in `s
 - Its result is **observation-time evidence** (docs/47 section 11, C1): it says the two trees matched when read. It
   is not a durable read-back receipt and not by itself permission to retire a source (section 6).
 
+#### Checking that A is covered by B
+
+`loomward-native covers A B --state-dir DIR [--max-entries N] [--budget-bytes N] [--budget-secs N]` (#1011) asks
+whether every file of A is present somewhere in B **by content, whatever the paths**, for backups that were renamed
+or reorganised. It grants and admits both folders exactly as `verify-tree` does and takes the same budgets, shared
+across its reads.
+
+- It lists B without reading content, hashes only the A files whose size occurs in B, then hashes only the B files
+  whose size occurs among those A files. A B file of a size no A file has is never read.
+- Each A file is `covered` (with one B path of equal size and equal content digest), `not_covered` (B has no file of
+  that size or content, and B's listing was complete), or `unknown` with a side and reason (unreadable, budget, an
+  incomplete B listing that leaves absence unproven). Never `covered` without equal digests on both sides.
+- Stdout carries the totals (files and bytes per state), the `not_covered` and `unknown` lists (at most 1,000 each),
+  a sample of 100 covered pairs, `truncated` flags, `bytes_read`, both root identities and a fixed note. Exit 0 only
+  when every A file is covered and nothing is unknown, 1 when something is not covered, 2 when anything is unknown.
+- Coverage is not metadata fidelity, not an independent backup (B may share a failing disk) and not permission to
+  delete anything.
+
 ## 5. What may live on the external disk
 
 Location-insensitive data can move to `H:` once copying is open; location-sensitive data stays. Agents propose,
@@ -234,7 +252,10 @@ the owner approves each plan.
   removed the external disk and plugged it in again (the owner confirms the replug; it empties the system cache for
   that volume, while the device's own cache stays outside the proof, as in section 4.5), and the copy is never
   removed. The owner chose a Loomward Recycle Bin effect, which is not built: it needs its own LW issue and
-  safety gate after the copy gate (invariant 1). Until it exists, nothing removes an original.
+  safety gate after the copy gate (invariant 1): LW-135 (#874). Removal waits for it; any interim removal before
+  then needs the owner's explicit approval of that specific plan. Record (#1012): the first cleanup's originals
+  (27 to 28 October 2026; 97 files, 141.6 GiB) were sent to the Recycle Bin by an interim agent script, by file ID,
+  after both verify runs, outside the decided path; its journal is in the gitignored `.loomward/archive/`.
 - **Journal for the interim path.** Each approved plan, its robocopy log summary and both verifier reports are kept
   in the gitignored `.loomward/archive/` of the primary checkout, never in Git (no real names in this repository).
 

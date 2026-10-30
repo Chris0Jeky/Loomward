@@ -787,6 +787,34 @@ fn reclaim_unknown_allocation_leaves_relief_unknown_never_zero() {
     );
 }
 
+/// Rules v3: creative-AI model folders and Steam games are relocation advice, never cleanup.
+#[test]
+fn reclaim_rules_v3_model_folders_and_game_libraries_are_relocate_candidates() {
+    let lab = Lab::new();
+    let comfy = lab.directory(lab.dir, "ComfyUI", 0);
+    lab.directory(comfy, "comfy", 0);
+    lab.directory(comfy, "custom_nodes", 0);
+    let models = lab.directory(comfy, "models", 0);
+    let checkpoints = NodeKey::Dir(lab.directory(models, "checkpoints", 700));
+    let steamapps = lab.directory(lab.dir, "steamapps", 0);
+    lab.file(steamapps, "appmanifest_480.acf", 1);
+    let common = lab.directory(steamapps, "common", 0);
+    let game = NodeKey::Dir(lab.directory(common, "Synthetic Game", 900));
+    let plan = reclaim::plan(lab.input()).unwrap();
+    assert_eq!(plan.rules_version, 3);
+    for (node, class, provider) in [
+        (checkpoints, "model_store", "comfyui"),
+        (game, "game_library", "steam"),
+    ] {
+        let (group, c) = find(&plan, node);
+        assert_eq!(group, GroupKind::Relocate);
+        assert_eq!((c.class, c.provider), (class, provider));
+        assert!(c.relocation.is_some());
+        // No link pass ran: relief is unobserved, never claimed from names.
+        assert_eq!(c.reclaimable_bytes, None);
+    }
+}
+
 /// Caller expectation (5): a recogniser report from the wrong rules version is refused
 /// with a "reclaim rules version" error. Positive control: the shipped versions plan Ok.
 #[test]
@@ -809,8 +837,8 @@ fn reclaim_wrong_rules_version_is_refused() {
         input.developer[0].rules_version = version;
         refused(&input);
     }
-    // Machine stores must be rules v2 (the plan's RULES_VERSION).
-    for version in [0, 1, 3, u32::MAX] {
+    // Machine stores must be rules v3 (the plan's RULES_VERSION).
+    for version in [0, 1, 2, 4, u32::MAX] {
         let mut input = lab.input();
         input.machine[0].rules_version = version;
         refused(&input);
@@ -818,7 +846,7 @@ fn reclaim_wrong_rules_version_is_refused() {
     // Positive control: the shipped versions plan Ok and stamp the plan version.
     let plan = reclaim::plan(lab.input()).unwrap();
     assert_eq!(plan.rules_version, RULES_VERSION);
-    assert_eq!(plan.rules_version, 2);
+    assert_eq!(plan.rules_version, 3);
 }
 
 /// Caller expectation (6): a deletion set larger than linkcount::MAX_FILES_PER_GROUP gets

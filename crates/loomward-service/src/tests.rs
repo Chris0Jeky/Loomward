@@ -1388,6 +1388,177 @@ fn a_stalled_personal_volume_shares_one_reader_across_distinct_grant_roots() {
     );
 }
 
+/// #939: a reclaim verdict for the fixture root directory, bound to the values passed in.
+struct ReliefRow {
+    grant: i64,
+    generation: i64,
+    incarnation: i64,
+    subtree_rev: i64,
+    instance: String,
+}
+
+/// The fixture root directory's id, allocation and the bindings a fresh reclaim row would carry.
+fn fresh_relief_row(svc: &Service, root: i64, grant: i64) -> (i64, i64, ReliefRow) {
+    let (dir, born, rev): (i64, i64, i64) = svc
+        .inner
+        .db()
+        .query_row(
+            "SELECT id,born_run,subtree_rev FROM main.dir WHERE root_id=?1 AND parent_id IS NULL",
+            [root],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    let generation: i64 = svc
+        .inner
+        .db()
+        .query_row(
+            "SELECT generation FROM main.root WHERE id=?1",
+            [root],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let allocated: i64 = svc
+        .inner
+        .db()
+        .query_row("SELECT sum(allocated) FROM main.file", [], |r| r.get(0))
+        .unwrap();
+    (
+        dir,
+        allocated,
+        ReliefRow {
+            grant,
+            generation,
+            incarnation: born,
+            subtree_rev: rev,
+            instance: svc.inner.instance.clone(),
+        },
+    )
+}
+
+fn store_relief(svc: &Service, dir: i64, bytes: i64, row: &ReliefRow) {
+    svc.inner
+        .db()
+        .execute("DELETE FROM st.reclaim_relief", [])
+        .unwrap();
+    svc.inner.db().execute(
+        "INSERT INTO st.reclaim_relief(grant_id,node_kind,node_id,volume_id,generation,incarnation,subtree_rev,catalog_instance,observed_at_ns,unique_allocated_bytes,reason)
+         VALUES(?1,'dir',?2,1,?3,?4,?5,?6,0,?7,NULL)",
+        rusqlite::params![row.grant, dir, row.generation, row.incarnation, row.subtree_rev, row.instance, bytes],
+    ).unwrap();
+}
+
+fn placement_group_relief(svc: &Service, volume: &str) -> (Value, Value) {
+    let (candidates, _) = ok(
+        "placement.candidates",
+        call(
+            svc,
+            "placement.candidates",
+            json!({"source_volume_id":volume,"basis":"largest_dirs","max_groups":50,"min_bytes":"0"}),
+        ),
+    );
+    let g = &candidates["groups"][0];
+    (
+        g["estimated_relief_bytes"].clone(),
+        g["relief_basis"].clone(),
+    )
+}
+
+#[test]
+fn placement_uses_a_bound_reclaim_verdict_and_leaves_stale_or_missing_ones_unknown() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let (root, grant, volume) = placement_fixture(&svc);
+    let (dir, allocated, fresh) = fresh_relief_row(&svc, root, grant);
+    let unknown = (Value::Null, json!("unknown"));
+    // Another root's grant, so a row can be bound to the wrong grant.
+    let WriteReply::Root {
+        grant_id: other_grant,
+        ..
+    } = svc
+        .inner
+        .catalog
+        .writer()
+        .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_guid: None,
+            volume_key: "other".into(),
+            display_name: "Other".into(),
+            display_path: "Synthetic other".into(),
+            root_file_id: Some(vec![2; 16]),
+            filesystem: Some("NTFS".into()),
+            origin: "fixture".into(),
+            granted_via: "fixture".into(),
+            observed_at_ns: 0,
+        }))
+        .unwrap()
+    else {
+        panic!("root registration");
+    };
+    // No verdict: unknown, not zero.
+    assert_eq!(placement_group_relief(&svc, &volume), unknown);
+    // A verdict bound to this generation, incarnation, subtree revision and instance is known.
+    store_relief(&svc, dir, allocated, &fresh);
+    assert_eq!(
+        placement_group_relief(&svc, &volume),
+        (
+            json!(allocated.to_string()),
+            json!("verified_unique_allocation")
+        )
+    );
+    // Each binding that no longer matches leaves the group unknown.
+    let stale: [(&str, ReliefRow); 5] = [
+        (
+            "generation",
+            ReliefRow {
+                generation: fresh.generation + 1,
+                instance: fresh.instance.clone(),
+                ..fresh
+            },
+        ),
+        (
+            "incarnation",
+            ReliefRow {
+                incarnation: fresh.incarnation + 1,
+                instance: fresh.instance.clone(),
+                ..fresh
+            },
+        ),
+        (
+            "subtree_rev",
+            ReliefRow {
+                subtree_rev: fresh.subtree_rev + 1,
+                instance: fresh.instance.clone(),
+                ..fresh
+            },
+        ),
+        (
+            "instance",
+            ReliefRow {
+                instance: "another".into(),
+                ..fresh
+            },
+        ),
+        (
+            "grant",
+            ReliefRow {
+                grant: other_grant,
+                instance: fresh.instance.clone(),
+                ..fresh
+            },
+        ),
+    ];
+    for (what, row) in &stale {
+        store_relief(&svc, dir, allocated, row);
+        assert_eq!(
+            placement_group_relief(&svc, &volume),
+            unknown,
+            "stale {what}"
+        );
+    }
+    // More relief than the directory allocates is never shown.
+    store_relief(&svc, dir, allocated + 1, &fresh);
+    assert_eq!(placement_group_relief(&svc, &volume), unknown);
+}
+
 #[test]
 fn placement_wire_preserves_unknowns_and_exclusions() {
     let tmp = temp_root();
