@@ -2,7 +2,7 @@
 //! could otherwise move unseen: both durable grants admitted before any read, the durable and
 //! in-memory recheck after the reads, and content observed on the success path.
 //!
-//! Production code calls [`point`] at three places and nothing else; a test installs a hook
+//! Production code calls [`point`] at a handful of places and nothing else; a test installs a hook
 //! for its own thread with [`install`]. Each pin fails if the line it names is removed or moved.
 #![cfg_attr(not(windows), allow(dead_code))]
 #[cfg(windows)]
@@ -23,7 +23,7 @@ use std::cell::RefCell;
 #[cfg(windows)]
 use std::rc::Rc;
 
-/// The points at which `Engine::compare_trees` pauses for a test hook.
+/// The points at which `Engine::compare_trees` and `observe_coverage` pause for a test hook.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TreePoint {
     /// The source observation returned; the destination read has not started.
@@ -32,6 +32,10 @@ pub(crate) enum TreePoint {
     AfterDestinationRead,
     /// Both end-of-run durable rechecks passed; the in-memory gate guard has not run.
     BeforeGuard,
+    /// `observe_coverage`: B was listed without content; A has not been read.
+    AfterCoverageListing,
+    /// `observe_coverage`: A and B were hashed; A has not been listed again.
+    AfterCoverageHashing,
 }
 
 type Hook = Box<dyn FnMut(TreePoint)>;
@@ -151,7 +155,7 @@ fn set_state(db: &std::path::Path, id: i64, state: &str) {
 }
 
 #[cfg(windows)]
-fn refusal(result: EngineResult<Report>) -> String {
+fn refusal<T: std::fmt::Debug>(result: EngineResult<T>) -> String {
     result.unwrap_err().to_body().message.as_str().to_owned()
 }
 
@@ -370,6 +374,210 @@ fn coverage_reads_only_matching_b_sizes_and_covers_a_renamed_copy() {
         .iter()
         .any(|item| matches!(item.coverage, Coverage::Covered { .. })));
     assert!(report.totals().unknown.files >= 2, "{report:?}");
+}
+
+#[cfg(windows)]
+fn cover_budget(bytes: u64) -> loomward_windows::duplicate_reader::Budget {
+    loomward_windows::duplicate_reader::Budget {
+        bytes,
+        time: std::time::Duration::from_secs(30),
+    }
+}
+
+/// The verdicts of `containment` over an `observe_coverage` run, keyed by A path.
+#[cfg(windows)]
+fn coverage_of(
+    pair: &Pair,
+    budget: u64,
+) -> std::collections::BTreeMap<std::path::PathBuf, loomward_operations::containment::Coverage> {
+    let (a, b, _) = pair
+        .engine
+        .observe_coverage(&pair.left, &pair.right, cover_budget(budget), 100)
+        .unwrap();
+    loomward_operations::containment::containment(&a, &b)
+        .items
+        .into_iter()
+        .map(|item| (item.path, item.coverage))
+        .collect()
+}
+
+/// #1037: a budget that lets A's hashing finish but not B's stops on the third read alone: A
+/// keeps its digest, B's copy is `byte_budget`, and the verdict is unknown on the destination.
+#[cfg(windows)]
+#[test]
+fn coverage_stops_on_the_destination_hashing_read_alone() {
+    use loomward_operations::{containment::Coverage, tree::Side};
+    if skip_elevated() {
+        return;
+    }
+    let pair = pair_of(&[5u8; 100], &[5u8; 100]);
+    let fixture = std::path::Path::new("fixture");
+    // A and B cost the same to hash, so the full run reads twice the cost of one.
+    let (_, _, full) = pair
+        .engine
+        .observe_coverage(&pair.left, &pair.right, cover_budget(1 << 20), 100)
+        .unwrap();
+    assert!(full >= 200, "{full}");
+    assert_eq!(
+        coverage_of(&pair, full)[fixture],
+        Coverage::Covered {
+            by: "fixture".into()
+        }
+    );
+    let (a, b, bytes) = pair
+        .engine
+        .observe_coverage(&pair.left, &pair.right, cover_budget(full - 1), 100)
+        .unwrap();
+    assert!(bytes < full, "{bytes} of {full}");
+    assert!(a.nodes[fixture].as_ref().unwrap().content.is_ok());
+    assert_eq!(
+        b.nodes[fixture].as_ref().unwrap().content,
+        Err("byte_budget")
+    );
+    assert_eq!(
+        loomward_operations::containment::containment(&a, &b).items[0].coverage,
+        Coverage::Unknown {
+            side: Side::Destination,
+            reason: "byte_budget"
+        }
+    );
+}
+
+/// #1037: B gaining a file of A's size after its listing is destination drift, not a source gap.
+#[cfg(windows)]
+#[test]
+fn coverage_labels_a_file_b_gained_after_its_listing_as_destination_drift() {
+    use loomward_operations::{
+        containment::{Coverage, CHANGED_DURING_COMPARE},
+        tree::Side,
+    };
+    if skip_elevated() {
+        return;
+    }
+    let pair = pair_of(b"same", b"same");
+    let (a, b) = (pair.left.path().to_owned(), pair.right.path().to_owned());
+    std::fs::write(a.join("late.txt"), b"12345").unwrap();
+    assert_eq!(
+        coverage_of(&pair, 1 << 20)[std::path::Path::new("late.txt")],
+        Coverage::NotCovered
+    );
+    let _guard = install(move |point| {
+        if point == TreePoint::AfterCoverageListing {
+            std::fs::write(b.join("arrived.txt"), b"abcde").unwrap();
+        }
+    });
+    assert_eq!(
+        coverage_of(&pair, 1 << 20)[std::path::Path::new("late.txt")],
+        Coverage::Unknown {
+            side: Side::Destination,
+            reason: CHANGED_DURING_COMPARE
+        }
+    );
+}
+
+/// #1037: A is listed again after the hashing reads, so an A file rewritten or deleted in between
+/// is unknown (source), never covered; an untouched file keeps its verdict.
+#[cfg(windows)]
+#[test]
+fn coverage_rechecks_a_after_the_hashing_reads() {
+    use loomward_operations::{
+        containment::{Coverage, CHANGED_DURING_COMPARE},
+        tree::Side,
+    };
+    use std::path::Path;
+    if skip_elevated() {
+        return;
+    }
+    let pair = pair_of(b"same", b"same");
+    let (a, b) = (pair.left.path().to_owned(), pair.right.path().to_owned());
+    for name in ["rewritten", "deleted", "untouched"] {
+        std::fs::write(a.join(name), b"keep!").unwrap();
+        std::fs::write(b.join(name), b"keep!").unwrap();
+    }
+    let drift = Coverage::Unknown {
+        side: Side::Source,
+        reason: CHANGED_DURING_COMPARE,
+    };
+    let before = coverage_of(&pair, 1 << 20);
+    assert!(matches!(
+        before[Path::new("rewritten")],
+        Coverage::Covered { .. }
+    ));
+    let a_edit = a.clone();
+    let _guard = install(move |point| {
+        if point == TreePoint::AfterCoverageHashing {
+            // Same length, new bytes, and a pinned write time so the clock tick cannot hide it.
+            let rewritten = a_edit.join("rewritten");
+            std::fs::write(&rewritten, b"oops!").unwrap();
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&rewritten)
+                .unwrap()
+                .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000))
+                .unwrap();
+            std::fs::remove_file(a_edit.join("deleted")).unwrap();
+        }
+    });
+    let after = coverage_of(&pair, 1 << 20);
+    assert_eq!(after[Path::new("rewritten")], drift);
+    assert_eq!(after[Path::new("deleted")], drift);
+    assert!(matches!(
+        after[Path::new("untouched")],
+        Coverage::Covered { .. }
+    ));
+    assert!(matches!(
+        after[Path::new("fixture")],
+        Coverage::Covered { .. }
+    ));
+}
+
+/// #1037: `observe_coverage` shares `finish_tree_reads`, so every final-gate refusal of
+/// `compare_trees` also refuses a coverage run: a durable revocation after any read (including
+/// the new recheck), and the in-memory revoked and cancel flags at the guard.
+#[cfg(windows)]
+#[test]
+fn coverage_is_refused_by_the_final_gate() {
+    if skip_elevated() {
+        return;
+    }
+    let run = |pair: &Pair| {
+        pair.engine
+            .observe_coverage(&pair.left, &pair.right, cover_budget(1 << 20), 100)
+    };
+    for (row, at) in [
+        (1, TreePoint::AfterCoverageListing),
+        (2, TreePoint::AfterCoverageHashing),
+    ] {
+        let pair = pair_of(b"same", b"same");
+        let db = pair.db.clone();
+        let _guard = install(move |point| {
+            if point == at {
+                set_state(&db, row, "revoked");
+            }
+        });
+        assert_eq!(
+            refusal(run(&pair)),
+            "grant_not_active",
+            "revoked row {row} at {at:?}"
+        );
+    }
+    type Set = fn(&mut RootGate);
+    let cases: [(&str, Set); 2] = [
+        ("revoked flag", |gate| gate.revoked = true),
+        ("cancel flag", |gate| {
+            gate.duplicate_cancel.store(true, Ordering::Release)
+        }),
+    ];
+    for (name, set) in cases {
+        let pair = pair_of(b"same", b"same");
+        let gate = pair.engine.scan_root_gate(pair.right.key());
+        let _guard = install(move |point| {
+            if point == TreePoint::BeforeGuard {
+                set(&mut gate.lock().unwrap());
+            }
+        });
+        assert_eq!(refusal(run(&pair)), "cancelled", "{name}");
+    }
 }
 
 /// #1037: with a selection, `compare_selected_trees` hashes only selected source files and files

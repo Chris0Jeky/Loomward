@@ -319,7 +319,8 @@ impl Engine {
     /// Read-only #1011 evidence for `containment(a, b)`: the same q-10 admission and final gate as
     /// `compare_trees`, under one shared budget. B is listed without content first; A is hashed
     /// only for sizes B has; B is then hashed only for sizes among A's hashed files, so a B file
-    /// of a size no A file has is never read. Returns (A, B, bytes read).
+    /// of a size no A file has is never read. A is then listed once more and any file that moved
+    /// since its hashing is marked unread (`recheck_source`). Returns (A, B, bytes read).
     pub fn observe_coverage(
         &self,
         a: &GrantedRoot,
@@ -366,14 +367,22 @@ impl Engine {
                 .collect()
         };
         let listed = read("destination", b, b_cancel.clone(), &|_, _| false)?;
+        #[cfg(test)]
+        tree_gate_tests::point(tree_gate_tests::TreePoint::AfterCoverageListing);
         let b_sizes = sizes(&listed, false);
-        let a_tree = read("source", a, a_cancel.clone(), &|_, size| {
+        let mut a_tree = read("source", a, a_cancel.clone(), &|_, size| {
             b_sizes.contains(&size)
         })?;
         let a_sizes = sizes(&a_tree, true);
         let b_tree = read("destination", b, b_cancel.clone(), &|_, size| {
             a_sizes.contains(&size)
         })?;
+        #[cfg(test)]
+        tree_gate_tests::point(tree_gate_tests::TreePoint::AfterCoverageHashing);
+        // A was last read before B's hashing: list it again (no content, no read budget) so a file
+        // that changed since loses its verdict (#1037).
+        let a_again = read("source", a, a_cancel.clone(), &|_, _| false)?;
+        loomward_operations::containment::recheck_source(&mut a_tree, &a_again);
         let bytes = budget.bytes - remaining_bytes;
         self.finish_tree_reads(a, b, a_cancel, b_cancel)?;
         Ok((a_tree, b_tree, bytes))

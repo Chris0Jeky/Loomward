@@ -207,10 +207,17 @@ or reorganised. It grants and admits both folders exactly as `verify-tree` does 
 across its reads.
 
 - It lists B without reading content, hashes only the A files whose size occurs in B, then hashes only the B files
-  whose size occurs among those A files. A B file of a size no A file has is never read.
+  whose size occurs among those A files. A B file of a size no A file has is never read. It then lists A once more
+  (metadata only, no read budget): an A file that is gone from a completely listed folder, or whose size or creation,
+  last-write or change time moved since it was hashed, is `unknown` (source, `changed_during_compare`). This is a
+  metadata heuristic (size and those three times, no file ID), not a content check. If that listing runs out of the
+  shared time budget, is cancelled or is cut short, a hashed file is `unknown` with the listing's own reason (or
+  `recheck_incomplete`), never blamed on a change. A file that appeared in A since is outside "A as read" and is not
+  reported. Windows remain: A after the recheck listing, and B after its own hashing (#1037).
 - Each A file is `covered` (with one B path of equal size and equal content digest), `not_covered` (B has no file of
   that size or content, and B's listing was complete), or `unknown` with a side and reason (unreadable, budget, an
-  incomplete B listing that leaves absence unproven). Never `covered` without equal digests on both sides.
+  incomplete B listing that leaves absence unproven, B gaining a file of A's size after its listing, reported on the
+  destination as `changed_during_compare`). Never `covered` without equal digests on both sides.
 - Stdout carries the totals (files and bytes per state), the `not_covered` and `unknown` lists (at most 1,000 each),
   a sample of 100 covered pairs, `truncated` flags, `bytes_read`, both root identities and a fixed note. Exit 0 only
   when every A file is covered and nothing is unknown, 1 when something is not covered, 2 when anything is unknown.
