@@ -117,7 +117,7 @@
       <p class="empty">{page.partial || page.budget_hit ? 'No candidates returned from the available observations. This does not establish that no projects exist.' : 'No recognised project markers are recorded in this folder.'}</p>
     {/each}
     {#if page.next_cursor}<button class="btn" type="button" disabled={busy} onclick={() => void find(true)}>Load more projects</button>{/if}
-  {:else if !error}<p class="empty">{busy ? 'Finding recorded project markers…' : roots.length ? 'Choose a folder, then find projects when you are ready.' : 'No granted folder is available.'}</p>{/if}
+  {:else if !error}<p class="empty">{busy ? 'Finding recorded project markers…' : roots.length ? 'Choose a folder, then find projects when you are ready.' : 'No granted folder is available.'}{#if !busy && !roots.length} <a href="#/health">Add a folder in Grants &amp; health</a>.{/if}</p>{/if}
 </section>
 <style>
   select { max-width: 100%; }

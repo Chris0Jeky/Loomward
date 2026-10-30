@@ -70,7 +70,7 @@
     </div>
     <button class="btn" disabled={loading || !selected} onclick={() => void read(selected)}>Look again</button>
   </div>
-  {#if !loading && !usable.length && !error}<p class="empty">No granted root is available. Add and scan a folder first.</p>{/if}
+  {#if !loading && !usable.length && !error}<p class="empty">No granted root is available. <a href="#/health">Add a folder in Grants &amp; health</a>.</p>{/if}
   <p id="clutter-error" class="live bad" class:has={!!error} role="alert">{error}</p>
 </section>
 
