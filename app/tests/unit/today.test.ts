@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { Client } from '../../src/lib/transport/client';
 import { createMockTransport } from '../../src/lib/transport/mock';
 import type { AlertItem, AlertReport, Job, ReclaimPlan, Root, Volume } from '../../src/lib/contracts.gen';
-import { ageText, jobNeed, largestGroup, linkName, missingSources, moreViews, needsEmptyText, nearlyFull, needsYou, reclaimTargets, rootNeed, unevaluatedAlerts, unevaluatedLine, unplacedRoots, usedFraction, volumeRows, type Sources } from '../../src/views/today/model';
+import { ageText, healthReading, jobNeed, largestGroup, linkName, missingSources, moreViews, needsEmptyText, nearlyFull, needsYou, reclaimTargets, rootNeed, unevaluatedAlerts, unevaluatedLine, unplacedRoots, usedFraction, volumeRows, type Sources } from '../../src/views/today/model';
 
 const NOW = Date.parse('2026-10-30T12:00:00Z');
 const iso = (minutesAgo: number) => new Date(NOW - minutesAgo * 60_000).toISOString();
@@ -115,6 +115,45 @@ describe('volume rows', () => {
 
   it('counts granted folders that sit on no listed volume', () => {
     expect(unplacedRoots([volume()], [root(), root({ root_id: 'rt_2', volume_id: null }), root({ root_id: 'rt_3', volume_id: 'vo_gone' }), root({ root_id: 'rt_4', volume_id: null, grant_state: 'revoked' })])).toBe(2);
+  });
+});
+
+describe('disk health on volume rows', () => {
+  const health = (h: NonNullable<Volume['storage_path']>['health']): Volume['storage_path'] => ({
+    bus_type: 'nvme', bridge: null, usb_transport: null, logical_sector_bytes: null, physical_sector_bytes: null,
+    removal_policy: null, write_cache_enabled: null, health: h,
+  });
+  const reporting = health({
+    state: 'counters_present', reason: null,
+    counters: { temperature_celsius: 34, read_errors_total: 0, read_errors_uncorrected: null, write_errors_total: 0, write_errors_uncorrected: null, power_on_hours: 1200, wear_percent: 3, start_stop_cycles: null },
+  });
+  const hidden = health({ state: 'unsupported_or_hidden', reason: 'not reported through this USB bridge', counters: null });
+
+  it('reads a volume hidden behind a USB bridge as unknown, never healthy', () => {
+    const r = healthReading(volume({ storage_path: hidden }));
+    expect(r).toEqual({ text: 'Disk health: unknown (not reported through this USB bridge)', unknown: true });
+    expect(r.text).not.toMatch(/healthy/i);
+  });
+
+  it('says counters were reported, and only that, when the volume reports them', () => {
+    const r = healthReading(volume({ storage_path: reporting }));
+    expect(r.text).toContain('counters reported, not a verdict');
+    expect(r.text).toContain('34 °C');
+    expect(r.text).not.toMatch(/healthy/i);
+    expect(r.unknown).toBe(false);
+  });
+
+  it('reads an absent storage path as not observed, and an offline volume as not observed whatever it held', () => {
+    expect(healthReading(volume())).toEqual({ text: 'Disk health: unknown (not observed)', unknown: true });
+    const offline = healthReading(volume({ online: false, storage_path: reporting }));
+    expect(offline).toEqual({ text: 'Disk health: unknown (not observed)', unknown: true });
+  });
+
+  it('carries the health line and its unknown flag on each volume row, unchanged from diskHealthLine', () => {
+    const [shown, absent] = volumeRows([volume({ storage_path: reporting }), volume({ volume_id: 'vo_b', display_name: 'B:' })], [], NOW);
+    expect(shown).toMatchObject({ healthUnknown: false });
+    expect(shown!.health).toMatch(/^Disk health: counters reported, not a verdict/);
+    expect(absent).toMatchObject({ health: 'Disk health: unknown (not observed)', healthUnknown: true });
   });
 });
 
