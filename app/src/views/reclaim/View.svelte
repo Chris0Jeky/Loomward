@@ -55,7 +55,8 @@
   }
 
   $effect(() => {
-    if (!selectionResult?.observed_at) return;
+    // Ages shown for an observed selection or any stored candidate verdict must keep moving.
+    if (!selectionResult?.observed_at && !report?.groups.some((g) => g.candidates.some((c) => c.observed_at))) return;
     now = Date.now();
     const timer = setInterval(() => { now = Date.now(); }, 10000);
     return () => clearInterval(timer);
@@ -175,7 +176,7 @@
                 <p>{candidate.class.replaceAll('_', ' ')} · {candidate.provider}{candidate.kind ? ` · ${candidate.kind.replaceAll('_', ' ')}` : ''}</p>
                 <p>Allocated: {formatBytes(candidate.allocated_bytes)} · Logical: {formatBytes(candidate.logical_bytes)} · Estimated reclaimable: {formatBytes(candidate.reclaimable_bytes)}</p>
                 {#if candidate.reclaimable_reason}<p class="muted">{candidate.reclaimable_reason}</p>{/if}
-                {#if candidate.observed_at}<p class="muted">Verified {observationAge(candidate.observed_at, now)} � <time datetime={candidate.observed_at}>{candidate.observed_at}</time>. Hard links made since then are not reflected.</p>{/if}
+                {#if candidate.observed_at}<p class="muted">Verified {observationAge(candidate.observed_at, now)} · <time datetime={candidate.observed_at}>{candidate.observed_at}</time>. Hard links made since then are not reflected.</p>{/if}
                 <p>Coverage: {COVERAGE_WORDS[candidate.coverage] ?? candidate.coverage}</p>
                 <p class="owner-step">Owner step: {candidate.owner_step}</p>
                 {#if candidate.relocation}

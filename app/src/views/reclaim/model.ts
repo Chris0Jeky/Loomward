@@ -45,7 +45,10 @@ export function selectionComparison(result: ReclaimSelection | null, target: str
 }
 
 export function observationAge(at: string, now: number): string {
-  const seconds = Math.max(0, Math.floor((now - Date.parse(at)) / 1000));
+  const elapsed = now - Date.parse(at);
+  if (Number.isNaN(elapsed)) return 'at an unknown time';
+  if (elapsed < 0) return 'at an unknown time (clock ahead)'; // never overstate freshness
+  const seconds = Math.floor(elapsed / 1000);
   if (seconds < 60) return 'less than a minute ago';
   const unit = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'} ago`;
   const minutes = Math.floor(seconds / 60);
