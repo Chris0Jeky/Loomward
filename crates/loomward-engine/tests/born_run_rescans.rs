@@ -189,21 +189,26 @@ impl Lab {
                  FROM file f JOIN paths p ON p.id=f.dir_id",
             )
             .unwrap();
-        s.query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                Row {
-                    id: r.get(1)?,
-                    born: r.get(2)?,
-                    seen: r.get(3)?,
-                    native: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
-                    logical: r.get(5)?,
-                },
-            ))
-        })
-        .unwrap()
-        .collect::<Result<_, _>>()
-        .unwrap()
+        let rows = s
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    Row {
+                        id: r.get(1)?,
+                        born: r.get(2)?,
+                        seen: r.get(3)?,
+                        native: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                        logical: r.get(5)?,
+                    },
+                ))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let count = rows.len();
+        let map: Snapshot = rows.into_iter().collect();
+        assert_eq!(map.len(), count, "duplicate paths hidden by the map");
+        map
     }
 }
 
@@ -238,9 +243,12 @@ fn born_run_across_rescans() {
     lab.scan("full");
     let one = lab.snapshot();
     table("after scan 1", &one);
-    let r1 = lab.runs().first().unwrap().0;
+    // Not `runs().first()`: if an automatic run ever precedes the explicit scan, rows are born
+    // across two runs. The baseline is the run that first listed a file; all rows must agree.
+    let r1 = row(&one, "file:/keep.txt").born;
     // The root directory row is created with the grant, before any run: born_run 0 for good.
     assert_eq!(row(&one, "dir:").born, 0);
+    assert!(r1 > 0);
     for (key, r) in one.iter().filter(|(key, _)| *key != "dir:") {
         assert_eq!(
             r.born, r1,
@@ -272,7 +280,8 @@ fn born_run_across_rescans() {
     let runs2 = lab.runs();
     eprintln!("runs after scan 2: {runs2:?}");
     // Runs after scan 1 (the refresh plus any watcher pass that raced it): rows a rescan
-    // creates are born in one of these, never in run 1.
+    // creates are born in one of these, never in run 1. `refresh` and `full` are the same
+    // `RunScope::FullRoot` path (recorded as mode `full`), so scan 3 below is a second full-root pass.
     let later: Vec<i64> = runs2.iter().map(|r| r.0).filter(|id| *id > r1).collect();
     assert!(!later.is_empty());
     let born_later = |key: &str| {
@@ -301,8 +310,8 @@ fn born_run_across_rescans() {
     assert!(later.contains(&keep.seen), "seen_run moved to a later run");
 
     // (b) file added before scan 2: born in a later run, not run 1. WHICH later run is a race with
-    // the root's watcher: it answers the mutations with its own full-root run, and in every local
-    // execution that run (id 2) listed the new rows before the explicit refresh (id 3) did. So
+    // the root's watcher: it answers the mutations with its own run, and in every local
+    // execution a watcher or refresh run (id 2) listed the new rows before the explicit refresh (id 3) did. So
     // born_run names the first run that listed a row, explicit or watcher-driven; the explicit
     // scan only advances seen_run. MISLEADING if "since the last scan" means `born_run = <last
     // explicit run>`: a cut must compare `born_run > <run id at the user's baseline>`, which
@@ -328,11 +337,13 @@ fn born_run_across_rescans() {
     // (e) moved between folders: matching is per directory (`old_files` reads one dir_id), so the
     // destination listing finds nothing to match, inserts a new row and the source listing deletes
     // the old one. MISLEADING: a moved file looks new (born in a later run, new row id), although
-    // its native identity is unchanged.
+    // its native identity is unchanged. (d) and (e) are a deliberate tripwire: the day
+    // cross-directory matching lands, (e) fails here and the "new since" semantics must be revisited.
     let moved = born_later("file:/dst/moved.txt");
     let before_move = row(&one, "file:/src/moved.txt");
     assert!(!two.contains_key("file:/src/moved.txt"));
     assert_ne!(moved.id, before_move.id, "a moved file is a new row");
+    assert!(!moved.native.is_empty(), "native identity is recorded");
     assert_eq!(moved.native, before_move.native, "yet the same native file");
 
     // (f) deleted and recreated under the same name: a new file, born in a later run.
@@ -361,6 +372,12 @@ fn born_run_across_rescans() {
         (row(&one, "dir:/mv/sub").id, r1)
     );
     assert_eq!(row(&two, "file:/dst/sub/deep.txt").born, r1);
+    // Directories whose contents changed but whose name and parent did not keep their birth, and
+    // so does the root.
+    for dir in ["dir:/dst", "dir:/src", "dir:/mv"] {
+        assert_eq!(kept(dir).born, r1, "{dir}");
+    }
+    assert_eq!(row(&two, "dir:").born, 0);
 
     // Scan 3: nothing changed; a full scan of an already-scanned root must not restamp anything.
     lab.scan("full");
@@ -378,4 +395,8 @@ fn born_run_across_rescans() {
             "{key}: born_run unchanged by a third scan"
         );
     }
+    for dir in ["dir:/dst", "dir:/src", "dir:/mv"] {
+        assert_eq!(row(&three, dir).born, r1, "{dir}");
+    }
+    assert_eq!(row(&three, "dir:").born, 0);
 }
