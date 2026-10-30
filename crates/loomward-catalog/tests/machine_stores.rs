@@ -1213,6 +1213,7 @@ fn windows_leftover_rules_are_recognised_with_their_own_owner_steps() {
     let dump = lab.file(windows, "MEMORY.DMP", 800, Some(800));
 
     let leftover = "windows_leftover";
+    let manual = "windows_manual_leftover";
     let previous = "Previous Windows installation(s)";
     let dumps = "System error memory dump files";
     let reports = "Windows Error Reports and Feedback Diagnostics";
@@ -1234,15 +1235,15 @@ fn windows_leftover_rules_are_recognised_with_their_own_owner_steps() {
         (dir(wer, "ReportQueue", 302), leftover, reports),
         (
             dir(local, "CrashDumps", 205),
-            leftover,
+            manual,
             "Review the dump files by hand",
         ),
         (dir(local, "D3DSCache", 206), leftover, shader),
         (dir(nvidia, "DXCache", 207), leftover, shader),
         (dir(nvidia, "GLCache", 208), leftover, shader),
         (dir(amd, "DxCache", 209), leftover, shader),
-        (NodeKey::Dir(amd_root), leftover, extract),
-        (NodeKey::Dir(nvidia_root), leftover, extract),
+        (NodeKey::Dir(amd_root), manual, extract),
+        (NodeKey::Dir(nvidia_root), manual, extract),
         (
             dir(distribution, "DeliveryOptimization", 51),
             leftover,
@@ -1308,6 +1309,16 @@ fn windows_leftover_names_compare_ascii_case_insensitively() {
         NodeKey::Dir(lab.directory(programdata, "PACKAGE CACHE", 1)),
     ];
     assert_eq!(lab.nodes(), sorted(expected));
+}
+
+#[test]
+fn noncanonical_case_delivery_optimization_shields_its_nested_stores() {
+    let lab = Lab::new();
+    let windows = lab.directory(lab.dir, "WINDOWS", 0);
+    let distribution = lab.directory(windows, "SoftwareDistribution", 0);
+    let delivery = lab.directory(distribution, "DeliveryOptimization", 50);
+    lab.store(delivery, "npm", 10);
+    assert_eq!(lab.nodes(), [NodeKey::Dir(delivery)]);
 }
 
 #[test]
@@ -1426,7 +1437,7 @@ fn driver_extracts_need_an_installer_payload_directly_under_the_root() {
             let report = lab.report(200);
             assert_eq!(report.candidates.len(), 1, "{vendor}");
             assert_eq!(report.candidates[0].node, NodeKey::Dir(v));
-            assert_eq!(report.candidates[0].class, "windows_leftover");
+            assert_eq!(report.candidates[0].class, "windows_manual_leftover");
         }
     }
     // Pick one rule: no payload, a payload two levels down, an unlisted vendor, the wrong vendor

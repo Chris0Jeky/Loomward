@@ -316,6 +316,9 @@ pub fn plan(input: ReclaimInput) -> EngineResult<ReclaimPlan> {
                 ("game_library", _) => GroupKind::Relocate,
                 // Windows' own leftovers: the owner step names Windows' tool or a manual review.
                 ("windows_leftover", _) => GroupKind::ToolOwnedCleanup,
+                // No supported cleanup command (crash dumps, driver installer payloads): the
+                // owner reviews and removes by hand, which docs/52 section 5 files as archive.
+                ("windows_manual_leftover", _) => GroupKind::ArchiveCandidates,
                 // A checkout may hold unique work: never on the cleanup list.
                 ("agent_worktree", _) => GroupKind::ArchiveCandidates,
                 _ => GroupKind::Informational,

@@ -70,6 +70,9 @@ rules AS NOT MATERIALIZED (
         (p.name COLLATE NOCASE='Windows'
           AND d.name COLLATE NOCASE IN ('Temp','Minidump','LiveKernelReports','Installer'))
         OR (p.name COLLATE NOCASE='ProgramData' AND d.name COLLATE NOCASE='Package Cache')) THEN 'pruned'
+      -- The root query matches SoftwareDistribution case-insensitively for Delivery Optimization.
+      WHEN d.name COLLATE NOCASE='DeliveryOptimization' AND p.name COLLATE NOCASE='SoftwareDistribution'
+        AND g.name COLLATE NOCASE='Windows' AND g.parent_id=?1 THEN 'pruned'
       WHEN d.name COLLATE NOCASE IN ('ReportArchive','ReportQueue') AND p.name COLLATE NOCASE='WER'
         AND g.name COLLATE NOCASE='Windows'
         AND EXISTS(SELECT 1 FROM dir h JOIN dir i ON i.id=h.parent_id

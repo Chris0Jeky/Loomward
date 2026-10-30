@@ -861,6 +861,12 @@ fn reclaim_rules_v4_windows_leftovers_are_cleanup_and_installer_caches_are_infor
     let dump = NodeKey::File(lab.file(windows, "MEMORY.DMP", 500));
     let programdata = lab.directory(lab.dir, "ProgramData", 0);
     let package_cache = NodeKey::Dir(lab.directory(programdata, "Package Cache", 600));
+    let local = lab.directory(lab.dir, "AppData", 0);
+    let local = lab.directory(local, "Local", 0);
+    let crash = NodeKey::Dir(lab.directory(local, "CrashDumps", 150));
+    let extract = lab.directory(lab.dir, "NVIDIA", 700);
+    lab.directory(extract, "DisplayDriver", 0);
+    let extract = NodeKey::Dir(extract);
     let mut input = lab.input();
     // One leftover has an observed deletion set; the others have none.
     input.files.insert(
@@ -885,6 +891,17 @@ fn reclaim_rules_v4_windows_leftovers_are_cleanup_and_installer_caches_are_infor
             (c.reclaimable_bytes, c.reclaimable_reason),
             (None, Some(RELIEF_UNOBSERVED))
         );
+    }
+    // No supported cleanup command: reviewed and removed by hand, so Archive candidates.
+    for (node, step) in [(crash, "Review"), (extract, "Delete by hand")] {
+        let (group, c) = find(&plan, node);
+        assert_eq!(group, GroupKind::ArchiveCandidates, "{node:?}");
+        assert_eq!(
+            (c.class, c.provider),
+            ("windows_manual_leftover", "windows")
+        );
+        assert!(c.owner_step.starts_with(step), "{}", c.owner_step);
+        assert_eq!(c.reclaimable_bytes, None);
     }
     for node in [installer, package_cache] {
         let (group, c) = find(&plan, node);

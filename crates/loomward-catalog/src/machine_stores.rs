@@ -221,7 +221,9 @@ fn candidate(row: query::Raw, rule: &str, scanning: bool) -> Result<MachineStore
         "system" => ("system_managed", "windows", "Informational: managed by Windows (Disk Cleanup or DISM); never counted as reclaimable.", None,
             "Recorded root system file or WinSxS or SoftwareDistribution directory directly under the root's Windows directory.",
             "Windows owns this space, and no reclaimable bytes or permission to alter it are established. This is advice, never a disposability claim."),
-        // Rules v4: Windows' own leftovers. Each owner step names the tool Windows itself offers.
+        // Rules v4: Windows' own leftovers. Each owner step names the tool Windows itself offers;
+        // crash-dumps and driver-extract have none, so their class (windows_manual_leftover) is
+        // planned under Archive candidates rather than Tool-owned cleanup.
         "windows-old" => ("windows_leftover", "windows", "Use Settings > System > Storage > Temporary files (Previous Windows installation(s)) or Disk Cleanup, after owner review of whether to keep the rollback.", None,
             "Recorded Windows.old, $WINDOWS.~BT or $WINDOWS.~WS directory directly under the granted root.",
             "Names only: whether the upgrade finished, whether rollback is still wanted and what the folder holds are unverified. This is advice, never a disposability claim."),
@@ -234,13 +236,13 @@ fn candidate(row: query::Raw, rule: &str, scanning: bool) -> Result<MachineStore
         "temp" => ("windows_leftover", "windows", "Use Settings > System > Storage > Temporary files (Storage Sense) rather than deleting by hand; files in use are left alone.", None,
             "Recorded Temp directory directly under the Windows directory under the root, or directly under AppData/Local.",
             "Names only: running programs and installers may still use files here, and contents are unverified. This is advice, never a disposability claim."),
-        "crash-dumps" => ("windows_leftover", "windows", "Review the dump files by hand and keep any still needed for a bug report; no Windows cleanup category is assumed.", None,
+        "crash-dumps" => ("windows_manual_leftover", "windows", "Review the dump files by hand and keep any still needed for a bug report; no Windows cleanup category is assumed.", None,
             "Recorded CrashDumps directory directly under AppData/Local.",
             "Names only: a dump may be the only record of a crash still under investigation, and its contents are unverified. This is advice, never a disposability claim."),
         "shader-cache" => ("windows_leftover", "windows", "Use Disk Cleanup, category \"DirectX Shader Cache\", or the GPU vendor's control panel, after owner review.", None,
             "Recorded D3DSCache, NVIDIA/DXCache, NVIDIA/GLCache or AMD/DxCache directory under AppData/Local.",
             "Names only: regeneration cost, such as stutter on the next game launch, and active users are unverified. This is advice, never a disposability claim."),
-        "driver-extract" => ("windows_leftover", "windows", "Delete by hand after the driver is installed and the owner has confirmed the installer files are not needed for a rollback.", None,
+        "driver-extract" => ("windows_manual_leftover", "windows", "Delete by hand after the driver is installed and the owner has confirmed the installer files are not needed for a rollback.", None,
             "Recorded AMD or NVIDIA directory directly under the granted root holding Setup.exe, or a Packages, Display.Driver or DisplayDriver child, or a child holding Setup.exe.",
             "Names only: the grant is not shown to be a volume root, and whether the driver installed or the installer is still wanted is unverified. This is advice, never a disposability claim."),
         "delivery-optimization" => ("windows_leftover", "windows", "Use Disk Cleanup, category \"Delivery Optimization Files\", or Settings > Windows Update > Advanced options > Delivery Optimization, after owner review.", None,
