@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { Client } from '../../src/lib/transport/client';
 import { createMockTransport } from '../../src/lib/transport/mock';
 import { parseQuery } from '../../src/lib/search/grammar';
-import { planFind, PRESETS, type FindControls } from '../../src/lib/search/find';
+import { findHref, planFind, PRESETS, type FindControls } from '../../src/lib/search/find';
 
 const NOW = Date.UTC(2026, 9, 30, 12, 0, 0); // 2026-10-30T12:00:00Z
 const NONE: FindControls = { extension: '', kind: 'any', minBytes: '' };
@@ -126,5 +126,16 @@ describe('find bar against the mock engine', () => {
     const txt = await run('ext:txt');
     expect(txt.length).toBeGreaterThan(0);
     expect(txt.every((h) => h.row.name.toLowerCase().endsWith('.txt'))).toBe(true);
+  });
+});
+
+describe('findHref (Today links, #1068 ?q=)', () => {
+  it('round-trips every preset through the Explorer route', () => {
+    for (const { query } of PRESETS) {
+      const href = findHref(query);
+      expect(href.startsWith('#/explorer?q=')).toBe(true);
+      expect(new URLSearchParams(href.split('?')[1]).get('q')).toBe(query);
+      expect(href.split('?')).toHaveLength(2); // no raw '?' inside the query (the route splits on it)
+    }
   });
 });
