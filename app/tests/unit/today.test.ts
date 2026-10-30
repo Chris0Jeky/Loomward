@@ -168,6 +168,19 @@ describe('needs you', () => {
     ] };
     expect(largestGroup(two)).toEqual({ name: 'Archive candidates', text: '2 candidates, 8.79 KiB reclaimable, 1 not observed yet. The plan is partial.' });
     expect(largestGroup({ ...plan, groups: [{ kind: 'relocate', candidates: [] }] })).toBeNull();
+    // A stale root clears every size: unknown, never "0 B"; a partly known group says "at least".
+    expect(largestGroup({ ...plan, groups: [{ kind: 'relocate', candidates: [cand(null, null)] }] }))
+      .toEqual({ name: 'Relocate', text: '1 candidate, reclaimable size not observed yet (their size is not observed either).' });
+    expect(largestGroup({ ...plan, groups: [{ kind: 'relocate', candidates: [cand(null, null), cand(null, '1024')] }] }))
+      .toEqual({ name: 'Relocate', text: '2 candidates, reclaimable size not observed yet (the folders hold at least 1.00 KiB).' });
+  });
+
+  it('keeps an incomplete reclaim plan with no candidates visible, never as a clean result', async () => {
+    const plan = (await client().call('reclaim.plan', { volume_id: 'vo_c', limit: 20 })).result;
+    const empty: ReclaimPlan = { ...plan, partial: true, budget_hit: true, groups: [] };
+    const out = needsYou({ volumes: [volume({ volume_id: 'vo_a' })], roots: [], alerts: null, jobs: [], reclaim: new Map([['vo_a', empty]]) }, NOW);
+    expect(out.find((s) => s.section === 'reclaim')?.items[0]?.text).toBe('reclaim plan is incomplete and found no candidates yet; that is not a clean result.');
+    expect(needsYou({ volumes: [volume({ volume_id: 'vo_a' })], roots: [], alerts: null, jobs: [], reclaim: new Map([['vo_a', { ...empty, partial: false, budget_hit: false, truncated: false }]]) }, NOW)).toEqual([]);
   });
 
   it('names a source that could not be read, and treats a failed reclaim plan as missing, not as empty', () => {

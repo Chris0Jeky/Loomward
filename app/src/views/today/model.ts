@@ -177,18 +177,22 @@ export function largestGroup(plan: ReclaimPlan): { name: string; text: string } 
     let known = 0n;
     let held = 0n;
     let unknown = 0;
+    let heldUnknown = 0; // a stale root's candidates carry no sizes at all: unknown, never zero
     for (const c of g.candidates) {
       const r = parseBytes(c.reclaimable_bytes);
       if (r === null) unknown++; else known += r;
-      held += parseBytes(c.allocated_bytes) ?? parseBytes(c.logical_bytes) ?? 0n;
+      const h = parseBytes(c.allocated_bytes) ?? parseBytes(c.logical_bytes);
+      if (h === null) heldUnknown++; else held += h;
     }
-    return { g, known, held, unknown };
+    return { g, known, held, unknown, heldUnknown };
   });
   if (!groups.length) return null;
   const best = groups.reduce((a, b) => (b.known > a.known || (b.known === a.known && b.held > a.held) ? b : a));
   const n = plural(best.g.candidates.length, 'candidate');
+  const holds = best.heldUnknown === best.g.candidates.length ? 'their size is not observed either'
+    : `the folders hold ${best.heldUnknown ? 'at least ' : ''}${formatBytes(String(best.held))}`;
   const size = best.unknown === best.g.candidates.length
-    ? `reclaimable size not observed yet (the folders hold ${formatBytes(String(best.held))})`
+    ? `reclaimable size not observed yet (${holds})`
     : `${formatBytes(String(best.known))} reclaimable${best.unknown ? `, ${best.unknown} not observed yet` : ''}`;
   const caveat = plan.partial || plan.truncated || plan.budget_hit ? ' The plan is partial.' : '';
   return { name: GROUP_WORDS[best.g.kind], text: `${n}, ${size}.${caveat}` };
@@ -210,6 +214,8 @@ export function needsYou(src: Sources, now: number): { section: Section; items: 
     const g = plan ? largestGroup(plan) : null;
     const vol = src.volumes?.find((v) => v.volume_id === id);
     if (g) items.push({ key: `reclaim-${id}`, section: 'reclaim', name: vol?.display_name ?? id, text: `largest group is ${g.name.toLowerCase()}, ${g.text}`, view: 'reclaim', linkText: 'Open Reclaim' });
+    // An incomplete plan with no candidates is not a clean volume: keep its uncertainty visible.
+    else if (plan && (plan.partial || plan.budget_hit || plan.truncated)) items.push({ key: `reclaim-${id}`, section: 'reclaim', name: vol?.display_name ?? id, text: 'reclaim plan is incomplete and found no candidates yet; that is not a clean result.', view: 'reclaim', linkText: 'Open Reclaim' });
   }
   const order: Section[] = ['alerts', 'roots', 'jobs', 'reclaim'];
   return order.map((section) => ({ section, items: items.filter((i) => i.section === section) })).filter((s) => s.items.length);
