@@ -421,15 +421,16 @@ describe('Explorer starting points after invalidation', () => {
   });
 });
 
-type TodayCode = { load(): Promise<void>; loadReclaim(ids: string[]): Promise<void>; effect(): void; onEvent(ev: { event: string }): void };
+type TodayCode = { load(): Promise<void>; loadReclaim(ids: string[]): Promise<void>; loadNewSince(ids: string[]): Promise<void>; effect(): void; onEvent(ev: { event: string }): void };
 
 function today(call: ReturnType<typeof vi.fn>) {
   const state = {
     session: { client: { call }, epoch: 0, connectionEpoch: 0, handle: (e: Error) => e.message },
-    scans: { settled: 0 }, untrack, alive: true, ticket: 0, reclaimTicket: 0, started: false, timer: undefined,
+    scans: { settled: 0 }, untrack, alive: true, ticket: 0, reclaimTicket: 0, newSinceTicket: 0, started: false, timer: undefined,
     JOBS_LIMIT: 100, REFRESH_MS: 250,
     roots: null as unknown, alerts: null as unknown, jobs: null as unknown, reclaim: new Map<string, unknown>(), failedReclaim: 0,
     loadProblems: [] as string[], reclaimProblems: [] as string[], loaded: false, refreshed: 0,
+    newSince: new Map<string, unknown>(), newSinceRead: false, failedNewSince: 0, newSinceProblems: [] as string[],
   };
   return { state, code: viewScript('today', state, 'session.epoch') as unknown as TodayCode };
 }
@@ -503,6 +504,51 @@ describe('Today loads', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('lets a stale new-since read never overwrite a newer one, and asks for the baseline default with a one-row limit', async () => {
+    const old = deferred<unknown>();
+    const call = vi.fn(async () => ({ result: 'new_answer' }));
+    call.mockImplementationOnce(() => old.promise as never);
+    const { state, code } = today(call);
+    const older = code.loadNewSince(['rt_a']);
+    await code.loadNewSince(['rt_a']);
+    old.resolve({ result: 'old_answer' });
+    await older;
+    expect([...state.newSince]).toEqual([['rt_a', 'new_answer']]);
+    expect(state.newSinceRead).toBe(true);
+    expect(call).toHaveBeenLastCalledWith('changes.new_since', { root_id: 'rt_a', baseline_run: null, limit: 1 });
+  });
+
+  it('drops a new-since read that finishes after the connection changed, and stays unread', async () => {
+    const reply = deferred<unknown>();
+    const { state, code } = today(vi.fn(() => reply.promise as never));
+    const loading = code.loadNewSince(['rt_a']);
+    state.session.connectionEpoch++;
+    reply.resolve({ result: 'answer_from_the_old_engine' });
+    await loading;
+    expect(state.newSince.size).toBe(0);
+    expect(state.newSinceRead).toBe(false);
+  });
+
+  it('keeps a folder whose new-since read failed as unread, replaces the errors each round and reads nothing for no folders', async () => {
+    const call = vi.fn(async (_c: string, p: { root_id: string }) => {
+      if (p.root_id === 'rt_bad') throw new Error('new files unreadable');
+      return { result: 'answer' };
+    });
+    const { state, code } = today(call as never);
+    await code.loadNewSince(['rt_a', 'rt_bad']);
+    await code.loadNewSince(['rt_a', 'rt_bad']);
+    expect([...state.newSince]).toEqual([['rt_a', 'answer'], ['rt_bad', null]]);
+    expect(state.failedNewSince).toBe(1);
+    expect(state.newSinceProblems).toEqual(['new files unreadable']);
+    call.mockClear();
+    await code.loadNewSince([]);
+    expect(call).not.toHaveBeenCalled();
+    expect(state.newSince.size).toBe(0);
+    expect(state.failedNewSince).toBe(0);
+    expect(state.newSinceProblems).toEqual([]);
+    expect(state.newSinceRead).toBe(true);
   });
 
   it('replaces reclaim errors each round instead of piling them up', async () => {

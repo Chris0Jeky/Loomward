@@ -878,6 +878,14 @@ def main() -> None:
         nav = page.get_by_role('navigation', name='Views')
         check(nav.get_by_role('link').count() >= 2, 'views are discovered into the navigation')
         expect(nav.get_by_role('link', name='Today')).to_have_attribute('aria-current', 'page')
+        # #1092: one honest "new since" line per volume that holds a granted folder, linked to Explorer.
+        new_since = page.get_by_role('region', name='New since the last scan')
+        expect(new_since).to_contain_text('New since the scan on 2026-10-23')
+        expect(new_since).to_contain_text('Moved or recreated files count as new.')
+        expect(new_since).to_contain_text('no earlier scan to compare with') # the second volume's folders have no baseline: not zero
+        new_since.get_by_role('link', name='Open the largest new folder in Explorer').first.click()
+        expect(page.get_by_role('heading', name='Explorer', level=1)).to_be_visible()
+        check('node=' in page.url, 'the new-since link opens Explorer on a node')
         nav.get_by_role('link', name='Explorer', exact=True).click()
         expect(page.get_by_role('heading', name='Explorer', level=1)).to_be_visible()
         expect(nav.get_by_role('link', name='Explorer')).to_have_attribute('aria-current', 'page')

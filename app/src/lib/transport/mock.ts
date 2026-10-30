@@ -12,6 +12,7 @@ import { createAlertMock } from './mock-alerts';
 import { createClutterMock } from './mock-clutter';
 import { createReclaimMock } from './mock-reclaim';
 import { createInsightMock } from './mock-insight';
+import { createChangesMock } from './mock-changes';
 import { createAskMock } from './mock-ask';
 import { createClientMock } from './mock-clients';
 import { createBackupMock } from './mock-backups';
@@ -41,7 +42,7 @@ const REVS: Partial<Record<string, 'c' | 's' | 'cs'>> = {
   'health.get': 'c', 'tree.children': 'c', 'search.query': 'c', 'stats.breakdown': 'c',
   'roots.list': 'cs', 'tree.slice': 'cs', 'placement.candidates': 'cs', 'placement.simulate': 'cs',
   'proposals.list': 'cs', 'proposals.get': 'cs', 'volumes.declare_tier': 'cs',
-  'roots.revoke': 'cs', 'roots.forget': 'cs', 'backups.list': 's', 'backups.forget': 's', 'alerts.list': 's', 'alerts.configure': 's', 'clutter.developer': 'cs', 'projects.find': 'cs', 'insight.folder': 'cs', 'grants.list': 's', 'grants.revoke': 's', 'volumes.list': 's', 'tiers.model': 's',
+  'roots.revoke': 'cs', 'roots.forget': 'cs', 'backups.list': 's', 'backups.forget': 's', 'alerts.list': 's', 'alerts.configure': 's', 'clutter.developer': 'cs', 'projects.find': 'cs', 'insight.folder': 'cs', 'changes.new_since': 'cs', 'grants.list': 's', 'grants.revoke': 's', 'volumes.list': 's', 'tiers.model': 's',
 };
 
 class CommandFailure extends Error {
@@ -425,6 +426,20 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
       const n = byId.get(id);
       const top = n ? topOf(n)[0] : undefined;
       return n && top ? { kind: n.kind, root: rootId(top), coverage: n.coverage } : null;
+    }),
+    ...createChangesMock(fail, () => (handlers['roots.list']!({}) as RootList).roots, (id, limit) => {
+      // Invented as new: the root's 40 largest files, and its top-level folders. Real mock node ids, so Explorer links open.
+      const inRoot = tree.nodes.filter((n) => n.kind !== 'atlas' && n.kind !== 'root' && rootId(topOf(n)[0]!) === id);
+      const files = inRoot.filter((n) => n.kind === 'file').sort((a, b) => (a.logical === b.logical ? a.index - b.index : a.logical > b.logical ? -1 : 1)).slice(0, 40);
+      if (!files.length) return null;
+      const folders = inRoot.filter((n) => n.kind === 'dir' && topOf(n).length === 2).sort((a, b) => (a.logical === b.logical ? a.index - b.index : a.logical > b.logical ? -1 : 1));
+      const unknown = files.filter((n) => n.allocated === null).length;
+      return {
+        files: files.slice(0, limit).map((n) => ({ node_id: n.id, name: n.name, path: { text: pathOf(n), truncated: false }, logical_bytes: n.logical.toString(), allocated_bytes: n.allocated === null ? null : n.allocated.toString() })),
+        folders: folders.slice(0, limit).map((n) => ({ node_id: n.id, name: n.name, path: { text: pathOf(n), truncated: false }, logical_bytes: n.logical.toString(), allocated_bytes: n.allocated === null ? null : n.allocated.toString(), coverage: n.coverage })),
+        fileCount: files.length, dirCount: folders.length, logical: files.reduce((s, n) => s + n.logical, 0n),
+        allocated: unknown ? null : files.reduce((s, n) => s + (n.allocated ?? 0n), 0n), allocationUnknown: unknown,
+      };
     }),
     ...createReclaimMock(failWith, () => (views.handlers['volumes.list']!({}) as import('../contracts.gen').VolumeList).volumes, scan.observe),
     // The contract's synthetic bundle, whose size and digest are those of its canonical text. Like HTTP, the mock

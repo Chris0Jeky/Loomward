@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { Client } from '../../src/lib/transport/client';
 import { createMockTransport } from '../../src/lib/transport/mock';
-import type { AlertItem, AlertReport, Job, ReclaimPlan, Root, Volume } from '../../src/lib/contracts.gen';
-import { ageText, healthReading, jobNeed, largestGroup, linkName, missingSources, moreViews, needsEmptyText, nearlyFull, needsYou, reclaimTargets, rootNeed, unevaluatedAlerts, unevaluatedLine, unplacedRoots, usedFraction, volumeRows, type Sources } from '../../src/views/today/model';
+import type { AlertItem, AlertReport, ChangesNewSince, Job, ReclaimPlan, Root, Volume } from '../../src/lib/contracts.gen';
+import { ageText, healthReading, jobNeed, largestGroup, linkName, missingSources, moreViews, needsEmptyText, nearlyFull, needsYou, newSinceLines, reclaimTargets, rootNeed, unevaluatedAlerts, unevaluatedLine, unplacedRoots, usedFraction, volumeRows, type NewSinceReads, type Sources } from '../../src/views/today/model';
 
 const NOW = Date.parse('2026-10-30T12:00:00Z');
 const iso = (minutesAgo: number) => new Date(NOW - minutesAgo * 60_000).toISOString();
@@ -315,5 +315,112 @@ describe('alerts that could not be evaluated', () => {
     expect(needsEmptyText(0, 0)).toBe('Nothing needs you.');
     expect(needsEmptyText(0, 2)).toBe('Nothing needs you in what was read.');
     expect(needsEmptyText(1, 0)).toBe('Nothing needs you in what was read.');
+  });
+});
+
+describe('new since the last scan', () => {
+  const baseline = (over: Partial<NonNullable<ChangesNewSince['baseline']>> = {}) =>
+    ({ run: '4', mode: 'full' as const, finished_at: '2026-10-23T08:30:00.000Z', complete: true, ...over });
+  const file = (id: string, bytes: string) => ({ node_id: id, name: id, path: { text: id, truncated: false }, logical_bytes: bytes, allocated_bytes: null });
+  const folder = (id: string, bytes: string | null) => ({ ...file(id, '0'), logical_bytes: bytes, coverage: 'complete' as const });
+  function answer(over: Partial<ChangesNewSince> = {}): ChangesNewSince {
+    return {
+      root_id: 'rt_1', generation: '7', outcome: 'ok', baseline: baseline(), latest: baseline({ run: '7' }),
+      new_files: 340, new_dirs: 12, logical_bytes: '13207024435', allocated_bytes: null, allocation_unknown_files: 2,
+      largest_files: [file('nd_f1', '4000')], largest_folders: [folder('nd_d1', '9000')], partial: false, partial_reasons: [], caveats: [], ...over,
+    };
+  }
+  const noBaseline = (): ChangesNewSince => answer({
+    outcome: 'no_baseline', baseline: null, new_files: null, new_dirs: null, logical_bytes: null, allocation_unknown_files: null, largest_files: [], largest_folders: [],
+  });
+  const reads = (...e: [string, ChangesNewSince | null][]): NewSinceReads => new Map(e);
+
+  it('words one line per volume with the scan date, the figure and a link to the largest new folder', () => {
+    const lines = newSinceLines([volume(), volume({ volume_id: 'vo_b', display_name: 'B:' })], [root()], reads(['rt_1', answer()]));
+    expect(lines).toHaveLength(1); // B: holds no granted folder
+    expect(lines[0]).toMatchObject({
+      volumeId: 'vo_a', name: 'A:', text: 'New since the scan on 2026-10-23: 12.3 GiB in 340 files.', unknown: false,
+      href: '#/explorer?node=nd_d1', linkText: 'Open the largest new folder in Explorer',
+    });
+    // Moved and recreated files count as new, and the size is logical: said beside every figure.
+    expect(lines[0]!.notes).toEqual(['Logical size. Moved or recreated files count as new.']);
+  });
+
+  it('falls back to the largest new file, encodes the link, and links nothing when nothing is new', () => {
+    const files = newSinceLines([volume()], [root()], reads(['rt_1', answer({ largest_folders: [], largest_files: [file('nd_small', '5'), file('nd_big', '50')] })]));
+    expect(files[0]).toMatchObject({ href: '#/explorer?node=nd_big', linkText: 'Open the largest new file in Explorer' });
+    expect(newSinceLines([volume()], [root()], reads(['rt_1', answer({ largest_folders: [], largest_files: [file('nd a b', '5')] })]))[0]!.href).toBe('#/explorer?node=nd%20a%20b');
+    const none = newSinceLines([volume()], [root()], reads(['rt_1', answer({ new_files: 0, new_dirs: 0, logical_bytes: '0', largest_files: [], largest_folders: [] })]));
+    expect(none[0]).toMatchObject({ text: 'New since the scan on 2026-10-23: 0 B in 0 files.', href: null, unknown: false }); // a real zero: there was a baseline
+  });
+
+  it('sums the granted folders of a volume that have an earlier scan and names the rest, never counting them as zero', () => {
+    const roots = [root(), root({ root_id: 'rt_2' }), root({ root_id: 'rt_3' }), root({ root_id: 'rt_4' })];
+    const lines = newSinceLines([volume()], roots, reads(
+      ['rt_1', answer()],
+      ['rt_2', answer({ root_id: 'rt_2', baseline: baseline({ finished_at: '2026-10-16T08:30:00.000Z' }), new_files: 10, logical_bytes: String(GiB), largest_folders: [folder('nd_d2', String(2n * GiB))] })],
+      ['rt_3', noBaseline()],
+      ['rt_4', null],
+    ));
+    expect(lines[0]!.text).toBe("New since each folder's previous scan (the oldest on 2026-10-16): 13.3 GiB in 350 files.");
+    expect(lines[0]!.href).toBe('#/explorer?node=nd_d2');
+    expect(lines[0]!.notes).toEqual([
+      '1 granted folder has no earlier scan to compare with, so it is not counted.',
+      '1 granted folder could not be read, so it is not counted.',
+      'Logical size. Moved or recreated files count as new.',
+    ]);
+  });
+
+  it('shows no figure, and no zero, when no folder has an earlier scan or could be read', () => {
+    const first = newSinceLines([volume()], [root()], reads(['rt_1', noBaseline()]));
+    expect(first[0]).toMatchObject({ text: 'New since the last scan: not known.', unknown: true, href: null });
+    expect(first[0]!.notes).toEqual(['1 granted folder has no earlier scan to compare with, so it is not counted.']);
+    const down = newSinceLines([volume()], [root(), root({ root_id: 'rt_2' })], reads(['rt_1', null]));
+    expect(down[0]!.text).toBe('New since the last scan: not known.');
+    expect(down[0]!.notes).toEqual(['2 granted folders could not be read, so they are not counted.']);
+    // An answer that claims ok but has no figure is not read as zero either.
+    expect(newSinceLines([volume()], [root()], reads(['rt_1', answer({ new_files: null, logical_bytes: null })]))[0]!.unknown).toBe(true);
+  });
+
+  it('says a partial answer is partial and why, in words', () => {
+    const lines = newSinceLines([volume()], [root()], reads(['rt_1', answer({ partial: true, partial_reasons: ['baseline_incomplete', 'scan_running'] })]));
+    expect(lines[0]!.notes[0]).toBe('Partial, so the figure may be off: the earlier scan was not complete; a scan is running.');
+    expect(lines[0]!.text).toBe('New since the scan on 2026-10-23: 12.3 GiB in 340 files.');
+  });
+
+  it('never invents a date: a baseline without a finish time reads as an unknown date', () => {
+    const lines = newSinceLines([volume()], [root()], reads(['rt_1', answer({ baseline: baseline({ finished_at: null }) })]));
+    expect(lines[0]!.text).toBe('New since an earlier scan (date unknown): 12.3 GiB in 340 files.');
+  });
+
+  it('leaves out revoked folders and folders on no listed volume, and shows nothing without volumes', () => {
+    expect(newSinceLines([volume()], [root({ grant_state: 'revoked' })], reads(['rt_1', answer()]))).toEqual([]);
+    expect(newSinceLines([volume()], [root({ volume_id: null })], reads(['rt_1', answer()]))).toEqual([]);
+    expect(newSinceLines([], [root()], reads())).toEqual([]);
+  });
+
+  it('counts a folder whose answer could not be read among the sources not read', () => {
+    const src: Sources = { volumes: [], roots: [], alerts: null, jobs: [], reclaim: new Map() };
+    expect(missingSources(src, 0, 1)).toEqual(['alerts', 'what is new in one granted folder']);
+    expect(missingSources(src, 1, 3)).toEqual(['alerts', 'one reclaim plan', 'what is new in 3 granted folders']);
+    expect(missingSources(src, 0)).toEqual(['alerts']);
+  });
+
+  it('reads the mock transport: real node ids for the first folder, no earlier scan for the next, honest refusals', async () => {
+    const c = client();
+    const roots = (await c.call('roots.list', {})).result.roots.filter((r) => r.grant_state === 'active');
+    const first = (await c.call('changes.new_since', { root_id: roots[0]!.root_id, baseline_run: null, limit: 3 })).result;
+    expect(first.outcome).toBe('ok');
+    expect(first.largest_files.length).toBeLessThanOrEqual(3);
+    for (const n of [...first.largest_files, ...first.largest_folders]) {
+      expect((await c.call('node.inspect', { node_id: n.node_id })).result.row.name).toBe(n.name); // Explorer can open it
+    }
+    const second = (await c.call('changes.new_since', { root_id: roots[1]!.root_id, baseline_run: null, limit: 3 })).result;
+    expect(second).toMatchObject({ outcome: 'no_baseline', baseline: null, new_files: null, logical_bytes: null, largest_files: [] });
+    const vols = (await c.call('volumes.list', {})).result.volumes;
+    expect(newSinceLines(vols, roots, reads([roots[0]!.root_id, first], [roots[1]!.root_id, second])).length).toBeGreaterThan(0);
+    await expect(c.call('changes.new_since', { root_id: roots[0]!.root_id, limit: 3 } as never)).rejects.toMatchObject({ code: 'invalid_request' });
+    await expect(c.call('changes.new_since', { root_id: roots[0]!.root_id, baseline_run: null, limit: 51 })).rejects.toMatchObject({ code: 'invalid_request' });
+    await expect(c.call('changes.new_since', { root_id: 'rt_nope', baseline_run: null, limit: 3 })).rejects.toMatchObject({ code: 'not_found' });
   });
 });
