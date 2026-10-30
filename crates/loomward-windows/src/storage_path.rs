@@ -1,7 +1,7 @@
 //! Read-only storage-path observations (LW-137 / ADR R6), never operation authority.
 use crate::volumes::Fact;
 use serde::Serialize;
-use std::{io, path::Path};
+use std::{io, path::Path, time::Duration};
 
 /// Qualification attaches to this tuple, not to mount paths or a drive letter.
 /// Device serials in temporary IOCTL response buffers are never extracted, retained or hashed.
@@ -138,19 +138,31 @@ pub struct StorageObservation {
 /// One explicitly selected path; providers do not scan disks or change device policy.
 pub trait StorageQueryProvider {
     fn query(&self, root: &Path) -> io::Result<StorageObservation>;
+
+    /// Like [`query`](Self::query), but the slow reliability-counter read may wait at most
+    /// `health_budget` (zero skips it). A stalled counter then degrades only `health`, so a caller
+    /// with a request deadline is never held past it. Providers without a slow read ignore it.
+    fn query_within(&self, root: &Path, health_budget: Duration) -> io::Result<StorageObservation> {
+        let _ = health_budget;
+        self.query(root)
+    }
 }
 
 pub struct WindowsStorageQueryProvider;
 
 impl StorageQueryProvider for WindowsStorageQueryProvider {
     fn query(&self, root: &Path) -> io::Result<StorageObservation> {
+        self.query_within(root, Duration::MAX)
+    }
+
+    fn query_within(&self, root: &Path, health_budget: Duration) -> io::Result<StorageObservation> {
         #[cfg(windows)]
         {
-            crate::volumes::storage_query(root)
+            crate::volumes::storage_query(root, health_budget)
         }
         #[cfg(not(windows))]
         {
-            let _ = root;
+            let _ = (root, health_budget);
             Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "Windows storage queries unavailable",
@@ -428,6 +440,30 @@ mod tests {
                 assert!(!reason.is_empty() && !reason.contains("Volume{"));
             }
         }
+    }
+
+    /// A request with no time left skips the slow counter read on every bus: health is a reason,
+    /// the rest of the observation is still returned.
+    #[cfg(windows)]
+    #[test]
+    fn real_provider_with_no_budget_skips_the_counter_read() {
+        if crate::enumerate::skip_elevated_test() {
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let started = std::time::Instant::now();
+        let observation = WindowsStorageQueryProvider
+            .query_within(root.path(), Duration::ZERO)
+            .unwrap();
+        assert!(observation
+            .storage_path
+            .volume_guid
+            .starts_with(r"\\?\Volume{"));
+        assert!(matches!(
+            observation.health,
+            HealthObservation::UnsupportedOrHidden { .. }
+        ));
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 
     #[cfg(not(windows))]

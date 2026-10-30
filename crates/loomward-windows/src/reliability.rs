@@ -26,6 +26,15 @@ const STORAGE_DEVICE_PROTOCOL_SPECIFIC_PROPERTY: u32 = 50;
 
 /// How long the health query may take before the volume row reports it as unobserved.
 pub(crate) const QUERY_BUDGET: Duration = Duration::from_secs(2);
+/// Reason when the request has no time left for a health query.
+pub(crate) const NO_BUDGET_REASON: &str = "not queried: request deadline";
+
+/// The wait a query may take: the caller's remaining budget capped at [`QUERY_BUDGET`], or `None`
+/// when no time remains (the query is skipped, never started).
+pub(crate) fn query_limit(budget: Duration) -> Option<Duration> {
+    (!budget.is_zero()).then(|| budget.min(QUERY_BUDGET))
+}
+
 /// A query that outlives its budget keeps its worker thread until the driver answers; at most this
 /// many may be stuck at once, then further queries are refused instead of piling up threads.
 const MAX_STUCK: usize = 4;
@@ -124,10 +133,15 @@ pub(crate) fn failure_reason(error: &io::Error) -> String {
         (Some(INVALID_FUNCTION | NOT_SUPPORTED | INVALID_PARAMETER), _) => {
             "this device or driver does not expose an NVMe health log".into()
         }
-        (_, io::ErrorKind::TimedOut) => format!(
-            "NVMe health log query exceeded {} s; the device may be asleep or removed",
-            QUERY_BUDGET.as_secs()
-        ),
+        (_, io::ErrorKind::TimedOut) => {
+            "NVMe health log query did not answer within its time budget; the device may be asleep or removed".into()
+        }
+        (_, io::ErrorKind::BrokenPipe) => {
+            "NVMe health log query ended without an answer (worker failed)".into()
+        }
+        (_, io::ErrorKind::WouldBlock) => {
+            "not queried: earlier health queries are still waiting on their devices".into()
+        }
         (_, io::ErrorKind::InvalidData) => "NVMe health log response was malformed".into(),
         (_, kind) => format!("NVMe health log query failed ({kind})"),
     }
@@ -179,17 +193,25 @@ pub(crate) fn bounded<T: Send + 'static>(
             let _slot = slot;
             let _ = tx.send(work());
         })?;
-    rx.recv_timeout(limit)
-        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "health query timed out"))?
+    rx.recv_timeout(limit).map_err(|error| match error {
+        mpsc::RecvTimeoutError::Timeout => {
+            io::Error::new(io::ErrorKind::TimedOut, "health query timed out")
+        }
+        // The worker dropped its sender without answering: it panicked.
+        mpsc::RecvTimeoutError::Disconnected => {
+            io::Error::new(io::ErrorKind::BrokenPipe, "health query worker failed")
+        }
+    })?
 }
 
-/// NVMe counters for the volume `guid` (`\\?\Volume{...}\`), bounded by [`QUERY_BUDGET`]. The
-/// volume is opened with access 0 and sent one read-only property query: no data is read from it.
+/// NVMe counters for the volume `guid` (`\\?\Volume{...}\`), waiting at most `limit` (see
+/// [`query_limit`]). The volume is opened with access 0 and sent one read-only property query: no
+/// data is read from it.
 #[cfg(windows)]
-pub(crate) fn nvme_counters(guid: &str) -> io::Result<ReliabilityCounters> {
+pub(crate) fn nvme_counters(guid: &str, limit: Duration) -> io::Result<ReliabilityCounters> {
     static STUCK: AtomicUsize = AtomicUsize::new(0);
     let path = guid.trim_end_matches('\\').to_owned();
-    bounded(&STUCK, QUERY_BUDGET, move || query_native(&path))
+    bounded(&STUCK, limit, move || query_native(&path))
 }
 
 #[cfg(windows)]
@@ -358,11 +380,45 @@ mod tests {
         for code in [1, 50, 87] {
             assert!(reason(io::Error::from_raw_os_error(code)).contains("does not expose"));
         }
-        assert!(reason(io::ErrorKind::TimedOut.into()).contains("exceeded 2 s"));
+        assert!(reason(io::ErrorKind::TimedOut.into()).contains("time budget"));
+        assert!(reason(io::ErrorKind::BrokenPipe.into()).contains("worker failed"));
+        assert!(reason(io::ErrorKind::WouldBlock.into()).contains("still waiting"));
         assert!(no_query_reason("usb").contains("USB bridge"));
         assert!(no_query_reason("sata").contains("never elevates"));
         assert!(no_query_reason("unknown").contains("not queried"));
         assert!(no_query_reason("something-new").contains("not queried"));
+    }
+
+    #[test]
+    fn a_panicking_worker_is_not_reported_as_a_timeout() {
+        static STUCK: AtomicUsize = AtomicUsize::new(0);
+        let error =
+            bounded::<()>(&STUCK, Duration::from_secs(5), || panic!("synthetic")).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+        let reason = failure_reason(&error);
+        assert!(reason.contains("worker failed") && !reason.contains("time budget"));
+        for _ in 0..200 {
+            if STUCK.load(Ordering::SeqCst) == 0 {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            STUCK.load(Ordering::SeqCst),
+            0,
+            "the slot is released on panic"
+        );
+    }
+
+    #[test]
+    fn the_remaining_request_budget_caps_the_wait_and_zero_skips_the_query() {
+        assert_eq!(query_limit(Duration::ZERO), None);
+        assert_eq!(
+            query_limit(Duration::from_millis(40)),
+            Some(Duration::from_millis(40))
+        );
+        assert_eq!(query_limit(Duration::from_secs(60)), Some(QUERY_BUDGET));
+        assert_eq!(NO_BUDGET_REASON, "not queried: request deadline");
     }
 
     #[test]
@@ -384,6 +440,9 @@ mod tests {
         // The cap is reached: refused immediately, without starting another thread.
         let error = bounded(&STUCK, Duration::from_millis(30), || Ok(())).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+        // The cap surfaces its own reason, not a timeout.
+        let reason = failure_reason(&error);
+        assert!(reason.starts_with("not queried") && !reason.contains("time budget"));
         drop(release); // workers unblock and free their slots
         for _ in 0..200 {
             if STUCK.load(Ordering::SeqCst) == 0 {

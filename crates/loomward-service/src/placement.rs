@@ -468,7 +468,14 @@ impl<'a> Input<'a> {
     }
 
     /// One read-only storage-path query for an explicitly granted root; any failure is unobserved.
-    fn query_storage(&self, root: &std::path::Path) -> Option<StorageObservation> {
+    /// The slow reliability-counter read gets only what the request deadline leaves (#1065), so a
+    /// stalled disk degrades its own health field and never fails the listing.
+    fn query_storage(
+        &self,
+        root: &std::path::Path,
+        deadline: Instant,
+    ) -> Option<StorageObservation> {
+        let budget = health_budget(deadline, Instant::now());
         #[cfg(test)]
         if let Some(provider) = self
             .inner
@@ -478,9 +485,9 @@ impl<'a> Input<'a> {
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
         {
-            return provider.query(root).ok();
+            return provider.query_within(root, budget).ok();
         }
-        WindowsStorageQueryProvider.query(root).ok()
+        WindowsStorageQueryProvider.query_within(root, budget).ok()
     }
 
     /// `observe_personal_grants` is set only by `volumes.list` and the alerts report (#519): a
@@ -547,7 +554,8 @@ impl<'a> Input<'a> {
                 }
                 // LW-137: the same granted online root, one read-only query, no scan of other disks.
                 if with_storage_path && storage.is_none() {
-                    storage = self.query_storage(std::path::Path::new(&root.display_path));
+                    storage =
+                        self.query_storage(std::path::Path::new(&root.display_path), deadline);
                 }
             }
             let device = match &classification {
@@ -1254,6 +1262,16 @@ impl ProposalStore for Store<'_> {
             })?;
         self.detail(self.conn, row)
     }
+}
+
+/// Time kept back for the rest of the response after a health read.
+const HEALTH_RESERVE: Duration = Duration::from_millis(250);
+
+/// What the request deadline leaves for one health read; zero skips it.
+pub(crate) fn health_budget(deadline: Instant, now: Instant) -> Duration {
+    deadline
+        .saturating_duration_since(now)
+        .saturating_sub(HEALTH_RESERVE)
 }
 
 /// LW-137: the wire form of one storage-path observation. An unknown fact is `null`; reported

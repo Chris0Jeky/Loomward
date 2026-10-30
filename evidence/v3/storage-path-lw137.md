@@ -166,9 +166,12 @@ Mapping from the 512-byte NVMe log page (NVMe Base Specification, SMART / Health
 | read/write error totals and uncorrected counts | Not mapped: the log has one aggregate Media Errors count, which is neither a read nor a write total |
 
 An all-zero page is treated as a driver stub, not a measurement. The query runs on a worker thread
-with a 2 s budget; on timeout the worker is detached and the row reports `unsupported_or_hidden`
-("exceeded 2 s"). At most four such stuck workers are allowed at once, after which queries are
-refused without spawning. Reasons never include identifiers. Through the real provider on this
+and waits at most the smaller of 2 s and what the request deadline leaves minus a 250 ms reserve
+(`volumes.list` passes that remainder, so a stalled disk cannot fail the listing); with nothing
+left it is skipped ("not queried: request deadline"). On timeout the worker is detached and the
+row reports `unsupported_or_hidden` ("did not answer within its time budget"). A worker panic
+has its own reason, and so does the cap: at most four stuck workers at once, after which queries
+are refused without spawning ("not queried: earlier health queries are still waiting"). Reasons never include identifiers. Through the real provider on this
 host (one query per volume): NVMe volumes reported `counters_present` with temperature, wear,
 power-on hours and power cycles all present (2 to 12 ms each); SATA volumes reported the "no
 unelevated health query" reason (under 2 ms); the USB volume reported the bridge reason (14 ms).

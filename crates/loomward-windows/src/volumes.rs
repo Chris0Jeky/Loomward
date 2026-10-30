@@ -229,8 +229,9 @@ pub fn enumerate() -> io::Result<Vec<Volume>> {
 #[cfg(windows)]
 pub(crate) fn storage_query(
     path: &std::path::Path,
+    health_budget: std::time::Duration,
 ) -> io::Result<crate::storage_path::StorageObservation> {
-    native::storage_query(path)
+    native::storage_query(path, health_budget)
 }
 
 #[cfg(windows)]
@@ -246,6 +247,7 @@ mod native {
 
     pub(super) fn storage_query(
         path: &Path,
+        health_budget: std::time::Duration,
     ) -> io::Result<crate::storage_path::StorageObservation> {
         use crate::storage_path::*;
         crate::win::non_elevated()?;
@@ -323,7 +325,7 @@ mod native {
                     }
                 }),
         );
-        let health = observe_health(&bus, &guid);
+        let health = observe_health(&bus, &guid, health_budget);
         Ok(StorageObservation {
             storage_path: StoragePath {
                 volume_guid: guid,
@@ -357,11 +359,21 @@ mod native {
     }
 
     /// #876: NVMe health log where a non-elevated query exists; every other bus keeps its reason.
-    fn observe_health(bus: &Fact<String>, guid: &str) -> crate::storage_path::HealthObservation {
+    fn observe_health(
+        bus: &Fact<String>,
+        guid: &str,
+        budget: std::time::Duration,
+    ) -> crate::storage_path::HealthObservation {
         use crate::{reliability, storage_path::HealthObservation};
         match bus {
             Fact::Known { value } if value == "nvme" => {
-                HealthObservation::from_counters(match reliability::nvme_counters(guid) {
+                // No time left in the caller's request: skip, never start, the slow read.
+                let Some(limit) = reliability::query_limit(budget) else {
+                    return HealthObservation::UnsupportedOrHidden {
+                        reason: reliability::NO_BUDGET_REASON.into(),
+                    };
+                };
+                HealthObservation::from_counters(match reliability::nvme_counters(guid, limit) {
                     Ok(value) => Fact::Known { value },
                     Err(error) => Fact::Unknown {
                         reason: reliability::failure_reason(&error),
