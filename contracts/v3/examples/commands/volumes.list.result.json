@@ -34,6 +34,29 @@
         "reparse_points": true,
         "usn_journal": null
       },
+      "storage_path": {
+        "bus_type": "nvme",
+        "bridge": null,
+        "usb_transport": null,
+        "logical_sector_bytes": 512,
+        "physical_sector_bytes": 4096,
+        "removal_policy": null,
+        "write_cache_enabled": true,
+        "health": {
+          "state": "counters_present",
+          "reason": null,
+          "counters": {
+            "temperature_celsius": 34,
+            "read_errors_total": 0,
+            "read_errors_uncorrected": null,
+            "write_errors_total": 0,
+            "write_errors_uncorrected": null,
+            "power_on_hours": 1200,
+            "wear_percent": 3,
+            "start_stop_cycles": null
+          }
+        }
+      },
       "observed_at": "2026-10-09T12:00:00Z"
     },
     {
@@ -69,6 +92,20 @@
         "compression": true,
         "reparse_points": true,
         "usn_journal": null
+      },
+      "storage_path": {
+        "bus_type": "nvme",
+        "bridge": null,
+        "usb_transport": null,
+        "logical_sector_bytes": 512,
+        "physical_sector_bytes": 4096,
+        "removal_policy": null,
+        "write_cache_enabled": null,
+        "health": {
+          "state": "unsupported_or_hidden",
+          "reason": "Reliability counters are not reported for this volume.",
+          "counters": null
+        }
       },
       "observed_at": "2026-10-09T12:00:00Z"
     }
