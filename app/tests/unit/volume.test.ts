@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { StorageCriticalWarning, Volume } from '../../src/lib/contracts.gen';
 import { diskHealthLine, hasDiskHealthWarning, volumeMarkers } from '../../src/lib/format/volume';
 import { volumes } from '../../src/lib/stores/volumes.svelte';
+import { healthReading } from '../../src/views/today/model';
 import { Client } from '../../src/lib/transport/client';
 import { createMockTransport } from '../../src/lib/transport/mock';
 
@@ -90,6 +91,39 @@ describe('disk health line (LW-137)', () => {
     const offline = (await load()).find((v) => !v.online)!;
     expect(offline.storage_path).toBeUndefined();
     expect(diskHealthLine(offline)).toBe('Disk health: unknown (not observed)');
+  });
+});
+
+describe('an offline volume never shows a stale disk-health reading', () => {
+  const warnedOnline = async (): Promise<Volume> => {
+    const reported = (await new Client(createMockTransport()).call('volumes.list', {})).result.volumes.find((v) => v.storage_path?.health.state === 'counters_present')!;
+    const counters = { ...reported.storage_path!.health.counters!, critical_warning: { available_spare_low: true, temperature: false, reliability_degraded: false, read_only: false, volatile_backup_failed: false, other_bits: 0 } };
+    return { ...reported, online: true, storage_path: { ...reported.storage_path!, health: { state: 'counters_present', reason: null, counters } } };
+  };
+
+  it('the shared helpers read a volume that holds a warning but is offline as not observed', async () => {
+    const warned = await warnedOnline();
+    expect(hasDiskHealthWarning(warned)).toBe(true);
+    const offline = { ...warned, online: false };
+    expect(hasDiskHealthWarning(offline)).toBe(false);
+    expect(diskHealthLine(offline)).toBe('Disk health: unknown (not observed)');
+  });
+
+  it('an online to offline volumes.changed transition clears the warning for Today and Grants & health', async () => {
+    const warned = await warnedOnline();
+    volumes.items = [warned];
+    const { storage_path: _dropped, ...row } = warned;
+    volumes.changed([{ ...row, online: false } as Volume]);
+    const now = volumes.items![0]!;
+    expect(now.storage_path).toBeUndefined();
+    // Grants & health calls the helpers directly; Today goes through healthReading.
+    expect(hasDiskHealthWarning(now)).toBe(false);
+    expect(diskHealthLine(now)).toBe('Disk health: unknown (not observed)');
+    expect(healthReading(now)).toEqual({ text: 'Disk health: unknown (not observed)', unknown: true, warning: false });
+    // Coming back online keeps nothing stale either: it reads not observed until the next list.
+    volumes.changed([{ ...row, online: true } as Volume]);
+    expect(hasDiskHealthWarning(volumes.items![0]!)).toBe(false);
+    volumes.items = null;
   });
 });
 

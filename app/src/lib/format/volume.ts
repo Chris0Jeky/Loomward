@@ -21,9 +21,17 @@ function criticalWarnings(w: StorageCriticalWarning | null): string[] {
   ].filter((part) => part !== null);
 }
 
+/**
+ * The storage-path health last observed for a volume, only while it is online: an offline volume is
+ * not queried, so whatever it last held (a kept row, a stale warning) is not current and reads not observed.
+ */
+function currentHealth(volume: Volume) {
+  return volume.online ? volume.storage_path?.health : undefined;
+}
+
 /** True when the volume's drive reported a critical warning. A clear or unreported byte is never a reading of health. */
 export function hasDiskHealthWarning(volume: Volume): boolean {
-  const health = volume.storage_path?.health;
+  const health = currentHealth(volume);
   return health?.state === 'counters_present' && criticalWarnings(health.counters?.critical_warning ?? null).length > 0;
 }
 
@@ -34,7 +42,7 @@ export function hasDiskHealthWarning(volume: Volume): boolean {
  * critical warning the drive latched leads the line, worded as the drive's report.
  */
 export function diskHealthLine(volume: Volume): string {
-  const health = volume.storage_path?.health;
+  const health = currentHealth(volume);
   if (!health) return 'Disk health: unknown (not observed)';
   if (health.state !== 'counters_present' || !health.counters) {
     return `Disk health: unknown (${health.reason ?? 'not reported'})`;

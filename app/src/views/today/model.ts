@@ -71,14 +71,13 @@ export function tierText(v: Volume): string {
 }
 
 /**
- * The Disk health line for a Today row: diskHealthLine() unchanged. An offline volume was not queried (its
- * storage path is not read), so it reads not observed whatever it last held. Unknown is never healthy (invariant 4).
+ * The Disk health line for a Today row: diskHealthLine() unchanged, which itself reads an offline volume (not queried) as
+ * not observed whatever it last held. Unknown is never healthy (invariant 4).
  */
 export function healthReading(v: Volume): { text: string; unknown: boolean; warning: boolean } {
-  const queried: Volume = v.online ? v : { ...v, storage_path: undefined };
-  const health = queried.storage_path?.health;
+  const health = v.online ? v.storage_path?.health : undefined;
   const unknown = health?.state !== 'counters_present' || !health.counters;
-  return { text: diskHealthLine(queried), unknown, warning: hasDiskHealthWarning(queried) };
+  return { text: diskHealthLine(v), unknown, warning: hasDiskHealthWarning(v) };
 }
 
 const activeRoots = (roots: Root[]) => roots.filter((r) => r.grant_state === 'active');

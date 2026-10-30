@@ -26,7 +26,8 @@ class Volumes {
     const before = this.items;
     this.items = items.map((v) => {
       const kept = before?.find((o) => o.volume_id === v.volume_id)?.storage_path;
-      return v.storage_path || !kept ? v : { ...v, storage_path: kept };
+      // An offline volume is not queried, so a cached observation is not carried onto it.
+      return v.storage_path || !kept || !v.online ? v : { ...v, storage_path: kept };
     });
     this.error = '';
   }
