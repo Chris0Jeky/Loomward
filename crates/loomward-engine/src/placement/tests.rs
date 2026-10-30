@@ -723,7 +723,9 @@ fn placement_save_digest_canonicalises_override_order() {
     assert_eq!(records[0].inputs_digest, records[1].inputs_digest);
     assert_eq!(
         records[0].inputs_digest.as_str(),
-        "sha256:2096dde6e180cfc63e7781a2aebd76c0b88ae59ea10bee33d4e74bff32646747"
+        // #954: the fixture's second group is partial (no listed files), so its candidate is now
+        // labelled logical_fallback; the digest covers that projection.
+        "sha256:d3f552d84c9ce16f9ed6b9113fd52d854e2f23cf613ad79cb1f323a1cc44ec05"
     );
     let plan = records[1].plan.clone();
     drop(records);
@@ -1436,5 +1438,39 @@ fn placement_saved_digest_ignores_the_stored_verdict_observation_time() {
     assert_eq!(
         digest_at("2026-10-09T08:00:00Z"),
         digest_at("2026-10-10T09:30:00Z")
+    );
+}
+
+/// #954: a partial group has no per-file destination rounding, so it must not claim the
+/// allocated-entries basis for a value that is only the unrounded logical total; source bytes
+/// follow the same label. A complete group keeps both the allocated and the rounded figure.
+#[test]
+fn placement_partial_group_labels_logical_fallback_with_matching_values() {
+    let mut inp = input();
+    inp.snapshot.subtrees[0].totals.allocated_bytes = Some(Bytes(300));
+    let complete = build_scenario(&inp, &request(), deadline()).unwrap();
+    let group = &complete.candidates.groups[0];
+    assert_eq!(group.coverage, CoverageState::Complete);
+    assert_eq!(
+        group.estimate_basis,
+        CandidateGroupEstimateBasis::AllocatedEntries
+    );
+    assert_eq!(group.source_bytes, Bytes(300));
+    assert_eq!(group.destination_bytes, Bytes(256));
+
+    inp.snapshot.subtrees[0].totals.complete = false;
+    let partial = build_scenario(&inp, &request(), deadline()).unwrap();
+    let group = &partial.candidates.groups[0];
+    assert_eq!(group.coverage, CoverageState::Partial);
+    assert_eq!(
+        group.estimate_basis,
+        CandidateGroupEstimateBasis::LogicalFallback
+    );
+    assert_eq!(group.source_bytes, Bytes(200));
+    assert_eq!(group.destination_bytes, Bytes(200));
+    assert_eq!(group.transfer_bytes, Bytes(200));
+    assert_eq!(
+        partial.pre_rejected[0].reason,
+        PlacementPlanPreRejectedReason::GroupCoverageIncomplete
     );
 }
