@@ -237,6 +237,12 @@ def meaning_weft(page: Page, base: str) -> None:
     page.get_by_role('button', name=re.compile('^Inspect ')).first.click()
     expect(page.get_by_role('region', name='Node inspector')).to_contain_text('Meaning thread')
     expect(page.get_by_role('region', name='Node inspector')).to_contain_text('Suggestions, relative scores, not probabilities, never actions.')
+    # #1069: a link from another view with a node and no generation (as Reclaim makes) opens the inspector.
+    page.evaluate("location.hash = '#/today'")
+    expect(page.get_by_role('heading', name='Today', level=1)).to_be_visible()
+    page.evaluate("location.hash = '#/explorer?node=nd_1'")
+    expect(page.get_by_role('region', name='Node inspector')).to_contain_text('Meaning thread')
+    check(page.evaluate('location.hash') == '#/explorer?node=nd_1', 'explorer: a ?node= link without a generation opens the inspector')
 
 
 def live_learning_isolated(browser, exe: Path) -> None:
