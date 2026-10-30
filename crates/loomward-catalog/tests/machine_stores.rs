@@ -394,7 +394,10 @@ fn a1111_models_directory_needs_stable_diffusion_beside_webui_py() {
     let c = &report.candidates[0];
     assert_eq!(c.node, NodeKey::Dir(models));
     assert_eq!((c.class, c.provider), ("model_store", "a1111"));
-    assert_eq!(c.relocation, Some("--ckpt-dir / --lora-dir launch arguments"));
+    assert_eq!(
+        c.relocation,
+        Some("--ckpt-dir / --lora-dir launch arguments")
+    );
     assert!(c.owner_step.contains("may be unique"));
     assert_bounded(c);
 }
