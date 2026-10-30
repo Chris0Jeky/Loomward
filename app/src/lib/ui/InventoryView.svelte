@@ -13,6 +13,7 @@
   let busy = $state(false);
   let error = $state('');
   let pageNumber = $state(1);
+  let largestFirst = $state(false);
   let next = $state<string | null>(null);
   let ticket = 0;
   let controller: AbortController | undefined;
@@ -33,7 +34,7 @@
     try {
       const opts = { signal: controller.signal };
       const result = kind === 'applications'
-        ? (await client.call('apps.list', { limit: 200, cursor }, opts)).result
+        ? (await client.call('apps.list', { limit: 200, cursor, sort: largestFirst ? 'size_desc' : 'registry' }, opts)).result
         : (await client.call('desktop.contexts', { limit: 200, cursor }, opts)).result;
       if (mine !== ticket) return;
       if ('applications' in result) apps = result;
@@ -59,6 +60,9 @@
   </div>
   <button type="button" class="btn" disabled={busy} onclick={() => void load()}>Refresh {title.toLowerCase()}</button>
 </div>
+{#if kind === 'applications'}
+  <label class="sortctl"><input type="checkbox" checked={largestFirst} onchange={(e) => { largestFirst = e.currentTarget.checked; void load(); }} /> Largest first <span class="muted">(by provider-estimated size; unknown sizes last)</span></label>
+{/if}
 <p class="sr-only" role="status" aria-live="polite" aria-atomic="true">{say.text}</p>
 {#if error}<p class="bad">{error}</p>{/if}
 {#if busy}<p class="muted">Loading {title.toLowerCase()}…</p>{/if}
@@ -77,11 +81,11 @@
 {#if apps}
   <section class="panel" aria-labelledby="inv-apps">
     <h2 id="inv-apps">Reported applications</h2>
-    <p class="note">Sizes are provider estimates. Unknown sizes stay unknown; application locations are evidence only.</p>
+    <p class="note">Sizes are provider estimates, not disk measurements. Unknown sizes stay unknown{largestFirst ? ' and are listed last' : ''}; application locations are evidence only. Uninstalling stays your own step in Windows Settings.</p>
     <!-- svelte-ignore a11y_no_noninteractive_tabindex (keyboard access to horizontal scrolling) -->
     <div class="tbl-wrap" tabindex="0" role="region" aria-label="Installed applications">
       <table class="tbl">
-        <caption>Applications reported on this page</caption>
+        <caption>Applications reported on this page{largestFirst ? ', largest estimated size first' : ''}</caption>
         <thead><tr><th scope="col">Application</th><th scope="col">Publisher / version</th><th scope="col">Scope / provenance</th><th scope="col">Estimated size</th><th scope="col">Install location</th></tr></thead>
         <tbody>
           {#each apps.applications as app, i (i)}
@@ -140,4 +144,5 @@
   .tbl { min-width: 680px; }
   th, td { overflow-wrap: anywhere; max-width: 320px; }
   .paging { margin-top: var(--sp-4); }
+  .sortctl { display: inline-flex; align-items: center; gap: var(--sp-2); margin: var(--sp-2) 0; }
 </style>

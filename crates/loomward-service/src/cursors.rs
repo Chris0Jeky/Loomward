@@ -27,6 +27,8 @@ pub enum Position {
     Metadata {
         snapshot: std::sync::Arc<serde_json::Value>,
         offset: usize,
+        /// The order the snapshot was sorted into; a resume under another sort is refused.
+        sort: loomward_protocol::AppsListRequestSort,
     },
 }
 

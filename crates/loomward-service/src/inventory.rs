@@ -4,7 +4,8 @@ use crate::{
     fail, now, with_reason, Inner, Out, ReadWork,
 };
 use loomward_protocol::{
-    Command, DatasetClass, ErrorBody, ErrorCode, MetadataPageRequest, RequestEnvelope,
+    AppsListRequest, AppsListRequestSort, Command, DatasetClass, ErrorBody, ErrorCode,
+    MetadataPageRequest, RequestEnvelope,
 };
 use serde_json::{json, Value};
 use std::{
@@ -123,6 +124,21 @@ pub(crate) fn encoded_size(value: &impl serde::Serialize) -> Result<usize, Error
     Ok(counter.0)
 }
 
+/// Largest provider-estimated size first. A size that is absent, null or not a decimal integer is
+/// unknown and sorts last, never as zero; the sort is stable, so ties (and the unknown tail) keep
+/// registry order. It runs once on the first page: the cursor holds the sorted snapshot, so no
+/// later page can repeat or skip an entry.
+fn sort_size_desc(snapshot: &mut Value) {
+    if let Some(rows) = snapshot["applications"].as_array_mut() {
+        rows.sort_by_key(|row| {
+            let size = row["estimated_size_bytes"]
+                .as_str()
+                .and_then(|n| n.parse::<u64>().ok());
+            (size.is_none(), std::cmp::Reverse(size))
+        });
+    }
+}
+
 impl Inner {
     pub(crate) fn metadata_page(
         &self,
@@ -131,12 +147,28 @@ impl Inner {
         work: Option<&ReadWork>,
         pending_cursor: Option<&Mutex<Option<Position>>>,
     ) -> Result<Out, ErrorBody> {
-        let r: MetadataPageRequest = req.decode_payload()?;
+        let (limit, cursor, sort) = if command == Command::AppsList {
+            let r: AppsListRequest = req.decode_payload()?;
+            (r.limit, r.cursor, r.sort.unwrap_or_default())
+        } else {
+            let r: MetadataPageRequest = req.decode_payload()?;
+            (r.limit, r.cursor, AppsListRequestSort::Registry)
+        };
         let deadline = work.expect("metadata commands use read admission").deadline;
         check(deadline)?;
-        let (snapshot, offset) = match &r.cursor {
+        let (snapshot, offset) = match &cursor {
             Some(cursor) => match self.metadata_cursors.resume(cursor, command, "", None) {
-                Ok(Position::Metadata { snapshot, offset }) => (snapshot, offset),
+                Ok(Position::Metadata {
+                    snapshot,
+                    offset,
+                    sort: bound,
+                }) if bound == sort => (snapshot, offset),
+                Ok(Position::Metadata { .. }) => {
+                    return Err(fail(
+                        ErrorCode::InvalidRequest,
+                        "cursor was issued for another sort",
+                    ))
+                }
                 Err(Resume::Expired) => {
                     return Err(with_reason(
                         fail(ErrorCode::StaleGeneration, "restart metadata paging"),
@@ -160,9 +192,12 @@ impl Inner {
                         "metadata_dataset_mismatch",
                     ));
                 }
-                let value = self.metadata.read(command, deadline)?;
+                let mut value = self.metadata.read(command, deadline)?;
                 check(deadline)?;
                 encoded_size(&value)?;
+                if sort == AppsListRequestSort::SizeDesc {
+                    sort_size_desc(&mut value);
+                }
                 (Arc::new(value), 0)
             }
         };
@@ -186,7 +221,7 @@ impl Inner {
                 "metadata entry budget exceeded",
             ));
         }
-        let end = (offset + r.limit.get() as usize).min(rows.len());
+        let end = (offset + limit.get() as usize).min(rows.len());
         // The receiver issues the handle; a timed-out worker must not evict a live cursor.
         if end < rows.len() {
             *pending_cursor
@@ -195,6 +230,7 @@ impl Inner {
                 .unwrap_or_else(|e| e.into_inner()) = Some(Position::Metadata {
                 snapshot: snapshot.clone(),
                 offset: end,
+                sort,
             });
         }
         let mut result = (*snapshot).clone();
