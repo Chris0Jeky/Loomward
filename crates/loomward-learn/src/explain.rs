@@ -86,8 +86,8 @@ fn when(value: &Value) -> String {
 }
 
 /// The packet fields each labelling function reads (kept beside `labelling::votes`).
-fn function_inputs(function: &str) -> &'static [&'static str] {
-    match function {
+pub fn function_inputs(function: &str) -> Option<&'static [&'static str]> {
+    Some(match function {
         "lf_photo_shoot" | "lf_documents" | "lf_installers" | "lf_archives" => {
             &["/families", "/markers"]
         }
@@ -97,8 +97,23 @@ fn function_inputs(function: &str) -> &'static [&'static str] {
             "/time/newest_content_write",
             "/time/newest_source_write",
         ],
-        _ => &["/markers"],
-    }
+        "lf_source_manifest"
+        | "lf_model_layout"
+        | "lf_virtual_disk"
+        | "lf_lightroom_catalogue"
+        | "lf_lightroom_backups"
+        | "lf_hub_layout"
+        | "lf_project_with_outputs"
+        | "lf_catalogue_previews"
+        | "lf_catalogue_only"
+        | "lf_camera_originals" => &["/markers"],
+        _ => return None,
+    })
+}
+
+fn inputs(function: &str) -> &'static [&'static str] {
+    function_inputs(function)
+        .unwrap_or_else(|| panic!("labelling function {function} has no explain trace mapping"))
 }
 
 fn axis_name(axis: Axis) -> &'static str {
@@ -114,7 +129,7 @@ fn axis_line(axis: Axis, outcome: &Outcome) -> Line {
     match outcome {
         Outcome::Label { label, functions } => {
             let mut trace = BTreeSet::new();
-            trace.extend(functions.iter().flat_map(|f| function_inputs(f)));
+            trace.extend(functions.iter().flat_map(|f| inputs(f)));
             line(
                 format!(
                     "{name}: rule evidence ({}) points to \"{}\". This is an inference from the facts above, not a recorded fact.",
@@ -138,7 +153,7 @@ fn axis_line(axis: Axis, outcome: &Outcome) -> Line {
         ),
         Outcome::Abstain(AbstainReason::Conflict(votes)) => {
             let mut trace = BTreeSet::new();
-            trace.extend(votes.iter().flat_map(|v| function_inputs(v.function)));
+            trace.extend(votes.iter().flat_map(|v| inputs(v.function)));
             let detail: Vec<_> = votes
                 .iter()
                 .map(|v| format!("{} says \"{}\"", v.function, words(v.label)))
@@ -156,6 +171,54 @@ fn axis_line(axis: Axis, outcome: &Outcome) -> Line {
             &["/coverage/state"],
         ),
     }
+}
+
+/// Newest of every dated activity field, never content writes alone; a dirty working tree is itself
+/// activity evidence, so inactivity is not claimed then. Future dates make no statement.
+fn coldness(packet: &Value) -> Line {
+    const TRACE: [&str; 6] = [
+        "/observed_at",
+        "/time/git_dirty",
+        "/time/git_last_commit",
+        "/time/newest_content_write",
+        "/time/newest_generated_write",
+        "/time/newest_source_write",
+    ];
+    let time = &packet["time"];
+    if time["git_dirty"] == true {
+        return line(
+            "Activity evidence is present: the git working tree has uncommitted changes."
+                .to_owned(),
+            &TRACE,
+        );
+    }
+    let newest = [
+        ("newest content change", "newest_content_write"),
+        ("newest source write", "newest_source_write"),
+        ("newest generated write", "newest_generated_write"),
+        ("last git commit", "git_last_commit"),
+    ]
+    .into_iter()
+    .filter_map(|(label, key)| time[key].as_u64().map(|at| (at, label)))
+    .reduce(|best, next| if next.0 > best.0 { next } else { best });
+    let text = match newest {
+        None => "No dated change is known, so no statement about activity is made.".to_owned(),
+        Some((at, label)) => match packet["observed_at"].as_u64().unwrap().checked_sub(at) {
+            None => format!(
+                "The {label} is dated {}, after this packet was observed, so no statement about activity is made.",
+                month(at)
+            ),
+            Some(seconds) => {
+                let days = seconds / DAY;
+                let unit = if days == 1 { "day" } else { "days" };
+                format!(
+                    "No activity evidence seen since {} ({label}, {days} {unit} before this packet was observed).",
+                    month(at)
+                )
+            }
+        },
+    };
+    line(text, &TRACE)
 }
 
 /// Validate the packet, then render facts first and the labelling outcome last. Deterministic.
@@ -309,26 +372,7 @@ pub fn explain(packet: &Value) -> Result<Vec<Line>, LearnError> {
     ));
 
     let time = &packet["time"];
-    lines.push(line(
-        match time["newest_content_write"].as_u64() {
-            Some(written) => {
-                let age = packet["observed_at"]
-                    .as_u64()
-                    .unwrap()
-                    .checked_sub(written)
-                    .map_or(String::new(), |s| {
-                        format!(", {} days before this packet was observed", s / DAY)
-                    });
-                format!(
-                    "No activity evidence seen since {} (newest content change{age}).",
-                    month(written)
-                )
-            }
-            None => "The newest content change is unknown, so no statement about activity is made."
-                .to_owned(),
-        },
-        &["/observed_at", "/time/newest_content_write"],
-    ));
+    lines.push(coldness(packet));
     lines.push(line(
         format!(
             "Newest source write: {}; newest generated write: {}.",
@@ -389,6 +433,21 @@ pub fn explain(packet: &Value) -> Result<Vec<Line>, LearnError> {
         },
         &["/media"],
     ));
+
+    if let Some(qualifier) = match state {
+        "partial" => Some("partial"),
+        "stale" => Some("stale"),
+        _ => None,
+    } {
+        for fact in lines
+            .iter_mut()
+            .skip(2)
+            .filter(|fact| fact.trace != ["/time/last_access"])
+        {
+            let body = fact.text.strip_suffix('.').unwrap_or(&fact.text);
+            fact.text = format!("{body} ({qualifier} coverage).");
+        }
+    }
 
     lines.extend(
         outcomes
