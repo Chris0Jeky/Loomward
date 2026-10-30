@@ -504,11 +504,15 @@ impl Inner {
         })
     }
 
-    /// Forgetting, revoking or losing a root's identity deletes its relief verdicts.
+    /// Forgetting, revoking or losing a root's identity deletes its relief verdicts, and the relief
+    /// samples of a volume left with no active grant (#1013).
     pub(crate) fn drop_reclaim_relief(&self, grant: i64) -> Result<(), ErrorBody> {
         let conn = self.db();
         conn.execute("DELETE FROM st.reclaim_selection WHERE EXISTS(SELECT 1 FROM json_each(members) WHERE json_extract(value,'$.grant')=?1)", [grant]).map_err(sql_error)?;
         conn.execute("DELETE FROM st.reclaim_relief WHERE grant_id=?1", [grant])
+            .map_err(sql_error)?;
+        // The grant's state has already left `active`, so a volume with no other active grant loses its samples.
+        conn.execute(db::PURGE_ORPHAN_SAMPLES, [])
             .map(drop)
             .map_err(sql_error)
     }

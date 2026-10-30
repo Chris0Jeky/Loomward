@@ -9,6 +9,11 @@ use std::time::Duration;
 
 pub type Sql<T> = rusqlite::Result<T>;
 
+/// #1013: a volume's relief samples live only while some grant on it is active. Revoking, forgetting
+/// or losing the identity of the last grant on a volume deletes them (`st.root_grant.volume_key` is
+/// the catalogue volume's key).
+pub const PURGE_ORPHAN_SAMPLES: &str = "DELETE FROM st.reclaim_sample WHERE volume_key NOT IN (SELECT volume_key FROM st.root_grant WHERE state='active')";
+
 pub fn open(dir: &Path) -> Sql<Connection> {
     let dir = &loomward_catalog::sqlite_dir(dir);
     let conn = Connection::open(dir.join("catalog.db"))?;
@@ -87,6 +92,7 @@ pub fn open(dir: &Path) -> Sql<Connection> {
          DELETE FROM st.reclaim_selection WHERE EXISTS(SELECT 1 FROM json_each(members) m
            JOIN st.root_forgotten f ON f.grant_id=json_extract(m.value,'$.grant'))",
     )?;
+    conn.execute(PURGE_ORPHAN_SAMPLES, [])?;
     Ok(conn)
 }
 

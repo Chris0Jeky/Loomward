@@ -1137,7 +1137,8 @@ a volume without an active grant is `invalid_request` (`no_active_grant`). A ref
 
 A sample holds the volume's capacity and free bytes, the Recycle Bin size, the estimate, and the time. Anything the
 service could not read is `null`, never zero; the bin is read only through a volume-root grant. The service stores at
-most one `before` and one `after` per volume in `state.db`; a new `before` removes the old `after`. The sample
+most one `before` and one `after` per volume in `state.db`; a new `before` removes the old `after`, and revoking,
+forgetting or losing the identity of the last active grant on the volume removes both. The sample
 carries no path or name. The catalogue and `state_rev` are unchanged.
 
 `ReclaimRelief.status` is `not_checked` (only the before sample exists), `different_volume` (the catalogue volume

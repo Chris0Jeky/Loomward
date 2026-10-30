@@ -193,10 +193,14 @@ view shows the observed change beside the plan's estimate. Loomward never runs t
 - **A sample** is free bytes, total bytes, the Recycle Bin size where readable, the volume's identity (the catalogue's
   volume key and the volume GUID recorded with the granted root) and the time. The bin is read exactly as the plan
   reads it: only through a volume-root grant, metadata only; otherwise it is unknown, never zero. Free or total space
-  that cannot be read is `null` in the sample. A volume that is offline, or whose letter now holds another disk
+  that cannot be read is `null` in the sample. A legacy grant with no recorded volume GUID cannot detect a
+  foreign disk on its letter: the volume then reads as present, and the second sample's free space typically
+  reads unknown (so `unreadable`) rather than comparing. A volume that is offline, or whose letter now holds another disk
   (#910), is refused and nothing is recorded.
-- **Storage.** `st.reclaim_sample`, at most one `before` and one `after` per volume, keyed by volume and catalogue
-  instance. Recording a new `before` deletes the old `after` and starts a new check. `estimate_bytes` is the plan's
+- **Storage.** `st.reclaim_sample`, at most one `before` and one `after` per volume (primary key `(volume_id, role)`);
+  a row also carries the catalogue instance and is ignored when that differs. Recording a new `before` deletes the
+  old `after` and starts a new check. When the last active grant on a volume is revoked, forgotten or loses its
+  identity, and in the startup sweep, the volume's samples are deleted with the other derived reclaim state. `estimate_bytes` is the plan's
   estimate as the owner saw it (the recorded union estimate of the current selection, when there is one), kept
   beside the before sample; it is refused with `after`, and an `after` without a `before` is refused.
 - **Outcome.** A pure comparison of the two samples. Different volume identities (key or GUID) never compare

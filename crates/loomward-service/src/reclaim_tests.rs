@@ -1653,3 +1653,150 @@ fn relief_check_writes_only_its_own_sample_rows() {
     assert_eq!(rows, 2, "at most one before and one after per volume");
     assert_eq!(row_checksums(&svc.inner.db()), catalogue);
 }
+
+fn sample_rows(svc: &Service) -> i64 {
+    svc.inner
+        .db()
+        .query_row("SELECT count(*) FROM st.reclaim_sample", [], |r| r.get(0))
+        .unwrap()
+}
+
+#[test]
+fn relief_samples_are_removed_with_the_last_active_grant_on_the_volume() {
+    for forget in [false, true] {
+        let tmp = temp_root();
+        let svc = open(tmp.path(), DatasetClass::Synthetic);
+        let first = fixture(&svc);
+        let second = scanned(&svc, 2, &dir("", &[("second.bin", 30)], vec![]));
+        let vid = volume_id(&svc);
+        set_space(&svc, 100_000);
+        relief(&svc, "before", json!({}));
+        let revoke = |root: &str| {
+            ok(
+                "roots.revoke",
+                call(
+                    &svc,
+                    "roots.revoke",
+                    json!({"root_id": root, "purge_catalog": false}),
+                ),
+            );
+        };
+        revoke(&first);
+        assert_eq!(sample_rows(&svc), 1, "another grant is still active");
+        assert_eq!(reclaim(&svc)["relief"]["status"], "not_checked");
+        revoke(&second);
+        assert_eq!(sample_rows(&svc), 0, "forget={forget}");
+        if forget {
+            for root in [&first, &second] {
+                ok(
+                    "roots.forget",
+                    call(&svc, "roots.forget", json!({"root_id": root})),
+                );
+            }
+        }
+        assert_eq!(sample_rows(&svc), 0, "forget={forget}");
+        let refused = err(call(
+            &svc,
+            "reclaim.plan",
+            json!({"volume_id": vid, "limit": 5}),
+        ));
+        // No plan, and so no relief block, is served for a volume with no active grant.
+        assert_eq!(
+            refused.message.as_str(),
+            if forget {
+                "unknown volume"
+            } else {
+                "no_active_grant"
+            }
+        );
+    }
+}
+
+#[test]
+fn relief_samples_are_removed_when_a_root_loses_its_identity_and_swept_at_startup() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let root = fixture(&svc);
+    set_space(&svc, 100_000);
+    relief(&svc, "before", json!({}));
+    let grant: i64 = svc
+        .inner
+        .db()
+        .query_row(
+            "SELECT grant_id FROM main.root WHERE id=?1",
+            [svc.inner.root_row(&root).unwrap()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    svc.inner
+        .identity_changed(grant, &RootId::new(root.clone()).unwrap(), false);
+    assert_eq!(sample_rows(&svc), 0);
+    // A sample left behind by an interrupted purge is swept when the connection opens.
+    svc.inner
+        .db()
+        .execute(
+            "INSERT INTO st.reclaim_sample(volume_id,role,catalog_instance,volume_key,sampled_at_ns) VALUES(1,'before','x','gone',0)",
+            [],
+        )
+        .unwrap();
+    assert_eq!(sample_rows(&svc), 1);
+    drop(crate::db::open(&svc.inner.state_dir).unwrap());
+    assert_eq!(sample_rows(&svc), 0);
+}
+
+#[test]
+fn relief_check_refuses_an_offline_volume_and_keeps_the_previous_sample() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    fixture(&svc);
+    set_space(&svc, 100_000);
+    let before = relief(&svc, "before", json!({}));
+    svc.inner
+        .db()
+        .execute("UPDATE main.volume SET online=0", [])
+        .unwrap();
+    set_space(&svc, 150_000);
+    for role in ["before", "after"] {
+        let refused = err(sample(&svc, role, json!({})));
+        assert_eq!(refused.code, ErrorCode::DeviceOffline, "{role}");
+        assert_eq!(reason(&refused), Some("volume_offline"));
+    }
+    assert_eq!(sample_rows(&svc), 1, "nothing was recorded");
+    svc.inner
+        .db()
+        .execute("UPDATE main.volume SET online=1", [])
+        .unwrap();
+    assert_eq!(
+        reclaim(&svc)["relief"],
+        before,
+        "the earlier sample is kept"
+    );
+}
+
+#[test]
+fn relief_check_is_closed_to_clients() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let root = fixture(&svc);
+    svc.grant_client(
+        "mcp:reader",
+        &[RootId::new(root).unwrap()],
+        &["size", "volumes"],
+        None,
+    )
+    .unwrap();
+    for client in ["ask:local", "mcp:reader"] {
+        assert_eq!(
+            err(svc.call(
+                request(
+                    "reclaim.sample",
+                    json!({"volume_id": volume_id(&svc), "role": "before"})
+                ),
+                &CallContext::client(client)
+            ))
+            .code,
+            ErrorCode::PermissionDenied
+        );
+    }
+    assert_eq!(sample_rows(&svc), 0);
+}
