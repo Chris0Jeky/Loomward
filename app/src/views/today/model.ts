@@ -1,5 +1,6 @@
 import type { AlertItem, AlertReport, AlertSettings, GroupKind, Job, JobKind, ReclaimPlan, Root, Volume } from '../../lib/contracts.gen';
 import { formatBytes, parseBytes } from '../../lib/format/bytes';
+import { diskHealthLine } from '../../lib/format/volume';
 import { measured, threshold } from '../alerts/model';
 
 /**
@@ -55,12 +56,27 @@ export interface VolumeRow {
   tier: string;
   /** Last scan of the granted folders on this volume, in words. */
   scan: string;
+  /** The "Disk health" line for this volume (see healthReading). */
+  health: string;
+  /** True when the health line is unknown: not observed, hidden behind a bridge, or not reported. Never a healthy reading. */
+  healthUnknown: boolean;
   /** Everything not known or not current about the row, said plainly. */
   unknowns: string[];
 }
 
 export function tierText(v: Volume): string {
   return v.tier.tier === null ? 'Tier unknown' : `Tier ${v.tier.tier} · ${v.tier.basis === 'declared' ? 'declared' : 'hinted'}`;
+}
+
+/**
+ * The Disk health line for a Today row: diskHealthLine() unchanged. An offline volume was not queried (its
+ * storage path is not read), so it reads not observed whatever it last held. Unknown is never healthy (invariant 4).
+ */
+export function healthReading(v: Volume): { text: string; unknown: boolean } {
+  const queried: Volume = v.online ? v : { ...v, storage_path: undefined };
+  const health = queried.storage_path?.health;
+  const unknown = health?.state !== 'counters_present' || !health.counters;
+  return { text: diskHealthLine(queried), unknown };
 }
 
 const activeRoots = (roots: Root[]) => roots.filter((r) => r.grant_state === 'active');
@@ -94,10 +110,11 @@ export function volumeRows(volumes: Volume[], roots: Root[] | null, now: number)
     }
     // An offline volume's figures are old: they are worded as such and draw no fill level (never shown as current).
     const space = `${formatBytes(v.free_bytes)} free of ${formatBytes(v.capacity_bytes)}`;
+    const health = healthReading(v);
     return {
       id: v.volume_id, name: v.display_name, online: v.online, used: v.online ? usedFraction(v) : null,
       space: v.online ? space : `Last observed: ${space}`,
-      tier: tierText(v), scan, unknowns,
+      tier: tierText(v), scan, health: health.text, healthUnknown: health.unknown, unknowns,
     };
   });
 }
