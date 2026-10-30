@@ -9,7 +9,7 @@
   import { volumes } from '../../lib/stores/volumes.svelte';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
   import type { AlertReport, Job, ReclaimPlan, Root } from '../../lib/contracts.gen';
-  import { missingSources, needsYou, reclaimTargets, SECTION_TITLES, unplacedRoots, volumeRows, type Sources } from './model';
+  import { missingSources, needsEmptyText, needsYou, reclaimTargets, SECTION_TITLES, unevaluatedAlerts, unevaluatedLine, unplacedRoots, volumeRows, type Sources } from './model';
 
   const JOBS_LIMIT = 100;
   const SHOWN = 5; // per section; the rest is one link to the view that lists them all
@@ -77,6 +77,8 @@
   const src = $derived<Sources>({ volumes: volumes.items, roots, alerts, jobs, reclaim });
   const rows = $derived(volumes.items ? volumeRows(volumes.items, roots, now) : []);
   const needs = $derived(needsYou(src, now));
+  const unevaluated = $derived(unevaluatedAlerts(alerts));
+  const unevaluatedNote = $derived(unevaluatedLine(unevaluated));
   const missing = $derived(settled ? missingSources(src, failedReclaim) : []);
   const nothingRead = $derived(settled && !volumes.items && !roots && !alerts && !jobs);
   const noGrant = $derived(roots !== null && !roots.some((r) => r.grant_state === 'active'));
@@ -156,7 +158,7 @@
   <section class="panel" aria-labelledby="today-needs">
     <h2 id="today-needs">Needs you</h2>
     {#if needs.length === 0}
-      <p>{missing.length ? 'Nothing needs you in what was read.' : 'Nothing needs you.'}</p>
+      <p>{needsEmptyText(missing.length, unevaluated)}</p>
     {:else}
       {#each needs as s (s.section)}
         <h3>{SECTION_TITLES[s.section]}</h3>
@@ -173,8 +175,9 @@
           <p class="muted small">and {s.items.length - SHOWN} more: <a href={`#/${s.items[0]!.view}`}>see all in {linkName(s.items[0]!.view)}</a></p>
         {/if}
       {/each}
-      {#if jobsCut}<p class="muted small">Only the {JOBS_LIMIT} most recent jobs were read.</p>{/if}
     {/if}
+    {#if unevaluatedNote}<p><a href="#/alerts">{unevaluatedNote}</a></p>{/if}
+    {#if jobsCut}<p class="muted small">Only the {JOBS_LIMIT} most recent jobs were read.</p>{/if}
   </section>
 {/if}
 
