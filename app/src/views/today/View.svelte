@@ -9,6 +9,7 @@
   import { volumes } from '../../lib/stores/volumes.svelte';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
   import type { AlertReport, Job, ReclaimPlan, Root } from '../../lib/contracts.gen';
+  import { findHref, PRESETS } from '../../lib/search/find';
   import { linkName, missingSources, moreViews, needsEmptyText, needsYou, reclaimTargets, SECTION_TITLES, unevaluatedAlerts, unevaluatedLine, unplacedRoots, volumeRows, type Sources } from './model';
 
   const JOBS_LIMIT = 100;
@@ -196,6 +197,13 @@
     {/if}
     {#if unevaluatedNote}<p><a href="#/alerts">{unevaluatedNote}</a></p>{/if}
     {#if jobsCut}<p class="muted small">Only the {JOBS_LIMIT} most recent jobs were read.</p>{/if}
+    {#if !noGrant}
+      <h3>Find large files to review</h3>
+      <ul class="cleanup" aria-label="Cleanup searches">
+        {#each PRESETS as preset (preset.label)}<li><a href={findHref(preset.query)}>{preset.label}</a></li>{/each}
+      </ul>
+      <p class="muted small">Searches the folders you granted. An old modified date does not mean a file is unused.</p>
+    {/if}
   </section>
 {/if}
 
@@ -205,6 +213,7 @@
   .needs { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--sp-2); }
   .needs li { max-width: var(--measure); }
   .needs a { margin-left: var(--sp-2); white-space: nowrap; }
+  .cleanup { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: var(--sp-2) var(--sp-4); }
   .meter { height: 10px; min-width: 9rem; border: 1px solid var(--control-line); border-radius: 5px; background: var(--raised); overflow: hidden; margin-bottom: var(--sp-1); }
   .meter.blank { border-style: dotted; border-color: var(--unknown); background: transparent; }
   .used { height: 100%; background: var(--residency); opacity: 0.75; }

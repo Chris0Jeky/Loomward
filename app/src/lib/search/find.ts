@@ -42,6 +42,11 @@ export const PRESETS: { label: string; query: string }[] = [
   { label: 'Old zip archives', query: 'ext:zip modified:>2y' },
 ];
 
+/** Explorer opens with this query in the find bar and runs it (`?q=`, #1068); Today links the presets this way. */
+export function findHref(query: string): string {
+  return `#/explorer?q=${encodeURIComponent(query)}`;
+}
+
 const UNIT_WORD: Record<AgoUnit, string> = { h: 'hour', d: 'day', w: 'week', mo: 'month', y: 'year' };
 const q = (s: string) => `“${escapedName(s)}”`;
 
