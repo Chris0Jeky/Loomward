@@ -71,7 +71,7 @@ impl Inner {
         if active.is_none() {
             return Err(fail(ErrorCode::NotFound, "unknown root"));
         }
-        let mut reader = self.read_reader(work)?;
+        let mut reader = self.read_reader(work)?.without_repairs(); // a pure read: never repair aggregates
         let key = self.node(&r.node_id, &mut reader)?;
         let NodeKey::Dir(dir) = key else {
             return Err(fail(
