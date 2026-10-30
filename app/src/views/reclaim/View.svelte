@@ -11,7 +11,7 @@
   import VisibleName from '../../lib/ui/VisibleName.svelte';
   import { COVERAGE_WORDS } from '../clutter/model';
   import { observationAge } from '../../lib/format/time';
-  import { defaultVolume, GROUP_HEADINGS, OBSERVE_EXPLAINER, observeLines, RELIEF_EXPLAINER, explorerHref, reliefEstimate, reliefSummary, sampleRefusal, selectionComparison, targetBytes, unaccountedText } from './model';
+  import { candidateAccessibleName, defaultVolume, GROUP_HEADINGS, OBSERVE_EXPLAINER, observeLines, RELIEF_EXPLAINER, explorerHref, reliefEstimate, reliefSummary, sampleRefusal, selectionComparison, targetBytes, unaccountedText } from './model';
 
   let volumes = $state<Volume[]>([]);
   let selected = $state('');
@@ -204,14 +204,15 @@
           <p class="empty">{report.partial || report.budget_hit ? 'None found in the evidence reached. That is not a clean result.' : 'No candidates recorded in this group.'}</p>
         {:else}
           <ul class="candidates">
-            {#each group.candidates as candidate}
+            {#each group.candidates as candidate, index}
               <li>
                 <h3><VisibleName name={candidate.name ?? 'Name unknown'} /></h3>
                 {#if explorerHref(candidate.node_id)}
-                  <p><a class="btn" href={explorerHref(candidate.node_id)} aria-label={`Inspect in Explorer: ${escapedName(candidate.name ?? 'Name unknown')}`}>Inspect in Explorer</a></p>
+                  <p><a class="btn" href={explorerHref(candidate.node_id)} aria-label={`Inspect in Explorer: ${candidateAccessibleName(candidate.name, GROUP_HEADINGS[group.kind], candidate.provider, index, group.candidates.length)}`}>Inspect in Explorer</a></p>
                 {/if}
                 {#if candidate.node_id}
                   <label class="selection-choice"><input type="checkbox" checked={members.includes(candidate.node_id)}
+                    aria-label={`Include ${candidateAccessibleName(candidate.name, GROUP_HEADINGS[group.kind], candidate.provider, index, group.candidates.length)} in selection`}
                     disabled={members.length === 12 && !members.includes(candidate.node_id)}
                     onchange={(e) => toggle(candidate.node_id!, e.currentTarget.checked)} />
                     Include <VisibleName name={candidate.name ?? 'Name unknown'} /> in selection</label>
