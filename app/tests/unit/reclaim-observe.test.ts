@@ -38,7 +38,7 @@ describe('reclaim observe store', () => {
   it('starts, follows progress events and ends completed, after which the plan shows a number', async () => {
     const { client, store, volume_id } = await mock();
     const plan = async () => (await client.call('reclaim.plan', { volume_id, limit: 50 })).result.groups[0]!.candidates[0]!;
-    expect((await plan()).reclaimable_bytes).toBeNull();
+    expect(await plan()).toMatchObject({ reclaimable_bytes: null, observed_at: null });
     await store.start(volume_id);
     expect(store.active).toBe(true);
     await vi.advanceTimersByTimeAsync(800);
@@ -47,7 +47,12 @@ describe('reclaim observe store', () => {
     await vi.advanceTimersByTimeAsync(1000);
     expect(store.job).toMatchObject({ state: 'completed', reclaim: { candidates_done: 1 } });
     expect(store.active).toBe(false);
-    expect(await plan()).toMatchObject({ reclaimable_bytes: '6144', reclaimable_reason: null });
+    // #1029: the known figure says when it was observed; the unknown ones keep no age.
+    const stored = await plan();
+    expect(stored).toMatchObject({ reclaimable_bytes: '6144', reclaimable_reason: null });
+    expect(Date.parse(stored.observed_at!)).not.toBeNaN();
+    const report = (await client.call('reclaim.plan', { volume_id, limit: 50 })).result;
+    for (const c of report.groups.flatMap((g) => g.candidates)) expect(c.observed_at !== null).toBe(c.reclaimable_bytes !== null);
   });
 
   it('cancels, stores nothing and leaves relief unknown', async () => {

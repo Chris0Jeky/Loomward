@@ -75,6 +75,9 @@ pub struct ReclaimCandidate {
     pub reclaimable_bytes: Option<Bytes>,
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub reclaimable_reason: Option<Text<256>>,
+    /// When the stored verdict behind `reclaimable_bytes` was observed; null when there is none.
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub observed_at: Option<Timestamp>,
     pub coverage: CoverageState,
     pub owner_step: Text<1024>,
     #[serde(deserialize_with = "crate::types::required_nullable")]

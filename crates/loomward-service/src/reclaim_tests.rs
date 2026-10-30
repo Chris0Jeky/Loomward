@@ -93,6 +93,69 @@ fn reclaim_composes_four_groups_with_unknown_relief_and_sealed_references() {
     assert_eq!(reclaim(&svc), plan, "same catalogue, same plan");
 }
 
+/// #1029: a stored verdict reaches the plan with the time it was observed; every candidate whose
+/// reclaimable bytes are unknown carries no time.
+#[test]
+fn reclaim_plan_states_when_a_stored_verdict_was_observed_and_nothing_else() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    fixture(&svc);
+    let unobserved = reclaim(&svc);
+    for g in unobserved["groups"].as_array().unwrap() {
+        for c in g["candidates"].as_array().unwrap() {
+            assert!(
+                c["reclaimable_bytes"].is_null() && c["observed_at"].is_null(),
+                "{c}"
+            );
+        }
+    }
+    let target: i64 = svc
+        .inner
+        .db()
+        .query_row("SELECT id FROM main.dir WHERE name='target'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    // 2023-11-14T22:13:20Z in Unix nanoseconds.
+    let observed_ns: i64 = 1_700_000_000_000_000_000;
+    let store = |bytes: Option<i64>| {
+        svc.inner
+            .db()
+            .execute("DELETE FROM st.reclaim_relief", [])
+            .unwrap();
+        svc.inner
+            .db()
+            .execute(
+                "INSERT INTO st.reclaim_relief(grant_id,node_kind,node_id,volume_id,generation,incarnation,subtree_rev,catalog_instance,observed_at_ns,unique_allocated_bytes,reason)
+                 SELECT r.grant_id,'dir',d.id,r.volume_id,r.generation,d.born_run,d.subtree_rev,?2,?3,?4,iif(?4 IS NULL,?5,NULL) FROM main.dir d JOIN main.root r ON r.id=d.root_id WHERE d.id=?1",
+                rusqlite::params![target, svc.inner.instance, observed_ns, bytes, loomward_engine::reclaim::RELIEF_UNOBSERVED],
+            )
+            .unwrap();
+    };
+    store(Some(4096));
+    let shown = reclaim(&svc);
+    for g in shown["groups"].as_array().unwrap() {
+        for c in g["candidates"].as_array().unwrap() {
+            if c["name"] == "target" {
+                assert_eq!(c["reclaimable_bytes"], "4096", "{c}");
+                assert_eq!(c["observed_at"], "2023-11-14T22:13:20.000Z", "{c}");
+            } else {
+                assert!(
+                    c["reclaimable_bytes"].is_null() && c["observed_at"].is_null(),
+                    "{c}"
+                );
+            }
+        }
+    }
+    // A verdict that found the relief unknown is not shown, so it has no age either.
+    store(None);
+    let unknown = target_candidate(&svc);
+    assert!(
+        unknown["reclaimable_bytes"].is_null() && unknown["observed_at"].is_null(),
+        "{unknown}"
+    );
+}
+
 #[test]
 fn reclaim_counts_only_outermost_active_roots_and_keeps_adjacent_roots() {
     let tmp = temp_root();

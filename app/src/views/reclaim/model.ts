@@ -47,8 +47,11 @@ export function selectionComparison(result: ReclaimSelection | null, target: str
 export function observationAge(at: string, now: number): string {
   const seconds = Math.max(0, Math.floor((now - Date.parse(at)) / 1000));
   if (seconds < 60) return 'less than a minute ago';
+  const unit = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'} ago`;
   const minutes = Math.floor(seconds / 60);
-  return `${minutes} minute${minutes === 1 ? '' : 's'} ago`;
+  if (minutes < 60) return unit(minutes, 'minute');
+  const hours = Math.floor(minutes / 60);
+  return hours < 48 ? unit(hours, 'hour') : unit(Math.floor(hours / 24), 'day');
 }
 
 /** Plain words for a refused or failed observe request. The service's own text is the fallback. */
