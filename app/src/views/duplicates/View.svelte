@@ -140,6 +140,7 @@
   import { isActive } from '../../lib/scan/model';
   import { escapedName } from '../../lib/format/names';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
+  import CoversPanel from './CoversPanel.svelte';
 
   const duplicates = new Duplicates();
   let roots = $state<Root[]>([]);
@@ -246,6 +247,8 @@
     {#if skippedText}<p class={safeReport.skipped.length ? 'muted' : 'empty'}>{skippedText}</p>{/if}
   {:else}<p class="empty">{active ? 'Inspection is running; verified evidence will appear when it ends.' : 'Start an inspection to see its evidence.'}</p>{/if}
 </section>
+
+<CoversPanel {roots} {origin} {loading} />
 
 <style>
   h3 { margin: var(--sp-5) 0 var(--sp-2); font-size: 1rem; }

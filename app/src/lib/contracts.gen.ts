@@ -561,7 +561,7 @@ export interface DuplicateReport {
 }
 
 /** placement.simulate is synchronous and bounded, never a job (semantics.md section 2). */
-export type JobKind = "scan" | "refit" | "teacher" | "duplicates" | "reclaim";
+export type JobKind = "scan" | "refit" | "teacher" | "duplicates" | "reclaim" | "coverage";
 
 export type JobState = "queued" | "running" | "cancel_requested" | "cancelled" | "failed" | "completed";
 
@@ -628,6 +628,70 @@ export interface JobListRequest {
 
 export interface JobList {
   jobs: Job[];
+}
+
+/** #1106. Two distinct active granted roots; the same root twice, or overlapping roots, is invalid_request. */
+export interface CoverageStartRequest {
+  a_root_id: RootId;
+  b_root_id: RootId;
+  /** Default-stream bytes read across all passes of both folders. Absent means 1 GiB. */
+  budget_bytes?: ByteCount;
+  /** Wall-clock seconds shared by all passes. Absent means 60. */
+  budget_secs?: number;
+}
+
+export type CoverageOutcome = "complete" | "partial";
+
+/** Why a result is partial. refused covers every other unreadable or unprovable case. A cancelled job has no result, so cancellation is a job state. */
+export type CoverageStop = "budget" | "refused" | "changed_during_read";
+
+export type CoverageSide = "a" | "b";
+
+export interface CoverageTotal {
+  files: Count;
+  /** A lower bound whenever size_unknown is above zero. */
+  bytes: ByteCount;
+  size_unknown: Count;
+}
+
+export interface CoverageTotals {
+  covered: CoverageTotal;
+  not_covered: CoverageTotal;
+  unknown: CoverageTotal;
+}
+
+export interface CoverageNotCovered {
+  /** Display path below folder A, . for A itself; lossy for a non-Unicode name. */
+  path: string;
+  /** The catalogue row of this path; null when the catalogue does not hold it. Viewing only (invariant 5). */
+  node_id: NodeId | null;
+  bytes: NullableBytes;
+}
+
+export interface CoverageUnknown {
+  path: string;
+  node_id: NodeId | null;
+  bytes: NullableBytes;
+  side: CoverageSide;
+  reason: string;
+}
+
+/** #1106, docs/48 section 4.5. Observation-time evidence that each covered A file had a B file of equal size and content digest when read. Not metadata fidelity, not an independent backup, never permission to delete. Per-file detail is kept only for not-covered and unknown files; covered files are counts only. */
+export interface CoverageReport {
+  job_id: JobId;
+  a_root_id: RootId;
+  b_root_id: RootId;
+  outcome: CoverageOutcome;
+  /** Empty exactly when outcome is complete. */
+  reasons: CoverageStop[];
+  bytes_read: ByteCount;
+  totals: CoverageTotals;
+  not_covered: CoverageNotCovered[];
+  not_covered_truncated: boolean;
+  unknown: CoverageUnknown[];
+  unknown_truncated: boolean;
+  observed_at: Timestamp;
+  note: string;
 }
 
 /** What the owner or a model thinks this is. A suggestion is not an approval (invariant 3). */
@@ -2629,6 +2693,8 @@ export interface CommandMap {
   "scan.start": { request: ScanStartRequest; result: JobResult };
   "duplicates.inspect": { request: DuplicatesInspectRequest; result: JobResult };
   "duplicates.cancel": { request: JobRefRequest; result: JobResult };
+  "coverage.start": { request: CoverageStartRequest; result: JobResult };
+  "coverage.result": { request: JobRefRequest; result: CoverageReport };
   "scan.cancel": { request: JobRefRequest; result: JobResult };
   "jobs.get": { request: JobRefRequest; result: JobResult };
   "jobs.list": { request: JobListRequest; result: JobList };
@@ -2725,6 +2791,8 @@ export const COMMANDS = {
   "scan.start": { adapters: ["tauri", "http"], wave: 2, events: ["job.state", "scan.progress", "tree.invalidated"] },
   "duplicates.inspect": { adapters: ["tauri", "http"], wave: 2, events: ["job.state"] },
   "duplicates.cancel": { adapters: ["tauri", "http"], wave: 2, events: ["job.state"] },
+  "coverage.start": { adapters: ["tauri", "http"], wave: 2, events: ["job.state"] },
+  "coverage.result": { adapters: ["tauri", "http"], wave: 2, events: [] },
   "scan.cancel": { adapters: ["tauri", "http"], wave: 2, events: ["job.state"] },
   "jobs.get": { adapters: ["tauri", "http"], wave: 2, events: [] },
   "jobs.list": { adapters: ["tauri", "http"], wave: 2, events: [] },
