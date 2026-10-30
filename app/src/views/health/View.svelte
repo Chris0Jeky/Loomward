@@ -14,7 +14,7 @@
   import { Say } from '../../lib/ui/say.svelte';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
   import VolumeStatus from '../../lib/ui/VolumeStatus.svelte';
-  import { diskHealthLine } from '../../lib/format/volume';
+  import { diskHealthLine, hasDiskHealthWarning } from '../../lib/format/volume';
   import { volumes } from '../../lib/stores/volumes.svelte';
   import Diagnostics from './Diagnostics.svelte';
   import type { GrantList, Health, Root, RootList } from '../../lib/contracts.gen';
@@ -357,7 +357,7 @@
   {#if volumes.items}
     <ul class="volumes">
       {#each volumes.items as v (v.volume_id)}
-        <li class="volume"><span class="num">{v.display_name}</span> <span class="muted">{diskHealthLine(v)}</span></li>
+        <li class="volume"><span class="num">{v.display_name}</span> <span class="muted" class:warn={hasDiskHealthWarning(v)}>{diskHealthLine(v)}</span></li>
       {:else}
         <li class="muted">No volumes known.</li>
       {/each}
@@ -422,6 +422,7 @@
   .kv dd { margin: 0; }
   .volumes { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
   .volume { overflow-wrap: anywhere; }
+  .volume .warn { font-weight: 600; }
   .caps { list-style: none; margin: 0 0 12px; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 6px; }
   .tag.ok-tag { color: var(--ok); border-color: var(--ok); }
   .meter { display: inline-block; width: 90px; height: 8px; margin-left: 10px; border: 1px solid var(--control-line); border-radius: 4px; vertical-align: middle; overflow: hidden; }

@@ -110,6 +110,30 @@ pub struct StorageCounters {
     pub wear_percent: Option<Count>,
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub start_stop_cycles: Option<Count>,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub critical_warning: Option<StorageCriticalWarning>,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub available_spare_percent: Option<Count>,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub available_spare_threshold_percent: Option<Count>,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub media_errors: Option<Count>,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub unsafe_shutdowns: Option<Count>,
+}
+
+/// The NVMe Critical Warning byte as the device latched it: a device report, not a Loomward verdict.
+/// A clear byte is not "healthy" either. `null` (the whole object) is unknown.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StorageCriticalWarning {
+    pub available_spare_low: bool,
+    pub temperature: bool,
+    pub reliability_degraded: bool,
+    pub read_only: bool,
+    pub volatile_backup_failed: bool,
+    /// Bits 5-7 of the byte, unshifted and uninterpreted (0..=255).
+    pub other_bits: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

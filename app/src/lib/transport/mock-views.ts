@@ -98,7 +98,7 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
       removal_policy: v.bus === 'usb' ? 'expect_surprise_removal' : null, write_cache_enabled: v.bus === 'nvme' ? true : null,
       health: hidden
         ? { state: 'unsupported_or_hidden', reason: v.bus === 'usb' ? 'not reported through this USB bridge' : 'no reliability counters reported', counters: null }
-        : { state: 'counters_present', reason: null, counters: { temperature_celsius: 34, read_errors_total: 0, read_errors_uncorrected: null, write_errors_total: 0, write_errors_uncorrected: null, power_on_hours: 1200, wear_percent: 3, start_stop_cycles: null } },
+        : { state: 'counters_present', reason: null, counters: { temperature_celsius: 34, read_errors_total: 0, read_errors_uncorrected: null, write_errors_total: 0, write_errors_uncorrected: null, power_on_hours: 1200, wear_percent: 3, start_stop_cycles: null, critical_warning: { available_spare_low: false, temperature: false, reliability_degraded: false, read_only: false, volatile_backup_failed: false, other_bits: 0 }, available_spare_percent: 100, available_spare_threshold_percent: 10, media_errors: 0, unsafe_shutdowns: 3 } },
     };
   };
   const volumeRow = (v: VolumeSeed): Volume => ({

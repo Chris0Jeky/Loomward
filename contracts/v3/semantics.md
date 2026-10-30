@@ -231,7 +231,11 @@ sector geometry, removal policy and write-cache facts the Windows storage query 
 an active online grant's own root, plus a `health` object. A `null` fact is unknown, never a
 default. `health.state` is `counters_present` (the device reported reliability counters, an
 absent counter is `null`, not zero) or `unsupported_or_hidden` (nothing reported, including SMART
-behind a USB bridge). Neither is a verdict and no state means healthy: clients show
+behind a USB bridge). NVMe counters include a nullable `critical_warning` (the device's Critical
+Warning byte as named flags plus raw `other_bits`), `available_spare_percent` and its
+`available_spare_threshold_percent`, `media_errors` (the aggregate Media and Data Integrity Errors,
+not a read or write total) and `unsafe_shutdowns`; a set flag is a device report that clients show
+prominently as reported, and a clear byte is not health. Neither state is a verdict and no state means healthy: clients show
 `unsupported_or_hidden` and an absent `storage_path` (offline volume, no active grant, query
 refused) as unknown. `volumes.changed` and `volumes.declare_tier` rows carry no `storage_path`.
 The volume GUID, device serial and mount paths are never carried, and the field is observation,

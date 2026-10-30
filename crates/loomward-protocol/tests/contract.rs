@@ -102,6 +102,56 @@ fn volume_storage_path_is_additive_and_never_reads_as_healthy() {
         assert!(roundtrip("Volume", &missing).unwrap().is_err(), "{field}");
     }
     let mut counters = list["volumes"][0]["storage_path"]["health"]["counters"].clone();
+    // The NVMe fields are required-nullable too; a null critical warning is unknown, not clear.
+    assert_eq!(counters["critical_warning"]["available_spare_low"], true);
+    for field in [
+        "critical_warning",
+        "available_spare_percent",
+        "available_spare_threshold_percent",
+        "media_errors",
+        "unsafe_shutdowns",
+    ] {
+        let mut unknown = counters.clone();
+        unknown[field] = Value::Null;
+        assert!(
+            schema.errors("StorageCounters", &unknown).is_empty(),
+            "{field}"
+        );
+        assert_eq!(
+            roundtrip("StorageCounters", &unknown).unwrap().unwrap(),
+            unknown
+        );
+        unknown.as_object_mut().unwrap().remove(field);
+        assert!(
+            !schema.errors("StorageCounters", &unknown).is_empty(),
+            "{field}"
+        );
+        assert!(
+            roundtrip("StorageCounters", &unknown).unwrap().is_err(),
+            "{field}"
+        );
+    }
+    // The warning is closed: an unnamed flag or a partial object is refused.
+    for edit in ["extra", "missing", "wide"] {
+        let mut warning = counters["critical_warning"].clone();
+        match edit {
+            "extra" => warning["healthy"] = json!(true),
+            "missing" => {
+                warning.as_object_mut().unwrap().remove("read_only");
+            }
+            _ => warning["other_bits"] = json!(256),
+        }
+        assert!(
+            !schema.errors("StorageCriticalWarning", &warning).is_empty(),
+            "{edit}"
+        );
+        assert!(
+            roundtrip("StorageCriticalWarning", &warning)
+                .unwrap()
+                .is_err(),
+            "{edit}"
+        );
+    }
     counters.as_object_mut().unwrap().remove("wear_percent");
     assert!(!schema.errors("StorageCounters", &counters).is_empty());
     assert!(roundtrip("StorageCounters", &counters).unwrap().is_err());
