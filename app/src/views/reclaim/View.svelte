@@ -3,14 +3,14 @@
 </script>
 <script lang="ts">
   import { untrack } from 'svelte';
-  import type { ReclaimPlan, ReclaimSelection, Volume } from '../../lib/contracts.gen';
+  import type { ReclaimPlan, ReclaimSelection, SampleRole, Volume } from '../../lib/contracts.gen';
   import { formatBytes } from '../../lib/format/bytes';
   import { escapedName } from '../../lib/format/names';
   import { ReclaimObserve } from '../../lib/stores/reclaim-observe.svelte';
   import { session } from '../../lib/stores/session.svelte';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
   import { COVERAGE_WORDS } from '../clutter/model';
-  import { defaultVolume, GROUP_HEADINGS, OBSERVE_EXPLAINER, observationAge, observeLines, selectionComparison, targetBytes, unaccountedText } from './model';
+  import { defaultVolume, GROUP_HEADINGS, OBSERVE_EXPLAINER, observationAge, observeLines, RELIEF_EXPLAINER, reliefEstimate, reliefSummary, sampleRefusal, selectionComparison, targetBytes, unaccountedText } from './model';
 
   let volumes = $state<Volume[]>([]);
   let selected = $state('');
@@ -87,6 +87,22 @@
     const timer = setInterval(() => void observe.refresh(), 1000);
     return () => clearInterval(timer);
   });
+  // Relief check (#1013): one metadata sample per click. The answer replaces the plan's relief block.
+  let sampling = $state(false);
+  let reliefProblem = $state('');
+  const summary = $derived(report?.relief ? reliefSummary(report.relief) : null);
+  async function recordSample(role: SampleRole): Promise<void> {
+    const c = session.client;
+    const id = selected;
+    if (!c || !id || sampling) return;
+    sampling = true; reliefProblem = '';
+    try {
+      const estimate = role === 'before' ? reliefEstimate(selectionResult) : undefined;
+      const { result } = await c.call('reclaim.sample', { volume_id: id, role, ...(estimate ? { estimate_bytes: estimate } : {}) });
+      if (id === selected && report) report = { ...report, relief: result };
+    } catch (e) { session.handle(e); reliefProblem = sampleRefusal(e); }
+    finally { sampling = false; }
+  }
   let wasObserving = false;
   $effect(() => {
     const finished = wasObserving && !observe.active;
@@ -147,6 +163,29 @@
     <p id="selection-comparison">{selectionComparison(selectionResult, target)}</p>
   </div>
   <p class="muted small">Recorded allocation evidence only. This does not approve removal or promise physical space recovery.</p>
+</section>
+
+<section class="panel" aria-labelledby="relief-h">
+  <h2 id="relief-h">Relief check</h2>
+  <p>Record this volume's free space before you clean something up in its owning tool, then check again afterwards. Loomward reads volume metadata only and cleans nothing.</p>
+  <div class="controls">
+    <button class="btn" disabled={loading || !selected || sampling || observe.active} onclick={() => void recordSample('before')}>Record before</button>
+    <button class="btn" disabled={loading || !selected || sampling || observe.active || !report?.relief} onclick={() => void recordSample('after')}>Check now</button>
+  </div>
+  <p class="muted small">{RELIEF_EXPLAINER}</p>
+  <div role="status" aria-label="Relief check">
+    {#if report?.relief && summary}
+      <p><strong>{summary.headline}</strong></p>
+      <p class="muted">Before: <time datetime={report.relief.before.sampled_at}>{report.relief.before.sampled_at}</time> · free {formatBytes(report.relief.before.free_bytes)} of {formatBytes(report.relief.before.capacity_bytes)}</p>
+      {#if report.relief.after}<p class="muted">Second: <time datetime={report.relief.after.sampled_at}>{report.relief.after.sampled_at}</time> · free {formatBytes(report.relief.after.free_bytes)} of {formatBytes(report.relief.after.capacity_bytes)}</p>{/if}
+      <p>{summary.estimate}</p>
+      <p>{summary.bin}</p>
+      <p class="muted small">{summary.caveat}</p>
+    {:else}
+      <p>{report ? 'No before sample is recorded for this volume.' : 'Choose a volume to look at.'}</p>
+    {/if}
+  </div>
+  <p class="live bad" class:has={!!reliefProblem} role="status" aria-label="Relief check problem">{reliefProblem}</p>
 </section>
 
 <div aria-busy={loading}>

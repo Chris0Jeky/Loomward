@@ -543,6 +543,16 @@
         }
       }
     },
+    "DuplicateCandidateSpace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["files", "bytes"],
+      "properties": {
+        "files": { "$ref": "#/$defs/Count" },
+        "bytes": { "$ref": "#/$defs/ByteCount" }
+      },
+      "$comment": "Eligible files sharing an exact logical size with another eligible file in the root, before any cap (semantics.md, Duplicate inspection)."
+    },
     "DuplicateReport": {
       "type": "object",
       "additionalProperties": false,
@@ -629,6 +639,10 @@
               "type": "null"
             }
           ]
+        },
+        "candidate_space": {
+          "$ref": "#/$defs/DuplicateCandidateSpace",
+          "$comment": "Optional and additive: absent means the candidate space is unknown, never zero. Never null."
         }
       }
     },
@@ -3238,9 +3252,15 @@
     "Relocation": {"type": "object", "additionalProperties": false, "required": ["variable_or_setting", "suggested_target_volume"], "properties": {"variable_or_setting": {"type": "string", "maxLength": 256}, "suggested_target_volume": {"anyOf": [{"type": "string", "maxLength": 128}, {"type": "null"}]}}},
     "ReclaimCandidate": {"type": "object", "additionalProperties": false, "required": ["node_id", "name", "class", "provider", "kind", "logical_bytes", "allocated_bytes", "reclaimable_bytes", "reclaimable_reason", "observed_at", "coverage", "owner_step", "relocation", "evidence", "uncertainty"], "properties": {"node_id": {"anyOf": [{"$ref": "#/$defs/NodeId"}, {"type": "null"}]}, "name": {"anyOf": [{"type": "string", "maxLength": 260}, {"type": "null"}]}, "class": {"type": "string", "maxLength": 64}, "provider": {"type": "string", "maxLength": 64}, "kind": {"anyOf": [{"type": "string", "maxLength": 64}, {"type": "null"}]}, "logical_bytes": {"$ref": "#/$defs/NullableBytes"}, "allocated_bytes": {"$ref": "#/$defs/NullableBytes"}, "reclaimable_bytes": {"$ref": "#/$defs/NullableBytes"}, "reclaimable_reason": {"anyOf": [{"type": "string", "maxLength": 256}, {"type": "null"}]}, "observed_at": {"$ref": "#/$defs/NullableTimestamp"}, "coverage": {"$ref": "#/$defs/CoverageState"}, "owner_step": {"type": "string", "maxLength": 1024}, "relocation": {"anyOf": [{"$ref": "#/$defs/Relocation"}, {"type": "null"}]}, "evidence": {"type": "array", "minItems": 0, "maxItems": 16, "items": {"type": "string", "maxLength": 1024}}, "uncertainty": {"type": "string", "maxLength": 1024}}, "$comment": "Read-only facts, never a disposability claim. owner_step is display text only; unknown reclaimable bytes carry a reason, never zero."},
     "ReclaimGroup": {"type": "object", "additionalProperties": false, "required": ["kind", "candidates"], "properties": {"kind": {"$ref": "#/$defs/GroupKind"}, "candidates": {"type": "array", "minItems": 0, "maxItems": 200, "items": {"$ref": "#/$defs/ReclaimCandidate"}}}},
-    "ReclaimPlan": {"type": "object", "additionalProperties": false, "required": ["volume", "covered_roots", "groups", "unaccounted_bytes", "rules_version", "partial", "truncated", "budget_hit"], "properties": {"volume": {"$ref": "#/$defs/ReclaimVolume"}, "covered_roots": {"type": "array", "minItems": 0, "maxItems": 64, "items": {"$ref": "#/$defs/CoveredRoot"}}, "groups": {"type": "array", "minItems": 4, "maxItems": 4, "items": {"$ref": "#/$defs/ReclaimGroup"}}, "unaccounted_bytes": {"$ref": "#/$defs/NullableBytes"}, "rules_version": {"type": "integer", "minimum": 1, "maximum": 1000}, "partial": {"type": "boolean"}, "truncated": {"type": "boolean"}, "budget_hit": {"type": "boolean"}, "selection": {"$ref": "#/$defs/ReclaimSelection"}}, "$comment": "LW-131 R1d. Four groups in GroupKind order. Outermost active grants only; unknown sizes remain null. No effects."},
+    "ReclaimPlan": {"type": "object", "additionalProperties": false, "required": ["volume", "covered_roots", "groups", "unaccounted_bytes", "rules_version", "partial", "truncated", "budget_hit"], "properties": {"volume": {"$ref": "#/$defs/ReclaimVolume"}, "covered_roots": {"type": "array", "minItems": 0, "maxItems": 64, "items": {"$ref": "#/$defs/CoveredRoot"}}, "groups": {"type": "array", "minItems": 4, "maxItems": 4, "items": {"$ref": "#/$defs/ReclaimGroup"}}, "unaccounted_bytes": {"$ref": "#/$defs/NullableBytes"}, "rules_version": {"type": "integer", "minimum": 1, "maximum": 1000}, "partial": {"type": "boolean"}, "truncated": {"type": "boolean"}, "budget_hit": {"type": "boolean"}, "selection": {"$ref": "#/$defs/ReclaimSelection"}, "relief": {"$ref": "#/$defs/ReclaimRelief"}}, "$comment": "LW-131 R1d. Four groups in GroupKind order. Outermost active grants only; unknown sizes remain null. No effects."},
     "ReclaimObserveRequest": {"type": "object", "additionalProperties": false, "required": ["volume_id"], "properties": {"volume_id": {"$ref": "#/$defs/VolumeId"}, "selection": {"type": "array", "minItems": 1, "maxItems": 12, "items": {"$ref": "#/$defs/NodeId"}}}},
     "ReclaimObserveProgress": {"type": "object", "additionalProperties": false, "required": ["candidates_total", "candidates_done", "names_checked"], "properties": {"candidates_total": {"$ref": "#/$defs/Count"}, "candidates_done": {"$ref": "#/$defs/Count"}, "names_checked": {"$ref": "#/$defs/Count"}}, "$comment": "LW-131 R1g counts only. Per-candidate verdicts live in state.db and reach the owner through reclaim.plan; a candidate the job did not finish stays unknown, never zero."},
+    "SampleRole": {"enum": ["before", "after"]},
+    "ReclaimSampleRequest": {"type": "object", "additionalProperties": false, "required": ["volume_id", "role"], "properties": {"volume_id": {"$ref": "#/$defs/VolumeId"}, "role": {"$ref": "#/$defs/SampleRole"}, "estimate_bytes": {"$ref": "#/$defs/ByteCount"}}, "$comment": "#1013. estimate_bytes is the plan's estimate as the owner saw it, kept beside a before sample; it is refused with an after sample."},
+    "ReliefSample": {"type": "object", "additionalProperties": false, "required": ["sampled_at", "capacity_bytes", "free_bytes", "recycle_bin_bytes", "estimate_bytes"], "properties": {"sampled_at": {"$ref": "#/$defs/Timestamp"}, "capacity_bytes": {"$ref": "#/$defs/NullableBytes"}, "free_bytes": {"$ref": "#/$defs/NullableBytes"}, "recycle_bin_bytes": {"$ref": "#/$defs/NullableBytes"}, "estimate_bytes": {"$ref": "#/$defs/NullableBytes"}}, "$comment": "#1013. Volume metadata at one moment; anything unreadable is null, never zero."},
+    "ReliefStatus": {"enum": ["not_checked", "different_volume", "unreadable", "compared"]},
+    "ReliefDirection": {"enum": ["more_free", "less_free", "unchanged"]},
+    "ReclaimRelief": {"type": "object", "additionalProperties": false, "required": ["before", "after", "status", "direction", "change_bytes"], "properties": {"before": {"$ref": "#/$defs/ReliefSample"}, "after": {"anyOf": [{"$ref": "#/$defs/ReliefSample"}, {"type": "null"}]}, "status": {"$ref": "#/$defs/ReliefStatus"}, "direction": {"anyOf": [{"$ref": "#/$defs/ReliefDirection"}, {"type": "null"}]}, "change_bytes": {"$ref": "#/$defs/NullableBytes"}}, "$comment": "#1013. Observed free-space change between two samples of one volume identity. direction and change_bytes are null unless status is compared. It never attributes the change to a cleanup."},
     "ReclaimSelectionStatus": {"enum": ["unobserved", "recorded", "expired"]},
     "ReclaimSelection": {"type": "object", "additionalProperties": false, "required": ["members", "status", "observed_at", "reclaimable_bytes", "reason"], "properties": {"members": {"type": "array", "minItems": 1, "maxItems": 12, "items": {"$ref": "#/$defs/NodeId"}}, "status": {"$ref": "#/$defs/ReclaimSelectionStatus"}, "observed_at": {"$ref": "#/$defs/NullableTimestamp"}, "reclaimable_bytes": {"$ref": "#/$defs/NullableBytes"}, "reason": {"anyOf": [{"type": "string", "maxLength": 256}, {"type": "null"}]}}},
     "DeveloperClutterRequest": {"type": "object", "additionalProperties": false, "required": ["root_id", "limit"], "properties": {"root_id": {"$ref": "#/$defs/RootId"}, "limit": {"type": "integer", "minimum": 1, "maximum": 200}}},

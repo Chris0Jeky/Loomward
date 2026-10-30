@@ -1,5 +1,6 @@
 <script module lang="ts">
   import type { DuplicateReport } from '../../lib/contracts.gen';
+  import { formatBytes, parseBytes } from '../../lib/format/bytes';
 
   export const meta = { title: 'Duplicates', order: 35 };
 
@@ -79,6 +80,43 @@
     };
   }
 
+  const STOP_WHY: Record<string, string> = {
+    entry_budget: 'the candidate cap was reached',
+    byte_budget: 'the byte budget was spent',
+    time_budget: 'the time budget ran out',
+    cancelled: 'the inspection was cancelled',
+  };
+
+  /** Coverage wording: how many same-size candidate files this run examined out of the root's candidate space, and why the rest were not. A missing or malformed space is unknown, never zero (invariant 4). */
+  export function candidateCoverage(report: DuplicateReport): { heading: string; detail: string } {
+    const listed = Array.isArray(report.entries) ? report.entries.length : 0;
+    const refused = new Set((Array.isArray(report.skipped) ? report.skipped : []).map((s) => s?.entry)).size;
+    const examined = Math.max(0, listed - refused);
+    const n = (v: number) => v.toLocaleString('en-US');
+    const space = report.candidate_space;
+    const files = space && Number.isSafeInteger(space.files) && space.files >= 0 ? space.files : null;
+    const stop = report.stop;
+    const why = stop ? (STOP_WHY[stop] ?? `the run stopped (${stop})`) : null;
+    // A byte, time or cancel stop can end the run before every listed name was read (or even reached), so such a run
+    // claims only what it listed, never what it examined (review of #1032).
+    const early = stop === 'byte_budget' || stop === 'time_budget' || stop === 'cancelled';
+    const verb = early ? 'Listed' : 'Examined';
+    const count = early ? listed : examined;
+    const parts: string[] = [];
+    let heading: string;
+    if (files === null) {
+      heading = `${verb} ${n(count)} candidate files. The size of the candidate space is unknown, so how much of the root this covers is unknown.`;
+    } else {
+      const bytes = parseBytes(space?.bytes) === null ? 'unknown size' : formatBytes(space?.bytes);
+      heading = `${verb} ${n(count)} of ${n(files)} candidate files (${bytes}).`;
+      const rest = Math.max(0, files - count);
+      if (rest > 0) parts.push(`${n(rest)} candidate ${rest === 1 ? 'file was' : 'files were'} not ${early ? 'listed' : 'examined'}${why ? `: ${why}` : ''}.`);
+    }
+    if (early) parts.push('Some listed files may not have been read before the run stopped.');
+    if (files === null && why) parts.push(`The run ended because ${why}.`);
+    return { heading, detail: parts.join(' ') };
+  }
+
   // Wording for skipped evidence that could not be read. Empty string means the list itself says enough.
   export function skippedNotice(unreadable: number, listed: number, unknown = false): string {
     if (unknown) return 'The skipped list could not be read, so what was skipped is unknown.';
@@ -94,7 +132,6 @@
   import { session } from '../../lib/stores/session.svelte';
   import { Duplicates } from '../../lib/stores/duplicates.svelte';
   import { isActive } from '../../lib/scan/model';
-  import { formatBytes } from '../../lib/format/bytes';
   import { escapedName } from '../../lib/format/names';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
 
@@ -108,6 +145,7 @@
   const guarded = $derived(sanitizeDuplicatesReport(report));
   const safeReport = $derived(guarded.report);
   const indexProblem = $derived(guarded.problem);
+  const coverage = $derived(safeReport ? candidateCoverage(safeReport) : null);
   const skippedText = $derived(safeReport ? skippedNotice(guarded.unreadableSkipped, safeReport.skipped.length, guarded.skippedUnknown) : '');
   const active = $derived(job ? isActive(job.state) : false);
   // A session reads its own class of root only: lab roots when synthetic, folders you granted when personal (q-10).
@@ -174,6 +212,7 @@
   <h2 id="duplicate-results" tabindex="-1" bind:this={resultHeading}>Inspection result</h2>
   {#if job?.error}<p class="bad" role="alert">{job.error.message}</p>{/if}
   {#if safeReport}
+    {#if coverage}<p class="coverage"><strong>{coverage.heading}</strong>{#if coverage.detail} {coverage.detail}{/if}</p>{/if}
     <p class="evidence">Bytes read <strong class="num">{formatBytes(safeReport.bytes_read)}</strong> · Partial <strong class:warn={safeReport.partial}>{safeReport.partial ? 'yes' : 'no'}</strong> · Truncated <strong class:warn={safeReport.truncated}>{safeReport.truncated ? 'yes' : 'no'}</strong> · Stop <strong>{safeReport.stop ?? 'none'}</strong></p>
     {#if indexProblem}<p class="bad" role="alert">{indexProblem}</p>{/if}
     <h3>Verified groups</h3>
@@ -204,6 +243,6 @@
 
 <style>
   h3 { margin: var(--sp-5) 0 var(--sp-2); font-size: 1rem; }
-  .evidence { overflow-wrap: anywhere; }
+  .evidence, .coverage { overflow-wrap: anywhere; }
   .evidence strong { font-family: var(--num-font); }
 </style>

@@ -12,7 +12,7 @@ def run(ctx) -> dict:
 
     def read_only():
         main = page.locator('main')
-        expect(main.get_by_role('button')).to_have_text(['Look again', 'Observe hard links', 'Observe selection', 'Clear selection'])
+        expect(main.get_by_role('button')).to_have_text(['Look again', 'Observe hard links', 'Observe selection', 'Clear selection', 'Record before', 'Check now'])
         expect(main.get_by_role('combobox')).to_have_count(1)
         expect(main.locator('a, form, [role="button"]')).to_have_count(0)
         expect(main.locator('input:not([type="checkbox"]):not([inputmode="numeric"])')).to_have_count(0)
@@ -22,7 +22,7 @@ def run(ctx) -> dict:
     expect(page.get_by_label('Volume to review')).to_have_value('vo_f')
     for heading in headings:
         expect(page.get_by_role('heading', name=heading, exact=True, level=2)).to_be_visible()
-    expect(page.locator('main h2')).to_have_text(['Volume', 'Inspect a selection', *headings])
+    expect(page.locator('main h2')).to_have_text(['Volume', 'Inspect a selection', 'Relief check', *headings])
     cleanup = page.get_by_role('region', name='Tool-owned cleanup', exact=True)
     expect(cleanup).to_contain_text('target')
     expect(cleanup).to_contain_text('Allocated: 7.81 KiB')

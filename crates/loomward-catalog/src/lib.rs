@@ -32,7 +32,7 @@ mod db;
 pub use db::take_integrity_checks;
 mod duplicates;
 mod family;
-pub use duplicates::{DuplicateCandidate, DuplicateCandidates};
+pub use duplicates::{CandidateSpace, DuplicateCandidate, DuplicateCandidates};
 pub use family::extension_family;
 mod machine_stores;
 mod model;
