@@ -26,6 +26,8 @@ pub struct Reader {
     breakdowns: HashMap<(i64, String, Basis, usize, String), Breakdown>,
     pub(crate) deadline: Option<std::time::Instant>,
     expected_generation: Option<(NodeKey, u64)>,
+    /// Shared with the `Catalog` that opened this reader; a bare `Reader::open` has none.
+    pub(crate) space_cache: Option<crate::duplicates::SpaceCache>,
 }
 pub(crate) const DIR_COLUMNS:&str="d.id,0 kind,d.name,d.sub_logical logical,d.sub_allocated allocated,d.sub_alloc_unknown unknown,d.sub_files files,d.sub_dirs dirs,d.modified_ft,d.attrs,d.flags,NULL extension,NULL family,CASE WHEN d.agg_valid_rev=0 AND d.dirty_rev>0 THEN 'unknown' ELSE coalesce(d.listing_outcome,CASE d.listing_state WHEN 'unlisted' THEN 'unscanned' WHEN 'incomplete' THEN 'partial' ELSE d.listing_state END) END,d.sub_complete complete,d.parent_id,d.root_id,d.file_id,d.created_ft,d.changed_ft,NULL accessed_ft,d.born_run,d.agg_valid_rev>=d.dirty_rev valid";
 pub(crate) const FILE_COLUMNS:&str="f.id,1 kind,f.name,f.logical,coalesce(f.allocated,0) allocated,(f.allocated IS NULL) unknown,1 files,0 dirs,f.modified_ft,f.attrs,f.flags,e.ext extension,e.family,CASE WHEN d.listing_state='incomplete' AND f.seen_run!=d.seen_run THEN 'stale' ELSE coalesce(d.listing_outcome,CASE d.listing_state WHEN 'unlisted' THEN 'unscanned' WHEN 'incomplete' THEN 'partial' ELSE d.listing_state END) END,1 complete,f.dir_id parent_id,d.root_id,f.file_id,f.created_ft,f.changed_ft,f.accessed_ft,f.born_run,1 valid";
@@ -435,6 +437,7 @@ impl Reader {
             breakdowns: HashMap::new(),
             deadline: None,
             expected_generation: None,
+            space_cache: None,
         })
     }
     /// Bind CPU work to the service request's wall-clock deadline.

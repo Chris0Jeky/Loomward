@@ -81,6 +81,54 @@ fn candidate_space(
         }
     }
 }
+/// Completed candidate-space counts shared by every reader of one `Catalog` (the service opens a fresh
+/// reader per request, so a per-reader cache would never hit). Keyed on (root, size floor); each entry
+/// carries the (root generation, root subtree revision) it was counted at (#1035 item 1).
+pub(crate) type SpaceCache =
+    std::sync::Arc<std::sync::Mutex<HashMap<(i64, i64), (Stamp, CandidateSpace)>>>;
+type Stamp = (Option<i64>, i64);
+/// The count at the root's current revision: served from `cache` only when the stamp read in this
+/// snapshot equals the stamp it was counted at; otherwise computed. Aggregates under repair and a
+/// running scan are never cached or served, and an unknown count (`None`) is never stored.
+fn space_at_revision(
+    cache: Option<&SpaceCache>,
+    conn: &rusqlite::Connection,
+    root: i64,
+    floor: i64,
+    flags: u32,
+    deadline: Option<std::time::Instant>,
+    budget: u64,
+) -> Result<Option<CandidateSpace>> {
+    let Some(cache) = cache else {
+        return candidate_space(conn, root, floor, flags, deadline, budget);
+    };
+    let (valid, rev): (bool, i64) = conn.query_row(
+        "SELECT agg_valid_rev>=dirty_rev, subtree_rev FROM dir WHERE root_id=?1 AND parent_id IS NULL",
+        [root],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    let stamp = (crate::query::revisions(conn, Some(root))?[0].1, rev);
+    let cacheable = valid && !crate::query::live(conn, root)?;
+    if cacheable {
+        if let Some((at, space)) = cache
+            .lock()
+            .ok()
+            .and_then(|c| c.get(&(root, floor)).copied())
+        {
+            if at == stamp {
+                return Ok(Some(space));
+            }
+        }
+    }
+    let space = candidate_space(conn, root, floor, flags, deadline, budget)?;
+    if let (true, Some(space), Ok(mut cache)) = (cacheable, space, cache.lock()) {
+        if cache.len() >= 64 {
+            cache.clear();
+        }
+        cache.insert((root, floor), (stamp, space));
+    }
+    Ok(space)
+}
 impl Reader {
     pub fn duplicate_candidates(
         &mut self,
@@ -105,6 +153,7 @@ impl Reader {
         if deadline.is_some_and(|at| std::time::Instant::now() >= at) {
             return Err(Error::Cancelled);
         }
+        let cache = self.space_cache.clone();
         let result = self.read(|conn| {
             crate::query::revisions(conn, Some(root))?;
             let complete: bool = conn.query_row("SELECT sub_complete FROM dir WHERE root_id=?1 AND parent_id IS NULL", [root], |r|r.get(0))?;
@@ -155,7 +204,7 @@ impl Reader {
             let partial = !complete || unknown || !skipped.is_empty();
             // A fresh budget of the same size: the count must not starve because selection used its own.
             drop(_guard);
-            let space = candidate_space(conn, root, floor.max(1) as i64, flags, deadline, space_budget)?;
+            let space = space_at_revision(cache.as_ref(), conn, root, floor.max(1) as i64, flags, deadline, space_budget)?;
             Ok(DuplicateCandidates { entries, truncated, partial, skipped, space })
         });
         match result {
@@ -355,6 +404,8 @@ mod tests {
     fn a_count_interrupted_inside_the_full_path_leaves_entries_intact_and_the_read_committed() {
         let (_temp, c, root) = catalog_with(pairs(40));
         let mut reader = c.reader().unwrap();
+        // The revision cache would serve the second call; this test needs the count to run.
+        reader.space_cache = None;
         let whole = reader.duplicate_candidates(root, 1, 200).unwrap();
         assert_eq!(whole.entries.len(), 40);
         assert_eq!(whole.space.map(|s| s.files), Some(40));
@@ -381,6 +432,74 @@ mod tests {
                 .map(|s| s.files),
             Some(40)
         );
+    }
+
+    #[test]
+    fn a_cached_count_is_served_until_a_write_changes_the_revision() {
+        let (temp, c, root) = catalog_with(pairs(40));
+        let mut reader = c.reader().unwrap();
+        let counted = |r: &mut Reader| r.duplicate_candidates(root, 1, 200).unwrap().space;
+        assert_eq!(counted(&mut reader).map(|s| s.files), Some(40));
+        // A fresh reader of the same catalogue shares the cache. The row edit below bypasses the
+        // writer, so no revision moves: a stale answer here proves the second call was a hit.
+        let raw = rusqlite::Connection::open(temp.path().join("catalog.db")).unwrap();
+        raw.execute("UPDATE file SET logical=100000+id", [])
+            .unwrap();
+        let mut other = c.reader().unwrap();
+        assert_eq!(counted(&mut other).map(|s| s.files), Some(40));
+        assert_eq!(other.space_cache.as_ref().unwrap().lock().unwrap().len(), 1);
+        // The edit really changed the data: a reader without the cache counts none of them,
+        // since the sizes no longer pair up.
+        other.space_cache = None;
+        assert_eq!(counted(&mut other).map(|s| s.files), Some(0));
+        // A real write (a second run listing new files) bumps the root's revision and generation.
+        let (dir_id, grant): (i64, i64) = raw
+            .query_row(
+                "SELECT d.id,d.root_id FROM dir d WHERE d.root_id=?1 AND d.parent_id IS NULL",
+                [root],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        let w = c.writer();
+        let WriteReply::Run(run) = w
+            .call(WriteCommand::BeginRun {
+                grant_id: grant,
+                mode: "full".into(),
+                strategy: "fixture".into(),
+                started_at_ns: 2,
+            })
+            .unwrap()
+        else {
+            panic!()
+        };
+        w.call(WriteCommand::DirListing(DirListing {
+            run_id: run,
+            dir_id,
+            files: pairs(10),
+            dirs: vec![],
+            state: "complete".into(),
+            skipped: 0,
+            errors: 0,
+        }))
+        .unwrap();
+        // A scan in flight is neither served from nor stored in the cache.
+        let mut live = c.reader().unwrap();
+        let during = counted(&mut live);
+        assert_ne!(
+            during.map(|s| s.files),
+            Some(40),
+            "live run served the old count"
+        );
+        w.call(WriteCommand::EndRun {
+            run_id: run,
+            state: "completed".into(),
+            finished_at_ns: 3,
+        })
+        .unwrap();
+        let after = counted(&mut c.reader().unwrap());
+        assert_eq!(after.map(|s| s.files), Some(10));
+        // Stored under the new revision, so a repeat is a hit and agrees.
+        assert_eq!(counted(&mut c.reader().unwrap()), after);
     }
 
     #[test]
@@ -496,5 +615,182 @@ mod tests {
             "candidate file rows must not be reread for each path: {}",
             reads.load(Ordering::Relaxed)
         );
+    }
+
+    /// `n` synthetic files in 1000-file directories under one root; `size(k)` is file k's logical size.
+    fn big_catalog(n: usize, size: impl Fn(usize) -> u64) -> (tempfile::TempDir, Catalog, i64) {
+        const PER_DIR: usize = 1000;
+        let temp = tempfile::tempdir().unwrap();
+        let c = Catalog::open(temp.path(), "synthetic").unwrap();
+        let w = c.writer();
+        let WriteReply::Root {
+            grant_id,
+            dir_id,
+            root_id,
+        } = w
+            .call(WriteCommand::RegisterRoot(RootObservation {
+                volume_guid: None,
+                volume_key: "fixture".into(),
+                display_name: "Root".into(),
+                display_path: "Synthetic root".into(),
+                root_file_id: Some(vec![0; 16]),
+                filesystem: Some("NTFS".into()),
+                origin: "fixture".into(),
+                granted_via: "fixture".into(),
+                observed_at_ns: 0,
+            }))
+            .unwrap()
+        else {
+            panic!()
+        };
+        let WriteReply::Run(run) = w
+            .call(WriteCommand::BeginRun {
+                grant_id,
+                mode: "full".into(),
+                strategy: "fixture".into(),
+                started_at_ns: 0,
+            })
+            .unwrap()
+        else {
+            panic!()
+        };
+        let observed = (0..n.div_ceil(PER_DIR))
+            .map(|d| {
+                let mut o = Observation::file(format!("d{d}"), 0, Some(0));
+                o.attrs = 0x10;
+                o.file_id = Some(vec![0xD1; 15].into_iter().chain([d as u8 + 1]).collect());
+                o.created_ft = Some(1);
+                o
+            })
+            .collect();
+        w.call(WriteCommand::DirListing(DirListing {
+            run_id: run,
+            dir_id,
+            files: vec![],
+            dirs: observed,
+            state: "complete".into(),
+            skipped: 0,
+            errors: 0,
+        }))
+        .unwrap();
+        let db = rusqlite::Connection::open(temp.path().join("catalog.db")).unwrap();
+        let ids: Vec<i64> = db
+            .prepare("SELECT id FROM dir WHERE parent_id=?1 ORDER BY id")
+            .unwrap()
+            .query_map([dir_id], |r| r.get(0))
+            .unwrap()
+            .collect::<std::result::Result<_, rusqlite::Error>>()
+            .unwrap();
+        for (d, child) in ids.into_iter().enumerate() {
+            let files = (0..PER_DIR.min(n - d * PER_DIR))
+                .map(|i| {
+                    let k = d * PER_DIR + i;
+                    let mut o = Observation::file(format!("f{i}.bin"), size(k), Some(4096));
+                    let mut id = [0u8; 16];
+                    id[..8].copy_from_slice(&(k as u64 + 1).to_le_bytes());
+                    o.file_id = Some(id.to_vec());
+                    o
+                })
+                .collect();
+            w.call(WriteCommand::DirListing(DirListing {
+                run_id: run,
+                dir_id: child,
+                files,
+                dirs: vec![],
+                state: "complete".into(),
+                skipped: 0,
+                errors: 0,
+            }))
+            .unwrap();
+        }
+        w.call(WriteCommand::EndRun {
+            run_id: run,
+            state: "completed".into(),
+            finished_at_ns: 1,
+        })
+        .unwrap();
+        (temp, c, root_id)
+    }
+
+    /// #1035 item 1, measurement (release build, `--ignored --nocapture`): what the second catalogue
+    /// pass costs on a 130k-file synthetic root. Four timings per shape, interleaved over ten runs
+    /// after one warm-up: the full call with the cache off, the call with the count cut off at its
+    /// first progress tick (selection only), the count alone, and the full call served from the cache.
+    ///
+    /// Result (Windows 11, release, 2026-10-30, 10 runs after a warm-up, medians; two sessions agree
+    /// within about 10%): all files sharing one size, full call 134-141 ms against 82-94 ms for
+    /// selection alone, so the count adds 47-52 ms (50-64%). With 20,000 distinct sizes the full call
+    /// is 734-743 ms against 153-162 ms, so the count adds 572-590 ms (353-385%). The second shape is
+    /// over the 100 ms line, hence the per-revision cache; a cached call is back at selection cost
+    /// (84 and 163 ms). The first call after a write still pays the count.
+    #[test]
+    #[ignore = "#1035 synthetic 130k-file timing; run with --release --ignored --nocapture"]
+    fn measure_the_candidate_space_count_at_130k() {
+        use std::time::{Duration, Instant};
+        fn stats(label: &str, mut t: Vec<Duration>) -> Duration {
+            t.sort();
+            let median = t[t.len() / 2];
+            println!(
+                "  {label:<16} median {:>8.1} ms  min {:>8.1}  max {:>8.1}",
+                median.as_secs_f64() * 1e3,
+                t[0].as_secs_f64() * 1e3,
+                t[t.len() - 1].as_secs_f64() * 1e3
+            );
+            median
+        }
+        let flags =
+            EXCLUDED_FLAGS | 1 | (1 << 1) | (1 << 6) | (1 << 9) | crate::IDENTITY_UNVERIFIED;
+        type Shape = (&'static str, fn(usize) -> u64);
+        let shapes: [Shape; 2] = [
+            ("one size (all 130k share it)", |_| 10),
+            ("20,000 sizes (about 6.5 each)", |k| {
+                10 + (k % 20_000) as u64
+            }),
+        ];
+        for (name, size) in shapes {
+            let (_t, c, root) = big_catalog(130_000, size);
+            let mut reader = c.reader().unwrap();
+            let (mut full, mut selection, mut count, mut cached) = (vec![], vec![], vec![], vec![]);
+            let mut space = None;
+            let shared = reader.space_cache.take();
+            for run in 0..11 {
+                reader.space_cache = None;
+                let t = Instant::now();
+                let with = reader.duplicate_candidates(root, 1, 200).unwrap();
+                let a = t.elapsed();
+                let t = Instant::now();
+                let without = reader.duplicate_candidates_with(root, 1, 200, 1).unwrap();
+                let b = t.elapsed();
+                let t = Instant::now();
+                let alone =
+                    candidate_space(&reader.conn, root, 1, flags, None, SPACE_WORK_BUDGET).unwrap();
+                let s = t.elapsed();
+                reader.space_cache = shared.clone();
+                let t = Instant::now();
+                let hit = reader.duplicate_candidates(root, 1, 200).unwrap();
+                let h = t.elapsed();
+                assert!(hit.space.is_some() && hit.space == with.space);
+                assert!(with.space.is_some() && without.space.is_none() && alone == with.space);
+                assert_eq!(with.entries.len(), without.entries.len());
+                space = with.space;
+                if run > 0 {
+                    full.push(a);
+                    selection.push(b);
+                    count.push(s);
+                    cached.push(h);
+                }
+            }
+            println!("130,000 files, {name}, space {space:?}");
+            let f = stats("full call", full);
+            let sel = stats("selection only", selection);
+            let cnt = stats("count alone", count);
+            stats("cached full call", cached);
+            println!(
+                "  count adds {:.1} ms = {:.0}% over selection only (count alone {:.1} ms)",
+                (f.as_secs_f64() - sel.as_secs_f64()) * 1e3,
+                (f.as_secs_f64() / sel.as_secs_f64() - 1.0) * 100.0,
+                cnt.as_secs_f64() * 1e3
+            );
+        }
     }
 }
