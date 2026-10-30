@@ -573,7 +573,6 @@ fn cargo_lab(extra: impl FnOnce(&std::path::Path)) -> Option<Lab> {
     Some(lab)
 }
 
-#[cfg(windows)]
 fn target_candidate(svc: &Service) -> Value {
     reclaim(svc)["groups"][0]["candidates"]
         .as_array()
