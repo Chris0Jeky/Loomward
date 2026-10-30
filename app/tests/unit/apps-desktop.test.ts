@@ -3,6 +3,8 @@ import { join } from 'node:path';
 import { expect, it } from 'vitest';
 import { Client } from '../../src/lib/transport/client';
 import { createMockTransport } from '../../src/lib/transport/mock';
+import { sizeDesc } from '../../src/lib/transport/mock-inventory';
+import type { InstalledApplication } from '../../src/lib/contracts.gen';
 
 it('pages synthetic apps without changing unknown sizes, provenance or provider coverage', async () => {
   const c = new Client(createMockTransport());
@@ -40,4 +42,32 @@ it('shows an unknown reason under publisher, version and install location, as it
     expect(row, field).toBeDefined();
     expect(row, field).toContain(`{#if app.${field}.reason}`);
   }
+});
+
+const row = (registry_key: string, size: string | null) => ({ registry_key, estimated_size_bytes: size }) as InstalledApplication;
+
+it('orders largest first with unknown last, never as zero, and ties in their given order', () => {
+  const rows = [row('small', '10'), row('unknown', null), row('tie_a', '500'), row('tie_b', '500'), row('largest', '18446744073709551615'), row('zero', '0')];
+  expect(sizeDesc(rows).map((r) => r.registry_key)).toEqual(['largest', 'tie_a', 'tie_b', 'small', 'zero', 'unknown']);
+  expect(rows[0]?.registry_key).toBe('small');
+});
+
+it('serves the sort through the transport, binds cursors to it and keeps the default order', async () => {
+  const c = new Client(createMockTransport());
+  const plain = await c.call('apps.list', { limit: 200, cursor: null });
+  const sorted = await c.call('apps.list', { limit: 200, cursor: null, sort: 'size_desc' });
+  expect(sorted.result.applications.map((a) => a.registry_key)).toEqual(plain.result.applications.map((a) => a.registry_key));
+  const first = await c.call('apps.list', { limit: 1, cursor: null, sort: 'size_desc' });
+  expect(first.result.next_cursor).not.toBeNull();
+  await expect(c.call('apps.list', { limit: 1, cursor: first.result.next_cursor })).rejects.toMatchObject({ code: 'invalid_request' });
+  const rest = await c.call('apps.list', { limit: 200, cursor: first.result.next_cursor, sort: 'size_desc' });
+  expect(rest.result.applications[0]?.estimated_size_bytes).toBeNull();
+  await expect(c.call('desktop.contexts', { limit: 1, cursor: null, sort: 'size_desc' } as never)).rejects.toMatchObject({ code: 'invalid_request' });
+});
+
+it('offers Largest first on Applications and sends the sort with every page request', () => {
+  const src = readFileSync(join(import.meta.dirname, '..', '..', 'src', 'lib', 'ui', 'InventoryView.svelte'), 'utf8');
+  expect(src).toContain('Largest first');
+  expect(src).toContain("largestFirst ? { sort: 'size_desc' as const } : {}");
+  expect(src).toContain('void load();');
 });

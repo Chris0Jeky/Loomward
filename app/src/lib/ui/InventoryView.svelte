@@ -14,6 +14,7 @@
   let error = $state('');
   let pageNumber = $state(1);
   let next = $state<string | null>(null);
+  let largestFirst = $state(false);
   let ticket = 0;
   let controller: AbortController | undefined;
   const say = new Say();
@@ -33,7 +34,7 @@
     try {
       const opts = { signal: controller.signal };
       const result = kind === 'applications'
-        ? (await client.call('apps.list', { limit: 200, cursor }, opts)).result
+        ? (await client.call('apps.list', { limit: 200, cursor, ...(largestFirst ? { sort: 'size_desc' as const } : {}) }, opts)).result
         : (await client.call('desktop.contexts', { limit: 200, cursor }, opts)).result;
       if (mine !== ticket) return;
       if ('applications' in result) apps = result;
@@ -78,6 +79,8 @@
   <section class="panel" aria-labelledby="inv-apps">
     <h2 id="inv-apps">Reported applications</h2>
     <p class="note">Sizes are provider estimates. Unknown sizes stay unknown; application locations are evidence only.</p>
+    <label><input type="checkbox" checked={largestFirst} disabled={busy} onchange={(e) => { largestFirst = e.currentTarget.checked; void load(); }} /> Largest first</label>
+    {#if largestFirst}<p class="note">Ordered by estimated size across all pages. Applications with an unknown size come last, not as zero.</p>{/if}
     <!-- svelte-ignore a11y_no_noninteractive_tabindex (keyboard access to horizontal scrolling) -->
     <div class="tbl-wrap" tabindex="0" role="region" aria-label="Installed applications">
       <table class="tbl">
