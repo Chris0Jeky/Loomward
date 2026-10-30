@@ -13,6 +13,16 @@ fn rt<T: DeserializeOwned + Serialize>(v: &Value) -> Result<Value, String> {
 /// `None` when the def has no registered type (the coverage test fails on that).
 pub fn roundtrip(def: &str, v: &Value) -> Option<Result<Value, String>> {
     Some(match def {
+        "ChangesNewSinceRequest" => rt::<ChangesNewSinceRequest>(v),
+        "NewSinceOutcome" => rt::<NewSinceOutcome>(v),
+        "NewSinceRunMode" => rt::<NewSinceRunMode>(v),
+        "NewSinceRun" => rt::<NewSinceRun>(v),
+        "NewSinceReason" => rt::<NewSinceReason>(v),
+        "NewSinceCaveatTopic" => rt::<NewSinceCaveatTopic>(v),
+        "NewSinceCaveat" => rt::<NewSinceCaveat>(v),
+        "NewSinceFile" => rt::<NewSinceFile>(v),
+        "NewSinceFolder" => rt::<NewSinceFolder>(v),
+        "ChangesNewSince" => rt::<ChangesNewSince>(v),
         "InsightFolderRequest" => rt::<InsightFolderRequest>(v),
         "InsightAxisName" => rt::<InsightAxisName>(v),
         "InsightOutcome" => rt::<InsightOutcome>(v),

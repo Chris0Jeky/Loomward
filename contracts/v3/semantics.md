@@ -1186,6 +1186,46 @@ abstains on coverage. An unscanned, denied or excluded folder reports unknown fi
 too large for the work budget is `resource_budget`; an expired deadline is `deadline_exceeded`.
 `observed_at` is the service clock when the facts were read.
 
+## New since the last scan (#1092)
+
+`changes.new_since { root_id, baseline_run, limit }` says what first appeared in one active granted root
+since a baseline scan run. It is owner-only on Tauri and HTTP in personal and synthetic sessions; client
+principals (including MCP and Ask) are refused with `permission_denied`, and it is not an MCP tool. A
+malformed request (a `limit` outside 1..=50, a `baseline_run` that is not a decimal run number) is
+`invalid_request`; an unknown or revoked root, and a `baseline_run` that is not a run of `root_id`, are
+`not_found`; a baseline run that is still running is `invalid_request`. `expected_generation` is not accepted.
+
+The answer is read from the catalogue's `born_run` columns, with no schema change and no live path or
+file read: a row is new when `born_run > baseline`, never `= the newest run`, because watcher-driven runs
+stamp it too. `baseline_run` is a scan run of this root (a full scan's run number is the root generation it
+published); null selects the full-root run completed just before the newest completed full-root run ("since
+the previous scan"). The result names that `baseline` and the `latest` completed run of any mode (with its
+`finished_at`, `mode` and whether it was `complete`: a clean full traversal), so a client words the date from
+the run, not from the clock. With fewer than two completed full-root runs and no `baseline_run`, `outcome` is
+`no_baseline`: the baseline and every figure are null and the lists are empty. That is "no earlier scan", never
+zero, and it is what a re-granted root reports until it has been scanned twice.
+
+For `ok`, `new_files` and `new_dirs` count the rows born after the baseline in the root's visible tree
+(entries the scan saw but did not follow, and directories pending removal, are never counted, as for
+`stats.breakdown`); `logical_bytes` sums the new files and `allocated_bytes` is null as soon as one new
+file's allocation is unknown (`allocation_unknown_files` says how many), never a partial sum. `largest_files`
+are the `limit` largest new files by logical size (row order breaking ties); `largest_folders` are new
+folders whose parent is not new, largest first, each with its whole recorded size now and its coverage.
+`node_id`s open in Explorer like any other. All figures come from one bounded pass over the root's files; a
+root too large for the work budget is `resource_budget` and an expired deadline `deadline_exceeded`, never a
+short count.
+
+`partial` is true, with `partial_reasons`, when the figures are not a clean answer: `baseline_not_completed`
+(the baseline run was cancelled or failed), `baseline_incomplete` (it finished without being a clean full
+traversal, or has no recorded counter), `coverage_partial`, `scan_running` (rows a running scan has listed so
+far are included), `catalogue_repairing` (folder sizes are not current) and `changes_since_scan` (the watcher
+saw changes after the scan, so the figures describe an earlier state). Anything an earlier run could not
+list (denied, depth-limited, partial or failed scans) is born in the first run that lists it. `caveats`
+always travels with an `ok` result: a file moved across folders, or deleted and recreated, is a new row and
+counts as new (only a rename inside one folder, and any directory rename or move, keep their history); a
+folder first listed later counts as new; a file that existed and grew is not measured. The result is a count
+of rows first listed after the baseline, never a claim about the disk, a recommendation or an approval.
+
 ## Reclaim relief check (#1013)
 
 `reclaim.sample { volume_id, role, estimate_bytes? }` is an owner-only mutation (Tauri and HTTP; clients are
