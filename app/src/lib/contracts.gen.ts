@@ -447,6 +447,12 @@ export interface DuplicateSkip {
   reason: string;
 }
 
+/** Eligible files sharing an exact logical size with another eligible file in the root, before any cap (semantics.md, Duplicate inspection). */
+export interface DuplicateCandidateSpace {
+  files: Count;
+  bytes: ByteCount;
+}
+
 export interface DuplicateReport {
   entries: DuplicateEntry[];
   groups: number[][];
@@ -457,6 +463,8 @@ export interface DuplicateReport {
   partial: boolean;
   truncated: boolean;
   stop: string | null;
+  /** Optional and additive: absent means the candidate space is unknown, never zero. Never null. */
+  candidate_space?: DuplicateCandidateSpace;
 }
 
 /** placement.simulate is synchronous and bounded, never a job (semantics.md section 2). */

@@ -31,6 +31,14 @@ pub struct DuplicateSkip {
     pub entry: Int<0, 199>,
     pub reason: BoundedStr<1, 64>,
 }
+/// Files and logical bytes in a root that share an exact size with another eligible file: the
+/// space the candidate selection draws from before any cap (invariant 4: never a guess).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DuplicateCandidateSpace {
+    pub files: Count,
+    pub bytes: Bytes,
+}
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct DuplicateReport {
     pub entries: BoundedVec<DuplicateEntry, 0, 200>,
@@ -42,6 +50,9 @@ pub struct DuplicateReport {
     pub partial: bool,
     pub truncated: bool,
     pub stop: Option<BoundedStr<1, 64>>,
+    /// Absent is unknown, never zero (an optional property that is never `null`, like `min_bytes`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candidate_space: Option<DuplicateCandidateSpace>,
 }
 
 impl<'de> Deserialize<'de> for DuplicateReport {
@@ -59,6 +70,9 @@ impl<'de> Deserialize<'de> for DuplicateReport {
             truncated: bool,
             #[serde(deserialize_with = "crate::types::required_nullable")]
             stop: Option<BoundedStr<1, 64>>,
+            // Additive: reports from before the field existed stay readable (unknown).
+            #[serde(default, deserialize_with = "crate::types::optional_present")]
+            candidate_space: Option<DuplicateCandidateSpace>,
         }
         let fields = Fields::deserialize(deserializer)?;
         // semantics.md (Duplicate inspection): groups, links and skipped.entry refer to indices in
@@ -87,6 +101,7 @@ impl<'de> Deserialize<'de> for DuplicateReport {
             partial: fields.partial,
             truncated: fields.truncated,
             stop: fields.stop,
+            candidate_space: fields.candidate_space,
         })
     }
 }

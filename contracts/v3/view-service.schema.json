@@ -543,6 +543,16 @@
         }
       }
     },
+    "DuplicateCandidateSpace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["files", "bytes"],
+      "properties": {
+        "files": { "$ref": "#/$defs/Count" },
+        "bytes": { "$ref": "#/$defs/ByteCount" }
+      },
+      "$comment": "Eligible files sharing an exact logical size with another eligible file in the root, before any cap (semantics.md, Duplicate inspection)."
+    },
     "DuplicateReport": {
       "type": "object",
       "additionalProperties": false,
@@ -629,6 +639,10 @@
               "type": "null"
             }
           ]
+        },
+        "candidate_space": {
+          "$ref": "#/$defs/DuplicateCandidateSpace",
+          "$comment": "Optional and additive: absent means the candidate space is unknown, never zero. Never null."
         }
       }
     },

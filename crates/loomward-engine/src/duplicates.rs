@@ -168,12 +168,20 @@ fn duplicate_report(
         .or(bounded.then_some("report_budget"))
         .or(candidates.skipped.first().copied());
     let partial = candidates.partial || report.partial || !skips.is_empty() || stop.is_some();
-    serde_json::from_value(serde_json::json!({
-            "entries": candidates.entries.iter().map(|e| serde_json::json!({"relative_path":e.relative,"logical_bytes":e.logical.to_string()})).collect::<Vec<_>>(),
-            "groups": groups(&report.groups, 100), "links": links, "links_not_compared":links.iter().map(Vec::len).sum::<usize>(),
-            "skipped":skips.iter().map(|(entry,reason)|serde_json::json!({"entry":entry,"reason":reason})).collect::<Vec<_>>(),
-            "bytes_read": report.bytes_read.to_string(), "partial":partial, "truncated":candidates.truncated || bounded, "stop":stop
-        })).map_err(|_| EngineError::Internal { message: "duplicate report bounds".into(), detail: None })
+    let mut wire = serde_json::json!({
+        "entries": candidates.entries.iter().map(|e| serde_json::json!({"relative_path":e.relative,"logical_bytes":e.logical.to_string()})).collect::<Vec<_>>(),
+        "groups": groups(&report.groups, 100), "links": links, "links_not_compared":links.iter().map(Vec::len).sum::<usize>(),
+        "skipped":skips.iter().map(|(entry,reason)|serde_json::json!({"entry":entry,"reason":reason})).collect::<Vec<_>>(),
+        "bytes_read": report.bytes_read.to_string(), "partial":partial, "truncated":candidates.truncated || bounded, "stop":stop
+    });
+    // Unknown is an absent property, never null or zero (semantics.md, Duplicate inspection).
+    if let Some(s) = candidates.space {
+        wire["candidate_space"] = serde_json::json!({"files":s.files,"bytes":s.bytes.to_string()});
+    }
+    serde_json::from_value(wire).map_err(|_| EngineError::Internal {
+        message: "duplicate report bounds".into(),
+        detail: None,
+    })
 }
 
 #[cfg(test)]
@@ -315,6 +323,32 @@ fn duplicate_budget_stop_takes_precedence_over_a_path_refusal() {
     let wire = duplicate_report(&candidates, &report, &[], &Default::default(), None).unwrap();
     assert!(wire.partial);
     assert_eq!(wire.stop.unwrap().as_str(), "byte_budget");
+}
+
+#[cfg(test)]
+#[test]
+fn duplicate_report_carries_the_candidate_space_and_an_unknown_one_stays_absent() {
+    let report = loomward_windows::duplicate_reader::Report::default();
+    let mut candidates = DuplicateCandidates {
+        space: Some(loomward_catalog::CandidateSpace {
+            files: 41_312,
+            bytes: 41_000_000_000,
+        }),
+        ..Default::default()
+    };
+    let wire = duplicate_report(&candidates, &report, &[], &Default::default(), None).unwrap();
+    let space = wire.candidate_space.as_ref().unwrap();
+    assert_eq!(
+        (space.files.get(), space.bytes.get()),
+        (41_312, 41_000_000_000)
+    );
+    candidates.space = None;
+    let wire = duplicate_report(&candidates, &report, &[], &Default::default(), None).unwrap();
+    assert_eq!(wire.candidate_space, None);
+    assert!(serde_json::to_value(&wire)
+        .unwrap()
+        .get("candidate_space")
+        .is_none());
 }
 
 #[cfg(test)]

@@ -22,6 +22,54 @@ pub struct DuplicateCandidates {
     pub partial: bool,
     /// Unrepresentable paths omitted before native I/O, with bounded refusal reasons.
     pub skipped: Vec<&'static str>,
+    /// Eligible files sharing a size, before the cap; `None` when the count ran out of budget.
+    pub space: Option<CandidateSpace>,
+}
+/// The candidate space: files (and their logical bytes) that share an exact size with another eligible file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CandidateSpace {
+    pub files: u64,
+    pub bytes: u64,
+}
+/// Shared by candidate selection and the space count so they cannot drift apart: ?1 root, ?2 size
+/// floor, ?3 excluded flags; `{cols}` is the file columns `eligible` carries (the count needs none
+/// of the identity or name columns). visible_dir supplies the grant/tombstone rules; excluded
+/// ancestors also shield old rows.
+const ELIGIBLE_SIZES: &str = "WITH RECURSIVE shielded(id) AS (
+    SELECT id FROM dir WHERE root_id=?1 AND (listing_state='excluded' OR flags & ?3 != 0)
+    UNION SELECT d.id FROM dir d JOIN shielded s ON d.parent_id=s.id),
+    eligible AS (SELECT {cols}, d.root_id FROM file f JOIN dir d ON d.id=f.dir_id
+    JOIN visible_dir v ON v.id=d.id WHERE d.root_id=?1 AND d.id NOT IN (SELECT id FROM shielded)
+    AND f.flags & ?3 = 0 AND f.logical>=?2 AND f.logical>0),
+    sizes AS (SELECT logical FROM eligible GROUP BY logical HAVING count(*)>=2)";
+const SPACE_WORK_BUDGET: u64 = 32_000_000;
+/// Count the candidate space without reading content. A count that cannot finish (work budget or
+/// deadline) is `None`, unknown, never zero: the candidates already selected are unaffected.
+fn candidate_space(
+    conn: &rusqlite::Connection,
+    root: i64,
+    floor: i64,
+    flags: u32,
+    deadline: Option<std::time::Instant>,
+    budget: u64,
+) -> Result<Option<CandidateSpace>> {
+    let _guard = WorkGuard::new(conn, budget, deadline)?;
+    Ok(conn
+        .query_row(
+            &format!(
+                "{}
+                SELECT count(*), coalesce(sum(logical),0) FROM eligible WHERE logical IN (SELECT logical FROM sizes)",
+                ELIGIBLE_SIZES.replace("{cols}", "f.logical, f.flags")
+            ),
+            params![root, floor, flags],
+            |r| {
+                Ok(CandidateSpace {
+                    files: r.get::<_, i64>(0)? as u64,
+                    bytes: r.get::<_, i64>(1)? as u64,
+                })
+            },
+        )
+        .ok())
 }
 impl Reader {
     pub fn duplicate_candidates(
@@ -42,19 +90,12 @@ impl Reader {
             let complete: bool = conn.query_row("SELECT sub_complete FROM dir WHERE root_id=?1 AND parent_id IS NULL", [root], |r|r.get(0))?;
             // Sized so a 130k-file root answers (about 0.4 s debug, #715); a larger root is refused (resource_budget), never truncated.
             let _guard = WorkGuard::new(conn, 32_000_000, deadline)?;
-            // visible_dir supplies the grant/tombstone rules; excluded ancestors also shield old rows.
-            let mut stmt = conn.prepare("WITH RECURSIVE shielded(id) AS (
-                SELECT id FROM dir WHERE root_id=?1 AND (listing_state='excluded' OR flags & ?4 != 0)
-                UNION SELECT d.id FROM dir d JOIN shielded s ON d.parent_id=s.id),
-                eligible AS (SELECT f.*, d.root_id FROM file f JOIN dir d ON d.id=f.dir_id
-                JOIN visible_dir v ON v.id=d.id WHERE d.root_id=?1 AND d.id NOT IN (SELECT id FROM shielded)
-                AND f.flags & ?4 = 0 AND f.logical>=?2 AND f.logical>0),
-                sizes AS (SELECT logical FROM eligible GROUP BY logical HAVING count(*)>=2)
+            let flags = EXCLUDED_FLAGS | 1 | (1 << 1) | (1 << 6) | (1 << 9) | crate::IDENTITY_UNVERIFIED;
+            let mut stmt = conn.prepare(&format!("{}
                 SELECT f.dir_id,f.logical,f.file_id,f.created_ft,f.modified_ft,f.changed_ft,f.attrs,g.volume_key,f.name
                 FROM eligible f JOIN sizes s ON s.logical=f.logical JOIN root_grant g ON g.id=f.root_id
-                ORDER BY f.logical,f.id LIMIT ?3")?;
-            let rows = stmt.query_map(params![root, floor.max(1) as i64, cap as i64 + 1,
-                EXCLUDED_FLAGS | 1 | (1 << 1) | (1 << 6) | (1 << 9) | crate::IDENTITY_UNVERIFIED], |r| Ok((
+                ORDER BY f.logical,f.id LIMIT ?4", ELIGIBLE_SIZES.replace("{cols}", "f.*")))?;
+            let rows = stmt.query_map(params![root, floor.max(1) as i64, flags, cap as i64 + 1], |r| Ok((
                 r.get::<_, i64>(0)?, r.get::<_, String>(8)?, DuplicateCandidate { relative: String::new(), logical: r.get::<_, i64>(1)? as u64,
                 file_id: r.get(2)?, created: r.get(3)?, modified: r.get(4)?, changed: r.get(5)?, attributes: r.get(6)?, volume_key: r.get(7)? }
             )))?.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -92,7 +133,10 @@ impl Reader {
             for e in &entries { *sizes.entry(e.logical).or_insert(0) += 1; }
             entries.retain(|e| sizes[&e.logical] >= 2);
             let partial = !complete || unknown || !skipped.is_empty();
-            Ok(DuplicateCandidates { entries, truncated, partial, skipped })
+            // A fresh budget of the same size: the count must not starve because selection used its own.
+            drop(_guard);
+            let space = candidate_space(conn, root, floor.max(1) as i64, flags, deadline, SPACE_WORK_BUDGET)?;
+            Ok(DuplicateCandidates { entries, truncated, partial, skipped, space })
         });
         match result {
             Err(Error::Sql(rusqlite::Error::SqliteFailure(e, _)))
@@ -119,6 +163,77 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
         Arc,
     };
+
+    #[test]
+    fn a_space_count_that_runs_out_of_work_budget_is_unknown_not_zero() {
+        let temp = tempfile::tempdir().unwrap();
+        let c = Catalog::open(temp.path(), "synthetic").unwrap();
+        let WriteReply::Root {
+            grant_id,
+            dir_id,
+            root_id,
+        } = c
+            .writer()
+            .call(WriteCommand::RegisterRoot(RootObservation {
+                volume_guid: None,
+                volume_key: "fixture".into(),
+                display_name: "Root".into(),
+                display_path: "Synthetic root".into(),
+                root_file_id: Some(vec![0; 16]),
+                filesystem: Some("NTFS".into()),
+                origin: "fixture".into(),
+                granted_via: "fixture".into(),
+                observed_at_ns: 0,
+            }))
+            .unwrap()
+        else {
+            panic!()
+        };
+        let WriteReply::Run(run) = c
+            .writer()
+            .call(WriteCommand::BeginRun {
+                grant_id,
+                mode: "full".into(),
+                strategy: "fixture".into(),
+                started_at_ns: 0,
+            })
+            .unwrap()
+        else {
+            panic!()
+        };
+        c.writer()
+            .call(WriteCommand::DirListing(DirListing {
+                run_id: run,
+                dir_id,
+                files: (0..400)
+                    .map(|i| Observation::file(format!("file-{i:03}"), 10 + i % 7, Some(4096)))
+                    .collect(),
+                dirs: vec![],
+                state: "complete".into(),
+                skipped: 0,
+                errors: 0,
+            }))
+            .unwrap();
+        c.writer()
+            .call(WriteCommand::EndRun {
+                run_id: run,
+                state: "completed".into(),
+                finished_at_ns: 1,
+            })
+            .unwrap();
+        let reader = c.reader().unwrap();
+        let flags =
+            EXCLUDED_FLAGS | 1 | (1 << 1) | (1 << 6) | (1 << 9) | crate::IDENTITY_UNVERIFIED;
+        let counted = candidate_space(&reader.conn, root_id, 1, flags, None, SPACE_WORK_BUDGET)
+            .unwrap()
+            .expect("an ample budget counts every file");
+        assert_eq!(counted.files, 400);
+        // One progress tick of budget cannot finish the aggregate: unknown, and no error.
+        assert_eq!(
+            candidate_space(&reader.conn, root_id, 1, flags, None, 1).unwrap(),
+            None
+        );
+    }
 
     #[test]
     fn candidates_reuse_parent_paths_and_match_node_path_bytes() {

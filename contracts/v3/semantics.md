@@ -617,6 +617,13 @@ verified equal default streams at observation time. Link sets are one native obj
 single visible name when native nlink>1), with no space to reclaim, and are not compared as duplicates.
 links_not_compared is the number of listed names in those link sets. skipped gives refusal reasons;
 bytes_read, partial, truncated and nullable stop preserve negative and incomplete evidence.
+candidate_space (optional, additive; absent is unknown, never zero, and never null) is the catalogue's count of
+files and logical bytes in the root that share an exact size with another eligible file, by the same
+eligibility rules as candidate selection and before any cap, so a result can say how many candidate
+files it examined out of how many existed. It reads no content and is computed under its own bounded
+work budget; a count that cannot finish is omitted. Names the catalogue filters as unknown (unreadable,
+unrepresentable, identity-unverified) are not in it and keep partial=true, so a present count is the
+visible candidate space of the catalogue at selection time, not a proof about unscanned content.
 No result authorises deleting, moving, renaming or creating links. No reclaim estimate is supplied.
 
 Personal content reads are open, local and read-only. Before resolving catalogue candidates or
