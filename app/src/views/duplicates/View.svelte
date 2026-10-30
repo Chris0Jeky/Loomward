@@ -87,7 +87,7 @@
     cancelled: 'the inspection was cancelled',
   };
 
-  /** Coverage wording: how many same-size candidate files this run examined out of the root's candidate space, and why the rest were not. A missing or malformed space is unknown, never zero (invariant 4). */
+  /** Coverage wording: how many same-size candidate files this run compared (exact when the report says so, else listed minus skipped) out of the root's candidate space, and why the rest were not. A missing or malformed space is unknown, never zero (invariant 4). */
   export function candidateCoverage(report: DuplicateReport): { heading: string; detail: string } {
     const listed = Array.isArray(report.entries) ? report.entries.length : 0;
     const refused = new Set((Array.isArray(report.skipped) ? report.skipped : []).map((s) => s?.entry)).size;
@@ -100,8 +100,12 @@
     // A byte, time or cancel stop can end the run before every listed name was read (or even reached), so such a run
     // claims only what it listed, never what it examined (review of #1032).
     const early = stop === 'byte_budget' || stop === 'time_budget' || stop === 'cancelled';
-    const verb = early ? 'Listed' : 'Examined';
-    const count = early ? listed : examined;
+    // An exact compared count (entries read against another file) replaces the estimate; a count that cannot be true is ignored.
+    const ec = report.entries_compared;
+    const exact = typeof ec === 'number' && Number.isSafeInteger(ec) && ec >= 0 && ec <= listed;
+    const verb = exact ? 'Compared' : early ? 'Listed' : 'Examined';
+    const count = exact ? ec : early ? listed : examined;
+    const noun = exact ? 'compared' : early ? 'listed' : 'examined';
     const parts: string[] = [];
     let heading: string;
     if (files === null) {
@@ -110,11 +114,11 @@
       const bytes = parseBytes(space?.bytes) === null ? 'unknown size' : formatBytes(space?.bytes);
       heading = `${verb} ${n(count)} of ${n(files)} candidate files (${bytes}).`;
       const rest = Math.max(0, files - count);
-      if (rest > 0) parts.push(`${n(rest)} candidate ${rest === 1 ? 'file was' : 'files were'} not ${early ? 'listed' : 'examined'}${why ? `: ${why}` : ''}.`);
+      if (rest > 0) parts.push(`${n(rest)} candidate ${rest === 1 ? 'file was' : 'files were'} not ${noun}${why ? `: ${why}` : exact ? ': link sets, refused names and files without a readable same-size partner are not compared' : ''}.`);
       // The catalogue leaves these names out of the total; a partial report is where they can exist.
       if (report.partial === true) parts.push('Unreadable or unrepresentable names are not in this count.');
     }
-    if (early) parts.push('Some listed files may not have been read before the run stopped.');
+    if (early && !exact) parts.push('Some listed files may not have been read before the run stopped.');
     if (files === null && why) parts.push(`The run ended because ${why}.`);
     return { heading, detail: parts.join(' ') };
   }

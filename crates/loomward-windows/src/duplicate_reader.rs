@@ -89,6 +89,10 @@ pub struct Report {
     pub links: Vec<Vec<usize>>,
     /// Listed names excluded from content comparison because their object is hard-linked.
     pub links_not_compared: usize,
+    /// Entries whose content was read and set against at least one other file (the partial-hash stage
+    /// had two or more readable files of their size) and that no later stage skipped; links, empty,
+    /// refused and lone-size names are not.
+    pub compared: usize,
     pub skipped: Vec<Skip>,
     pub bytes_read: u64,
     /// A budget stop leaves the remaining input unexamined, never absent.
@@ -387,6 +391,7 @@ fn group(entries: &[Entry], reader: &mut impl ContentReader, meter: &mut Meter) 
     for indices in &mut groups {
         indices.sort_unstable();
     }
+    let mut compared = Vec::new();
     for partial in [true, false] {
         let mut next = Vec::new();
         for indices in groups {
@@ -395,6 +400,12 @@ fn group(entries: &[Entry], reader: &mut impl ContentReader, meter: &mut Meter) 
                 match reader.hash(index, &entries[index], partial, meter) {
                     Ok(hash) => hashes.entry(hash).or_default().push(index),
                     Err(reason) => skip(&mut report, index, reason),
+                }
+            }
+            if partial {
+                let read: usize = hashes.values().map(Vec::len).sum();
+                if read > 1 {
+                    compared.extend(hashes.values().flatten().copied());
                 }
             }
             next.extend(hashes.into_values().filter(|g| g.len() > 1));
@@ -469,6 +480,9 @@ fn group(entries: &[Entry], reader: &mut impl ContentReader, meter: &mut Meter) 
             }
         }
     }
+    // A later skip (full hash, equality or the final validate) withdraws an entry from the count.
+    let skipped: BTreeSet<usize> = report.skipped.iter().map(|s| s.entry).collect();
+    report.compared = compared.iter().filter(|i| !skipped.contains(i)).count();
     if let Err(reason) = meter.check() {
         report.partial = true;
         report.stop = Some(reason);

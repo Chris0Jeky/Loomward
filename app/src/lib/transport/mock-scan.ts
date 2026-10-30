@@ -22,7 +22,7 @@ export const DUPLICATES_FIXTURE: DuplicateReport = {
   entries: ['equal-a.txt', 'equal-b.txt', 'linked.txt', 'alias.txt', 'changed.txt'].map((relative_path) => ({ relative_path, logical_bytes: '16' })),
   groups: [[0, 1]], links: [[2, 3]], links_not_compared: 2,
   skipped: [{ entry: 4, reason: 'changed_during_read' }], bytes_read: '96', partial: true, truncated: false, stop: null,
-  candidate_space: { files: 12, bytes: '192' },
+  candidate_space: { files: 12, bytes: '192' }, entries_compared: 2,
 };
 export const LAB_ROOT_IDS = LABS.map((l) => l.id);
 
@@ -146,6 +146,7 @@ export function createScanMock(o: ScanMockOptions): ScanMock {
         const report: DuplicateReport = { ...DUPLICATES_FIXTURE, entries, groups: byteStop ? [] : [[0, 1]],
           links: entries.length >= 4 ? [[2, 3]] : [], links_not_compared: entries.length >= 4 ? 2 : 0,
           skipped: entries.length === 5 ? DUPLICATES_FIXTURE.skipped : [], bytes_read: byteStop ? '0' : '96',
+          entries_compared: byteStop ? 0 : 2,
           truncated, stop: byteStop ? 'byte_budget' : truncated ? 'entry_budget' : null };
         set(job, { state: 'completed', finished_at: iso(), coverage: 'partial', duplicates: report });
       });

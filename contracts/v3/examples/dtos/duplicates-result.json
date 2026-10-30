@@ -63,7 +63,8 @@
         "candidate_space": {
           "files": 12,
           "bytes": "4096"
-        }
+        },
+        "entries_compared": 2
       }
     }
   }

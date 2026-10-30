@@ -714,6 +714,10 @@
         "candidate_space": {
           "$ref": "#/$defs/DuplicateCandidateSpace",
           "$comment": "Optional and additive: absent means the candidate space is unknown, never zero. Never null."
+        },
+        "entries_compared": {
+          "$ref": "#/$defs/Count",
+          "$comment": "Optional and additive: absent means how many entries were content-compared is unknown, never zero. Never null. At most entries.length (semantics.md, Duplicate inspection)."
         }
       }
     },

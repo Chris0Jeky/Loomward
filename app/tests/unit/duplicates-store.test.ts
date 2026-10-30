@@ -271,6 +271,26 @@ describe('duplicates candidate coverage', () => {
     // No count, nothing to qualify.
     expect(candidateCoverage(report({ ...full, partial: true, candidate_space: undefined })).detail).not.toContain(note);
   });
+  it('uses the exact compared count when the report carries one, even on an early stop, and never trusts a bad one', () => {
+    const space = { candidate_space: { files: 12, bytes: '192' }, entries: entries(12), truncated: false };
+    // Complete run: 2 link names, 1 refused and 1 left without a partner are listed but not compared.
+    const exact = candidateCoverage(report({ ...space, stop: null, partial: true, skipped: [{ entry: 3, reason: 'access_denied' }], entries_compared: 8 }));
+    expect(exact.heading).toBe('Compared 8 of 12 candidate files (192 B).');
+    expect(exact.detail).toContain('4 candidate files were not compared: link sets, refused names and files without a readable same-size partner are not compared.');
+    expect(exact.detail).not.toContain('examined');
+    // An early stop is exact too, and keeps its reason.
+    const early = candidateCoverage(report({ ...space, stop: 'byte_budget', entries_compared: 5 }));
+    expect(early.heading).toBe('Compared 5 of 12 candidate files (192 B).');
+    expect(early.detail).toContain('7 candidate files were not compared: the byte budget was spent.');
+    expect(candidateCoverage(report({ ...space, stop: null, partial: false, entries_compared: 12 }))).toEqual({ heading: 'Compared 12 of 12 candidate files (192 B).', detail: '' });
+    expect(candidateCoverage(report({ ...space, stop: null, partial: false, entries_compared: 0 })).heading).toBe('Compared 0 of 12 candidate files (192 B).');
+    // Unknown space: still says how many were compared, and that the space is unknown.
+    expect(candidateCoverage(report({ ...space, stop: null, candidate_space: undefined, entries_compared: 8 })).heading).toBe('Compared 8 candidate files. The size of the candidate space is unknown, so how much of the root this covers is unknown.');
+    // A count above the listed entries, negative or not an integer is ignored (back to the listed-minus-skipped wording).
+    for (const bad of [13, -1, 1.5, null as unknown as undefined, '8' as unknown as undefined]) {
+      expect(candidateCoverage(report({ ...space, stop: null, partial: false, entries_compared: bad })).heading).toBe('Examined 12 of 12 candidate files (192 B).');
+    }
+  });
   it('renders the coverage heading in the result panel', () => {
     const source = readFileSync(new URL('../../src/views/duplicates/View.svelte', import.meta.url), 'utf8');
     expect(source).toContain('candidateCoverage(safeReport)');

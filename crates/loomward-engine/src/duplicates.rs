@@ -178,6 +178,7 @@ fn duplicate_report(
     if let Some(s) = candidates.space {
         wire["candidate_space"] = serde_json::json!({"files":s.files,"bytes":s.bytes.to_string()});
     }
+    wire["entries_compared"] = report.compared.into();
     serde_json::from_value(wire).map_err(|_| EngineError::Internal {
         message: "duplicate report bounds".into(),
         detail: None,

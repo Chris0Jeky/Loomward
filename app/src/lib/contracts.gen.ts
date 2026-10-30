@@ -556,6 +556,8 @@ export interface DuplicateReport {
   stop: string | null;
   /** Optional and additive: absent means the candidate space is unknown, never zero. Never null. */
   candidate_space?: DuplicateCandidateSpace;
+  /** Optional and additive: absent means how many entries were content-compared is unknown, never zero. Never null. At most entries.length (semantics.md, Duplicate inspection). */
+  entries_compared?: Count;
 }
 
 /** placement.simulate is synchronous and bounded, never a job (semantics.md section 2). */
