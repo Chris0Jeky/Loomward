@@ -286,6 +286,68 @@ pub fn compare(source: &Tree, destination: &Tree) -> Report {
     report
 }
 
+/// Selected-set comparison (#1009): compares only the `selected` relative paths and everything
+/// under a selected directory, so a plan that copied some files out of a folder can pass.
+/// Unselected source entries are ignored; every destination entry still counts, so anything
+/// unplanned in the destination is `Extra`. Strict ancestors of selected paths are containers:
+/// their kind, listing and refused or inherited classes are checked, but not their preserved
+/// metadata, because the source container also holds what the plan left behind. A selected path
+/// the source does not hold, or an empty selection, is unknown, never equal.
+pub fn compare_selected(
+    source: &Tree,
+    destination: &Tree,
+    selected: &std::collections::BTreeSet<PathBuf>,
+) -> Report {
+    use std::{collections::BTreeSet, path::Path};
+    if selected.is_empty() {
+        let mut report = Report::default();
+        report.unknowns.push(Unknown {
+            path: PathBuf::new(),
+            side: Side::Source,
+            field: Field::Entry,
+            reason: "empty_selection",
+        });
+        return report;
+    }
+    let containers: BTreeSet<&Path> = selected
+        .iter()
+        .flat_map(|path| path.ancestors().skip(1))
+        .collect();
+    let chosen = |path: &Path| {
+        containers.contains(path)
+            || path
+                .ancestors()
+                .any(|a| !a.as_os_str().is_empty() && selected.contains(a))
+    };
+    let kept = Tree {
+        nodes: source
+            .nodes
+            .iter()
+            .filter(|(path, _)| chosen(path))
+            .map(|(path, node)| (path.clone(), node.clone()))
+            .collect(),
+    };
+    let mut report = compare(&kept, destination);
+    let container_preserved = |path: &Path, class: &MetadataClass| {
+        containers.contains(path) && class.policy() == Policy::Preserved
+    };
+    report.differences.retain(
+        |d| !matches!(&d.kind, DifferenceKind::Metadata(c) if container_preserved(&d.path, c)),
+    );
+    report
+        .unknowns
+        .retain(|u| !matches!(&u.field, Field::Metadata(c) if container_preserved(&u.path, c)));
+    for path in selected.iter().filter(|p| !source.nodes.contains_key(*p)) {
+        report.unknowns.push(Unknown {
+            path: path.clone(),
+            side: Side::Source,
+            field: Field::Entry,
+            reason: "selected_not_in_source",
+        });
+    }
+    report
+}
+
 fn observe<T: PartialEq>(
     report: &mut Report,
     path: &std::path::Path,
@@ -542,5 +604,137 @@ mod tests {
                 .count(),
             2
         );
+    }
+
+    fn selection(paths: &[&str]) -> std::collections::BTreeSet<PathBuf> {
+        paths.iter().map(PathBuf::from).collect()
+    }
+    fn stamped(kind: Kind, stamp: u8) -> Node {
+        let mut node = node(kind);
+        node.metadata
+            .insert(MetadataClass::LastWriteTime, Ok(vec![stamp]));
+        node
+    }
+    /// A source folder `m` holding a planned file and one the plan left behind; the destination
+    /// holds only the planned file. Container timestamps differ, as they do after a partial copy.
+    fn partial_copy() -> (Tree, Tree) {
+        let source = Tree {
+            nodes: [
+                (PathBuf::new(), Ok(stamped(Kind::Directory, 1))),
+                ("m".into(), Ok(stamped(Kind::Directory, 1))),
+                ("m/planned".into(), Ok(node(Kind::File))),
+                ("m/left".into(), Ok(node(Kind::File))),
+                ("other".into(), Ok(node(Kind::File))),
+            ]
+            .into(),
+        };
+        let destination = Tree {
+            nodes: [
+                (PathBuf::new(), Ok(stamped(Kind::Directory, 2))),
+                ("m".into(), Ok(stamped(Kind::Directory, 2))),
+                ("m/planned".into(), Ok(node(Kind::File))),
+            ]
+            .into(),
+        };
+        (source, destination)
+    }
+    #[test]
+    fn selected_partial_copy_passes_where_the_whole_tree_differs() {
+        let (source, destination) = partial_copy();
+        let whole = compare(&source, &destination);
+        assert!(whole
+            .differences
+            .iter()
+            .any(|d| d.kind == DifferenceKind::Missing));
+        let report = compare_selected(&source, &destination, &selection(&["m/planned"]));
+        assert!(report.equal(), "{report:?}");
+    }
+    #[test]
+    fn a_planned_file_missing_beside_an_unplanned_sibling_is_still_missing() {
+        // The hand rule this replaces matched top-level names only, so `m/left` hid `m/planned`.
+        let (source, mut destination) = partial_copy();
+        destination.nodes.remove(Path::new("m/planned"));
+        let report = compare_selected(&source, &destination, &selection(&["m/planned"]));
+        assert_eq!(
+            report.differences,
+            vec![Difference {
+                path: "m/planned".into(),
+                kind: DifferenceKind::Missing
+            }]
+        );
+    }
+    #[test]
+    fn selected_files_keep_every_check_and_the_destination_may_hold_nothing_else() {
+        let (source, mut destination) = partial_copy();
+        destination
+            .nodes
+            .insert("m/left".into(), Ok(node(Kind::File)));
+        let mut changed = node(Kind::File);
+        changed.content = Ok([9; 32]);
+        changed
+            .metadata
+            .insert(MetadataClass::CreationTime, Ok(vec![7]));
+        destination.nodes.insert("m/planned".into(), Ok(changed));
+        let report = compare_selected(&source, &destination, &selection(&["m/planned"]));
+        let found: Vec<_> = report
+            .differences
+            .iter()
+            .map(|d| (d.path.to_str().unwrap(), d.kind.clone()))
+            .collect();
+        assert_eq!(
+            found,
+            vec![
+                ("m/left", DifferenceKind::Extra),
+                ("m/planned", DifferenceKind::Content),
+                (
+                    "m/planned",
+                    DifferenceKind::Metadata(MetadataClass::CreationTime)
+                ),
+            ]
+        );
+    }
+    #[test]
+    fn a_selected_directory_compares_its_whole_subtree_and_containers_keep_refusals() {
+        let (mut source, mut destination) = partial_copy();
+        for tree in [&mut source, &mut destination] {
+            tree.nodes.insert("m/sub".into(), Ok(node(Kind::Directory)));
+            tree.nodes.insert("m/sub/a".into(), Ok(node(Kind::File)));
+        }
+        source.nodes.insert("m/sub/b".into(), Ok(node(Kind::File)));
+        destination.nodes.remove(Path::new("m/planned"));
+        let report = compare_selected(&source, &destination, &selection(&["m/sub"]));
+        assert_eq!(report.differences.len(), 1, "{report:?}");
+        assert_eq!(report.differences[0].path, Path::new("m/sub/b"));
+        let mut linked = stamped(Kind::Directory, 2);
+        linked
+            .metadata
+            .insert(MetadataClass::ReparsePoint, Ok(vec![1]));
+        destination.nodes.insert("m".into(), Ok(linked));
+        source.nodes.remove(Path::new("m/sub/b"));
+        let report = compare_selected(&source, &destination, &selection(&["m/sub"]));
+        assert_eq!(
+            report.differences,
+            vec![Difference {
+                path: "m".into(),
+                kind: DifferenceKind::Refused {
+                    side: Side::Destination,
+                    class: MetadataClass::ReparsePoint
+                }
+            }]
+        );
+    }
+    #[test]
+    fn an_unheld_selection_or_an_empty_one_is_never_equal() {
+        let (source, destination) = partial_copy();
+        for paths in [&["m/planned", "m/typo"][..], &[]] {
+            let report = compare_selected(&source, &destination, &selection(paths));
+            assert!(!report.equal(), "{paths:?}");
+            assert!(report.differences.is_empty());
+            assert_eq!(report.unknowns.len(), 1);
+            assert!(matches!(
+                report.unknowns[0].reason,
+                "selected_not_in_source" | "empty_selection"
+            ));
+        }
     }
 }
