@@ -18,7 +18,7 @@ use loomward_windows::linkcount::{self, Outcome, Stop, MAX_FILES_PER_GROUP};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::json;
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::{Arc, Weak},
     time::{Duration, Instant},
@@ -270,11 +270,15 @@ impl Inner {
             online,
         } = gathered;
         let mut bin_unknown = false;
+        // When each shown verdict was observed (#1029), by the candidate's wire reference.
+        let mut observed_at: HashMap<String, i64> = HashMap::new();
         for (i, root) in roots.iter().enumerate() {
             // A stale root's sizes are unknown, so a stored verdict for it is not shown either.
             if planner.covered_roots[i].coverage != "stale" {
-                let observed = self.observed_relief(&input.conn, root.root)?;
-                planner.observed.extend(observed);
+                for (node, bytes, at) in self.observed_relief(&input.conn, root.root, None)? {
+                    planner.observed.insert(node, bytes);
+                    observed_at.insert(node.reference(), at);
+                }
             }
             let path = Path::new(&root.display_path);
             // shortcut: mounted-folder roots stay unknown until volume mount points are recorded.
@@ -308,6 +312,9 @@ impl Inner {
                     "provider": c.provider, "kind": c.kind,
                     "logical_bytes": bytes(c.logical_bytes), "allocated_bytes": bytes(c.allocated_bytes),
                     "reclaimable_bytes": bytes(c.reclaimable_bytes), "reclaimable_reason": c.reclaimable_reason,
+                    // The plan runs no pass of its own, so known relief is always a stored verdict (#1029).
+                    "observed_at": c.reclaimable_bytes.and(c.node_id.as_ref())
+                        .and_then(|id| observed_at.get(id)).map(|&ns| crate::ts_ns(ns)),
                     "coverage": c.coverage, "owner_step": c.owner_step, "relocation": c.relocation,
                     "evidence": c.evidence, "uncertainty": c.uncertainty,
                 })).collect::<Vec<_>>()
@@ -336,19 +343,28 @@ impl Inner {
     /// Verified relief stored for this root's current generation, catalogue instance, node
     /// incarnation and subtree revision, on a complete root with no scan in flight. A targeted or
     /// partial run moves `subtree_rev` without a generation bump (#970 review); any other row is
-    /// not shown, so its candidate stays `RELIEF_UNOBSERVED`.
+    /// not shown, so its candidate stays `RELIEF_UNOBSERVED`. Each verdict carries the Unix
+    /// nanoseconds it was observed at; the bindings track the catalogue, not the filesystem, so
+    /// that age is the only sign a figure may have drifted (#1029). `only` reads one node's row.
     pub(crate) fn observed_relief(
         &self,
         conn: &Connection,
         root: i64,
-    ) -> Result<Vec<(NodeKey, u64)>, ErrorBody> {
+        only: Option<NodeKey>,
+    ) -> Result<Vec<(NodeKey, u64, i64)>, ErrorBody> {
+        let (kind, id) = match only {
+            Some(NodeKey::Dir(id)) => (Some("dir"), Some(id)),
+            Some(NodeKey::File(id)) => (Some("file"), Some(id)),
+            _ => (None, None),
+        };
         let mut stmt = conn
             .prepare_cached(
-                "SELECT o.node_kind,o.node_id,o.unique_allocated_bytes FROM st.reclaim_relief o
+                "SELECT o.node_kind,o.node_id,o.unique_allocated_bytes,o.observed_at_ns FROM st.reclaim_relief o
                  JOIN main.root r ON r.grant_id=o.grant_id
                  WHERE r.id=?1 AND o.catalog_instance=?2 AND o.generation=r.generation
                    AND r.state='complete' AND r.active_run IS NULL
                    AND o.unique_allocated_bytes IS NOT NULL
+                   AND (?3 IS NULL OR (o.node_kind=?3 AND o.node_id=?4))
                    AND o.incarnation IS (CASE o.node_kind WHEN 'dir' THEN (SELECT born_run FROM main.dir WHERE id=o.node_id)
                                          ELSE (SELECT born_run FROM main.file WHERE id=o.node_id) END)
                    AND o.subtree_rev IS (CASE o.node_kind WHEN 'dir' THEN (SELECT subtree_rev FROM main.dir WHERE id=o.node_id)
@@ -356,14 +372,14 @@ impl Inner {
             )
             .map_err(sql_error)?;
         let rows = stmt
-            .query_map(params![root, self.instance], |r| {
+            .query_map(params![root, self.instance, kind, id], |r| {
                 let id: i64 = r.get(1)?;
                 let node = if r.get::<_, String>(0)? == "dir" {
                     NodeKey::Dir(id)
                 } else {
                     NodeKey::File(id)
                 };
-                Ok((node, r.get::<_, i64>(2)? as u64))
+                Ok((node, r.get::<_, i64>(2)? as u64, r.get(3)?))
             })
             .map_err(sql_error)?
             .collect::<rusqlite::Result<Vec<_>>>()

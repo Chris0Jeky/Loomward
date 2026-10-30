@@ -1,4 +1,4 @@
-import type { AlertReport, AlertSettings, GroupKind, Job, JobKind, ReclaimPlan, Root, Volume } from '../../lib/contracts.gen';
+import type { AlertItem, AlertReport, AlertSettings, GroupKind, Job, JobKind, ReclaimPlan, Root, Volume } from '../../lib/contracts.gen';
 import { formatBytes, parseBytes } from '../../lib/format/bytes';
 import { measured, threshold } from '../alerts/model';
 
@@ -219,6 +219,24 @@ export function needsYou(src: Sources, now: number): { section: Section; items: 
   }
   const order: Section[] = ['alerts', 'roots', 'jobs', 'reclaim'];
   return order.map((section) => ({ section, items: items.filter((i) => i.section === section) })).filter((s) => s.items.length);
+}
+
+/** Alert statuses that say why no alert was raised: the threshold could not be evaluated, so the alert is not clean either. */
+const NOT_EVALUATED: AlertItem['status'][] = ['unknown', 'insufficient_history', 'incomplete_coverage'];
+
+/** How many alerts Loomward could not evaluate. They raise nothing in "needs you", so they are counted here instead. */
+export function unevaluatedAlerts(alerts: AlertReport | null): number {
+  return (alerts?.items ?? []).filter((i) => NOT_EVALUATED.includes(i.status)).length;
+}
+
+/** The sentence that counts unevaluated alerts and points at Alerts, or null when every alert was evaluated. */
+export function unevaluatedLine(n: number): string | null {
+  return n ? `${plural(n, 'alert')} could not be evaluated; see Alerts.` : null;
+}
+
+/** The empty "needs you" sentence: "Nothing needs you." only when nothing was missing and no alert went unevaluated. */
+export function needsEmptyText(missingCount: number, unevaluatedCount: number): string {
+  return missingCount || unevaluatedCount ? 'Nothing needs you in what was read.' : 'Nothing needs you.';
 }
 
 /** Sources that could not be read, by name. Empty means everything Today asked for arrived. */

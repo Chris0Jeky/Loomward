@@ -144,6 +144,12 @@ result.
   root deletes its rows.
 - **Plan.** `reclaim.plan` fills `ReclaimInput.files` from the matching rows; unmatched candidates stay
   `RELIEF_UNOBSERVED`. The plan stays a pure read within its deadline.
+- **Age (#1029).** The bindings above track the catalogue, not the filesystem: a hard link made to a file under the
+  candidate after the pass moves nothing in the catalogue, so a stored figure can overstate relief while it is still
+  bound. Each candidate whose `reclaimable_bytes` comes from a stored verdict therefore carries `observed_at`, the time
+  of that pass (null wherever the bytes are unknown), and the Reclaim view says "verified 3 hours ago" beside the
+  figure. There is deliberately no maximum age after which the figure is dropped: that is a policy choice, left open.
+  Placement's tier DTO has no field for the age, so its `estimated_relief_bytes` from a stored verdict is unchanged.
 - **Not chosen.** An inline pass for small candidates is cheap, but it helps only small caches and makes plan latency
   depend on disk state. Placement's `PlacementInput::files` has the same deadline problem; it can read the same rows later.
 - **Acceptance.** Synthetic lab trees only. Hard links inside a candidate count once. Links crossing the candidate
