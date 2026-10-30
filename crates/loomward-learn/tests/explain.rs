@@ -1,5 +1,6 @@
 use loomward_learn::explain::{explain, function_inputs, Line};
 use loomward_learn::labelling::FUNCTIONS;
+use loomward_learn::packet::{FAMILIES, MARKERS};
 use serde_json::{json, Value};
 
 fn fixture() -> Value {
@@ -271,6 +272,14 @@ fn no_output_reads_as_approval_or_advice() {
     for (name, packet) in &packets {
         let body = text(&explain(packet).unwrap());
         assert_eq!(banned_hit(&body), None, "{name}\n{body}");
+    }
+}
+
+#[test]
+fn closed_vocabularies_pass_the_banned_scan() {
+    // Family and marker ids are echoed from packets (underscores become spaces for markers).
+    for id in FAMILIES.iter().chain(MARKERS) {
+        assert_eq!(banned_hit(&id.replace('_', " ")), None, "{id}");
     }
 }
 
@@ -677,7 +686,7 @@ fn families_line(packet: &Value) -> String {
     explain(packet)
         .unwrap()
         .into_iter()
-        .find(|line| line.trace == ["/families"])
+        .find(|line| line.text.starts_with("File types") || line.text.starts_with("No file types"))
         .unwrap()
         .text
 }
@@ -712,16 +721,23 @@ fn small_shares_never_read_as_zero_and_shown_shares_never_pass_100() {
         "File types by share: code 29% of files (100% of bytes)."
     );
 
-    let mut checked = 0;
+    // Not vacuous: percentages were really parsed (and some sums were really large).
+    let (mut parsed, mut largest) = (0, 0);
     for (name, packet) in all_packets().into_iter().chain(generated_packets(400)) {
         let line = families_line(&packet);
         for column in ["files", "bytes"] {
-            let shown: u64 = shown_shares(&line, column).iter().sum();
+            let shares = shown_shares(&line, column);
+            let shown: u64 = shares.iter().sum();
             assert!(shown <= 100, "{name}: {column} sums to {shown} in {line}");
-            checked += 1;
+            parsed += shares.len();
+            largest = largest.max(shown);
         }
     }
-    assert!(checked > 900);
+    assert!(parsed > 400, "only {parsed} percentages parsed");
+    assert!(
+        largest >= 90,
+        "no generated column came near 100: {largest}"
+    );
 }
 
 #[test]
@@ -737,11 +753,20 @@ fn unobserved_link_counts_qualify_logical_size_and_duplicate_figures() {
     assert!(
         contents
             .text
-            .contains("logical size 1.5 GiB (link counts not observed); allocated size"),
+            .contains("logical size 1.5 GiB (link counts not observed); allocated size 1.5 GiB (link counts not observed); deepest"),
         "{}",
         contents.text
     );
     assert!(contents
+        .trace
+        .contains(&"/coverage/link_counts_observed".to_owned()));
+    // Byte shares come from the same per-row sums as logical size.
+    let types = line_with(&lines, "File types by share:");
+    assert_eq!(
+        types.text,
+        "File types by share: code 75% of files (25% of bytes); executable 25% of files (75% of bytes) (link counts not observed)."
+    );
+    assert!(types
         .trace
         .contains(&"/coverage/link_counts_observed".to_owned()));
     let duplicates = line_with(&lines, "Duplicate bytes:");
@@ -757,8 +782,14 @@ fn unobserved_link_counts_qualify_logical_size_and_duplicate_figures() {
     packet["coverage"]["state"] = json!("partial");
     let partial = text(&explain(&packet).unwrap());
     assert!(partial.contains("duplicate groups: 3 (link counts not observed) (partial coverage)."));
+    // Only a stated byte figure is qualified: file-count shares alone and unknown sizes get none.
     packet["duplicates"] = json!({"duplicate_bytes": null, "groups": null});
     packet["shape"]["logical_bytes"] = Value::Null;
+    packet["shape"]["allocated_bytes"] = Value::Null;
+    packet["coverage"]["allocation_known"] = json!(false);
+    for family in packet["families"].as_array_mut().unwrap() {
+        family["share_bytes"] = Value::Null;
+    }
     assert!(!text(&explain(&packet).unwrap()).contains("link counts"));
 }
 

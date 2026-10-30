@@ -63,9 +63,11 @@ fn size(bytes: u64) -> String {
     unreachable!()
 }
 
-/// Whole-percent share for display, always rounded DOWN so the shown shares of one column can never sum past
-/// 100 (2 x 33.5% reads 33% + 33%, not 34% + 34%). A non-zero share below 1% reads "<1%", never "0%", because
-/// "0%" reads as absence; only an exact zero prints "0%". Basis points absorb float noise (0.29 * 100 < 29).
+/// Whole-percent share for display. The share is first rounded to the nearest basis point (0.01%), which
+/// absorbs float noise (0.29 * 100 is 28.999...), then floored to a whole percent, so 2 x 33.5% reads 33% +
+/// 33%, not 34% + 34%. Consequently a share of 99.995% or more can show 100%, and a column of valid shares
+/// (sum at most 1.000001) cannot show more than 100 in total. A non-zero share below 1% reads "<1%", never
+/// "0%", because "0%" reads as absence; only an exact zero prints "0%".
 fn percent(share: f64) -> String {
     let basis_points = (share * 10_000.0).round() as u64;
     match basis_points / 100 {
@@ -74,7 +76,8 @@ fn percent(share: f64) -> String {
     }
 }
 
-/// Qualifier for any figure that double-counts hard-linked files when link counts were not observed.
+/// Qualifier for any figure that double-counts hard-linked files when link counts were not observed:
+/// logical size, allocated size, byte shares and duplicate figures all come from the same per-row sums.
 const LINKS_UNOBSERVED: &str = " (link counts not observed)";
 
 fn words(id: &str) -> String {
@@ -284,23 +287,27 @@ pub fn explain(packet: &Value) -> Result<Vec<Line>, LearnError> {
     ));
 
     let links_unobserved = coverage["link_counts_observed"] == false;
+    let qualify = |known: bool| {
+        if links_unobserved && known {
+            LINKS_UNOBSERVED
+        } else {
+            ""
+        }
+    };
     let shape = &packet["shape"];
     lines.push(line(
         format!(
-            "Contents: {}; {}; logical size {}{}; allocated size {}; deepest nesting {}.",
+            "Contents: {}; {}; logical size {}{}; allocated size {}{}; deepest nesting {}.",
             count(&shape["files"], "files"),
             count(&shape["folders"], "folders"),
             shape["logical_bytes"]
                 .as_u64()
                 .map_or("unknown".into(), size),
-            if links_unobserved && shape["logical_bytes"].is_u64() {
-                LINKS_UNOBSERVED
-            } else {
-                ""
-            },
+            qualify(shape["logical_bytes"].is_u64()),
             shape["allocated_bytes"]
                 .as_u64()
                 .map_or("unknown".into(), size),
+            qualify(shape["allocated_bytes"].is_u64()),
             shape["max_depth"]
                 .as_u64()
                 .map_or("unknown".into(), |d| d.to_string()),
@@ -345,9 +352,13 @@ pub fn explain(packet: &Value) -> Result<Vec<Line>, LearnError> {
                     )
                 })
                 .collect();
-            format!("File types by share: {}.", parts.join("; "))
+            format!(
+                "File types by share: {}{}.",
+                parts.join("; "),
+                qualify(families.iter().any(|f| f["share_bytes"].as_f64().is_some()))
+            )
         },
-        &["/families"],
+        &["/coverage/link_counts_observed", "/families"],
     ));
 
     let mut extensions: Vec<_> = packet["extensions"].as_array().unwrap().iter().collect();
@@ -434,13 +445,7 @@ pub fn explain(packet: &Value) -> Result<Vec<Line>, LearnError> {
             duplicates["groups"]
                 .as_u64()
                 .map_or("unknown".into(), |g| g.to_string()),
-            if links_unobserved
-                && (duplicates["duplicate_bytes"].is_u64() || duplicates["groups"].is_u64())
-            {
-                LINKS_UNOBSERVED
-            } else {
-                ""
-            },
+            qualify(duplicates["duplicate_bytes"].is_u64() || duplicates["groups"].is_u64()),
         ),
         &[
             "/coverage/link_counts_observed",
