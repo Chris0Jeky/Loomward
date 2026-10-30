@@ -248,17 +248,23 @@ pub(crate) fn check_profile_with(
 
 /// Where tests create synthetic grant fixtures (#465): the workspace's `target/test-roots`, unless
 /// the profile fence refuses it, as it rightly does for a checkout under `%LOCALAPPDATA%` (every
-/// `%TEMP%` worktree). Then `loomward-test-roots` at the root of the same volume, which no store
-/// rule names. The fixtures move; the fence never relaxes. Panics if neither place is eligible.
+/// `%TEMP%` worktree) or under a `.claude` folder (every agent worktree). Then `loomward-test-roots`
+/// in `%ProgramData%`, which no store rule names and whose folders inherit their ACLs the way the
+/// copy engine requires (#1027); then the same folder at the root of the volume, whose children
+/// carry explicit-looking ACEs (a volume root is not auto-inherited), so the lab copy tests cannot
+/// complete there. The fixtures move; the fence never relaxes. Panics if no place is eligible.
 #[cfg(any(test, feature = "test-support"))]
 pub fn test_roots_base() -> PathBuf {
     let eligible = |dir: PathBuf| {
-        std::fs::create_dir_all(&dir).unwrap();
-        let dir = dir.canonicalize().unwrap();
+        std::fs::create_dir_all(&dir).ok()?;
+        let dir = dir.canonicalize().ok()?;
         check_profile(&dir).is_ok().then_some(dir)
     };
     let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/test-roots");
     eligible(target.clone())
+        .or_else(|| {
+            eligible(Path::new(&std::env::var_os("ProgramData")?).join("loomward-test-roots"))
+        })
         .or_else(|| {
             let volume = target
                 .canonicalize()
