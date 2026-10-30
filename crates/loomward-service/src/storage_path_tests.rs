@@ -32,6 +32,31 @@ impl StorageQueryProvider for Synthetic {
     }
 }
 
+/// A disk whose counter read stalls for 30 s unless the caller's health budget ends the wait,
+/// as the Windows provider does. Records every budget it is given.
+#[cfg(windows)]
+struct Stalled(std::sync::Arc<std::sync::Mutex<Vec<std::time::Duration>>>);
+#[cfg(windows)]
+impl StorageQueryProvider for Stalled {
+    fn query(&self, root: &std::path::Path) -> std::io::Result<StorageObservation> {
+        self.query_within(root, std::time::Duration::MAX)
+    }
+    fn query_within(
+        &self,
+        _: &std::path::Path,
+        health_budget: std::time::Duration,
+    ) -> std::io::Result<StorageObservation> {
+        self.0.lock().unwrap().push(health_budget);
+        let wait = health_budget.min(std::time::Duration::from_secs(30));
+        std::thread::sleep(wait);
+        let mut observed = supported();
+        observed.health = HealthObservation::UnsupportedOrHidden {
+            reason: "synthetic stall: gave up at the budget".into(),
+        };
+        Ok(observed)
+    }
+}
+
 fn path(bus: Fact<String>) -> StoragePath {
     StoragePath {
         volume_guid: r"\\?\Volume{00000000-0000-0000-0000-000000000876}\".into(),
@@ -131,6 +156,62 @@ fn hidden_or_empty_health_is_unsupported_or_hidden_never_healthy() {
     assert!(wire_storage_path(&odd)["bus_type"].is_null());
 }
 
+/// #1065 review: a stalled counter read waits only what the request deadline leaves, so the
+/// listing still answers (health unknown) instead of failing with deadline_exceeded.
+#[cfg(windows)]
+#[test]
+fn a_stalled_health_read_degrades_only_health_and_the_listing_still_answers() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    let budgets = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    *svc.inner.hooks.storage.lock().unwrap() = Some(Box::new(Stalled(budgets.clone())));
+    let mut request = request("volumes.list", json!({}));
+    request.deadline_ms = Some(loomward_protocol::Int::new(1_500).unwrap());
+    let started = std::time::Instant::now();
+    let (list, _) = ok("volumes.list", svc.call(request, &CallContext::http()));
+    // The synthetic stall would have run 30 s; the budget ended it well inside the request.
+    assert!(started.elapsed() < std::time::Duration::from_millis(1_500));
+    let list = serde_json::to_value(list).unwrap();
+    let storage = &list["volumes"][0]["storage_path"];
+    assert_eq!(storage["health"]["state"], "unsupported_or_hidden");
+    assert!(storage["health"]["counters"].is_null());
+    assert_eq!(
+        storage["bus_type"], "nvme",
+        "the rest of the path is still reported"
+    );
+    let seen = budgets.lock().unwrap().clone();
+    assert!(!seen.is_empty());
+    // Never more than the deadline minus the reserve for finishing the response.
+    assert!(
+        seen.iter()
+            .all(|b| *b <= std::time::Duration::from_millis(1_250)),
+        "{seen:?}"
+    );
+}
+
+#[test]
+fn the_health_budget_is_what_the_deadline_leaves_minus_the_reserve() {
+    use crate::placement::health_budget;
+    use std::time::{Duration, Instant};
+    let now = Instant::now();
+    assert_eq!(
+        health_budget(now + Duration::from_secs(2), now),
+        Duration::from_millis(1_750)
+    );
+    assert_eq!(
+        health_budget(now + Duration::from_millis(250), now),
+        Duration::ZERO
+    );
+    assert_eq!(
+        health_budget(now + Duration::from_millis(100), now),
+        Duration::ZERO
+    );
+    assert_eq!(
+        health_budget(now, now + Duration::from_secs(1)),
+        Duration::ZERO
+    );
+}
+
 #[cfg(windows)]
 #[test]
 fn volumes_list_carries_the_storage_path_from_the_provider() {
@@ -157,11 +238,20 @@ fn volumes_list_carries_the_storage_path_from_the_provider() {
     *svc.inner.hooks.storage.lock().unwrap() = Some(Box::new(Synthetic(None)));
     let volumes = list(svc);
     assert!(volumes["volumes"][0].get("storage_path").is_none());
-    // The real provider reports no health source yet, so whatever it observed is unsupported_or_hidden.
+    // The real provider reads NVMe counters where Windows allows it (#876); either way the wire is
+    // consistent: counters only with counters_present, a reason only without.
     *svc.inner.hooks.storage.lock().unwrap() = None;
     let volumes = list(svc);
     if let Some(storage) = volumes["volumes"][0].get("storage_path") {
-        assert_eq!(storage["health"]["state"], "unsupported_or_hidden");
-        assert!(storage["health"]["counters"].is_null());
+        let health = &storage["health"];
+        match health["state"].as_str() {
+            Some("counters_present") => {
+                assert!(health["counters"].is_object() && health["reason"].is_null());
+            }
+            Some("unsupported_or_hidden") => {
+                assert!(health["counters"].is_null() && health["reason"].is_string());
+            }
+            other => panic!("unexpected health state {other:?}"),
+        }
     }
 }
