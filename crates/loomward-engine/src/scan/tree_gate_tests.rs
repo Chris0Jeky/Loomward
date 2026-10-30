@@ -443,6 +443,56 @@ fn coverage_stops_on_the_destination_hashing_read_alone() {
     );
 }
 
+/// #1037 item 2: `covers` ignores named streams, so it must not spend read budget on them. Each
+/// side's `fixture` carries a 64 KiB `:note` stream; the budget is exactly what the unlimited run
+/// read, which is the two default streams only, and still covers. `compare_trees` (verify-tree)
+/// keeps reading and comparing named streams: the same pair with different streams differs.
+#[cfg(windows)]
+#[test]
+fn coverage_spends_no_budget_on_named_streams_but_verify_tree_still_compares_them() {
+    use loomward_operations::{containment::Coverage, tree::MetadataClass};
+    if skip_elevated() {
+        return;
+    }
+    let pair = pair_of(&[5u8; 100], &[5u8; 100]);
+    let fixture = std::path::Path::new("fixture");
+    let big = 64 * 1024;
+    std::fs::write(pair.left.path().join("fixture:note"), vec![1u8; big]).unwrap();
+    std::fs::write(pair.right.path().join("fixture:note"), vec![2u8; big]).unwrap();
+    let (a, b, full) = pair
+        .engine
+        .observe_coverage(&pair.left, &pair.right, cover_budget(1 << 20), 100)
+        .unwrap();
+    assert!((200..big as u64).contains(&full), "{full}");
+    for tree in [&a, &b] {
+        let node = tree.nodes[fixture].as_ref().unwrap();
+        assert!(node.content.is_ok());
+        assert_eq!(
+            node.metadata[&MetadataClass::NamedStreams],
+            Err("not_requested")
+        );
+    }
+    assert_eq!(
+        coverage_of(&pair, full)[fixture],
+        Coverage::Covered {
+            by: "fixture".into()
+        }
+    );
+    let budget = loomward_windows::duplicate_reader::Budget {
+        bytes: 1 << 20,
+        ..duplicate_budget()
+    };
+    let report = pair
+        .engine
+        .compare_trees(&pair.left, &pair.right, budget, 100)
+        .unwrap();
+    assert!(
+        report.differences.iter().any(|d| d.path == fixture
+            && d.kind == DifferenceKind::Metadata(MetadataClass::NamedStreams)),
+        "{report:?}"
+    );
+}
+
 /// #1037: B gaining a file of A's size after its listing is destination drift, not a source gap.
 #[cfg(windows)]
 #[test]

@@ -53,13 +53,23 @@ pub(crate) fn read_tree(
     max_entries: usize,
     cancel: Arc<AtomicBool>,
 ) -> Result<(Tree, u64), Reason> {
-    read_tree_wanting(root, expected, budget, max_entries, cancel, &|_, _| true)
+    read_tree_wanting(
+        root,
+        expected,
+        budget,
+        max_entries,
+        cancel,
+        &|_, _| true,
+        &|_, _| true,
+    )
 }
 
 /// `read_tree` that hashes only the files whose root-relative path (the `Tree` key) and listed size
 /// `want` accepts (#1011, #1037). Any other file
 /// is still opened, bound and observed, but its content and named streams are `not_requested` and
-/// cost no read budget.
+/// cost no read budget. Of the wanted files, only those `want_streams` also accepts have their named
+/// streams read; the others keep their content but get `NamedStreams: not_requested` (#1037).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn read_tree_wanting(
     root: &Path,
     expected: &OpenedIdentity,
@@ -67,6 +77,7 @@ pub(crate) fn read_tree_wanting(
     max_entries: usize,
     cancel: Arc<AtomicBool>,
     want: &dyn Fn(&Path, u64) -> bool,
+    want_streams: &dyn Fn(&Path, u64) -> bool,
 ) -> Result<(Tree, u64), Reason> {
     read_tree_from(
         &NativeSource::default(),
@@ -77,6 +88,7 @@ pub(crate) fn read_tree_wanting(
         cancel,
         crate::noncached::sector_for_file,
         want,
+        want_streams,
     )
 }
 
@@ -92,6 +104,7 @@ fn read_tree_from(
     cancel: Arc<AtomicBool>,
     geometry: fn(&File) -> io::Result<usize>,
     want: &dyn Fn(&Path, u64) -> bool,
+    want_streams: &dyn Fn(&Path, u64) -> bool,
 ) -> Result<(Tree, u64), Reason> {
     let mut meter = Meter::new(budget);
     meter.cancel = Some(cancel);
@@ -297,7 +310,11 @@ fn read_tree_from(
                         .map_err(Reason::as_str);
                     node.metadata.insert(
                         Class::NamedStreams,
-                        stream_hashes(&mut reader, &opened, &entry, &mut meter),
+                        if want_streams(&relative, size) {
+                            stream_hashes(&mut reader, &opened, &entry, &mut meter)
+                        } else {
+                            Err("not_requested")
+                        },
                     );
                 } else {
                     node.content = Err("not_requested");
@@ -1724,6 +1741,7 @@ mod tests {
             Default::default(),
             |_| Err(io::Error::from_raw_os_error(1)),
             &|_, _| true,
+            &|_, _| true,
         );
         assert_eq!(result.unwrap_err(), Reason::GeometryUnavailable);
         assert_eq!(
@@ -1872,6 +1890,7 @@ mod tests {
                 Default::default(),
                 crate::noncached::sector_for_file,
                 &|_, _| true,
+                &|_, _| true,
             )
             .unwrap()
             .0
@@ -1913,6 +1932,7 @@ mod tests {
             Default::default(),
             crate::noncached::sector_for_file,
             &|_, _| true,
+            &|_, _| true,
         )
         .unwrap()
         .0;
@@ -1945,6 +1965,7 @@ mod tests {
                 max,
                 Default::default(),
                 crate::noncached::sector_for_file,
+                &|_, _| true,
                 &|_, _| true,
             )
             .unwrap()
@@ -1981,6 +2002,7 @@ mod tests {
                 max,
                 Default::default(),
                 crate::noncached::sector_for_file,
+                &|_, _| true,
                 &|_, _| true,
             )
             .unwrap()
@@ -2019,6 +2041,7 @@ mod tests {
                     100,
                     Default::default(),
                     want,
+                    &|_, _| true,
                 ),
             }
             .unwrap()
@@ -2062,5 +2085,55 @@ mod tests {
         assert_eq!(file(&by_path, big).content, file(&default, big).content);
         assert_eq!(file(&by_path, "five").content, Err("not_requested"));
         assert_eq!(file(&by_path, "five").size, file(&default, "five").size);
+    }
+
+    /// #1037: a wanted file whose streams are not wanted keeps its content and costs no stream
+    /// bytes; the per-path predicate leaves other files' streams read, and the default still reads
+    /// them all.
+    #[test]
+    fn stream_predicate_skips_named_streams_only_where_unwanted() {
+        if crate::enumerate::skip_elevated_test() {
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("one"), b"one").unwrap();
+        std::fs::write(temp.path().join("two"), b"two").unwrap();
+        std::fs::write(temp.path().join("one:note"), vec![1u8; 64 * 1024]).unwrap();
+        std::fs::write(temp.path().join("two:note"), b"small").unwrap();
+        let (_, expected) = NativeSource::default().open_root(temp.path()).unwrap();
+        let run = |want_streams: &dyn Fn(&Path, u64) -> bool| {
+            read_tree_wanting(
+                temp.path(),
+                &expected,
+                budget(),
+                100,
+                Default::default(),
+                &|_, _| true,
+                want_streams,
+            )
+            .unwrap()
+        };
+        let file = |tree: &Tree, name: &str| tree.nodes[Path::new(name)].clone().unwrap();
+        let (default, default_bytes) =
+            read_tree(temp.path(), &expected, budget(), 100, Default::default()).unwrap();
+        assert!(default_bytes >= 64 * 1024, "{default_bytes}");
+        assert!(file(&default, "one").metadata[&Class::NamedStreams].is_ok());
+        let (none, none_bytes) = run(&|_, _| false);
+        assert!(none_bytes < 1024, "{none_bytes}");
+        for name in ["one", "two"] {
+            let node = file(&none, name);
+            assert_eq!(node.content, file(&default, name).content);
+            assert_eq!(node.metadata[&Class::NamedStreams], Err("not_requested"));
+        }
+        let (some, some_bytes) = run(&|path, _| path == Path::new("two"));
+        assert!(some_bytes < 1024, "{some_bytes}");
+        assert_eq!(
+            file(&some, "one").metadata[&Class::NamedStreams],
+            Err("not_requested")
+        );
+        assert_eq!(
+            file(&some, "two").metadata[&Class::NamedStreams],
+            file(&default, "two").metadata[&Class::NamedStreams]
+        );
     }
 }
