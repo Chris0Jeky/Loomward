@@ -1,4 +1,4 @@
--- Rules v2: safe rows are inlined into indexed lookups, never materialised across the catalogue.
+-- Rules v3 (v2 plus ComfyUI, A1111 and Steam): safe rows are inlined into indexed lookups, never materialised across the catalogue.
 -- The top-down walk stops at stores, dependency/git directories and v1 project outputs.
 WITH RECURSIVE
 safe AS NOT MATERIALIZED (
@@ -31,6 +31,13 @@ rules AS NOT MATERIALIZED (
           AND f.name IN ('build.gradle','build.gradle.kts')) THEN 'pruned'
       WHEN d.name='packages' AND p.name='.nuget' THEN 'nuget'
       WHEN d.name='models' AND p.name='.lmstudio' THEN 'lmstudio'
+      -- ComfyUI: each child of a models directory whose parent holds comfy and custom_nodes.
+      WHEN p.name='models'
+        AND EXISTS(SELECT 1 FROM safe c WHERE c.parent_id=p.parent_id AND c.name='comfy')
+        AND EXISTS(SELECT 1 FROM safe c WHERE c.parent_id=p.parent_id AND c.name='custom_nodes') THEN 'comfyui'
+      -- Steam: each game folder under steamapps/common, where steamapps records an app manifest.
+      WHEN p.name='common' AND g.name='steamapps'
+        AND EXISTS(SELECT 1 FROM files f WHERE f.dir_id=g.id AND f.name GLOB 'appmanifest_*.acf') THEN 'steam'
       -- Root-level advice is queried first; keep shielding its subtrees here.
       WHEN d.name='$Recycle.Bin' AND p.id=?1 THEN 'pruned'
       WHEN d.name IN ('WinSxS','SoftwareDistribution') AND p.name='Windows'
@@ -52,6 +59,9 @@ rules AS NOT MATERIALIZED (
         WHEN d.name='models'
           AND EXISTS(SELECT 1 FROM safe c WHERE c.parent_id=d.id AND c.name='blobs')
           AND EXISTS(SELECT 1 FROM safe c WHERE c.parent_id=d.id AND c.name='manifests') THEN 'ollama'
+        WHEN d.name='models'
+          AND EXISTS(SELECT 1 FROM safe c WHERE c.parent_id=d.id AND c.name='Stable-diffusion')
+          AND EXISTS(SELECT 1 FROM files f WHERE f.dir_id=d.parent_id AND f.name='webui.py') THEN 'a1111'
         WHEN (d.name IN ('store','.pnpm-store') OR p.name='pnpm')
           AND EXISTS(SELECT 1 FROM safe c WHERE c.parent_id=d.id
           AND c.name GLOB 'v[0-9]*' AND substr(c.name,2) NOT GLOB '*[^0-9]*'
@@ -74,7 +84,7 @@ rules AS NOT MATERIALIZED (
         WHEN EXISTS(SELECT 1 FROM files f WHERE f.dir_id=d.id AND f.name='.git') THEN 'worktree'
       END
     END rule
-  FROM safe d LEFT JOIN dir p ON p.id=d.parent_id
+  FROM safe d LEFT JOIN dir p ON p.id=d.parent_id LEFT JOIN dir g ON g.id=p.parent_id
 ),
 tree(id,rule) AS (
   SELECT id,rule FROM rules WHERE id=?1

@@ -124,7 +124,7 @@ fn query_candidates(
     scanning: bool,
 ) -> Result<MachineStores> {
     let mut report = MachineStores {
-        rules_version: 2,
+        rules_version: 3,
         ..MachineStores::default()
     };
     let mut stmt = conn.prepare(sql)?;
@@ -197,6 +197,15 @@ fn candidate(row: query::Raw, rule: &str, scanning: bool) -> Result<MachineStore
         "ollama" => ("model_store", "ollama", "Review the host's models before using ollama rm in the owning tool.", Some("OLLAMA_MODELS"),
             "Recorded models directory with blobs and manifests children.",
             "Model contents, unique local models, availability and active leases are unknown. This is advice, never a disposability claim."),
+        "comfyui" => ("model_store", "comfyui", "Review this model folder in ComfyUI's model manager or by hand; custom checkpoints and trained LoRAs may be unique.", Some("extra_model_paths.yaml"),
+            "Recorded child of a models directory whose parent holds comfy and custom_nodes directories.",
+            "Custom checkpoints and trained LoRAs may be unique and not re-downloadable; contents, links and active workflows are unverified. This is advice, never a disposability claim."),
+        "a1111" => ("model_store", "a1111", "Review models in the web UI by hand; custom checkpoints and trained LoRAs may be unique.", Some("--ckpt-dir / --lora-dir launch arguments"),
+            "Recorded models directory with a Stable-diffusion child, beside a webui.py file.",
+            "Custom checkpoints and trained LoRAs may be unique and not re-downloadable; contents, links and active sessions are unverified. This is advice, never a disposability claim."),
+        "steam" => ("game_library", "steam", "In Steam, use Properties, Installed Files, Move install folder; uninstalling is the owner's call after checking mods and local saves.", Some("another Steam library folder (Steam Settings, Storage)"),
+            "Recorded directory directly under steamapps/common, where steamapps holds an appmanifest_*.acf file.",
+            "Names cannot show that a game is re-downloadable or that mods and local saves survive an uninstall. Contents and active play are unverified. This is advice, never a disposability claim."),
         "wsl" => ("virtual_disk", "wsl", "Review WSL compaction using its documented offline procedure in the owning tool.", Some("wsl --manage <distro> --move"),
             "Recorded file named ext4.vhdx.",
             "The host observes container size only; guest free space is unknown, so reclaimable bytes are unknown. This is advice, never a disposability claim."),

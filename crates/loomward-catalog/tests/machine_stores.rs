@@ -74,7 +74,7 @@ fn machine_store_signature_produces_catalogue_advice() {
     lab.directory(cache, "content-v2", 100);
     lab.directory(cache, "index-v5", 23);
     let report = lab.report(200);
-    assert_eq!(report.rules_version, 2);
+    assert_eq!(report.rules_version, 3);
     assert!(!report.partial);
     assert!(!report.truncated);
     assert!(!report.budget_hit);
@@ -341,6 +341,144 @@ fn decoy_names_incomplete_signatures_and_v1_project_outputs_are_not_candidates()
     lab.directory(wrong_case, "content-v2", 0);
     lab.directory(wrong_case, "index-v5", 0);
     assert!(lab.report(200).candidates.is_empty());
+}
+
+/// A ComfyUI-shaped tree: `models` beside `comfy` and `custom_nodes`.
+fn comfy_install(lab: &Lab, parent: i64, name: &str) -> (i64, i64) {
+    let install = lab.directory(parent, name, 0);
+    lab.directory(install, "comfy", 0);
+    lab.directory(install, "custom_nodes", 0);
+    (install, lab.directory(install, "models", 0))
+}
+
+fn assert_bounded(c: &MachineStoreCandidate) {
+    for text in [c.owner_step, c.reason, c.relocation.unwrap_or("")] {
+        assert!(!text.is_empty() && text.len() <= 256, "{text}");
+    }
+    assert!(c.uncertainty.len() <= 512);
+    assert!(c
+        .uncertainty
+        .ends_with("This is advice, never a disposability claim."));
+}
+
+#[test]
+fn comfyui_model_folders_are_candidates_with_the_uniqueness_caution() {
+    let lab = Lab::new();
+    let (_, models) = comfy_install(&lab, lab.dir, "ComfyUI");
+    let checkpoints = lab.directory(models, "checkpoints", 300);
+    let loras = lab.directory(models, "loras", 200);
+    // Nested folders sit under a candidate and are shielded by it.
+    lab.directory(checkpoints, "loras", 50);
+    let report = lab.report(200);
+    assert!(!report.partial);
+    let nodes: Vec<_> = report.candidates.iter().map(|c| c.node).collect();
+    assert_eq!(nodes, [NodeKey::Dir(checkpoints), NodeKey::Dir(loras)]);
+    let c = &report.candidates[0];
+    assert_eq!((c.class, c.provider), ("model_store", "comfyui"));
+    assert_eq!((c.logical_bytes, c.allocated_bytes), (Some(300), Some(300)));
+    assert_eq!(c.relocation, Some("extra_model_paths.yaml"));
+    assert!(c.owner_step.contains("may be unique"));
+    assert!(c.uncertainty.contains("not re-downloadable"));
+    assert_bounded(c);
+}
+
+#[test]
+fn a1111_models_directory_needs_stable_diffusion_beside_webui_py() {
+    let lab = Lab::new();
+    let install = lab.directory(lab.dir, "webui", 0);
+    lab.file(install, "webui.py", 1, Some(1));
+    let models = lab.directory(install, "models", 400);
+    lab.directory(models, "Stable-diffusion", 300);
+    let report = lab.report(200);
+    assert_eq!(report.candidates.len(), 1);
+    let c = &report.candidates[0];
+    assert_eq!(c.node, NodeKey::Dir(models));
+    assert_eq!((c.class, c.provider), ("model_store", "a1111"));
+    assert_eq!(c.relocation, Some("--ckpt-dir / --lora-dir launch arguments"));
+    assert!(c.owner_step.contains("may be unique"));
+    assert_bounded(c);
+}
+
+#[test]
+fn steam_games_under_a_manifested_steamapps_are_candidates_with_the_reinstall_caution() {
+    let lab = Lab::new();
+    let library = lab.directory(lab.dir, "SteamLibrary", 0);
+    let steamapps = lab.directory(library, "steamapps", 0);
+    lab.file(steamapps, "appmanifest_480.acf", 1, Some(1));
+    let common = lab.directory(steamapps, "common", 0);
+    let game = lab.directory(common, "Synthetic Game", 500);
+    // The walk stops at the game folder: its interior is never a candidate.
+    lab.directory(game, "models", 5);
+    lab.directory(steamapps, "shadercache", 70);
+    let report = lab.report(200);
+    assert!(!report.partial);
+    assert_eq!(report.candidates.len(), 1);
+    let c = &report.candidates[0];
+    assert_eq!(c.node, NodeKey::Dir(game));
+    assert_eq!((c.class, c.provider), ("game_library", "steam"));
+    assert_eq!((c.logical_bytes, c.allocated_bytes), (Some(500), Some(500)));
+    assert!(c.owner_step.contains("Move install folder"));
+    assert!(c.uncertainty.contains("re-downloadable"));
+    assert!(c.uncertainty.contains("mods and local saves"));
+    assert_eq!(
+        c.relocation,
+        Some("another Steam library folder (Steam Settings, Storage)")
+    );
+    assert_bounded(c);
+}
+
+#[test]
+fn creative_ai_and_game_library_decoys_are_not_candidates() {
+    let lab = Lab::new();
+    // models without comfy and custom_nodes, or with only one of them.
+    let plain = lab.directory(lab.dir, "plain-app", 0);
+    let models = lab.directory(plain, "models", 1);
+    lab.directory(models, "checkpoints", 1);
+    let half = lab.directory(lab.dir, "half-comfy", 0);
+    lab.directory(half, "comfy", 0);
+    let half_models = lab.directory(half, "models", 1);
+    lab.directory(half_models, "loras", 1);
+    // A models directory not directly beside comfy and custom_nodes.
+    let (outer, _) = comfy_install(&lab, lab.dir, "outer");
+    let deep = lab.directory(outer, "deeper", 0);
+    let deep_models = lab.directory(deep, "models", 1);
+    lab.directory(deep_models, "checkpoints", 1);
+    // Stable-diffusion without webui.py, and webui.py without Stable-diffusion.
+    let no_webui = lab.directory(lab.dir, "no-webui", 0);
+    let no_webui_models = lab.directory(no_webui, "models", 1);
+    lab.directory(no_webui_models, "Stable-diffusion", 1);
+    let no_sd = lab.directory(lab.dir, "no-sd", 0);
+    lab.file(no_sd, "webui.py", 1, Some(1));
+    let no_sd_models = lab.directory(no_sd, "models", 1);
+    lab.directory(no_sd_models, "Lora", 1);
+    // A wrong-case Stable-diffusion child is not the A1111 layout.
+    let wrong_case = lab.directory(lab.dir, "wrong-case", 0);
+    lab.file(wrong_case, "webui.py", 1, Some(1));
+    let wrong_case_models = lab.directory(wrong_case, "models", 1);
+    lab.directory(wrong_case_models, "stable-diffusion", 1);
+    // steamapps/common without an app manifest (and with a near-miss file name).
+    let library = lab.directory(lab.dir, "BareLibrary", 0);
+    let bare = lab.directory(library, "steamapps", 0);
+    lab.file(bare, "appmanifest_480.txt", 1, Some(1));
+    lab.file(bare, "libraryfolder.vdf", 1, Some(1));
+    let bare_common = lab.directory(bare, "common", 0);
+    lab.directory(bare_common, "Synthetic Game", 1);
+    // A manifested library whose games folder is not named common, or is not under steamapps.
+    let other_library = lab.directory(lab.dir, "OtherLibrary", 0);
+    let other = lab.directory(other_library, "steamapps", 0);
+    lab.file(other, "appmanifest_480.acf", 1, Some(1));
+    let other_games = lab.directory(other, "games", 0);
+    lab.directory(other_games, "Synthetic Game", 1);
+    let loose = lab.directory(lab.dir, "loose", 0);
+    lab.file(loose, "appmanifest_480.acf", 1, Some(1));
+    let loose_common = lab.directory(loose, "common", 0);
+    lab.directory(loose_common, "Synthetic Game", 1);
+    // A game-like folder outside steamapps.
+    let games = lab.directory(lab.dir, "Games", 0);
+    lab.directory(games, "Synthetic Game", 1);
+    let report = lab.report(200);
+    let names: Vec<_> = report.candidates.iter().map(|c| c.name.as_str()).collect();
+    assert!(names.is_empty(), "{names:?}");
 }
 
 #[test]
