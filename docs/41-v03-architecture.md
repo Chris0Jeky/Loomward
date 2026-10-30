@@ -294,7 +294,7 @@ Every command has `effects: none` except `diagnostics.save` (`owner_picked_expor
 | Volumes | `volumes.list` | `EmptyRequest` | `VolumeList` | Device hints are hints, not speeds |
 | | `volumes.declare_tier` | `DeclareTierRequest` | `DeclareTierResult` | Human preference (append-only) |
 | Scan | `scan.start` | `ScanStartRequest` | `JobResult` | `full` or `refresh`; optional budget |
-| | `scan.cancel` | `JobRefRequest` | `JobResult` | Acknowledged at once as `cancel_requested` |
+| | `scan.cancel` | `JobRefRequest` | `JobResult` | `cancel_requested` when accepted; current job state after a plain scan's final publication is admitted (section 7) |
 | | `jobs.get` / `jobs.list` | `JobRefRequest` / `JobListRequest` | `JobResult` / `JobList` | |
 | Tree | `tree.slice` | `TreeSliceRequest` | `TreeSlice` | Bounded tree; `aggregate_state` says consistent or provisional (section 8) |
 | | `tree.children` | `TreeChildrenRequest` | `EntryPage` | Keyset paging by size; name/modified sorts limited to 10,000 children |
@@ -635,10 +635,15 @@ sequenceDiagram
     or leaves a tombstone, then publishes ancestor sums with the repair rollup. Whether
     `FSCTL_READ_UNPRIVILEGED_USN_JOURNAL` gives non-elevated catch-up is a **hypothesis** for the LW-007 spike.
 
-**Cancellation.** `scan.cancel` is acknowledged within 250 ms (`cancel_requested`). Stopping is separate: workers
-stop at the next chunk or directory; a worker blocked more than 500 ms inside a synchronous directory call after
-cancellation gets `CancelSynchronousIo` on its own thread; handles are closed only after the call returns. The
-target "stopped within 2 s" applies to local fixed volumes and is measured; on a hung device the job stays
+**Cancellation.** The acknowledgement target for `scan.cancel` is 250 ms. For a plain scan, an
+accepted cancellation before final publication admission returns `cancel_requested`; after admission,
+the request returns the current job state. Admission is a decision to finish, not proof of a successful
+write: the pending sink I/O completes or fails and the job reports that outcome. Watched scans retain
+their separate reconciliation boundary; an accepted cancellation after sink completion still prevents
+a complete job outcome. Stopping is separate for accepted requests: workers stop at the next chunk or
+directory; a worker blocked more than 500 ms inside a synchronous directory call after cancellation gets
+`CancelSynchronousIo` on its own thread; handles are closed only after the call returns. The target
+"stopped within 2 s" applies to local fixed volumes and is measured; on a hung device the job stays
 `cancel_requested` ("stopping") until the call returns, and the UI says so.
 
 **Memory bounds.** Arena 40 B per directory (`max_dirs` default 4M); chunk byte semaphore 64 MiB; worker buffers
@@ -978,7 +983,7 @@ separately; state on G: unless stated.
 | File ID reused for a new object | Continuity key includes creation time: old labels become `unresolved`, not reattached |
 | `catalog.db` corrupt | Renamed aside; roots recreated from active grants in `state.db`; rescans rebuild; no grant is minted |
 | `state.db` corrupt | That dataset class refuses to start; owner restores a `VACUUM INTO` backup |
-| Revocation during a scan | Run cancelled; writer drops further messages for the grant |
+| Revocation during a scan | Grant revocation commits first, hides the root's catalogue observations, and rejects later writer messages. Revocation cancels any nonterminal scan, even after a plain scan's final publication admission (ADR-V3-22); ordinary `scan.cancel` cannot. A historical job outcome never restores the revoked grant |
 | Volume offline | `device_offline`; volume `online: false`; existing rows kept, coverage `stale` |
 | Writer slower than enumeration | Byte semaphore backpressure; `scan_throttled`; memory bounded |
 | UI slow to read events | Per-subscriber overflow: `stream.lagged`; engine never blocks |
