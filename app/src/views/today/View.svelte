@@ -9,10 +9,11 @@
   import { volumes } from '../../lib/stores/volumes.svelte';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
   import type { AlertReport, Job, ReclaimPlan, Root } from '../../lib/contracts.gen';
-  import { missingSources, needsEmptyText, needsYou, reclaimTargets, SECTION_TITLES, unevaluatedAlerts, unevaluatedLine, unplacedRoots, volumeRows, type Sources } from './model';
+  import { linkName, missingSources, moreViews, needsEmptyText, needsYou, reclaimTargets, SECTION_TITLES, unevaluatedAlerts, unevaluatedLine, unplacedRoots, volumeRows, type Sources } from './model';
 
   const JOBS_LIMIT = 100;
-  const SHOWN = 5; // per section; the rest is one link to the view that lists them all
+  const SHOWN = 5; // per section; the rest is a link to each view that lists them
+  const REFRESH_MS = 250;
 
   let roots = $state<Root[] | null>(null);
   let alerts = $state<AlertReport | null>(null);
@@ -26,6 +27,8 @@
   let ticket = 0;
   let reclaimTicket = 0;
   let alive = true;
+  let started = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
 
   async function load(): Promise<void> {
     const c = session.client;
@@ -44,22 +47,31 @@
 
   async function loadReclaim(ids: string[]): Promise<void> {
     const c = session.client;
+    const epoch = session.connectionEpoch; // the client object is constant across reconnects, the epoch is not
     const mine = ++reclaimTicket;
     if (!c || !ids.length) { reclaim = new Map(); failedReclaim = 0; return; }
     const settled = await Promise.allSettled(ids.map((id) => c.call('reclaim.plan', { volume_id: id, limit: 20 })));
-    if (!alive || mine !== reclaimTicket || c !== session.client) return;
-    reclaim = new Map(settled.map((s, i) => [ids[i]!, s.status === 'fulfilled' ? s.value.result : null] as const));
+    if (!alive || mine !== reclaimTicket || c !== session.client || epoch !== session.connectionEpoch) return;
+    reclaim =new Map(settled.map((s, i) => [ids[i]!, s.status === 'fulfilled' ? s.value.result : null] as const));
     failedReclaim = settled.filter((s) => s.status === 'rejected').length;
     for (const s of settled) if (s.status === 'rejected') problems = [...problems, session.handle(s.reason)];
   }
 
-  onMount(() => () => { alive = false; ticket++; reclaimTicket++; });
+  // The first read is immediate; later triggers (a scan end fires both scans.settled and job.state) coalesce into one read.
+  function refresh(): void {
+    if (!started) { started = true; void load(); return; }
+    clearTimeout(timer);
+    timer = setTimeout(() => void load(), REFRESH_MS);
+  }
+  function onEvent(ev: { event: string }): void { if (ev.event === 'job.state') refresh(); }
+
+  onMount(() => () => { alive = false; ticket++; reclaimTicket++; clearTimeout(timer); });
   $effect(() => {
     void session.epoch;
     void scans.settled;
-    untrack(() => void load());
+    untrack(refresh);
   });
-  $effect(() => session.listen((ev) => { if (ev.event === 'job.state') void load(); }));
+  $effect(() => session.listen(onEvent));
   $effect(() => {
     const t = setInterval(() => { now = Date.now(); }, 30_000); // ages ("5 min ago") move without a reload
     return () => clearInterval(t);
@@ -85,7 +97,6 @@
   const unplaced = $derived(volumes.items && roots ? unplacedRoots(volumes.items, roots) : 0);
   const jobsCut = $derived(jobs !== null && jobs.length >= JOBS_LIMIT);
   const percent = (f: number) => `${(f * 100).toFixed(0)}%`;
-  const linkName = (view: string) => (view === 'health' ? 'Grants & health' : view);
 </script>
 
 <h1>Today</h1>
@@ -129,7 +140,7 @@
                 </th>
                 <td>
                   <div class="meter" class:blank={v.used === null} role="img"
-                    aria-label={v.used === null ? 'Fill level unknown' : `${percent(v.used)} full`}>
+                    aria-label={!v.online ? 'Offline: no current fill level' : v.used === null ? 'Fill level unknown' : `${percent(v.used)} full`}>
                     {#if v.used !== null}<div class="used" class:tight={v.used > 0.9} style={`width:${(v.used * 100).toFixed(1)}%`}></div>{/if}
                   </div>
                   <span class="num" class:unknown={v.used === null}>{v.space}</span>
@@ -172,7 +183,8 @@
           {/each}
         </ul>
         {#if s.items.length > SHOWN}
-          <p class="muted small">and {s.items.length - SHOWN} more: <a href={`#/${s.items[0]!.view}`}>see all in {linkName(s.items[0]!.view)}</a></p>
+          <p class="muted small">and {s.items.length - SHOWN} more: see all in
+            {#each moreViews(s.items, SHOWN) as view, n (view)}{n ? ', ' : ''}<a href={`#/${view}`}>{linkName(view)}</a>{/each}</p>
         {/if}
       {/each}
     {/if}
