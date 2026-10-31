@@ -1,5 +1,7 @@
 <script module lang="ts">
   export const meta = { title: 'Explorer', order: 30 };
+  // Remember only that a disconnected scoped search needs a new choice, never a session-sealed ID.
+  let scopedSearchOpen = false;
 </script>
 
 <script lang="ts">
@@ -18,7 +20,7 @@
   import FolderInsight from '../../lib/ui/FolderInsight.svelte';
   import type { CopyItem } from '../../lib/stores/copy.svelte';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
-  import type { Basis, EntryPage, EntryRow, NodeId, NodeDetail, SearchHit, SearchPage } from '../../lib/contracts.gen';
+  import type { Basis, EntryPage, EntryRow, NodeId, NodeDetail, Root, SearchHit, SearchPage } from '../../lib/contracts.gen';
 
   type Sort = 'size_desc' | 'name_asc' | 'modified_desc';
   interface Recovery { lost: string; saved: Crumb[]; focus: HTMLElement | null }
@@ -58,7 +60,17 @@
   let kind = $state<'any' | 'file' | 'dir'>('any');
   let extension = $state('');
   let minBytes = $state('');
-  let searching = $state(false);
+  let searching = $state(scopedSearchOpen);
+  let rootChoices = $state<Root[]>([]);
+  let rootChoice = $state<string | null>(scopedSearchOpen ? null : '');
+  let submittedRoot = $state<Root | null>(null);
+  let scopeBlocked = $state(scopedSearchOpen);
+  let rootsLoading = $state(false);
+  let rootProblem = $state('');
+  let rootsRequest = 0;
+  let rootsAbort: AbortController | null = null;
+  const mountedConnection = session.connectionEpoch;
+  let reconnectScopePending = scopedSearchOpen;
   /** The request of the search that is showing, frozen when it started so Load more repeats it (relative times included). */
   let sent: FindRequest | null = null;
   /** The box text of the search that is showing. */
@@ -102,7 +114,7 @@
   async function fetchPage(cursor: string | null, signal: AbortSignal): Promise<{ result: Page }> {
     const c = session.client!;
     if (searching) {
-      const { result } = await c.call('search.query', { root_id: null, ...sent!, limit: PAGE, cursor }, { signal });
+      const { result } = await c.call('search.query', { root_id: submittedRoot?.root_id ?? null, ...sent!, limit: PAGE, cursor }, { signal });
       // No generation: a search cursor is a keyset over the live index, so a root's generation moving
       // between pages (every watcher run) is no reason to restart the results from the top.
       return { result: { generation: null, items: result.hits.map((h) => h.row), next_cursor: result.next_cursor, total: null, budget_hit: result.budget_hit, search: result } };
@@ -165,13 +177,15 @@
   }
 
   async function show(append = false, restarted = false, recovery?: Recovery): Promise<void> {
-    if (!session.client || (!searching && !here)) return;
+    if (!session.client || (!searching && !here) || (searching && (scopeBlocked || (submittedRoot && rootsLoading)))) return;
     if (!append) {
       inspection++; inspectAbort?.abort(); detail = null; inspectError = '';
       abort?.abort();
       gen++;
+      if (searching) clearResults();
     }
     const mine = gen;
+    const epoch = session.epoch, connection = session.connectionEpoch;
     const ctl = (abort = new AbortController());
     const hadFocus = append && document.activeElement === moreEl; // Load more goes away after the last page
     const at = document.activeElement;
@@ -189,7 +203,7 @@
     };
     try {
       const { result: page } = await fetchPage(append ? next : null, ctl.signal);
-      if (mine !== gen) return;
+      if (mine !== gen || epoch !== session.epoch || connection !== session.connectionEpoch) return;
       if (append && pageGen !== null && page.generation !== null && page.generation !== pageGen) {
         return await restart('The listing changed while you were paging, so it starts again from the top.');
       }
@@ -219,7 +233,7 @@
         if (at === moreEl || at === document.body) (next ? moreEl : countEl)?.focus();
       }
     } catch (e) {
-      if (mine !== gen) return;
+      if (mine !== gen || epoch !== session.epoch || connection !== session.connectionEpoch) return;
       if (e instanceof LoomwardError && e.code === 'stale_generation' && !restarted) {
         return await restart('The listing changed under the cursor, so it starts again from the top.');
       }
@@ -262,6 +276,11 @@
 
   /** Freeze what the box says as the request to run. False (nothing is started) when it would match the whole catalogue. */
   function commit(): boolean {
+    const chosen = rootChoices.find(r => r.root_id === rootChoice);
+    if (rootChoice === null || (rootChoice && (rootsLoading || !chosen))) {
+      notice = 'Choose an available search scope, then search again.';
+      return false;
+    }
     // Re-plan with the current clock: `plan` is only re-derived when the box or controls change,
     // so a resubmitted `modified:<1h` would otherwise keep the earlier "now".
     const fresh = planFind(query, { extension, kind, minBytes }, Date.now());
@@ -270,6 +289,9 @@
       return false;
     }
     sent = fresh.request;
+    submittedRoot = chosen ?? null;
+    scopeBlocked = false;
+    scopedSearchOpen = !!submittedRoot;
     shown = fresh;
     ran = query.trim();
     searching = true;
@@ -289,6 +311,9 @@
 
   function clearSearch() {
     searching = false;
+    scopedSearchOpen = false;
+    scopeBlocked = false; submittedRoot = null;
+    gen++; abort?.abort(); clearResults(); busy = false;
     query = '';
     extension = '';
     void show();
@@ -298,6 +323,7 @@
   function go(to: Crumb[]) {
     trail = to;
     searching = false;
+    scopedSearchOpen = false;
     query = '';
     void show();
   }
@@ -356,13 +382,55 @@
     }
   }
 
-  /** Keep the user's place (refreshing starting points beside it), or find the starting points. */
-  async function reload(): Promise<void> {
-    if (trail.length || searching) await Promise.all([loadStarts(undefined, true), show()]);
-    else await loadStarts();
+  function clearResults() {
+    rows = []; found = new Map(); scope = null; total = null; next = null; budgetHit = false; pageGen = null;
+    inspection++; inspectAbort?.abort(); detail = null; inspectError = '';
   }
 
-  $effect(() => () => { startsRequest++; startsAbort?.abort(); inspection++; inspectAbort?.abort(); abort?.abort(); });
+  async function loadRoots(): Promise<void> {
+    const c = session.client!;
+    const epoch = session.epoch;
+    const mine = ++rootsRequest;
+    rootsAbort?.abort();
+    const ctl = rootsAbort = new AbortController();
+    rootsLoading = true;
+    rootProblem = '';
+    try {
+      const { result } = await c.call('roots.list', {}, { signal: ctl.signal });
+      if (mine !== rootsRequest || c !== session.client || epoch !== session.epoch) return;
+      rootChoices = result.roots.filter(r => r.grant_state === 'active');
+    } catch (e) {
+      if (mine !== rootsRequest || c !== session.client || epoch !== session.epoch) return;
+      rootChoices = [];
+      rootProblem = session.handle(e);
+    } finally {
+      if (mine === rootsRequest) rootsLoading = false;
+    }
+    if (rootChoice && !rootChoices.some(r => r.root_id === rootChoice)) rootChoice = null;
+    if (searching && submittedRoot && !rootChoices.some(r => r.root_id === submittedRoot?.root_id)) {
+      gen++; abort?.abort(); clearResults(); busy = false;
+      submittedRoot = null;
+      scopeBlocked = true;
+    }
+  }
+
+  /** Validate search scope before refreshing results; the Atlas sample is only for folder navigation. */
+  async function reload(): Promise<void> {
+    const mine = ++gen;
+    abort?.abort();
+    if (searching) { clearResults(); busy = true; }
+    const starting = loadStarts(undefined, !!(trail.length || searching));
+    const [loaded] = await Promise.all([starting, loadRoots()]);
+    if (mine === gen && (trail.length || searching)) {
+      if (!loaded || (searching && scopeBlocked)) busy = false;
+      else await show();
+    }
+  }
+
+  $effect(() => () => {
+    gen++; rootsRequest++; rootsAbort?.abort(); startsRequest++; startsAbort?.abort(); inspection++; inspectAbort?.abort(); abort?.abort();
+    if (session.state === 'connected' && mountedConnection === session.connectionEpoch) scopedSearchOpen = false;
+  });
 
   // The session starts, or the engine says data may be stale (reconnect, tree.invalidated, roots.changed):
   // keep the user's place and ask again; the first time, find the starting points.
@@ -387,8 +455,9 @@
       if (linked && linked !== appliedQ) {
         appliedQ = linked;
         query = linked.slice(0, 256);
-        commit();
+        if (!reconnectScopePending) { rootChoice = ''; commit(); }
       }
+      reconnectScopePending = false;
       const node = params.get('node'), observed = params.get('generation');
       if (!node) appliedNode = null;
       void reload().then(() => {
@@ -421,6 +490,15 @@
     <label class="field stack grow"><span class="lbl">Search names</span>
       <input type="search" placeholder="Search names" bind:value={query} bind:this={searchEl} maxlength="256" onkeydown={searchKeys} aria-describedby="find-hint find-notes" />
     </label>
+    <div class="field stack search-root"><label class="lbl" for="search-root">Search scope</label>
+      <select id="search-root" bind:value={rootChoice} aria-describedby="root-scope-note">
+        {#if rootChoice === null}<option value={null} disabled>Choose a search scope</option>{/if}
+        <option value="">All granted roots</option>
+        {#each rootChoices as root (root.root_id)}
+          <option value={root.root_id}>{escapedName(root.display_path.text)}{root.display_path.truncated ? ' (truncated)' : ''}</option>
+        {/each}
+      </select>
+    </div>
     <label class="field stack"><span class="lbl">Extension</span>
       <input type="text" placeholder="ext" bind:value={extension} maxlength="32" size="6" />
     </label>
@@ -433,6 +511,9 @@
     <button class="btn" type="submit" disabled={!query.trim() && !extension.trim()}>Search</button>
     {#if searching}<button class="btn" type="button" onclick={clearSearch}>Clear search</button>{/if}
   </form>
+  <p id="root-scope-note" class="muted small hint" role="status">
+    {#if rootsLoading}Refreshing available search scopes…{:else if rootProblem}Root choices could not be refreshed: {rootProblem}{:else if rootChoice === null}The previous scope is unavailable. Choose a scope explicitly to search again.{:else}Scope changes apply when you search. Cleanup searches use the chosen scope.{/if}
+  </p>
 
   <p id="find-hint" class="muted small hint">Filters in the box: <code>ext:pdf</code> <code>size:&gt;100mb</code> <code>modified:&lt;30d</code> (newer) <code>modified:&gt;1y</code> (older) <code>kind:dir</code>. The Extension, Kind and Size boxes fill in only what the query leaves out.</p>
   <div class="bar" role="group" aria-label="Cleanup searches">
@@ -470,6 +551,11 @@
 
   {#if searching}
     <p class="where">Search results {#if ran}for <q><VisibleName name={ran} /></q>{/if}</p>
+    <p class="where" aria-label="Applied search scope">
+      {#if scopeBlocked}Search paused: choose an available scope and search again.
+      {:else if submittedRoot}Scope: <VisibleName name={submittedRoot.display_path.text} />{#if submittedRoot.display_path.truncated} <span class="tag warn">truncated</span>{/if}
+      {:else}Scope: All granted roots{/if}
+    </p>
     {#if shown?.chips.length}
       <ul class="chips" aria-label="Filters applied to these results">{#each shown.chips as c, i (i)}<li class="chip">{c}</li>{/each}</ul>
     {/if}
@@ -543,7 +629,7 @@
             <td><button class="btn" type="button" data-inspect onkeydown={rowKeys} aria-label={`Inspect ${escapedName(r.name)}`} onclick={() => void inspect(r.node_id)}>Inspect</button></td>
           </tr>
         {:else}
-          <tr><td colspan="8" class="muted">{busy ? 'Loading' : error ? 'Nothing is shown because the last request failed.' : searching && budgetHit ? 'Nothing found yet: the engine stopped at its work budget before finding a match.' : searching && scope?.partial ? 'No matches in what is catalogued so far; coverage is partial, so this is not proof of absence.' : searching ? 'No matches.' : 'Nothing to show.'}</td></tr>
+          <tr><td colspan="8" class="muted">{searching && scopeBlocked ? 'No results are shown until you choose an available scope and search again.' : busy ? 'Loading' : error ? 'Nothing is shown because the last request failed.' : searching && budgetHit ? 'Nothing found yet: the engine stopped at its work budget before finding a match.' : searching && scope?.partial ? 'No matches in what is catalogued so far; coverage is partial, so this is not proof of absence.' : searching ? 'No matches.' : 'Nothing to show.'}</td></tr>
         {/each}
       </tbody>
     </table>
@@ -579,6 +665,8 @@
   .form { align-items: flex-end; }
   .grow { flex: 1 1 14rem; }
   .grow input { width: 100%; }
+  .search-root { flex: 1 1 14rem; min-width: 0; max-width: 100%; }
+  .search-root select { width: 100%; max-width: 100%; }
   .starts { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
   .where { margin: 0 0 8px; }
   .hint { margin: 0 0 8px; }

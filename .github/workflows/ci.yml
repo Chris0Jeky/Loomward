@@ -140,4 +140,13 @@ jobs:
         run: python scripts/test_app.py --live-serve
         env:
           RUSTUP_TOOLCHAIN: stable
+      - name: Retain synthetic Explorer scope captures
+        if: always() && runner.os == 'Linux'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: search-root-browser-${{ github.sha }}
+          path: .loomward/search-root-*.png
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
 # Hosted CI first ran green on 2026-10-09 (PR #2). Actions are pinned to full commit SHAs.
