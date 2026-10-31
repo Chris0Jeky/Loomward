@@ -2,13 +2,13 @@
   export const meta = { title: 'Backups', order: 65 };
 </script>
 <script lang="ts">
-  import { tick, untrack } from 'svelte';
+  import { onDestroy, tick, untrack } from 'svelte';
   import { session } from '../../lib/stores/session.svelte';
   import { formatTime } from '../../lib/format/time';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
   import { volumeMarkers } from '../../lib/format/volume';
   import type { BackupEvidence, Volume } from '../../lib/contracts.gen';
-  import { conditions, coverage, formatAge, IMPORT_REFUSAL_WORDS, LABEL, observations, parseRequired, SNAPSHOT, topology } from './model';
+  import { conditions, coverage, formatAge, formatRequired, IMPORT_REFUSAL_WORDS, LABEL, observations, parseRequired, SNAPSHOT, topology } from './model';
 
   const PROOF: Record<string, string> = {
     repository_and_snapshot_binding: 'the restore is bound to this repository and snapshot',
@@ -35,13 +35,19 @@
   let integrity = $state(true);
   let importing = $state(false);
   let forgetting = $state('');
+  let updating = $state('');
   // The import field the shown form error belongs to: it is marked invalid and described by the message (WCAG 3.3.1).
   let invalidField = $state<'' | 'label' | 'snapshot' | 'receipt'>('');
   let heading = $state<HTMLElement>();
+  let importHeading = $state<HTMLElement>();
   let generation = 0;
+  let alive = true;
+  let knownConnection = -1;
+  let knownClient: typeof session.client = null;
 
   const desktop = $derived(session.info?.adapter === 'tauri');
   const personal = $derived(session.datasetClass === 'personal');
+  const busy = $derived(loading || importing || !!forgetting);
   const parsed = $derived(parseRequired(wanted));
   const formError = $derived(
     !LABEL.test(label) ? 'Use a label of 1–64 letters, digits, dots, dashes or underscores.'
@@ -49,31 +55,67 @@
       : parsed.errors[0] ?? '',
   );
 
+  function current(c: typeof session.client, epoch: number): boolean {
+    return alive && c === session.client && epoch === session.connectionEpoch;
+  }
+
+  function resetForm(): void {
+    updating = ''; label = ''; snapshot = ''; source = ''; target = ''; wanted = ''; integrity = true;
+    invalidField = '';
+  }
+
+  async function beginUpdate(e: BackupEvidence): Promise<void> {
+    if (busy || !alive || !desktop || !personal) return;
+    error = ''; notice = ''; invalidField = '';
+    const text = formatRequired(e.required_versions);
+    if (text === null || !LABEL.test(e.repository_label) || !SNAPSHOT.test(e.snapshot_id)) {
+      error = 'This record cannot be copied into the form without changing its label, snapshot, filenames or hashes. The stored evidence was not changed.';
+      return;
+    }
+    resetForm();
+    updating = e.repository_label; label = e.repository_label; snapshot = e.snapshot_id; wanted = text;
+    const c = session.client, epoch = session.connectionEpoch;
+    await tick();
+    if (current(c, epoch)) importHeading?.focus();
+  }
+
+  async function newImport(): Promise<void> {
+    if (busy || !alive || !desktop || !personal) return;
+    resetForm(); error = ''; notice = '';
+    const c = session.client, epoch = session.connectionEpoch;
+    await tick();
+    if (current(c, epoch)) importHeading?.focus();
+  }
+
   async function load(): Promise<void> {
-    if (!session.client) return;
+    const c = session.client, epoch = session.connectionEpoch;
+    if (!c || !alive) return;
     const mine = ++generation;
     loading = true; error = ''; invalidField = '';
     try {
-      const { result } = await session.client.call('backups.list', {});
-      if (mine !== generation) return;
+      const { result } = await c.call('backups.list', {});
+      if (mine !== generation || !current(c, epoch)) return;
       evidence = result.evidence;
+      if (updating && !evidence.some((e) => e.repository_label === updating)) resetForm();
+      if (desktop && personal) {
+        try {
+          const { result } = await c.call('volumes.list', {});
+          if (mine !== generation || !current(c, epoch)) return;
+          volumes = result.volumes;
+        } catch (e) {
+          if (mine !== generation || !current(c, epoch)) return;
+          error = session.handle(e); volumes = [];
+        }
+      } else volumes = [];
     } catch (e) {
-      if (mine !== generation) return;
-      error = session.handle(e); evidence = [];
-    } finally { if (mine === generation) loading = false; }
-    if (desktop && personal) {
-      try {
-        volumes = (await session.client.call('volumes.list', {})).result.volumes;
-      } catch (e) {
-        if (mine !== generation) return;
-        error = session.handle(e);
-        volumes = [];
-      }
-    }
+      if (mine !== generation || !current(c, epoch)) return;
+      error = session.handle(e); evidence = []; volumes = [];
+    } finally { if (mine === generation && current(c, epoch)) loading = false; }
   }
 
   async function importReceipt(): Promise<void> {
-    if (!session.client || importing) return;
+    const c = session.client, epoch = session.connectionEpoch;
+    if (!c || busy || !alive || !desktop || !personal) return;
     notice = ''; error = ''; invalidField = '';
     if (formError) {
       error = formError;
@@ -83,34 +125,46 @@
     importing = true;
     try {
       // The dialog waits on the owner: Rust opens it, reads the file and keeps the path.
-      const { result } = await session.client.call('backups.import', {
-        repository_label: label, snapshot_id: snapshot, source_volume_id: source || null, target_volume_id: target || null,
+      const { result } = await c.call('backups.import', {
+        repository_label: updating || label, snapshot_id: snapshot, source_volume_id: source || null, target_volume_id: target || null,
         required: parsed.required, integrity_check: integrity,
       }, { deadlineMs: 60000 });
+      if (!current(c, epoch)) return;
       if (result.outcome === 'cancelled_by_user') notice = 'Import cancelled. Nothing was stored.';
       else if (result.outcome === 'refused') error = result.refusal ? IMPORT_REFUSAL_WORDS[result.refusal] : 'The import was refused.';
       else { notice = 'Evidence imported. Only the normalised evidence was stored; the file was read, not kept.'; await load(); }
-    } catch (e) { error = session.handle(e); }
-    finally { importing = false; }
+    } catch (e) { if (current(c, epoch)) error = session.handle(e); }
+    finally { if (current(c, epoch)) importing = false; }
   }
 
   async function forget(e: BackupEvidence): Promise<void> {
-    if (!session.client || forgetting) return;
+    const c = session.client, epoch = session.connectionEpoch;
+    if (!c || busy || !alive) return;
     forgetting = e.evidence_id; notice = ''; error = ''; invalidField = '';
     try {
-      await session.client.call('backups.forget', { evidence_id: e.evidence_id });
+      await c.call('backups.forget', { evidence_id: e.evidence_id });
+      if (!current(c, epoch)) return;
       await load();
+      if (!current(c, epoch)) return;
       notice = `Forgot the evidence for ${e.repository_label}. No backup or file was changed.`;
-      await tick(); heading?.focus();
-    } catch (err) { error = session.handle(err); }
-    finally { forgetting = ''; }
+      await tick();
+      if (current(c, epoch)) heading?.focus();
+    } catch (err) { if (current(c, epoch)) error = session.handle(err); }
+    finally { if (current(c, epoch)) forgetting = ''; }
   }
 
   $effect(() => {
     session.epoch;
-    untrack(() => void load());
+    untrack(() => {
+      if (knownClient !== session.client || knownConnection !== session.connectionEpoch) {
+        resetForm(); evidence = []; volumes = []; error = ''; notice = ''; loading = false; importing = false; forgetting = '';
+        knownClient = session.client; knownConnection = session.connectionEpoch;
+      }
+      void load();
+    });
     return () => { generation++; };
   });
+  onDestroy(() => { alive = false; generation++; resetForm(); });
 </script>
 
 <h1 tabindex="-1" bind:this={heading}>Backups</h1>
@@ -120,26 +174,34 @@
 <p id="backup-error" class="live bad" class:has={!!error} role="alert">{error}</p>
 
 <section class="panel" aria-labelledby="backup-import">
-  <h2 id="backup-import">Import a receipt</h2>
+  <h2 id="backup-import" tabindex="-1" bind:this={importHeading}>{updating ? 'Update receipt' : 'Import a receipt'}</h2>
   {#if !desktop || !personal}
     <p class="muted">Importing needs the desktop app in a personal session: only it can open a file dialog that keeps the path in Rust. This session can read and forget stored evidence.</p>
   {:else}
+    {#if updating}
+      <p id="backup-replacement">A successful import replaces the stored evidence for <strong>{updating}</strong>. Cancelling or a refused import keeps the existing record. Importing an old receipt does not make its observation fresh.</p>
+      <p id="backup-pairing" class="muted">Volume pairing is not stored with the evidence. Declare the source and backup volumes again, or leave them Not declared.</p>
+      <button class="btn" type="button" aria-disabled={busy} onclick={() => void newImport()}>Import a new receipt</button>
+    {/if}
     <p class="muted">Run <code>restic snapshots &lt;id&gt; --json</code> (and optionally <code>restic check --json</code>) yourself, save the output, then pick the files. Loomward reads at most 256 KiB of each, read only, and keeps only the normalised evidence.</p>
     <form class="controls form" onsubmit={(e) => { e.preventDefault(); void importReceipt(); }}>
-      <label class="lw-field"><span class="lbl">Repository label</span> <input type="text" bind:value={label} maxlength="64" autocomplete="off" aria-invalid={invalidField === 'label' ? 'true' : undefined} aria-describedby={invalidField === 'label' ? 'backup-error' : undefined} /></label>
+      <fieldset class="form-fields" disabled={importing || !!forgetting}>
+      <legend class="sr-only">Receipt details</legend>
+      <label class="lw-field"><span class="lbl">Repository label</span> <input type="text" bind:value={label} readonly={!!updating} maxlength="64" autocomplete="off" aria-invalid={invalidField === 'label' ? 'true' : undefined} aria-describedby={invalidField === 'label' ? 'backup-error' : updating ? 'backup-replacement' : undefined} /></label>
       <label class="lw-field wide"><span class="lbl">Snapshot ID</span> <input type="text" bind:value={snapshot} maxlength="64" autocomplete="off" spellcheck="false" aria-invalid={invalidField === 'snapshot' ? 'true' : undefined} aria-describedby={invalidField === 'snapshot' ? 'backup-error' : undefined} /></label>
-      <label class="lw-field"><span class="lbl">Source volume</span> <select bind:value={source}>
+      <label class="lw-field"><span class="lbl">Source volume</span> <select bind:value={source} aria-describedby={updating ? 'backup-pairing' : undefined}>
         <option value="">Not declared</option>
         {#each volumes as v (v.volume_id)}<option value={v.volume_id}>{[v.display_name, ...volumeMarkers(v)].join(' · ')}</option>{/each}
       </select></label>
-      <label class="lw-field"><span class="lbl">Backup volume</span> <select bind:value={target}>
+      <label class="lw-field"><span class="lbl">Backup volume</span> <select bind:value={target} aria-describedby={updating ? 'backup-pairing' : undefined}>
         <option value="">Not declared (remote or unknown)</option>
         {#each volumes as v (v.volume_id)}<option value={v.volume_id}>{[v.display_name, ...volumeMarkers(v)].join(' · ')}</option>{/each}
       </select></label>
       <label class="lw-field wide"><span class="lbl">Files you need back: one per line, relative name then SHA-256</span>
         <textarea bind:value={wanted} rows="3" spellcheck="false" aria-invalid={invalidField === 'receipt' ? 'true' : undefined} aria-describedby={invalidField === 'receipt' ? 'backup-error' : undefined}></textarea></label>
       <label class="check"><input type="checkbox" bind:checked={integrity} /> Also pick a <code>check --json</code> output</label>
-      <button class="btn primary" type="submit" aria-disabled={importing} onclick={(e) => { if (importing) e.preventDefault(); }}>{importing ? 'Waiting for the file dialog' : 'Choose receipt file'}</button>
+      </fieldset>
+      <button class="btn primary" type="submit" aria-disabled={busy} onclick={(e) => { if (busy) e.preventDefault(); }}>{importing ? 'Waiting for the file dialog' : 'Choose receipt file'}</button>
     </form>
   {/if}
 </section>
@@ -182,7 +244,8 @@
       <p class="muted">It shows recovery only when {e.proposed_drill.proofs.map((p) => PROOF[p] ?? p).join('; ')}.</p>
     </details>
     <div class="foot">
-      <button class="btn" type="button" aria-label={`Forget the evidence for ${e.repository_label}`} aria-disabled={!!forgetting} onclick={() => void forget(e)}>Forget record</button>
+      {#if desktop && personal}<button class="btn" type="button" aria-label={`Update receipt for ${e.repository_label}`} aria-disabled={busy} onclick={() => void beginUpdate(e)}>Update receipt</button>{/if}
+      <button class="btn" type="button" aria-label={`Forget the evidence for ${e.repository_label}`} aria-disabled={busy} onclick={() => void forget(e)}>Forget record</button>
       <span class="muted">Removes Loomward’s record only.</span>
     </div>
   </section>
@@ -192,6 +255,7 @@
 
 <style>
   .form { flex-wrap: wrap; align-items: end; }
+  .form-fields { display: flex; flex-wrap: wrap; align-items: end; gap: var(--sp-3); min-width: 0; width: 100%; border: 0; padding: 0; margin: 0; }
   .wide { flex: 1 1 22rem; }
   input, select, textarea { max-width: 100%; }
   textarea { width: 100%; font-family: var(--font-mono); }
@@ -204,5 +268,5 @@
   .drill summary { cursor: pointer; min-height: 24px; }
   .foot { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-3); margin-top: var(--sp-3); }
   /* the heading takes focus after Forget record: keyboard users get the focus ring (2.4.7) */
-  h1:focus:not(:focus-visible) { outline: none; }
+  h1:focus:not(:focus-visible), h2:focus:not(:focus-visible) { outline: none; }
 </style>

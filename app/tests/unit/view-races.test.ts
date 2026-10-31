@@ -13,6 +13,9 @@ import { formatBytes } from '../../src/lib/format/bytes';
 import { planFind } from '../../src/lib/search/find';
 import rootList from '../../../contracts/v3/examples/commands/roots.list.result.json';
 import type { Root } from '../../src/lib/contracts.gen';
+import type { BackupEvidence } from '../../src/lib/contracts.gen';
+import * as backupModel from '../../src/views/backups/model';
+import backupList from '../../../contracts/v3/examples/commands/backups.list.result.json';
 
 /** Run the real instance-script functions/effect without a DOM or canvas. State is supplied by
  * the test; imports and rendering are excluded, so deferred replies control the interleaving. */
@@ -67,6 +70,178 @@ const deferred = <T>() => {
   const promise = new Promise<T>((r, fail) => { resolve = r; reject = fail; });
   return { promise, resolve, reject };
 };
+
+function backups(call: ReturnType<typeof vi.fn>) {
+  const state = {
+    ...backupModel, untrack, tick: async () => {},
+    session: { client: { call }, epoch: 0, connectionEpoch: 0, info: { adapter: 'tauri' }, datasetClass: 'personal', handle: vi.fn((e: Error) => e.message) },
+    alive: true, generation: 0, knownConnection: -1, knownClient: null as unknown,
+    evidence: structuredClone(backupList.evidence) as BackupEvidence[], volumes: [] as unknown[],
+    loading: false, error: '', notice: '', label: 'synthetic-nas', snapshot: '1'.repeat(64),
+    source: '', target: '', wanted: `fixture/ledger.ods sha256:${'a'.repeat(64)}`, integrity: true,
+    importing: false, forgetting: '', updating: '', invalidField: '', heading: { focus: vi.fn() }, importHeading: { focus: vi.fn() },
+    get desktop(): boolean { return this.session.info.adapter === 'tauri'; },
+    get personal(): boolean { return this.session.datasetClass === 'personal'; },
+    get busy(): boolean { return this.loading || this.importing || !!this.forgetting; },
+    get parsed(): ReturnType<typeof backupModel.parseRequired> { return backupModel.parseRequired(this.wanted); },
+    get formError(): string { return !backupModel.LABEL.test(this.label) ? 'Invalid label' : !backupModel.SNAPSHOT.test(this.snapshot) ? 'Invalid snapshot' : this.parsed.errors[0] ?? ''; },
+  };
+  const code = viewScript('backups', state, 'session.epoch') as ReturnType<typeof viewScript> & {
+    importReceipt(): Promise<void>;
+    forget(e: BackupEvidence): Promise<void>;
+    beginUpdate(e: BackupEvidence): Promise<void>;
+    newImport(): Promise<void>;
+  };
+  return { state, code };
+}
+
+describe('Backups session boundaries', () => {
+  it('prefills exact stored values without a call, clears volume choices, and exits to a blank new import', async () => {
+    const call = vi.fn();
+    const { state, code } = backups(call);
+    const record = state.evidence[0]!;
+    const original = structuredClone(state.evidence);
+    state.source = 'vo_previous_source'; state.target = 'vo_previous_target'; state.integrity = false;
+    await code.beginUpdate(record);
+    expect(state.label).toBe(record.repository_label);
+    expect(state.updating).toBe(record.repository_label);
+    expect(state.snapshot).toBe(record.snapshot_id);
+    expect(state.parsed).toEqual({ required: record.required_versions, errors: [] });
+    expect([state.source, state.target]).toEqual(['', '']);
+    expect(state.integrity).toBe(true);
+    expect(state.importHeading.focus).toHaveBeenCalledOnce();
+    expect(state.evidence).toEqual(original);
+    expect(call).not.toHaveBeenCalled();
+    await code.newImport();
+    expect([state.updating, state.label, state.snapshot, state.wanted, state.source, state.target]).toEqual(['', '', '', '', '', '']);
+    expect(state.evidence).toEqual(original);
+  });
+
+  it('refuses a lossy prefill and preserves the existing form and evidence', async () => {
+    const { state, code } = backups(vi.fn());
+    const record = state.evidence[0]!;
+    const before = [state.label, state.snapshot, state.wanted];
+    await code.beginUpdate({ ...record, required_versions: [{ relative_name: ' leading.txt', version: `sha256:${'a'.repeat(64)}` }] });
+    expect(state.error).toContain('without changing');
+    expect([state.label, state.snapshot, state.wanted]).toEqual(before);
+    expect(state.updating).toBe('');
+    expect(state.session.client.call).not.toHaveBeenCalled();
+  });
+
+  it.each(['cancelled_by_user', 'refused', 'error'])('preserves existing evidence on %s and sends the fixed label with no path', async (outcome) => {
+    const call = vi.fn(async () => {
+      if (outcome === 'error') throw new Error('receipt transport failed');
+      return { result: { outcome, refusal: outcome === 'refused' ? 'too_large' : null } };
+    });
+    const { state, code } = backups(call);
+    const record = state.evidence[0]!;
+    const original = structuredClone(state.evidence);
+    await code.beginUpdate(record);
+    state.label = 'other-valid-label'; // even a changed DOM binding must not redirect the replacement
+    await code.importReceipt();
+    expect(call).toHaveBeenCalledExactlyOnceWith('backups.import', {
+      repository_label: record.repository_label, snapshot_id: record.snapshot_id, source_volume_id: null, target_volume_id: null,
+      required: record.required_versions, integrity_check: true,
+    }, { deadlineMs: 60000 });
+    expect(state.evidence).toEqual(original);
+    expect(state.importing).toBe(false);
+    expect(state.updating).toBe(record.repository_label);
+    if (outcome === 'cancelled_by_user') expect(state.notice).toContain('Nothing was stored');
+    else expect(state.error).not.toBe('');
+  });
+
+  it.each(['loading', 'importing', 'forgetting'] as const)('blocks overlapping form and mutation actions while %s', async (pending) => {
+    const { state, code } = backups(vi.fn());
+    const before = [state.label, state.snapshot, state.wanted, state.updating];
+    if (pending === 'forgetting') state.forgetting = 'be_pending'; else state[pending] = true;
+    await code.beginUpdate(state.evidence[0]!);
+    await code.newImport();
+    await code.importReceipt();
+    await code.forget(state.evidence[0]!);
+    expect(state.session.client.call).not.toHaveBeenCalled();
+    expect([state.label, state.snapshot, state.wanted, state.updating]).toEqual(before);
+  });
+
+  it.each(['http', 'synthetic'])('does not enter update or import in a %s session', async (mode) => {
+    const { state, code } = backups(vi.fn());
+    if (mode === 'http') state.session.info.adapter = 'http'; else state.session.datasetClass = 'synthetic';
+    await code.beginUpdate(state.evidence[0]!);
+    await code.importReceipt();
+    expect(state.updating).toBe('');
+    expect(state.session.client.call).not.toHaveBeenCalled();
+  });
+
+  it('keeps a draft on ordinary refresh but clears personal state when the connection changes', async () => {
+    const never = deferred<unknown>();
+    const { state, code } = backups(vi.fn(() => never.promise));
+    state.knownClient = state.session.client; state.knownConnection = 0;
+    await code.beginUpdate(state.evidence[0]!);
+    const before = [state.label, state.snapshot, state.wanted, state.updating];
+    state.session.epoch++;
+    code.effect();
+    expect([state.label, state.snapshot, state.wanted, state.updating]).toEqual(before);
+    state.session.connectionEpoch++; state.session.epoch++;
+    state.importing = true; state.forgetting = 'be_pending';
+    code.effect();
+    expect([state.label, state.snapshot, state.wanted, state.updating]).toEqual(['', '', '', '']);
+    expect(state.evidence).toEqual([]);
+    expect(state.volumes).toEqual([]);
+    expect(state.importing).toBe(false);
+    expect(state.forgetting).toBe('');
+  });
+
+  it('does not populate volumes from the previous connection', async () => {
+    const reply = deferred<unknown>();
+    const call = vi.fn(async (command: string) => command === 'volumes.list' ? reply.promise : { result: backupList });
+    const { state, code } = backups(call);
+    const loading = code.load();
+    await Promise.resolve();
+    expect(call).toHaveBeenCalledWith('volumes.list', {});
+    state.session.connectionEpoch++;
+    reply.resolve({ result: { volumes: [{ volume_id: 'vo_old' }] } });
+    await loading;
+    expect(state.volumes).toEqual([]);
+  });
+
+  it('ignores an import reply after the connection changes, even when the client object is reused', async () => {
+    const reply = deferred<unknown>();
+    const call = vi.fn(async (command: string) => command === 'backups.import' ? reply.promise : { result: command === 'backups.list' ? backupList : { volumes: [] } });
+    const { state, code } = backups(call);
+    const importing = code.importReceipt();
+    expect(call).toHaveBeenCalledTimes(1);
+    state.session.connectionEpoch++;
+    reply.resolve({ result: { outcome: 'imported', evidence: backupList.evidence[0], refusal: null } });
+    await importing;
+    expect(call).toHaveBeenCalledTimes(1);
+    expect(state.notice).toBe('');
+    expect(state.session.handle).not.toHaveBeenCalled();
+  });
+
+  it.each(['backups.list', 'backups.import', 'backups.forget'])('ignores late %s errors after unmount or reconnect', async (command) => {
+    const reply = deferred<unknown>();
+    const { state, code } = backups(vi.fn(() => reply.promise));
+    const pending = command === 'backups.list' ? code.load() : command === 'backups.import' ? code.importReceipt() : code.forget(state.evidence[0]!);
+    state.session.connectionEpoch++; state.alive = false;
+    reply.reject(new Error('old connection failed'));
+    await pending;
+    expect(state.error).toBe('');
+    expect(state.notice).toBe('');
+    expect(state.session.handle).not.toHaveBeenCalled();
+    expect(state.session.client.call).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not refetch or announce a late forget in a new connection', async () => {
+    const reply = deferred<unknown>();
+    const { state, code } = backups(vi.fn(() => reply.promise));
+    const forgetting = code.forget(state.evidence[0]!);
+    state.session.connectionEpoch++;
+    reply.resolve({ result: {} });
+    await forgetting;
+    expect(state.session.client.call).toHaveBeenCalledTimes(1);
+    expect(state.notice).toBe('');
+    expect(state.heading.focus).not.toHaveBeenCalled();
+  });
+});
 
 function review(call: ReturnType<typeof vi.fn>) {
   const state = {
