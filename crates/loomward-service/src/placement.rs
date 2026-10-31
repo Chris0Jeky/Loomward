@@ -102,11 +102,9 @@ fn notes(mut plan: PlacementPlan, conn: &Connection) -> EngineResult<PlacementPl
             assumptions.push(note);
         }
     }
-    for note in [
-        "Catalogue-only groups have unknown relief without fresh identity-matched link observations. No file contents or per-file native metadata are read by this simulation.",
-    ] {
-        let note = Text::new(note).expect("bounded assumption");
-        if !assumptions.contains(&note) { assumptions.push(note); }
+    let note = Text::new("Catalogue-only groups have unknown relief without fresh identity-matched link observations. No file contents or per-file native metadata are read by this simulation.").expect("bounded assumption");
+    if !assumptions.contains(&note) {
+        assumptions.push(note);
     }
     plan.assumptions = bounded(BoundedVec::new(assumptions))?;
     Ok(plan)

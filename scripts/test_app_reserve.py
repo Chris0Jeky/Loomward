@@ -54,8 +54,9 @@ def run_live_reserve(browser, exe: Path, dist: Path, check, call, evidence: Path
 
         def simulate(page):
             page.get_by_label('Assumed heat for Reserve group').select_option('0.1')
-            page.get_by_label('Assume not pinned, active or protected for Reserve group').check()
-            page.get_by_label('Assume no move in the past 7 days for Reserve group').check()
+            group = page.locator('main table.tbl tbody tr').filter(has_text='Reserve group').first
+            group.get_by_role('checkbox', name=re.compile('^Assume not pinned')).check()
+            group.get_by_role('checkbox', name=re.compile('^Assume no move')).check()
             page.get_by_label('Space freed counted from').select_option('entry_allocation_whatif')
             page.get_by_label('Keep these scenarios').check()
             def assumed_reply(response):
