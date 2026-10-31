@@ -98,7 +98,7 @@
   // View generation. Every action that changes what the table shows bumps it; a response that comes
   // back for an older generation is dropped (and its request aborted), so a slow answer can never
   // overwrite a newer search, folder or basis.
-  let gen = 0;
+  let gen = $state(0);
   let startsRequest = 0;
   let startsAbort: AbortController | null = null;
   let abort: AbortController | null = null;
@@ -584,11 +584,13 @@
   {/if}
   <p id="explorer-notice" class="muted live" class:has={!!notice || !!gone} role="status" tabindex="-1" bind:this={noticeEl}>{#if gone}<q><VisibleName name={gone.lost} /></q> is no longer in the catalogue, so the view {#if gone.now}moved up to <q><VisibleName name={gone.now} /></q>, the nearest folder still there.{:else}went back to the top level.{/if}{:else}{notice}{/if}</p>
 
-  <div class="bar" role="group" aria-label="Copy selection">
+  <div class="bar" role="group" aria-label="Selected rows">
     <CopyTo items={selected} />
     <span class="muted num" role="status">{formatCount(selected.length)} selected across folders</span>
-    {#if selected.length}<button class="btn" type="button" onclick={() => { selected = []; }}>Clear copy selection</button>{/if}
+    {#if selected.length}<button class="btn" type="button" onclick={() => { selected = []; }}>Clear selection</button>{/if}
   </div>
+  {#if selected.length}<AddToCollection nodeIds={selected.map(item => item.node_id)} contextKey={gen} />
+  {:else}<p class="muted small">Select rows to add them to a virtual collection. Files stay in place.</p>{/if}
   <div class="tbl-wrap" aria-busy={busy}>
     <table class="tbl" bind:this={tableEl}>
       <caption class="sr-only">{searching ? 'Search results' : 'Folder contents'}</caption>
@@ -604,7 +606,7 @@
         {#each rows as r (r.node_id)}
           <tr>
             <th scope="row">
-              <input class="copy-select" type="checkbox" aria-label={`Select ${escapedName(r.name)} for copy`} checked={selected.some(i => i.node_id === r.node_id)}
+              <input class="copy-select" type="checkbox" aria-label={`Select ${escapedName(r.name)}`} checked={selected.some(i => i.node_id === r.node_id)}
                 onchange={(e) => { selected = e.currentTarget.checked ? [...selected, { node_id: r.node_id, name: r.name }] : selected.filter(i => i.node_id !== r.node_id); }} />
               {#if r.kind === 'dir' && !searching && r.coverage !== 'denied'}
                 <button class="crumb" type="button" onclick={() => go([...trail, { id: r.node_id, name: r.name }])}><VisibleName name={r.name} /></button>
