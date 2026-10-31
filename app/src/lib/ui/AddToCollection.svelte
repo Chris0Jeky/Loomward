@@ -85,7 +85,7 @@
 {#if batch}<p class="muted small">{ids.length} selected {ids.length === 1 ? 'row' : 'rows'} · virtual membership only; files stay in place.</p>{/if}
 {#if ids.length > 500}<p class="bad" role="alert">Choose at most 500 rows for one collection update.</p>{/if}
 {:else}<p class="muted small">Select rows to add them to a virtual collection. Files stay in place.</p>{/if}
-<p class="live muted" class:has={!!result.text} role="status" aria-label="Membership result">{result.text}</p>
+<p class="live muted" class:has={!!result.text} role="status" aria-label={batch ? 'Selected rows result' : 'Membership result'}>{result.text}</p>
 <p class="live bad" class:has={!!error} role="alert">{error}</p>
 <style>
   select { max-width: 100%; }

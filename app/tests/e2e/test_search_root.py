@@ -205,7 +205,7 @@ def run(ctx):
             expect(add).to_be_focused()
             before = len(updates)
             add.press('Enter')
-            membership = page.get_by_role('status', name='Membership result')
+            membership = page.get_by_role('status', name='Selected rows result')
             expect(membership).to_contain_text('Saved selection of 2 rows')
             expect(membership).to_contain_text('U+202E RLO')
             expect(add).to_be_focused()
@@ -241,7 +241,7 @@ def run(ctx):
         expect(target).to_have_value('co_papers')
         add = page.get_by_role('button', name='Add selected to collection', exact=True)
         add.click()
-        membership = page.get_by_role('status', name='Membership result')
+        membership = page.get_by_role('status', name='Selected rows result')
         expect(membership).to_contain_text('Saved selection of 2 rows')
         ctx.check(updates[-1]['payload']['add'] == ['nd_rt_scope_0_0', 'nd_rt_scope_1_0'],
                   'Identical names across scoped searches retain their distinct selected identities')
