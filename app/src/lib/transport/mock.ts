@@ -41,7 +41,7 @@ const REVS: Partial<Record<string, 'c' | 's' | 'cs'>> = {
   'node.inspect': 'cs', 'threads.meaning': 'cs',
   'health.get': 'c', 'tree.children': 'c', 'search.query': 'c', 'stats.breakdown': 'c',
   'roots.list': 'cs', 'tree.slice': 'cs', 'placement.candidates': 'cs', 'placement.simulate': 'cs',
-  'proposals.list': 'cs', 'proposals.get': 'cs', 'volumes.declare_tier': 'cs',
+  'proposals.list': 'cs', 'proposals.get': 'cs', 'volumes.declare_tier': 'cs', 'volumes.declare_reserve': 'cs',
   'roots.revoke': 'cs', 'roots.forget': 'cs', 'backups.list': 's', 'backups.forget': 's', 'alerts.list': 's', 'alerts.configure': 's', 'clutter.developer': 'cs', 'projects.find': 'cs', 'insight.folder': 'cs', 'changes.new_since': 'cs', 'grants.list': 's', 'grants.revoke': 's', 'volumes.list': 's', 'tiers.model': 's',
 };
 
@@ -487,7 +487,8 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
         }
         if (req.expected_generation !== GENERATION) fail('stale_generation', 'Project observations changed; find projects again.');
       }
-      if (req.command === 'roots.forget'  && req.expected_state_rev != null && String(req.expected_state_rev) !== collections.stateRev()) {
+      if (req.command === 'volumes.declare_reserve' && req.expected_state_rev == null) fail('invalid_request', 'expected_state_rev is required.');
+      if ((req.command === 'roots.forget' || req.command === 'volumes.declare_reserve') && req.expected_state_rev != null && String(req.expected_state_rev) !== collections.stateRev()) {
         failWith('stale_generation', 'state.db changed since your read; re-read and ask the owner again', { reason: 'state_rev_changed' });
       }
       const result = await (req.command.startsWith('collections.') ? collections.handle(req) : h!((req.payload ?? {}) as Record<string, unknown>)) as Record<string, unknown>;
@@ -507,7 +508,7 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
   return {
     mode: 'mock',
     call: async (req) => {
-      if (req.command !== 'collections.create' && req.command !== 'collections.update_members') return respond(req);
+      if (!['collections.create', 'collections.update_members', 'volumes.declare_reserve'].includes(req.command)) return respond(req);
       const binding = JSON.stringify([req.command, req.payload, req.expected_state_rev, req.expected_generation]);
       const saved = retained.get(req.request_id);
       if (saved && now().getTime() - saved.at < 600_000) {
