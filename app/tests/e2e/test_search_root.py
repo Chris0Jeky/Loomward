@@ -8,6 +8,7 @@ from playwright.sync_api import expect
 
 def run(ctx):
     page = ctx.page.context.new_page()
+    page.on('pageerror', lambda error: print(f'Search scope page error: {error}'))
     root = Path(__file__).resolve().parents[3]
     examples = root / 'contracts/v3/examples/commands'
     load = lambda name: json.loads((examples / f'{name}.result.json').read_text(encoding='utf-8'))
@@ -180,5 +181,12 @@ def run(ctx):
         expect(applied).to_have_text('Scope: All granted roots')
         ctx.check(calls[-1]['root_id'] is None, 'An explicit new unscoped link restores the global default')
         return {'scope': 'pass', 'keyboard_widths': [1440, 390], 'roots': 64, 'reconnect': 'pass'}
+    except Exception:
+        print(f'Search scope failure URL: {page.url}')
+        print(page.locator('body').inner_text()[:6000])
+        captures = root / '.loomward'
+        captures.mkdir(exist_ok=True)
+        page.screenshot(path=str(captures / 'search-root-failure.png'), full_page=True)
+        raise
     finally:
         page.close()

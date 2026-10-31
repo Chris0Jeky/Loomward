@@ -490,15 +490,15 @@
     <label class="field stack grow"><span class="lbl">Search names</span>
       <input type="search" placeholder="Search names" bind:value={query} bind:this={searchEl} maxlength="256" onkeydown={searchKeys} aria-describedby="find-hint find-notes" />
     </label>
-    <label class="field stack search-root"><span class="lbl">Search scope</span>
-      <select bind:value={rootChoice} aria-describedby="root-scope-note">
+    <div class="field stack search-root"><label class="lbl" for="search-root">Search scope</label>
+      <select id="search-root" bind:value={rootChoice} aria-describedby="root-scope-note">
         {#if rootChoice === null}<option value={null} disabled>Choose a search scope</option>{/if}
         <option value="">All granted roots</option>
         {#each rootChoices as root (root.root_id)}
           <option value={root.root_id}>{escapedName(root.display_path.text)}{root.display_path.truncated ? ' (truncated)' : ''}</option>
         {/each}
       </select>
-    </label>
+    </div>
     <label class="field stack"><span class="lbl">Extension</span>
       <input type="text" placeholder="ext" bind:value={extension} maxlength="32" size="6" />
     </label>
