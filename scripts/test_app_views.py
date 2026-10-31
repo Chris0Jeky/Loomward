@@ -1124,7 +1124,7 @@ def check_backups_import(page: Page, engine: FakeEngine) -> None:
         engine.backups = None
 
 
-def check_backups_update(page: Page, engine: FakeEngine, *, baseline: bool = False) -> None:
+def check_backups_update(page: Page, engine: FakeEngine, *, baseline: bool = False, transport_fault: bool = False) -> None:
     """Use stored fictional evidence across documents; no real native picker or repository."""
     records = json.loads((ROOT / 'contracts/v3/examples/commands/backups.list.result.json').read_text(encoding='utf-8'))['evidence']
     first, other = records
@@ -1203,17 +1203,20 @@ def check_backups_update(page: Page, engine: FakeEngine, *, baseline: bool = Fal
         expect(page.get_by_role('alert')).to_contain_text('synthetic receipt unavailable')
         unchanged('service error keeps the original evidence')
 
-        # A transport failure before dispatch must not produce an optimistic replacement.
-        def fail_import(route) -> None:
-            if route.request.post_data_json['command'] == 'backups.import':
-                route.abort('failed')
-            else:
-                route.continue_()
-        page.route('**/api/v3/call', fail_import)
-        choose.click()
-        expect(page.get_by_role('status', name='Session status')).to_contain_text('unavailable', ignore_case=True)
-        ok(engine.backups == original, 'pre-dispatch transport error keeps stored evidence')
-        page.unroute('**/api/v3/call', fail_import)
+        # The dedicated fault proof asserts the exact console error; the broad page keeps its zero-error guard.
+        if transport_fault:
+            def fail_import(route) -> None:
+                if route.request.post_data_json['command'] == 'backups.import':
+                    route.abort('failed')
+                else:
+                    route.continue_()
+            page.route('**/api/v3/call', fail_import)
+            try:
+                choose.click()
+                expect(page.get_by_role('status', name='Session status')).to_contain_text('unavailable', ignore_case=True)
+                ok(engine.backups == original, 'pre-dispatch transport error keeps stored evidence')
+            finally:
+                page.unroute('**/api/v3/call', fail_import)
         reopen(); update.click()
 
         snapshot.fill('3' * 64)
