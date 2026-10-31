@@ -64,6 +64,48 @@ pub struct FeedbackResult {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct FeedbackHistoryRequest {
+    pub limit: Int<1, 100>,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub cursor: Option<Cursor>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FeedbackReferenceStatus {
+    Resolved,
+    Unresolved,
+    Redacted,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FeedbackHistoryItem {
+    pub event_id: EventId,
+    pub revision: Int<1, 9007199254740991>,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub label: Option<Label>,
+    pub retracted: bool,
+    /// Latest event for this durable object, including a withdrawal; not training eligibility.
+    pub is_current: bool,
+    pub taxonomy_version: Int<1, 9007199254740991>,
+    pub recorded_at: Timestamp,
+    pub reference_status: FeedbackReferenceStatus,
+    /// Recorded name, never a current path. Hidden unless provenance and reference are visible.
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub name: Option<BoundedStr<0, 256>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FeedbackHistory {
+    pub items: BoundedVec<FeedbackHistoryItem, 0, 100>,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub next_cursor: Option<Cursor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LearningQueueRequest {
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub root_id: Option<RootId>,

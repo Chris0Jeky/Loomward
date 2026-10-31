@@ -13,7 +13,7 @@ impl ResponseEnvelope {
         };
         let mut error = ErrorBody::new(
             ErrorCode::PermissionDenied,
-            "This reply was withheld after a root forget. The action may have completed; read current state before acting again.",
+            "This reply was withheld after an access change or root forget. The action may have completed; read current state before acting again.",
             false,
         );
         error.detail = Some(

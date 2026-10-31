@@ -13,6 +13,10 @@ fn rt<T: DeserializeOwned + Serialize>(v: &Value) -> Result<Value, String> {
 /// `None` when the def has no registered type (the coverage test fails on that).
 pub fn roundtrip(def: &str, v: &Value) -> Option<Result<Value, String>> {
     Some(match def {
+        "FeedbackHistoryRequest" => rt::<FeedbackHistoryRequest>(v),
+        "FeedbackReferenceStatus" => rt::<FeedbackReferenceStatus>(v),
+        "FeedbackHistoryItem" => rt::<FeedbackHistoryItem>(v),
+        "FeedbackHistory" => rt::<FeedbackHistory>(v),
         "ChangesNewSinceRequest" => rt::<ChangesNewSinceRequest>(v),
         "NewSinceOutcome" => rt::<NewSinceOutcome>(v),
         "NewSinceRunMode" => rt::<NewSinceRunMode>(v),

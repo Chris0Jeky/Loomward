@@ -7,6 +7,8 @@
   import { session } from '../../lib/stores/session.svelte';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
   import { LoomwardError } from '../../lib/transport/client';
+  import { formatTime } from '../../lib/format/time';
+  import { HistoryPanel } from './history.svelte';
   import type { FeedbackRequest, Job, LearningQueue, LearningStatus } from '../../lib/contracts.gen';
 
   let status = $state<LearningStatus | null>(null);
@@ -21,6 +23,8 @@
   let timer: ReturnType<typeof setTimeout> | undefined;
   let generation = 0;
   let alive = true;
+  const history = new HistoryPanel();
+  const handle = (e: unknown) => session.handle(e);
   const gated = $derived(status?.gate !== null && status?.gate !== undefined);
   const personal = $derived(status?.dataset_class === 'personal');
   const active = $derived(job !== null && ['queued', 'running', 'cancel_requested'].includes(job.state));
@@ -44,11 +48,13 @@
     if (!client || !selected || working || gated) return;
     pending ??= { node_id: selected, label: retract ? null : label, retract, client_event_id: `ce_${crypto.randomUUID().replaceAll('-', '')}` };
     working = true;
+    history.clear();
     try {
       const response = await client.call('feedback.record', pending);
       pending = null;
       message = `Human feedback recorded, revision ${response.result.revision}. Refit when ready.`;
       await load();
+      if (alive) await history.load(session.client, handle);
     } catch (e) {
       if (e instanceof LoomwardError && ['invalid_request', 'not_found', 'permission_denied', 'capability_unavailable'].includes(e.code)) pending = null;
       error = session.handle(e);
@@ -79,8 +85,9 @@
     try { job = (await session.client.call('jobs.cancel', { job_id: job.job_id })).result.job; }
     catch (e) { error = session.handle(e); }
   }
-  $effect(() => { void session.epoch; untrack(() => void load()); });
-  onDestroy(() => { alive = false; generation++; clearTimeout(timer); });
+  function refresh(): void { void load(); void history.load(session.client, handle); }
+  $effect(() => { void session.epoch; untrack(refresh); });
+  onDestroy(() => { alive = false; generation++; clearTimeout(timer); history.clear(); });
 </script>
 
 <section aria-labelledby="review-title">
@@ -102,7 +109,7 @@
       {/if}
       <div class="controls">
         <button class="btn primary" disabled={working || active || gated} onclick={() => void refit()}>Refit from human labels</button>
-        <button class="btn" disabled={working} onclick={() => void load()}>Refresh review</button>
+        <button class="btn" disabled={working} onclick={refresh}>Refresh review</button>
         {#if active}<button class="btn" onclick={() => void cancel()}>Cancel refit</button>{/if}
       </div>
       {#if job}<p role="status">Refit {job.state}{#if job.error}: {job.error.message}{/if}</p>{/if}
@@ -147,6 +154,35 @@
       <p class="muted small limits">{personal ? 'Advice only, never an approval.' : 'Synthetic smoke only.'} Limits: 10,000 eligible files and the latest labels for at most 10,000 resolved objects per refit. No teacher labels are trained here.</p>
     </div>
   {/if}
+  <section class="panel history" aria-labelledby="history-title" aria-busy={history.loading}>
+    <h2 id="history-title">Human feedback history</h2>
+    <p class="note">Newest first. Current means the latest record for that object; a withdrawal leaves no active human label. Recorded names may differ from current names. Teacher labels and permissions are separate.</p>
+    <p class="bad live" class:has={!!history.problem} role="alert">{history.problem}</p>
+    <p class="live" class:has={!!history.notice || history.loading} role="status">{history.loading ? 'Loading history…' : history.notice}</p>
+    <div class="controls">
+      <button class="btn" disabled={history.loading || working} onclick={() => void history.load(session.client, handle)}>{history.problem ? 'Retry history' : 'Newest records'}</button>
+      <button class="btn" disabled={history.loading || working || !history.page?.next_cursor} onclick={() => void history.load(session.client, handle, history.page?.next_cursor)}>Older records</button>
+      {#if history.older}<span class="muted">Older page</span>{/if}
+    </div>
+    {#if history.page}
+      <div class="tbl-wrap">
+        <table class="tbl">
+          <caption>Human feedback records</caption>
+          <thead><tr><th scope="col">Recorded item</th><th scope="col">Feedback</th><th scope="col">Record</th><th scope="col">When</th></tr></thead>
+          <tbody>
+            {#each history.page.items as item (item.event_id)}
+              <tr>
+                <th scope="row">{#if item.name !== null}<VisibleName name={item.name} />{:else}<span class="muted">Recorded name hidden</span>{/if}<small>{item.reference_status === 'resolved' ? 'Reference resolved' : item.reference_status === 'redacted' ? 'Details redacted or provenance unavailable' : 'Reference unresolved'}</small></th>
+                <td>{item.retracted ? 'Withdrawal' : item.revision > 1 ? 'Correction' : 'Label'} · {item.label ?? 'Unknown label'}</td>
+                <td>Revision {item.revision}<small>{item.is_current ? 'Current record' : 'Superseded'}</small></td>
+                <td><time datetime={item.recorded_at}>{formatTime(item.recorded_at)}</time></td>
+              </tr>
+            {:else}<tr><td colspan="4" class="muted">No human feedback records.</td></tr>{/each}
+          </tbody>
+        </table>
+      </div>
+    {/if}
+  </section>
 </section>
 
 <style>
@@ -155,4 +191,7 @@
   .feedback { margin: var(--sp-4) 0 0; padding-top: var(--sp-4); border-top: 1px solid var(--line); }
   .limits { margin: var(--sp-4) 0 0; max-width: var(--measure); }
   .tbl td small { max-width: 28rem; }
+  .history { margin-top: var(--sp-4); }
+  .history h2 { margin-top: 0; }
+  .history th small { display: block; font-weight: normal; }
 </style>
