@@ -6,7 +6,7 @@ import { session } from '../../src/lib/stores/session.svelte';
 import { TransportError, type Transport } from '../../src/lib/transport/transport';
 import type { BackupEvidence, BackupRefusal } from '../../src/lib/contracts.gen';
 import {
-  conditions, coverage, formatAge, IMPORT_REFUSAL_WORDS, observations, parseRequired, REFUSAL_WORDS, topology,
+  conditions, coverage, formatAge, formatRequired, IMPORT_REFUSAL_WORDS, observations, parseRequired, REFUSAL_WORDS, topology,
 } from '../../src/views/backups/model';
 
 const ALL_REFUSALS: BackupRefusal[] = [
@@ -75,6 +75,34 @@ it('refuses names that are not relative: a root, a drive or a `..` segment', () 
     expect(parsed.errors, name).toEqual(['Line 1: expected a relative name, a space and a 64-digit SHA-256.']);
   }
   expect(parseRequired(`..notes/a.txt ${hash}`)).toEqual({ required: [{ relative_name: '..notes/a.txt', version: `sha256:${hash}` }], errors: [] });
+});
+
+describe('stored required versions in the receipt editor', () => {
+  const version = `sha256:${'ab'.repeat(32)}`;
+
+  it('round-trips all 64 full names and hashes exactly, including Unicode and internal spaces', () => {
+    const required = Array.from({ length: 64 }, (_, i) => ({ relative_name: `photos/夏 ${i}  résumé.txt`, version }));
+    const text = formatRequired(required);
+    expect(text).not.toBeNull();
+    expect(parseRequired(text!)).toEqual({ required, errors: [] });
+    expect(text!.split('\n')).toHaveLength(64);
+  });
+
+  it.each([' leading.txt', 'trailing.txt ', '\ttab.txt', 'tab.txt\t', 'line\nbreak.txt', 'line\rbreak.txt', '', '../outside', '/absolute', 'C:relative'])('refuses an unrepresentable or invalid stored name %j without changing it', (relative_name) => {
+    const required = [{ relative_name, version }];
+    const original = structuredClone(required);
+    expect(formatRequired(required)).toBeNull();
+    expect(required).toEqual(original);
+  });
+
+  it.each(['', 'sha256:short', 'ab'.repeat(32), `sha256:${'AB'.repeat(32)}`, `sha256:${'z'.repeat(64)}`])('refuses an invalid or lossy stored version %j', (hash) => {
+    expect(formatRequired([{ relative_name: 'fixture/a.txt', version: hash }])).toBeNull();
+  });
+
+  it('refuses zero or over-limit entries instead of silently dropping them', () => {
+    expect(formatRequired([])).toBeNull();
+    expect(formatRequired(Array.from({ length: 65 }, (_, i) => ({ relative_name: `f${i}`, version })))).toBeNull();
+  });
 });
 
 it('the mock forgets a record, refuses an unknown one and has no file dialog to import with', async () => {

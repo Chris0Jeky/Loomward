@@ -92,8 +92,13 @@ class FakeEngine:
         self.explain_calls: list[str] = []
         self.process_observed_at: str | None = None
         self.backups: list[dict] | None = None  # set: hello says a personal desktop session, and backups.* answer
-        self.backup_answers: list[dict] = []  # backups.import outcomes, in order
+        self.backup_answers: list[dict | tuple[str, str]] = []  # backups.import outcomes, in order
         self.backup_calls: list[dict] = []
+        self.backup_forget_calls: list[dict] = []
+        self.backup_volumes: list[dict] = []
+        self.backup_adapter = 'tauri'
+        self.backup_class = 'personal'
+        self.backup_gate: tuple[threading.Event, threading.Event] | None = None
         self.grant_picker = False  # session.hello features.grant_picker
         self.diagnostics_answers: list[dict] | None = None  # set: hello offers diagnostics_save, diagnostics.save pops these
         self.diagnostics_calls: list[dict] = []
@@ -136,8 +141,8 @@ class FakeEngine:
             effects = {k: False for k in 'file_move file_delete file_rename file_write content_read process_kill process_suspend process_priority memory_trim uninstall elevation'.split()}
             desktop = self.backups is not None
             return {
-                'protocol': 'loomward/3', 'engine_version': 'view-fake', 'adapter': 'tauri' if desktop else 'http',
-                'dataset_class': 'personal' if desktop else 'synthetic', 'session_started_at': '2026-10-01T00:00:00Z',
+                'protocol': 'loomward/3', 'engine_version': 'view-fake', 'adapter': self.backup_adapter if desktop else 'http',
+                'dataset_class': self.backup_class if desktop else 'synthetic', 'session_started_at': '2026-10-01T00:00:00Z',
                 'enumeration_strategy': 'std_read_dir', 'capabilities': {'observation': {'duplicate_content_read': True, 'process_observation': self.process_error is not None}, 'effects': effects},
                 'features': {**{k: k == 'grant_picker' and self.grant_picker for k in ('grant_picker', 'disclosure_dialog', 'teacher_available', 'telemetry_available', 'gpu_available')},
                              'diagnostics_save': self.diagnostics_answers is not None},
@@ -147,13 +152,24 @@ class FakeEngine:
             if cmd == 'backups.list':
                 return {'evidence': self.backups}
             if cmd == 'volumes.list':
-                return {'volumes': []}
+                return {'volumes': self.backup_volumes}
             if cmd == 'backups.import':
                 self.backup_calls.append(req)
+                records = self.backups
                 answer = self.backup_answers.pop(0)
-                if answer['outcome'] == 'imported':
-                    self.backups.append(answer['evidence'])
+                if self.backup_gate:
+                    arrived, release = self.backup_gate
+                    arrived.set()
+                    if not release.wait(8):
+                        return ('internal_error', 'backup fixture gate timed out')
+                if isinstance(answer, dict) and answer['outcome'] == 'imported':
+                    records[:] = [e for e in records if e['repository_label'] != answer['evidence']['repository_label']]
+                    records.append(answer['evidence'])
                 return answer
+            if cmd == 'backups.forget':
+                self.backup_forget_calls.append(req)
+                self.backups[:] = [e for e in self.backups if e['evidence_id'] != p['evidence_id']]
+                return {'evidence_id': p['evidence_id'], 'forgotten_at': '2026-10-01T00:00:00Z'}
         if cmd == 'diagnostics.preview':
             return json.loads((ROOT / 'contracts/v3/examples/commands/diagnostics.preview.result.json').read_text(encoding='utf-8'))
         if cmd == 'diagnostics.save' and self.diagnostics_answers is not None:
@@ -1108,6 +1124,183 @@ def check_backups_import(page: Page, engine: FakeEngine) -> None:
         engine.backups = None
 
 
+def check_backups_update(page: Page, engine: FakeEngine, *, baseline: bool = False, transport_fault: bool = False) -> None:
+    """Use stored fictional evidence across documents; no real native picker or repository."""
+    records = json.loads((ROOT / 'contracts/v3/examples/commands/backups.list.result.json').read_text(encoding='utf-8'))['evidence']
+    first, other = records
+    first['required_versions'] = [{'relative_name': 'photos/夏 résumé.txt', 'version': 'sha256:' + 'ab' * 32}]
+    first['proposed_drill']['files'] = first['required_versions']
+    original = json.loads(json.dumps(records))
+    engine.backups = records
+    engine.backup_calls = []; engine.backup_forget_calls = []
+    engine.backup_volumes = json.loads((ROOT / 'contracts/v3/examples/commands/volumes.list.result.json').read_text(encoding='utf-8'))['volumes']
+    label = first['repository_label']
+
+    def reopen() -> None:
+        page.goto('about:blank')
+        page.goto(f'{engine.base}/#token={TOKEN}')
+        page.evaluate("location.hash = '#/backups'")
+        expect(page.get_by_role('heading', name=label, exact=True)).to_be_visible()
+        expect(page.get_by_role('status', name='Session status')).to_contain_text('Connected')
+
+    def unchanged(message: str) -> None:
+        ok(engine.backups == original, message)
+        expect(page.get_by_role('heading', name=other['repository_label'], exact=True)).to_be_visible()
+
+    try:
+        reopen()
+        update = page.get_by_role('button', name=f'Update receipt for {label}', exact=True)
+        choose = page.get_by_role('button', name='Choose receipt file', exact=True)
+        expect(choose).to_be_enabled()  # positive control: the real import form is available
+        if baseline:
+            expect(page.get_by_label('Repository label', exact=True)).to_have_value('')
+            expect(page.get_by_label('Snapshot ID', exact=True)).to_have_value('')
+            expect(page.get_by_label('Files you need back', exact=False)).to_have_value('')
+            ok(update.count() == 0, 'EXPECTED_BASELINE_MISSING_UPDATE: stored record and working blank import form have no Update receipt action')
+            unchanged('baseline control retains both stored records')
+            return
+
+        expect(update).to_be_enabled()
+        source = page.get_by_role('combobox', name=re.compile(r'^Source volume'))
+        target = page.get_by_role('combobox', name=re.compile(r'^Backup volume'))
+        source.select_option(engine.backup_volumes[0]['volume_id'])
+        target.select_option(engine.backup_volumes[-1]['volume_id'])
+        update.focus(); update.press('Enter')
+        expect(page.get_by_role('heading', name='Update receipt', exact=True)).to_be_focused()
+        label_input = page.get_by_label('Repository label', exact=True)
+        snapshot = page.get_by_label('Snapshot ID', exact=True)
+        wanted = page.get_by_label('Files you need back', exact=False)
+        expect(label_input).to_have_value(label)
+        expect(label_input).not_to_be_editable()
+        expect(snapshot).to_have_value(first['snapshot_id'])
+        expect(wanted).to_have_value('photos/夏 résumé.txt sha256:' + 'ab' * 32)
+        expect(source).to_have_value(''); expect(target).to_have_value('')
+        expect(source).to_have_attribute('aria-describedby', 'backup-pairing')
+        expect(page.locator('#backup-replacement')).to_contain_text('replaces the stored evidence')
+        unchanged('Update receipt entry changes no evidence or timestamps')
+        ok(not engine.backup_calls and not engine.backup_forget_calls, 'Update receipt entry opens no picker and sends no mutation')
+
+        # Ordinary catalogue refreshes must not erase an edited draft.
+        snapshot.fill('3' * 64)
+        reads = engine.served.get('backups.list', 0)
+        engine.invalidate()
+        wait_until(page, lambda: engine.served.get('backups.list', 0) > reads)
+        expect(choose).to_be_enabled()
+        expect(snapshot).to_have_value('3' * 64)
+
+        engine.backup_answers = [
+            {'outcome': 'cancelled_by_user', 'evidence': None, 'refusal': None},
+            {'outcome': 'refused', 'evidence': None, 'refusal': 'too_large'},
+            ('internal_error', 'synthetic receipt unavailable'),
+        ]
+        choose.click()
+        expect(page.get_by_role('status', name='Backup result')).to_contain_text('Nothing was stored')
+        unchanged('cancel keeps the original evidence')
+        choose.click()
+        expect(page.get_by_role('alert')).to_contain_text('larger than 256 KiB')
+        unchanged('refusal keeps the original evidence')
+        choose.click()
+        expect(page.get_by_role('alert')).to_contain_text('synthetic receipt unavailable')
+        unchanged('service error keeps the original evidence')
+
+        # The dedicated fault proof asserts the exact console error; the broad page keeps its zero-error guard.
+        if transport_fault:
+            def fail_import(route) -> None:
+                if route.request.post_data_json['command'] == 'backups.import':
+                    route.abort('failed')
+                else:
+                    route.continue_()
+            page.route('**/api/v3/call', fail_import)
+            try:
+                choose.click()
+                expect(page.get_by_role('status', name='Session status')).to_contain_text('unavailable', ignore_case=True)
+                ok(engine.backups == original, 'pre-dispatch transport error keeps stored evidence')
+            finally:
+                page.unroute('**/api/v3/call', fail_import)
+        reopen(); update.click()
+
+        snapshot.fill('3' * 64)
+        wanted.fill('photos/夏 revised.txt sha256:' + 'cd' * 32)
+        replacement = {**first, 'snapshot_id': '3' * 64,
+                       'required_versions': [{'relative_name': 'photos/夏 revised.txt', 'version': 'sha256:' + 'cd' * 32}]}
+        replacement['proposed_drill'] = {**first['proposed_drill'], 'files': replacement['required_versions']}
+        engine.backup_answers = [{'outcome': 'imported', 'evidence': replacement, 'refusal': None}]
+        arrived, release = threading.Event(), threading.Event()
+        engine.backup_gate = (arrived, release)
+        choose.click()
+        wait_until(page, arrived.is_set)
+        try:
+            expect(snapshot).to_be_disabled(); expect(wanted).to_be_disabled()
+            for button in [update, page.get_by_role('button', name='Import a new receipt', exact=True),
+                           page.get_by_role('button', name=f"Forget the evidence for {other['repository_label']}", exact=True)]:
+                expect(button).to_have_attribute('aria-disabled', 'true')
+                button.focus(); button.press('Enter')
+            ok(len(engine.backup_calls) == 4 and not engine.backup_forget_calls, 'pending import excludes update, new and forget actions')
+        finally:
+            release.set(); engine.backup_gate = None
+        expect(page.get_by_role('status', name='Backup result')).to_contain_text('Evidence imported')
+        expect(choose).to_be_enabled()
+        expected_payload = {'repository_label': label, 'snapshot_id': '3' * 64, 'source_volume_id': None, 'target_volume_id': None,
+                            'required': replacement['required_versions'], 'integrity_check': True}
+        ok(engine.backup_calls[-1]['payload'] == expected_payload and engine.backup_calls[-1]['deadline_ms'] == 60000,
+           'replacement request keeps the fixed label, exact versions, unknown volumes and picker deadline, with no path')
+        ok(engine.backups == [other, replacement], 'one successful replacement leaves the unrelated record unchanged')
+        ok(replacement['snapshot_observed_at'] == first['snapshot_observed_at'], 'UI does not refresh an old observation timestamp')
+
+        reopen(); update.click()
+        expect(snapshot).to_have_value(replacement['snapshot_id'])
+        expect(wanted).to_have_value('photos/夏 revised.txt sha256:' + 'cd' * 32)
+        page.set_viewport_size({'width': 390, 'height': 844})
+        ok(page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1'), 'Update receipt fits a narrow viewport')
+        page.get_by_role('button', name='Import a new receipt', exact=True).click()
+        expect(label_input).to_be_editable()
+        for field in [label_input, snapshot, wanted]:
+            expect(field).to_have_value('')
+        expect(source).to_have_value(''); expect(target).to_have_value('')
+        expect(page.get_by_role('heading', name='Import a receipt', exact=True)).to_be_focused()
+        page.set_viewport_size({'width': 1360, 'height': 900})
+
+        # A changed engine epoch clears the form, and a late old import cannot refill it.
+        update.click()
+        engine.backup_answers = [{'outcome': 'imported', 'evidence': replacement, 'refusal': None}]
+        arrived, release = threading.Event(), threading.Event()
+        engine.backup_gate = (arrived, release)
+        choose.click(); wait_until(page, arrived.is_set)
+        try:
+            engine.backups = [other]
+            engine.seq += 1
+            epoch = 'e_backup_reconnected'
+            engine.publish({'protocol': 'loomward/3', 'epoch': epoch, 'seq': engine.seq, 'event': 'stream.hello',
+                            'at': '2026-10-31T00:00:00Z', 'catalog_rev': None, 'state_rev': None,
+                            'data': {'session_started_at': '2026-10-31T00:00:00Z', 'epoch': epoch,
+                                     'last_seq': engine.seq, 'oldest_replayable_seq': 1, 'dataset_class': 'personal'}})
+            expect(label_input).to_have_value('')
+            expect(page.get_by_role('heading', name=label, exact=True)).to_have_count(0)
+            with page.expect_response(lambda response: response.request.method == 'POST' and response.request.post_data_json['command'] == 'backups.import'):
+                release.set()
+            page.wait_for_timeout(50)
+            expect(page.get_by_role('status', name='Backup result')).to_have_text('')
+            expect(label_input).to_have_value('')
+            ok(engine.backups == [other], 'late reply from the old session does not alter new-session records')
+        finally:
+            release.set(); engine.backup_gate = None
+
+        engine.backups = original
+        for adapter, dataset in [('http', 'personal'), ('tauri', 'synthetic')]:
+            engine.backup_adapter = adapter; engine.backup_class = dataset
+            reopen()
+            expect(update).to_have_count(0)
+            expect(choose).to_have_count(0)
+            expect(page.get_by_text('Importing needs the desktop app in a personal session', exact=False)).to_be_visible()
+        print('PASS Backups Update receipt: exact prefill, explicit replacement, cancel/refusal/error, pending and epoch fences, persisted reload, accessible narrow form and session restrictions')
+    finally:
+        if engine.backup_gate:
+            engine.backup_gate[1].set()
+        engine.backup_gate = None; engine.backups = None; engine.backup_volumes = []
+        engine.backup_adapter = 'tauri'; engine.backup_class = 'personal'
+        page.set_viewport_size({'width': 1360, 'height': 900})
+
+
 def check_diagnostics_save(page: Page, engine: FakeEngine) -> None:
     """The desktop-like engine offers the save: only the digest of what is shown leaves the page."""
     fixture = json.loads((ROOT / 'contracts/v3/examples/commands/diagnostics.preview.result.json').read_text(encoding='utf-8'))
@@ -1945,6 +2138,7 @@ def run_views(page: Page, base: str, shots: Path | None) -> None:
         check_tiers_refused(page, engine)
         check_tiers_legacy_candidates(page, engine)
         check_backups_import(page, engine)
+        check_backups_update(page, engine)
         check_diagnostics_save(page, engine)
         check_add_folder(page, engine)
     finally:

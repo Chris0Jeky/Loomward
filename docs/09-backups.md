@@ -21,6 +21,9 @@ For each copy/backup provider, verify whether it preserves required streams, sec
 Coverage should be object/version-based, not solely a folder name. A backup of last month's file is not protection of today's edits. Record freshness and completeness. User-selected exclusions remain visible and must not be treated as protected just because their parent folder appears in a backup job.
 
 ## Retention and cleanup
+
+In the desktop Backups view, **Update receipt** fills the import form from an existing record's exact label, snapshot ID and requested versions. The label stays fixed: a successful import replaces that label's evidence. Volume pairing is not retained and must be declared again or left unknown. Cancelling or a refused import keeps the old record; **Import a new receipt** exits update mode. A stored filename or hash that cannot round-trip through the line editor is explicitly refused, never silently changed. Reimporting an old receipt does not refresh its observation time, establish recovery or run a backup/restore tool.
+
 Retention, forget/prune, replica deletion and source-file retirement require separate policy and consent. A storage-pressure event must not make the backup adapter silently delete the last recoverable version. Account for repository growth and intermediate scratch space. A retention change should show which recovery points would become unavailable before it executes.
 
 Plan initial recovery objectives as user choices, not universal promises: for example, a daily snapshot of personal documents and a monthly restore drill. Measure actual last successful backup and restore duration. Protect the catalogue/configuration too, but do not synchronise a live WAL file as though it were a portable snapshot [R22]. Use a database-supported consistent export/backup path.
