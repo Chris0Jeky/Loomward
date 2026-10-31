@@ -176,10 +176,13 @@ def run(ctx):
         expect(box).to_be_focused()
         page.get_by_role('group', name='Cleanup searches').get_by_role('button', name='Disk images over 1 GB').click()
         expect(applied).to_have_text('Scope: Synthetic B')
+        expect(page.locator('main .tbl-wrap')).to_have_attribute('aria-busy', 'false')
         ctx.check(calls[-1]['root_id'] == 'rt_scope_1' and calls[-1]['extension'] == 'iso', 'Presets retain the chosen scope')
         page.evaluate("location.hash = '#/explorer?q=another'")
         expect(applied).to_have_text('Scope: All granted roots')
-        ctx.check(calls[-1]['root_id'] is None, 'An explicit new unscoped link restores the global default')
+        expect(page.locator('main .tbl-wrap')).to_have_attribute('aria-busy', 'false')
+        expect(rows).to_have_count(50)
+        ctx.check(calls[-1]['root_id'] is None and calls[-1]['text'] == 'another', 'An explicit new unscoped link restores the global default')
         return {'scope': 'pass', 'keyboard_widths': [1440, 390], 'roots': 64, 'reconnect': 'pass'}
     except Exception:
         print(f'Search scope failure URL: {page.url}')
