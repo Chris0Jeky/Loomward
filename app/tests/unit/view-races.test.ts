@@ -290,6 +290,7 @@ function explorer(call: ReturnType<typeof vi.fn>) {
     rootChoices: [] as Root[], rootChoice: '' as string | null, submittedRoot: null as Root | null,
     rootsRequest: 0, rootsAbort: null, rootsLoading: false, rootProblem: '', scopeBlocked: false,
     scopedSearchOpen: false, mountedConnection: 0, reconnectScopePending: false,
+    selectionConnection: 0, selected: [] as { node_id: string; name: string }[],
   };
   return { state, code: viewScript('explorer', state, 'session.epoch') };
 }
@@ -347,6 +348,21 @@ describe('Explorer submitted root scope', () => {
 
   const reply = (command: string, available = [grantedA, grantedB]) => ({ result: command === 'roots.list'
     ? { roots: available } : command === 'tree.slice' ? { nodes: [] } : searchExample });
+
+  it('retains selection for catalogue refreshes but clears sealed IDs on a connected restart', async () => {
+    const { state, code } = explorer(vi.fn(async command => reply(command)));
+    const selected = [{ node_id: 'nd_old_session', name: 'shared.pdf' }];
+    state.selected = selected;
+    code.effect();
+    await vi.waitFor(() => expect(state.rootsLoading).toBe(false));
+    state.session.epoch++; code.effect();
+    await vi.waitFor(() => expect(state.rootsLoading).toBe(false));
+    expect(state.selected).toEqual(selected);
+    state.session.connectionEpoch++; state.session.epoch++; code.effect();
+    expect(state.session.state).toBe('connected');
+    expect(state.selected).toEqual([]);
+    await vi.waitFor(() => expect(state.rootsLoading).toBe(false));
+  });
 
   it('offers the complete active root list, including roots beyond the Atlas sample', async () => {
     const all = Array.from({ length: 64 }, (_, i) => ({ ...grantedA, root_id: `rt_${i}` }));

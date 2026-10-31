@@ -551,7 +551,7 @@ def check_explorer_fallback(page: Page, engine: FakeEngine) -> None:
     expect(rows(page)).to_have_count(2)
     expect(crumbs.get_by_role('button', name='dir-1', exact=True)).to_be_focused()
     page.keyboard.press('Tab')
-    expect(page.get_by_role('checkbox', name='Select dir-2 for copy')).to_be_focused()
+    expect(page.get_by_role('checkbox', name='Select dir-2', exact=True)).to_be_focused()
     # the next action the reader takes clears the notice
     engine.gone = set()
     page.locator('main table.tbl').get_by_role('button', name='dir-2', exact=True).click()
@@ -568,7 +568,7 @@ def check_explorer_fallback(page: Page, engine: FakeEngine) -> None:
     expect(notice).to_contain_text('dir-2 is no longer in the catalogue')
     expect(crumbs.get_by_role('button', name='dir-1', exact=True)).to_be_focused()
     page.keyboard.press('Tab')
-    expect(page.get_by_role('checkbox', name='Select dir-2 for copy')).to_be_focused()
+    expect(page.get_by_role('checkbox', name='Select dir-2', exact=True)).to_be_focused()
     engine.gone = set()
     page.locator('main table.tbl').get_by_role('button', name='dir-2', exact=True).click()
     page.locator('main table.tbl').get_by_role('button', name='dir-3', exact=True).click()
@@ -601,7 +601,7 @@ def check_explorer_fallback(page: Page, engine: FakeEngine) -> None:
     ok(crumbs.inner_text().split() == ['New', 'Root'], f'with the whole saved chain gone the view shows the new starting point: {crumbs.inner_text()!r}')
     expect(crumbs.get_by_role('button', name='New Root')).to_be_focused()
     page.keyboard.press('Tab')
-    expect(page.get_by_role('checkbox', name='Select dir-1 for copy')).to_be_focused()
+    expect(page.get_by_role('checkbox', name='Select dir-1', exact=True)).to_be_focused()
     engine.gone = set()
     engine.nested = False
     print('PASS a vanished folder keeps the reader at the nearest folder that still exists, and says so')
