@@ -501,6 +501,7 @@ impl Inner {
                     }),
             ),
             FeedbackRecord => self.feedback_record(req.decode_payload()?),
+            FeedbackHistory => self.feedback_history(req.decode_payload()?, work),
             LearningStatus => self.learning_status(),
             LearningQueue => self.learning_queue(req.decode_payload()?, work),
             LearningRefit => self.learning_refit(),
@@ -1036,6 +1037,8 @@ impl Inner {
     /// only then publish `roots.changed`. Monotone: a revoked grant returns its original time.
     pub(crate) fn revoke(&self, grant: i64) -> Result<(Timestamp, (i64, i64)), ErrorBody> {
         let presence = self.cached_root_presence();
+        // Wake pending history only after the mutation lock drops, including error returns.
+        let _history_delivery;
         let _m = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
         let (state, revoked_at): (String, Option<i64>) = self
             .db()
@@ -1047,6 +1050,7 @@ impl Inner {
             .optional()
             .map_err(sql_error)?
             .ok_or_else(|| fail(ErrorCode::NotFound, "unknown grant"))?;
+        _history_delivery = self.history_delivery.suspend();
         self.forget_root_presence(grant);
         if state != "active" && state != "identity_changed" {
             // A prior revoke may have committed its grant but failed feature cleanup.
@@ -1111,6 +1115,7 @@ impl Inner {
         // Declare before the mutation guard: on every return or unwind it wakes adapters only
         // after the service lock releases. It is initialized only once forget can reach a write.
         let reply_delivery;
+        let history_delivery;
         let mutation = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
         let (grant, grant_state, path, volume) = db::roots(&self.db(), Some(root))
             .map_err(sql_error)?
@@ -1142,6 +1147,7 @@ impl Inner {
         // for that whole interval without holding a Bus lock over the blocking writer call.
         let _delivery = self.engine.suspend_event_delivery();
         reply_delivery = self.reply_delivery.suspend();
+        history_delivery = self.history_delivery.suspend();
         let written = self.catalog.writer().call(WriteCommand::ForgetGrant {
             grant_id: grant,
             forgotten_at_ns: at,
@@ -1177,6 +1183,7 @@ impl Inner {
             // original error below without any further owner-state work.
             drop(mutation);
             reply_delivery.resume();
+            history_delivery.resume();
         }
         written.map_err(|e| match e {
             loomward_catalog::Error::StaleGeneration => stale(

@@ -1252,3 +1252,366 @@ fn feedback_inside_the_publication_window_queues_behind_the_publication() {
     assert_eq!(count("object_ref"), 0);
     assert_eq!(count("human_feedback"), 0);
 }
+
+#[test]
+fn feedback_history_lifecycle_replay_and_restart() {
+    let tmp = temp_root();
+    let original = tmp.path().join("synthetic-original.bin");
+    std::fs::write(&original, b"unchanged history fixture").unwrap();
+    let before_file = (
+        std::fs::read(&original).unwrap(),
+        std::fs::metadata(&original).unwrap().modified().unwrap(),
+    );
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let node = learning_node(&svc);
+    let request = feedback(&node, "ce_history_first", Some("Documents"), false);
+    let (first, _) = ok(
+        "feedback.record",
+        call(&svc, "feedback.record", request.clone()),
+    );
+    let history = |service: &Service| {
+        ok(
+            "feedback.history",
+            call(
+                service,
+                "feedback.history",
+                json!({"limit": 100, "cursor": null}),
+            ),
+        )
+        .0
+    };
+    let initial = history(&svc);
+    assert_eq!(initial["items"].as_array().unwrap().len(), 1);
+    assert_eq!(initial["items"][0]["event_id"], first["event_id"]);
+    assert_eq!(initial["items"][0]["label"], "Documents");
+    assert_eq!(initial["items"][0]["is_current"], true);
+
+    let (corrected, _) = ok(
+        "feedback.record",
+        call(
+            &svc,
+            "feedback.record",
+            feedback(&node, "ce_history_corrected", Some("Archive"), false),
+        ),
+    );
+    let (withdrawn, _) = ok(
+        "feedback.record",
+        call(
+            &svc,
+            "feedback.record",
+            feedback(&node, "ce_history_withdrawn", None, true),
+        ),
+    );
+    let (replay, _) = ok(
+        "feedback.record",
+        call(&svc, "feedback.record", request.clone()),
+    );
+    assert_eq!(replay["event_id"], first["event_id"]);
+    assert_eq!(replay["idempotent_replay"], true);
+
+    let before_revision = svc.inner.revisions().unwrap();
+    let before_grants = count(
+        &svc,
+        "SELECT count(*) FROM st.root_grant WHERE state='active'",
+    );
+    let before_learning = ok("learning.status", call(&svc, "learning.status", json!({}))).0;
+    let final_page = history(&svc);
+    assert_eq!(
+        svc.inner.revisions().unwrap(),
+        before_revision,
+        "history is read-only"
+    );
+    let rows = final_page["items"].as_array().unwrap();
+    assert_eq!(rows.len(), 3, "replay must not duplicate the history");
+    assert_eq!(rows[0]["event_id"], withdrawn["event_id"]);
+    assert_eq!(rows[0]["label"], "Archive");
+    assert_eq!(rows[0]["revision"], 3);
+    assert_eq!(rows[0]["retracted"], true);
+    assert_eq!(rows[0]["is_current"], true);
+    assert_eq!(rows[1]["event_id"], corrected["event_id"]);
+    assert_eq!(rows[1]["revision"], 2);
+    assert_eq!(rows[1]["is_current"], false);
+    assert_eq!(rows[2]["event_id"], first["event_id"]);
+    assert_eq!(rows[2]["is_current"], false);
+    assert_eq!(final_page["next_cursor"], Value::Null);
+    assert_eq!(
+        count(
+            &svc,
+            "SELECT count(*) FROM st.root_grant WHERE state='active'"
+        ),
+        before_grants
+    );
+    assert_eq!(
+        ok("learning.status", call(&svc, "learning.status", json!({}))).0,
+        before_learning
+    );
+    assert_eq!(before_learning["human_support"]["Archive"], 0);
+    assert_eq!(before_learning["teacher_labels"], 0);
+    drop(svc);
+
+    let reopened = open(tmp.path(), DatasetClass::Synthetic);
+    assert_eq!(
+        history(&reopened),
+        final_page,
+        "restart preserves the exact records"
+    );
+    let (replay, _) = ok(
+        "feedback.record",
+        call(&reopened, "feedback.record", request),
+    );
+    assert_eq!(replay["idempotent_replay"], true);
+    assert_eq!(history(&reopened), final_page);
+    assert_eq!(
+        (
+            std::fs::read(&original).unwrap(),
+            std::fs::metadata(&original).unwrap().modified().unwrap()
+        ),
+        before_file,
+    );
+}
+
+fn history_page(svc: &Service, limit: i64, cursor: Value) -> ResponseEnvelope {
+    call(
+        svc,
+        "feedback.history",
+        json!({"limit":limit,"cursor":cursor}),
+    )
+}
+
+#[test]
+fn feedback_history_pages_bind_revisions_and_session_and_reject_clients() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let node = learning_node(&svc);
+    for i in 1..=3 {
+        ok(
+            "feedback.record",
+            call(
+                &svc,
+                "feedback.record",
+                feedback(
+                    &node,
+                    &format!("ce_history_page_{i}"),
+                    Some("Documents"),
+                    false,
+                ),
+            ),
+        );
+    }
+    let first = ok("feedback.history", history_page(&svc, 1, Value::Null)).0;
+    let cursor = first["next_cursor"].clone();
+    assert_eq!(first["items"][0]["revision"], 3);
+    let second = ok("feedback.history", history_page(&svc, 1, cursor.clone())).0;
+    assert_eq!(second["items"][0]["revision"], 2);
+    let third = ok(
+        "feedback.history",
+        history_page(&svc, 1, second["next_cursor"].clone()),
+    )
+    .0;
+    assert_eq!(third["items"][0]["revision"], 1);
+    assert_eq!(third["next_cursor"], Value::Null);
+    for limit in [0, 101] {
+        assert_eq!(
+            err(history_page(&svc, limit, Value::Null)).code,
+            ErrorCode::InvalidRequest
+        );
+    }
+    assert_eq!(
+        reason(&err(history_page(&svc, 1, json!("cu_forged")))),
+        Some("cursor_expired")
+    );
+    let root: RootId = serde_json::from_value(json!(svc.inner.root_id(1))).unwrap();
+    svc.grant_client("mcp:history", &[root], &["name", "size"], None)
+        .unwrap();
+    assert_eq!(
+        err(svc.call(
+            request("feedback.history", json!({"limit":1,"cursor":null})),
+            &CallContext::client("mcp:history")
+        ))
+        .code,
+        ErrorCode::PermissionDenied
+    );
+    assert!(!Command::FeedbackHistory.available_on(Adapter::Mcp));
+    ok(
+        "feedback.record",
+        call(
+            &svc,
+            "feedback.record",
+            feedback(&node, "ce_history_page_4", Some("Archive"), false),
+        ),
+    );
+    assert_eq!(
+        reason(&err(history_page(&svc, 1, cursor))),
+        Some("state_rev_changed")
+    );
+    let cursor =
+        ok("feedback.history", history_page(&svc, 1, Value::Null)).0["next_cursor"].clone();
+    svc.inner
+        .db()
+        .execute("UPDATE main.revision SET catalog_rev=catalog_rev+1", [])
+        .unwrap();
+    assert_eq!(
+        reason(&err(history_page(&svc, 1, cursor))),
+        Some("catalog_rev_changed")
+    );
+    let cursor =
+        ok("feedback.history", history_page(&svc, 1, Value::Null)).0["next_cursor"].clone();
+    drop(svc);
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    assert_eq!(
+        reason(&err(history_page(&svc, 1, cursor))),
+        Some("cursor_expired")
+    );
+}
+
+#[test]
+fn feedback_history_hides_unresolved_and_unproven_names_without_writing() {
+    for (change, status) in [
+        (
+            "UPDATE st.object_ref SET state='unresolved',retired=1",
+            "unresolved",
+        ),
+        ("UPDATE main.file SET created_ft=created_ft+1", "unresolved"),
+        ("UPDATE main.dir SET listing_state='excluded'", "unresolved"),
+        ("UPDATE main.file SET flags=1", "unresolved"),
+        (
+            "UPDATE st.root_grant SET state='revoked',revoked_at_ns=1",
+            "redacted",
+        ),
+        ("DELETE FROM st.learning_feature_grant", "redacted"),
+        (
+            "INSERT INTO st.learning_redacted SELECT event_id FROM st.human_feedback",
+            "redacted",
+        ),
+    ] {
+        let tmp = temp_root();
+        let svc = open(tmp.path(), DatasetClass::Synthetic);
+        let node = learning_node(&svc);
+        ok(
+            "feedback.record",
+            call(
+                &svc,
+                "feedback.record",
+                feedback(&node, "ce_history_private", Some("Documents"), false),
+            ),
+        );
+        let visible = ok("feedback.history", history_page(&svc, 1, Value::Null)).0;
+        assert_eq!(visible["items"][0]["reference_status"], "resolved");
+        assert!(visible["items"][0]["name"].is_string());
+        svc.inner.db().execute_batch(change).unwrap();
+        let revs = svc.inner.revisions().unwrap();
+        let before: String = svc
+            .inner
+            .db()
+            .query_row("SELECT features_json FROM st.human_feedback", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let hidden = ok("feedback.history", history_page(&svc, 1, Value::Null)).0;
+        assert_eq!(hidden["items"][0]["reference_status"], status, "{change}");
+        assert_eq!(hidden["items"][0]["name"], Value::Null, "{change}");
+        assert_eq!(hidden["items"][0]["label"], "Documents");
+        assert_eq!(svc.inner.revisions().unwrap(), revs);
+        assert_eq!(
+            svc.inner
+                .db()
+                .query_row("SELECT features_json FROM st.human_feedback", [], |r| {
+                    r.get::<_, String>(0)
+                })
+                .unwrap(),
+            before,
+            "history must not run a redaction sweep"
+        );
+    }
+}
+
+#[test]
+fn feedback_history_forget_removes_records_and_withholds_pending_names() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let node = learning_node(&svc);
+    ok(
+        "feedback.record",
+        call(
+            &svc,
+            "feedback.record",
+            feedback(&node, "ce_history_forget", Some("Documents"), false),
+        ),
+    );
+    let pending = svc.call_pending(
+        request("feedback.history", json!({"limit":20,"cursor":null})),
+        &CallContext::http(),
+    );
+    ok(
+        "roots.revoke",
+        call(
+            &svc,
+            "roots.revoke",
+            json!({"root_id":svc.inner.root_id(1),"purge_catalog":false}),
+        ),
+    );
+    let redacted = ok("feedback.history", history_page(&svc, 20, Value::Null)).0;
+    assert_eq!(redacted["items"][0]["reference_status"], "redacted");
+    assert_eq!(redacted["items"][0]["name"], Value::Null);
+    ok(
+        "roots.forget",
+        call(
+            &svc,
+            "roots.forget",
+            json!({"root_id":svc.inner.root_id(1)}),
+        ),
+    );
+    assert_eq!(reason(&err(pending.admit())), Some("forgotten_result"));
+    assert!(
+        ok("feedback.history", history_page(&svc, 20, Value::Null)).0["items"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    drop(svc);
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    assert!(
+        ok("feedback.history", history_page(&svc, 20, Value::Null)).0["items"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn feedback_history_revoke_withholds_a_prepared_response_without_forget() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let node = learning_node(&svc);
+    ok(
+        "feedback.record",
+        call(
+            &svc,
+            "feedback.record",
+            feedback(&node, "ce_history_revoke", Some("Documents"), false),
+        ),
+    );
+    let pending = svc.call_pending(
+        request("feedback.history", json!({"limit":20,"cursor":null})),
+        &CallContext::http(),
+    );
+    ok(
+        "roots.revoke",
+        call(
+            &svc,
+            "roots.revoke",
+            json!({"root_id":svc.inner.root_id(1),"purge_catalog":false}),
+        ),
+    );
+    assert_eq!(reason(&err(pending.admit())), Some("forgotten_result"));
+    let fresh = svc
+        .call_pending(
+            request("feedback.history", json!({"limit":20,"cursor":null})),
+            &CallContext::http(),
+        )
+        .admit();
+    let page = ok("feedback.history", fresh).0;
+    assert_eq!(page["items"][0]["reference_status"], "redacted");
+    assert_eq!(page["items"][0]["name"], Value::Null);
+    assert_eq!(count(&svc, "SELECT count(*) FROM st.root_forgotten"), 0);
+}

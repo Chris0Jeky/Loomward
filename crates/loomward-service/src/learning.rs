@@ -168,6 +168,22 @@ impl Inner {
             .ids
             .open(node.as_str(), &self.instance)
             .map_err(|e| crate::id_refusal(e, "unknown node"))?;
+        if !self.feedback_reference_matches(&self.db(), key, born, reference)? {
+            return Err(fail(
+                ErrorCode::InvalidRequest,
+                "client_event_id was used for different content",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn feedback_reference_matches(
+        &self,
+        conn: &rusqlite::Connection,
+        key: NodeKey,
+        born: i64,
+        reference: i64,
+    ) -> Result<bool, ErrorBody> {
         let (kind, row, table, directory) = match key {
             NodeKey::File(row) => ("file", row, "file", "n.dir_id"),
             NodeKey::Dir(row) => ("dir", row, "dir", "n.id"),
@@ -184,8 +200,7 @@ impl Inner {
         // A committed publication can overlay row/birth before its state-side fold. Check the
         // effective binding and native continuity tuple together; paths and row IDs alone do
         // not establish identity, and an unresolved or retired reference is never reattached.
-        let matches: bool = self
-            .db()
+        conn
             .query_row(
                 &format!(
                     "WITH RECURSIVE ancestry(id,parent_id,root_id,listing_state) AS (
@@ -228,14 +243,7 @@ impl Inner {
                 ],
                 |r| r.get(0),
             )
-            .map_err(sql_error)?;
-        if !matches {
-            return Err(fail(
-                ErrorCode::InvalidRequest,
-                "client_event_id was used for different content",
-            ));
-        }
-        Ok(())
+            .map_err(sql_error)
     }
     pub(crate) fn learning_refit(&self) -> Result<Out, ErrorBody> {
         let _permit = self.mutation.lock().unwrap_or_else(|e| e.into_inner());

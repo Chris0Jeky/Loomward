@@ -1220,6 +1220,31 @@ export interface FeedbackResult {
   learning: LearningStatus;
 }
 
+export interface FeedbackHistoryRequest {
+  limit: number;
+  cursor: Cursor | null;
+}
+
+export type FeedbackReferenceStatus = "resolved" | "unresolved" | "redacted";
+
+/** Human event only. is_current means latest event for its durable object, including withdrawal; not training eligibility. name is a recorded name, never a current path, and is null unless provenance and reference remain visible. */
+export interface FeedbackHistoryItem {
+  event_id: EventId;
+  revision: number;
+  label: Label | null;
+  retracted: boolean;
+  is_current: boolean;
+  taxonomy_version: number;
+  recorded_at: Timestamp;
+  reference_status: FeedbackReferenceStatus;
+  name: string | null;
+}
+
+export interface FeedbackHistory {
+  items: FeedbackHistoryItem[];
+  next_cursor: Cursor | null;
+}
+
 export interface LearningQueueRequest {
   root_id: RootId | null;
   limit: number;
@@ -2775,6 +2800,7 @@ export interface CommandMap {
   "clutter.developer": { request: DeveloperClutterRequest; result: DeveloperClutterReport };
   "taxonomy.get": { request: EmptyRequest; result: Taxonomy };
   "feedback.record": { request: FeedbackRequest; result: FeedbackResult };
+  "feedback.history": { request: FeedbackHistoryRequest; result: FeedbackHistory };
   "learning.status": { request: EmptyRequest; result: LearningStatus };
   "learning.queue": { request: LearningQueueRequest; result: LearningQueue };
   "learning.refit": { request: EmptyRequest; result: JobResult };
@@ -2874,6 +2900,7 @@ export const COMMANDS = {
   "clutter.developer": { adapters: ["tauri", "http"], wave: 2, events: [] },
   "taxonomy.get": { adapters: ["tauri", "http"], wave: 3, events: [] },
   "feedback.record": { adapters: ["tauri", "http"], wave: 3, events: ["learning.updated"] },
+  "feedback.history": { adapters: ["tauri", "http"], wave: 3, events: [] },
   "learning.status": { adapters: ["tauri", "http"], wave: 3, events: [] },
   "learning.queue": { adapters: ["tauri", "http"], wave: 3, events: [] },
   "learning.refit": { adapters: ["tauri", "http"], wave: 3, events: ["job.state", "learning.updated"] },

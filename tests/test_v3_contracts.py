@@ -18,6 +18,27 @@ class V3ContractTests(unittest.TestCase):
         self.defs = self.schema['$defs']
         self.commands = load('commands.json')
 
+    def test_feedback_history_is_bounded_owner_only_and_read_only(self):
+        self.assertIn('feedback.history', self.commands['commands'])
+        command = self.commands['commands']['feedback.history']
+        self.assertEqual(command['effects'], 'none')
+        self.assertEqual(command['adapters'], ['tauri', 'http'])
+        self.assertNotIn('client_result', command)
+        import jsonschema
+        validator = jsonschema.Draft202012Validator({
+            '$defs': self.defs, '$ref': '#/$defs/' + command['request']})
+        request = {'limit': 20, 'cursor': None}
+        validator.validate(request)
+        for limit in (0, 101):
+            self.assertFalse(validator.is_valid(dict(request, limit=limit)))
+        self.assertFalse(validator.is_valid({'limit': 20}))
+        self.assertFalse(validator.is_valid(dict(request, path='Synthetic private path')))
+        page = load('examples/commands/feedback.history.result.json')
+        validator = jsonschema.Draft202012Validator({
+            '$defs': self.defs, '$ref': '#/$defs/' + command['result']})
+        validator.validate(page)
+        self.assertFalse(validator.is_valid(dict(page, items=page['items'] * 101)))
+
     def test_project_discovery_is_explicit_bounded_and_read_only(self):
         self.assertTrue('projects.find' in self.commands['commands'],
                         'An explicit catalogue-only project discovery command is missing')

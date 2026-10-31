@@ -1629,6 +1629,39 @@
         "learning": { "$ref": "#/$defs/LearningStatus" }
       }
     },
+    "FeedbackHistoryRequest": {
+      "type": "object", "additionalProperties": false,
+      "required": ["limit", "cursor"],
+      "properties": {
+        "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+        "cursor": {"anyOf": [{"$ref": "#/$defs/Cursor"}, {"type": "null"}]}
+      }
+    },
+    "FeedbackReferenceStatus": {"enum": ["resolved", "unresolved", "redacted"]},
+    "FeedbackHistoryItem": {
+      "type": "object", "additionalProperties": false,
+      "required": ["event_id", "revision", "label", "retracted", "is_current", "taxonomy_version", "recorded_at", "reference_status", "name"],
+      "properties": {
+        "event_id": {"$ref": "#/$defs/EventId"},
+        "revision": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+        "label": {"anyOf": [{"$ref": "#/$defs/Label"}, {"type": "null"}]},
+        "retracted": {"type": "boolean"},
+        "is_current": {"type": "boolean"},
+        "taxonomy_version": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+        "recorded_at": {"$ref": "#/$defs/Timestamp"},
+        "reference_status": {"$ref": "#/$defs/FeedbackReferenceStatus"},
+        "name": {"type": ["string", "null"], "maxLength": 256}
+      },
+      "$comment": "Human event only. is_current means latest event for its durable object, including withdrawal; not training eligibility. name is a recorded name, never a current path, and is null unless provenance and reference remain visible."
+    },
+    "FeedbackHistory": {
+      "type": "object", "additionalProperties": false,
+      "required": ["items", "next_cursor"],
+      "properties": {
+        "items": {"type": "array", "maxItems": 100, "items": {"$ref": "#/$defs/FeedbackHistoryItem"}},
+        "next_cursor": {"anyOf": [{"$ref": "#/$defs/Cursor"}, {"type": "null"}]}
+      }
+    },
     "LearningQueueRequest": {
       "type": "object",
       "additionalProperties": false,
