@@ -18,6 +18,27 @@ class V3ContractTests(unittest.TestCase):
         self.defs = self.schema['$defs']
         self.commands = load('commands.json')
 
+    def test_review_deferral_is_owner_only_and_queue_mode_is_additive(self):
+        self.assertIn('learning.set_deferred', self.commands['commands'])
+        command = self.commands['commands']['learning.set_deferred']
+        self.assertEqual(command['effects'], 'none')
+        self.assertEqual(command['adapters'], ['tauri', 'http'])
+        self.assertNotIn('client_result', command)
+        import jsonschema
+        validator = lambda name: jsonschema.Draft202012Validator({
+            '$defs': self.defs, '$ref': '#/$defs/' + name})
+        request = {'node_id': 'nd_1', 'deferred': True, 'client_event_id': 'ce_defer_1'}
+        validator(command['request']).validate(request)
+        for changed in (dict(request, deferred=None), dict(request, label='Archive'),
+                        {k: v for k, v in request.items() if k != 'client_event_id'}):
+            self.assertFalse(validator(command['request']).is_valid(changed))
+        queue = {'root_id': None, 'limit': 100, 'cursor': None}
+        validator('LearningQueueRequest').validate(queue)
+        for mode in ('review', 'deferred'):
+            validator('LearningQueueRequest').validate(dict(queue, mode=mode))
+        for mode in (None, 'all', 'dismissed'):
+            self.assertFalse(validator('LearningQueueRequest').is_valid(dict(queue, mode=mode)))
+
     def test_feedback_history_is_bounded_owner_only_and_read_only(self):
         self.assertIn('feedback.history', self.commands['commands'])
         command = self.commands['commands']['feedback.history']

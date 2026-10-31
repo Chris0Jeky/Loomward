@@ -66,7 +66,10 @@ impl RequestEnvelope {
         command.validate_request(&self.payload)?;
         let takes_precondition = matches!(
             command,
-            Command::VolumesDeclareTier | Command::CollectionsUpdateMembers | Command::RootsForget
+            Command::VolumesDeclareTier
+                | Command::CollectionsUpdateMembers
+                | Command::RootsForget
+                | Command::LearningSetDeferred
         );
         if self.expected_state_rev.is_some() && !takes_precondition {
             return Err(ErrorBody::invalid_request(

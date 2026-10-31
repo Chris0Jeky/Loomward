@@ -504,6 +504,7 @@ impl Inner {
             FeedbackHistory => self.feedback_history(req.decode_payload()?, work),
             LearningStatus => self.learning_status(),
             LearningQueue => self.learning_queue(req.decode_payload()?, work),
+            LearningSetDeferred => self.learning_set_deferred(req),
             LearningRefit => self.learning_refit(),
             ThreadsMeaning => self.meaning(req.decode_payload()?, work),
             TreeSlice => self.tree_slice(req, work),
