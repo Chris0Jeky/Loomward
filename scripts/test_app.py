@@ -766,7 +766,7 @@ def live_backups(page: Page, token: str) -> None:
     expect(page.get_by_role('heading', name='Backups', level=1)).to_be_visible()
     expect(page.get_by_text('No backup evidence imported yet.')).to_be_visible()
     expect(page.get_by_text('Importing needs the desktop app in a personal session')).to_be_visible()
-    check(page.locator('#alerts-error').inner_text() == '', 'backups: the view loaded from the engine with no error')
+    check(page.locator('main p.bad.live').inner_text() == '', 'backups: the view loaded from the engine with no error')
     print('PASS live Backups: list and forget over HTTP, import refused, the view shows no evidence rather than demo data')
 
 

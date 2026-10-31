@@ -13,6 +13,14 @@ reports zero errors and warnings. Generated TypeScript matches the canonical sch
 logs are retained in the driver mission outputs; the coordinator's exact-head delivery receipt records
 hosted results and archive identity after qualification.
 
+The first hosted head exposed three test-harness issues: an Alerts selector accidentally applied to
+Backups, Rust fixture helper qualification/shared ownership, and an optional Python schema dependency
+absent from the standard-library CI lane. The correction restores the Backups selector, qualifies the
+clock helper and shares the concurrent service through `Arc`. Python checks the declarations without
+an optional import; required full JSON Schema/DTO validation stays in the native protocol tests.
+No skipped optional Python schema check counts as that validation. The independent review found the
+Backups regression, reproduced by the hosted browser log; no other blocking finding was raised.
+
 ## Executable proof
 
 - `crates/loomward-protocol/tests/contract.rs`: closed request/result DTOs, required nullable bytes,

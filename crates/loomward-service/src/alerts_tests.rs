@@ -276,7 +276,7 @@ fn history_preserves_exact_zero_unknown_partial_and_filters_unfinished_runs() {
     let tmp = temp_root();
     let svc = open(tmp.path(), DatasetClass::Synthetic);
     let (root, _) = register(&svc, 1);
-    let when = now_ns() - DAY_NS;
+    let when = crate::now_ns() - DAY_NS;
     for counters in [
         r#"{"logical_bytes":9007199254740993,"complete":true}"#,
         r#"{"logical_bytes":0,"complete":true}"#,
@@ -340,7 +340,7 @@ fn history_retains_the_newest_64_with_stable_ties_and_unchanged_window_math() {
         "old records do not enter the growth window"
     );
     assert_eq!(result["check"], report(&svc)["items"][1]);
-    let when = now_ns();
+    let when = crate::now_ns();
     for size in 1..=65 {
         recorded_row(
             &svc,
@@ -516,7 +516,7 @@ fn history_deadline_discards_a_held_read_and_releases_its_worker() {
 #[test]
 fn history_refuses_a_snapshot_superseded_by_revocation() {
     let tmp = temp_root();
-    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let svc = std::sync::Arc::new(open(tmp.path(), DatasetClass::Synthetic));
     let (root, grant) = register(&svc, 1);
     scan(&svc, grant, root, GIB, 1, 0);
     svc.inner

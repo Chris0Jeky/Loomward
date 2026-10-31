@@ -19,36 +19,32 @@ class V3ContractTests(unittest.TestCase):
         self.commands = load('commands.json')
 
     def test_alert_history_is_bounded_owner_only_and_read_only(self):
-        import jsonschema
-        jsonschema.Draft202012Validator({
-            '$defs': self.defs, '$ref': '#/$defs/AlertReport'}).validate(
-                load('examples/commands/alerts.list.result.json'))
+        # This lane uses the standard library. Required full JSON Schema/DTO validation is in
+        # loomward-protocol/tests/contract.rs, including negative payloads and lossless bytes.
         self.assertIn('alerts.history', self.commands['commands'])
         command = self.commands['commands']['alerts.history']
         self.assertEqual(command['effects'], 'none')
         self.assertEqual(command['adapters'], ['tauri', 'http'])
         self.assertNotIn('client_result', command)
-        request = jsonschema.Draft202012Validator({
-            '$defs': self.defs, '$ref': '#/$defs/' + command['request']})
-        request.validate({'root_id': 'rt_1'})
-        for bad in ({}, {'root_id': 'rt_1', 'path': 'private'},
-                    {'root_id': 'rt_1', 'limit': 65}, {'root_id': None}):
-            self.assertFalse(request.is_valid(bad))
-        result = jsonschema.Draft202012Validator({
-            '$defs': self.defs, '$ref': '#/$defs/' + command['result']})
+        request = self.defs[command['request']]
+        self.assertIs(request['additionalProperties'], False)
+        self.assertEqual(request['required'], ['root_id'])
+        self.assertEqual(request['properties'], {'root_id': {'$ref': '#/$defs/RootId'}})
+        result = self.defs[command['result']]
+        self.assertIs(result['additionalProperties'], False)
+        self.assertEqual(result['properties']['samples']['maxItems'], 64)
+        self.assertEqual(result['properties']['samples']['items'], {'$ref': '#/$defs/AlertSample'})
+        self.assertEqual(set(result['required']), set(result['properties']))
+        sample = self.defs['AlertSample']
+        self.assertIs(sample['additionalProperties'], False)
+        self.assertIn('logical_bytes', sample['required'])
+        self.assertEqual(sample['properties']['logical_bytes'], {'$ref': '#/$defs/NullableBytes'})
         history = load('examples/commands/alerts.history.result.json')
-        result.validate(history)
-        self.assertTrue(any(s['logical_bytes'] == '9007199254740993'
-                            for s in history['samples']))
-        too_many = dict(history, samples=[history['samples'][0]] * 65)
-        self.assertFalse(result.is_valid(too_many))
-        sample = dict(history['samples'][0])
-        for value in (None, '0', '9007199254740993'):
-            result.validate(dict(history, samples=[dict(sample, logical_bytes=value)]))
-        for value in (0, -1, 'unknown'):
-            self.assertFalse(result.is_valid(dict(history, samples=[dict(sample, logical_bytes=value)])))
-        del sample['logical_bytes']
-        self.assertFalse(result.is_valid(dict(history, samples=[sample])))
+        self.assertLessEqual(len(history['samples']), 64)
+        self.assertEqual([s['logical_bytes'] for s in history['samples']],
+                         ['9007199254740993', '0', None, '1073741824'])
+        self.assertEqual([s['coverage'] for s in history['samples']],
+                         ['complete', 'complete', 'unknown', 'partial'])
 
     def test_feedback_history_is_bounded_owner_only_and_read_only(self):
         self.assertIn('feedback.history', self.commands['commands'])
