@@ -83,6 +83,7 @@ commands! {
     RootsForget = "roots.forget", RootForgetRequest, RootForgetResult, [Tauri, Http], 2, [];
     VolumesList = "volumes.list", EmptyRequest, VolumeList, [Tauri, Http], 2, [];
     VolumesDeclareTier = "volumes.declare_tier", DeclareTierRequest, DeclareTierResult, [Tauri, Http], 2, [];
+    VolumesDeclareReserve = "volumes.declare_reserve", DeclareReserveRequest, DeclareReserveResult, [Tauri, Http], 2, [VolumesChanged];
     ScanStart = "scan.start", ScanStartRequest, JobResult, [Tauri, Http], 2, [JobState, ScanProgress, TreeInvalidated];
     DuplicatesInspect = "duplicates.inspect", DuplicatesInspectRequest, JobResult, [Tauri, Http], 2, [JobState];
     DuplicatesCancel = "duplicates.cancel", JobRefRequest, JobResult, [Tauri, Http], 2, [JobState];

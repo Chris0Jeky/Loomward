@@ -232,6 +232,7 @@ impl Engine {
                 free_bytes: v.free_bytes,
                 reserve_bytes,
                 free_fraction: fraction,
+                declared_reserve_bytes: None,
                 pressure,
                 source_eligible,
             });

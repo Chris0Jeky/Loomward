@@ -260,7 +260,7 @@ export interface RequestEnvelope {
   payload: Record<string, unknown>;
   deadline_ms?: number;
   expected_generation?: Generation;
-  /** Revision precondition for owner-state mutations (volumes.declare_tier, collections.update_members): the call commits only while state.db is still at this revision, else stale_generation with detail.reason state_rev_changed (semantics.md sections 3 and 5). Elsewhere invalid_request. */
+  /** Revision precondition for owner-state mutations (volumes.declare_tier, volumes.declare_reserve (required), collections.update_members): the call commits only while state.db is still at this revision, else stale_generation with detail.reason state_rev_changed (semantics.md sections 3 and 5). Elsewhere invalid_request. */
   expected_state_rev?: Generation;
 }
 
@@ -566,6 +566,18 @@ export interface Volume {
 
 export interface VolumeList {
   volumes: Volume[];
+}
+
+/** Owner-only absolute uint64 bytes, not a percentage. null clears; zero is explicit. The service requires expected_state_rev on the envelope. */
+export interface DeclareReserveRequest {
+  volume_id: VolumeId;
+  reserve_bytes: NullableBytes;
+}
+
+export interface DeclareReserveResult {
+  volume_id: VolumeId;
+  reserve_bytes: NullableBytes;
+  preference_recorded_at: Timestamp;
 }
 
 /** Records a human preference. null clears the declaration. */
@@ -1436,6 +1448,8 @@ export interface TierVolume {
   capacity_bytes: NullableBytes;
   free_bytes: NullableBytes;
   reserve_bytes: ByteCount;
+  /** Absent on older producers. null is unset (zero assumed); a string including 0 is the owner preference. */
+  declared_reserve_bytes?: NullableBytes;
   free_fraction: NullableFraction;
   pressure: "ok" | "watch" | "pressure" | "unknown";
   source_eligible: boolean;
@@ -2753,6 +2767,7 @@ export interface CommandMap {
   "roots.revoke": { request: RootRevokeRequest; result: RootRevokeResult };
   "roots.forget": { request: RootForgetRequest; result: RootForgetResult };
   "volumes.list": { request: EmptyRequest; result: VolumeList };
+  "volumes.declare_reserve": { request: DeclareReserveRequest; result: DeclareReserveResult };
   "volumes.declare_tier": { request: DeclareTierRequest; result: DeclareTierResult };
   "scan.start": { request: ScanStartRequest; result: JobResult };
   "duplicates.inspect": { request: DuplicatesInspectRequest; result: JobResult };
@@ -2852,6 +2867,7 @@ export const COMMANDS = {
   "roots.revoke": { adapters: ["tauri", "http"], wave: 2, events: [] },
   "roots.forget": { adapters: ["tauri", "http"], wave: 2, events: [] },
   "volumes.list": { adapters: ["tauri", "http"], wave: 2, events: [] },
+  "volumes.declare_reserve": { adapters: ["tauri", "http"], wave: 2, events: ["volumes.changed"] },
   "volumes.declare_tier": { adapters: ["tauri", "http"], wave: 2, events: [] },
   "scan.start": { adapters: ["tauri", "http"], wave: 2, events: ["job.state", "scan.progress", "tree.invalidated"] },
   "duplicates.inspect": { adapters: ["tauri", "http"], wave: 2, events: ["job.state"] },

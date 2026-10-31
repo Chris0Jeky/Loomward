@@ -64,6 +64,7 @@ re-send as stated.
 |---|---|---|---|---|
 | `feedback.record` | Yes | `client_event_id`, forever: an identical replay returns the original result with `idempotent_replay: true` | `learning.status`, `learning.queue` | Not needed: the durable key makes a resend with the same `client_event_id` safe. Reuse with different content is `invalid_request` |
 | `volumes.declare_tier` | Yes | `request_id`, 10 min | `volumes.list` | Re-declare only with `expected_state_rev` from that read |
+| `volumes.declare_reserve` | Yes | `request_id`, 10 min | `tiers.model` | An identical retry replays its retained result. A new declaration requires `expected_state_rev` from the current model read. |
 | `collections.create` | Yes | `request_id`, 10 min | `collections.list`; a duplicate name is `invalid_request` with `detail.existing_id` | Not needed: the name is the key |
 | `collections.update_members` | Yes | `request_id`, 10 min | `collections.members` | Re-send adds and removes only with `expected_state_rev` from that read; set operations are not idempotent against intervening changes |
 | `roots.revoke`, `grants.revoke` | Yes | Revocation is monotone: revoking a revoked grant returns the original `revoked_at` | `roots.list`, `grants.list` | Re-send is safe |
@@ -299,6 +300,16 @@ report `personal_metadata_unsupported`. There is no synthetic fallback for perso
 | `state_rev` | One `state.db` instance | Every committed `state.db` transaction that changes owner data: feedback, collections and members, tier declarations, grants, backup evidence (monotonic, never reused) | `ResponseMeta.state_rev`, `EventEnvelope.state_rev`, request precondition `expected_state_rev` |
 
 Rules:
+
+- `volumes.declare_reserve` is owner-only on HTTP/Tauri, requires `expected_state_rev`, and
+  records an absolute decimal byte string (uint64), including explicit `"0"`; `null` clears
+  the preference. A stale revision writes nothing. It changes only Loomward state, never grants
+  or files. Preferences bind to stable native volume identity, survive restart and remain
+  separate from observed capacity. In `tiers.model`, `declared_reserve_bytes: null` means unset
+  and effective `reserve_bytes` is explicitly zero; omission of the new field means an older
+  producer. Reserve values and their declaration revision bind saved simulations; a revision
+  makes older scenarios stale and a concurrent revision refuses saving. No eligibility rule
+  or effect gate changes. An older service cannot accept this new command.
 
 - `expected_generation` is accepted only for commands anchored in exactly one root (`tree.*`, `node.inspect`,
   `projects.find`, `stats.breakdown` on a root or node anchor, and `collections.update_members` with exactly

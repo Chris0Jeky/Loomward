@@ -25,6 +25,13 @@ pub struct TierVolume {
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub free_bytes: Option<Bytes>,
     pub reserve_bytes: Bytes,
+    /// Absent on older services; null means unset (zero assumed), including after a clear.
+    #[serde(
+        default,
+        deserialize_with = "crate::types::optional_nullable",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub declared_reserve_bytes: Option<Option<Bytes>>,
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub free_fraction: Option<Fraction>,
     pub pressure: TierVolumePressure,

@@ -21,7 +21,7 @@ const str = (b: bigint): ByteCount => b.toString();
 const WATCH = 0.2;
 const PRESSURE = 0.1;
 
-interface VolumeSeed { id: string; name: string; fs: string; bus: Volume['device']['bus_type']; seek: boolean | null; capacity: bigint; freeFraction: number; declared: number | null; hint: number | null; removable: boolean; exclusion?: PlacementPlan['excluded_volumes'][number]['reason'] }
+interface VolumeSeed { id: string; name: string; fs: string; bus: Volume['device']['bus_type']; seek: boolean | null; capacity: bigint; freeFraction: number; declared: number | null; hint: number | null; removable: boolean; reserve?: bigint; exclusion?: PlacementPlan['excluded_volumes'][number]['reason'] }
 const VOLUMES: VolumeSeed[] = [
   { id: 'vo_c', name: 'C:', fs: 'NTFS', bus: 'nvme', seek: false, capacity: 2048n * GiB, freeFraction: 0.09, declared: null, hint: 1, removable: false },
   { id: 'vo_g', name: 'G:', fs: 'NTFS', bus: 'nvme', seek: false, capacity: 1024n * GiB, freeFraction: 0.58, declared: 2, hint: 1, removable: false },
@@ -77,6 +77,7 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
   let subscriptionSeq = 0;
   let stateRev = 1;
   let declarationRev = 0;
+  let reserveRev = 0;
   let sampleSeq = 0;
 
   const free = (v: VolumeSeed): bigint => BigInt(Math.round(Number(v.capacity) * v.freeFraction));
@@ -88,7 +89,7 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
       note: v.declared !== null ? 'Declared by the owner.' : v.hint !== null ? 'Device hint, not a measured speed.' : 'The device reports nothing usable; declare a tier to include this volume.',
     };
   };
-  const exclusion = (v: VolumeSeed) => v.exclusion ?? (tierInfo(v).tier === null ? 'tier_unknown' : null);
+  const exclusion = (v: VolumeSeed) => v.exclusion ?? ((v.reserve ?? 0n) > v.capacity ? 'physics_unusable' : tierInfo(v).tier === null ? 'tier_unknown' : null);
   // LW-137: USB and SATA seeds hide their reliability counters; NVMe seeds report some. Unreported facts stay null.
   const storagePath = (v: VolumeSeed): NonNullable<Volume['storage_path']> => {
     const hidden = v.bus === 'usb' || v.bus === 'sata' || v.bus === 'unknown';
@@ -121,14 +122,14 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
         ? Number(available) / Number(capacity) : null;
       return {
         volume_id: v.id, display_name: v.name, tier: { ...tierInfo(v), ...(v.exclusion === 'no_active_grant' ? { note: 'No active grant; excluded from placement simulation.' } : {}) }, online: observed.online, writable: true,
-        capacity_bytes: observed.capacity_bytes, free_bytes: observed.free_bytes, reserve_bytes: str(v.capacity / 50n), free_fraction: frac,
+        capacity_bytes: observed.capacity_bytes, free_bytes: observed.free_bytes, reserve_bytes: str(v.reserve ?? 0n), declared_reserve_bytes: v.reserve === undefined ? null : str(v.reserve), free_fraction: frac,
         pressure: frac === null ? 'unknown' : frac < PRESSURE ? 'pressure' : frac < WATCH ? 'watch' : 'ok',
         source_eligible: exclusion(v) === null,
       };
     }),
     policy: {
       watch_free_fraction: WATCH, pressure_free_fraction: PRESSURE,
-      reserve_note: 'Each volume keeps a reserve of 2% of its capacity that a plan never spends.',
+      reserve_note: 'Recorded reserves are kept free. Unset reserves assume zero; capacity and eligibility still come from observations.',
       note: 'Tier 0 is fastest. A plan only demotes to an equal or slower tier. Tiers come from a declaration, else a device hint, else they are unknown.',
     },
   });
@@ -145,7 +146,7 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
 
   const excludedVolumes = (source: string): PlacementPlan['excluded_volumes'] =>
     volumes.flatMap((v) => { const reason = exclusion(v); return v.id !== source && reason ? [{ volume_id: v.id, reason }] : []; });
-  const placementState = () => JSON.stringify([catalogRev, declarationRev, [...revokedRoots], [...revokedGrants], [...forgottenRoots]]);
+  const placementState = () => JSON.stringify([catalogRev, declarationRev, reserveRev, volumes.map(v => v.reserve?.toString() ?? null), [...revokedRoots], [...revokedGrants], [...forgottenRoots]]);
 
   const candidates = (p: Record<string, unknown>): PlacementCandidates => {
     if (exclusion(seed(p.source_volume_id))) fail('invalid_request', 'source volume is excluded');
@@ -213,7 +214,7 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
 
     // Exhaustive over subsets (at most 2^9), first target with room: lexicographic shortfall, transfer, count.
     const need = goal > free(source) ? goal - free(source) : 0n;
-    const room = new Map(targets.map((t) => [t.id, free(t) - t.capacity / 50n]));
+    const room = new Map(targets.map((t) => [t.id, free(t) > (t.reserve ?? 0n) ? free(t) - (t.reserve ?? 0n) : 0n]));
     let best: { picks: { g: GroupSeed; to: string; relief: bigint }[]; short: bigint; transfer: bigint } = { picks: [], short: need, transfer: 0n };
     let visited = 0;
     let complete = true;
@@ -388,6 +389,17 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
 
   const handlers: Record<string, Handler> = {
     'volumes.list': (): VolumeList => ({ volumes: volumes.map(volumeRow) }),
+    'volumes.declare_reserve': (p) => {
+      if (Object.keys(p).some(k => !['volume_id', 'reserve_bytes'].includes(k)) || !Object.hasOwn(p, 'reserve_bytes')) fail('invalid_request', 'Expected volume_id and reserve_bytes.');
+      const bytes = p.reserve_bytes;
+      if (bytes !== null && (typeof bytes !== 'string' || !/^(0|[1-9][0-9]{0,19})$/.test(bytes) || BigInt(bytes) > (1n << 64n) - 1n)) fail('invalid_request', 'reserve_bytes must be an unsigned byte string or null.');
+      const volume = seed(p.volume_id);
+      volume.reserve = bytes === null ? undefined : BigInt(bytes as string);
+      reserveRev++;
+      stateRev++;
+      for (const detail of saved.values()) detail.summary.status = 'stale';
+      return { volume_id: volume.id, reserve_bytes: bytes, preference_recorded_at: iso() };
+    },
     'volumes.declare_tier': (p) => {
       const volume = seed(String(p.volume_id));
       if (p.tier !== null && (typeof p.tier !== 'number' || !Number.isInteger(p.tier) || p.tier < 0 || p.tier > 9)) fail('invalid_request', 'tier must be 0 to 9 or unknown');

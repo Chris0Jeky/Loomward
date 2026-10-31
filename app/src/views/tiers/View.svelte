@@ -12,10 +12,11 @@
   import VolumeStatus from '../../lib/ui/VolumeStatus.svelte';
   import { Say } from '../../lib/ui/say.svelte';
   import { firstTrusted, isSound, reliefAgeText, type Outcome } from './plan';
+  import { reserveBytes, reserveDraft, type ReserveDraft } from './reserve';
   import type { CandidateGroup, GroupOverride, PlacementCandidates, PlacementPlan, ProposalDetail, ProposalSummary, TierInfo, TierModel, TierVolume } from '../../lib/contracts.gen';
   import type { HeatPolicy, PreRejectReason, RejectReason, ReliefPolicy } from '../../lib/derived';
 
-  interface Assumption { heat: '' | '0.1' | '0.5' | '0.9'; free: boolean }
+  interface Assumption { heat: '' | '0.1' | '0.5' | '0.9'; free: boolean; cooldown: boolean }
 
   const HEAT: { id: HeatPolicy; label: string; note: string }[] = [
     { id: 'unknown_is_ineligible', label: 'Unknown heat is ineligible', note: 'The default. Nothing is guessed to be cold.' },
@@ -55,6 +56,8 @@
   let simulating = $state(false);
   let formError = $state('');
   let declaring = $state(false);
+  let modelStateRev = $state<string | null>(null);
+  let reserves = $state<Record<string, ReserveDraft>>({});
   let save = $state(false);
   let saved = $state<ProposalSummary[]>([]);
   let savedDetail = $state<ProposalDetail | null>(null);
@@ -104,9 +107,11 @@
     savedTicket++;
     loading = true;
     try {
-      const { result } = await c.call('tiers.model', {});
+      const { result, meta } = await c.call('tiers.model', {});
       if (mine !== modelTicket) return;
       model = result;
+      modelStateRev = meta.state_rev;
+      reserves = Object.fromEntries(result.volumes.map(v => [v.volume_id, reserveDraft(v.declared_reserve_bytes)]));
       error = '';
       const keep = result.volumes.find((v) => v.volume_id === source && v.source_eligible);
       const next = (keep ?? result.volumes.find((v) => v.pressure === 'pressure' && v.source_eligible) ?? result.volumes.find((v) => v.source_eligible))?.volume_id ?? '';
@@ -140,6 +145,28 @@
       saved = result.proposals;
       savedError = '';
     } catch (e) { saved = []; savedError = session.handle(e); }
+  }
+
+  async function declareReserve(id: string, clear = false) {
+    const c = session.client;
+    const expectedStateRev = modelStateRev;
+    const draft = reserves[id];
+    if (!c || declaring || loading || expectedStateRev === null || !draft) return;
+    const bytes = clear ? null : reserveBytes(draft.value, draft.unit);
+    if (!clear && bytes === null) { error = 'Enter a whole number of bytes or GiB. The reserve must fit within the supported byte range.'; return; }
+    const mine = modelTicket;
+    declaring = true;
+    try {
+      await c.call('volumes.declare_reserve', { volume_id: id, reserve_bytes: bytes }, { expectedStateRev });
+      if (c !== session.client || mine !== modelTicket) return;
+      await loadModel();
+      say.say(clear ? 'Reserve cleared. Simulations assume zero reserve.' : 'Destination reserve recorded. Saved scenarios have been refreshed. Nothing is moved.');
+    } catch (e) {
+      if (c !== session.client || mine !== modelTicket) return;
+      const message = session.handle(e);
+      await loadModel();
+      error = message;
+    } finally { declaring = false; }
   }
 
   async function loadSaved(id: string) {
@@ -187,7 +214,8 @@
       const o: GroupOverride = { group_id };
       if (a.heat) o.heat = Number(a.heat);
       if (a.free) { o.pinned = false; o.active = false; o.protected = false; }
-      if (a.heat || a.free) out.push(o);
+      if (a.cooldown) o.days_since_move = 7;
+      if (a.heat || a.free || a.cooldown) out.push(o);
     }
     return out;
   }
@@ -273,6 +301,23 @@
               {#each Array.from({ length: 10 }, (_, i) => i) as tier (tier)}<option value={tier}>Tier {tier}</option>{/each}
             </select>
           </label>
+          {#if v.declared_reserve_bytes !== undefined && reserves[v.volume_id]}
+            <form class="reserve" onsubmit={(event) => { event.preventDefault(); void declareReserve(v.volume_id); }}>
+              <label class="field">Keep at least free
+                <input type="text" inputmode="numeric" aria-label={`Keep at least free for ${escapedName(v.display_name)}`} bind:value={reserves[v.volume_id]!.value} disabled={declaring || loading || modelStateRev === null} />
+              </label>
+              <label class="field">Unit
+                <select aria-label={`Reserve unit for ${escapedName(v.display_name)}`} bind:value={reserves[v.volume_id]!.unit} disabled={declaring || loading}>
+                  <option value="GiB">GiB</option><option value="B">bytes</option>
+                </select>
+              </label>
+              <div class="reserve-actions">
+                <button class="btn" type="submit" aria-label={`Save reserve for ${escapedName(v.display_name)}`} disabled={declaring || loading || modelStateRev === null}>Save reserve</button>
+                <button class="btn" type="button" aria-label={`Clear reserve for ${escapedName(v.display_name)}`} disabled={declaring || loading || modelStateRev === null || v.declared_reserve_bytes === null} onclick={() => void declareReserve(v.volume_id, true)}>Clear reserve</button>
+              </div>
+              <p class="small muted reserve-note">{v.declared_reserve_bytes === null ? 'No reserve set; simulations assume 0 B.' : `Keep at least ${formatBytes(v.declared_reserve_bytes)} free (${v.declared_reserve_bytes} bytes).`}</p>
+            </form>
+          {:else}<p class="small muted">This service does not report reserve preferences.</p>{/if}
           <button class="btn" type="button" aria-pressed={v.volume_id === source} disabled={!v.source_eligible} onclick={() => choose(v.volume_id)}>
             {v.volume_id === source ? 'Source volume' : 'Use as source'}<span class="sr-only">: {escapedName(v.display_name)}</span>
           </button>
@@ -302,7 +347,7 @@
         </thead>
         <tbody>
           {#each cands.groups as g (g.group_id)}
-            {@const a = assume[g.group_id] ?? { heat: '', free: false }}
+            {@const a = assume[g.group_id] ?? { heat: '', free: false, cooldown: false }}
             <tr>
               <th scope="row"><VisibleName name={g.name} />{#if g.coverage !== 'complete'} <span class="tag warn">{g.coverage}</span>{/if}</th>
               <td class="r num">{formatBytes(g.source_bytes)}<div class="small"><span class="tag" class:warn={g.estimate_basis !== 'allocated_entries'}>{g.estimate_basis.replaceAll('_', ' ')}</span></div></td>
@@ -324,6 +369,7 @@
                   <option value="">Heat: as observed</option><option value="0.1">Assume cold (0.1)</option><option value="0.5">Assume warm (0.5)</option><option value="0.9">Assume hot (0.9)</option>
                 </select>
                 <label class="chk"><input type="checkbox" checked={a.free} onchange={(e) => (assume[g.group_id] = { ...a, free: e.currentTarget.checked })} /> Assume not pinned, active or protected<span class="sr-only"> for {escapedName(g.name)}</span></label>
+                <label class="chk"><input type="checkbox" checked={a.cooldown} onchange={(e) => (assume[g.group_id] = { ...a, cooldown: e.currentTarget.checked })} /> Assume no move in the past 7 days<span class="sr-only"> for {escapedName(g.name)}</span></label>
               </td>
             </tr>
           {:else}
@@ -489,6 +535,10 @@
   .vol header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px; }
   .vol h3 { margin: 0; font-size: 1.1rem; }
   .vol p { margin: 6px 0; }
+  .reserve { display: grid; grid-template-columns: minmax(0, 1fr) 5rem; gap: 8px; margin: 12px 0; padding-top: 10px; border-top: 1px solid var(--line); }
+  .reserve input { min-width: 0; width: 100%; box-sizing: border-box; font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--control-line); border-radius: var(--radius); padding: 6px 10px; }
+  .reserve-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px; }
+  .reserve-note { grid-column: 1 / -1; overflow-wrap: anywhere; }
   .tag.tier { color: var(--residency); border: 1px dashed var(--residency); }
   .meter { position: relative; height: 12px; border: 1px solid var(--control-line); border-radius: 6px; background: var(--raised); overflow: hidden; }
   .used { height: 100%; background: var(--residency); opacity: 0.75; }
