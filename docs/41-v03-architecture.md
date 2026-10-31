@@ -317,6 +317,8 @@ Every command has `effects: none` except `diagnostics.save` (`owner_picked_expor
 | | **`diagnostics.save`** | `DiagnosticsSaveRequest` | `DiagnosticsSaveResult` | Writes exactly the previewed bytes, named by digest, to a file the owner picks in a Rust save dialog; the path never crosses IPC (ADR-V3-24) |
 | Alerts | `alerts.list` / `alerts.configure` | `EmptyRequest` / `AlertSettings` | `AlertReport` | Advice only (LW-121): low free space on volumes holding a granted root, and fast growth per root from completed-scan history; unknown, missing history and partial scans are statuses, never zero; thresholds are a `state.db` preference, notifications off by default. Refresh checks rereads recorded observations without a scan or settings write, preserves unsaved threshold drafts, and offers an explicit retry after a failed read. Refresh and save cannot be started together; invalidated replies are discarded. |
 
+| | `alerts.history` | `AlertHistoryRequest` | `AlertHistory` | Owner-only recorded history for one actively granted sealed root. At most 64 completed observations, chronological, with unknown/partial coverage and truncation disclosed. Uses the existing growth evaluator, read snapshot, deadline and revoke/forget delivery fence; no scan, volume probe or write. The keyboard inspector preserves threshold drafts and discards superseded replies. |
+
 **Events.** `stream.hello`, `stream.lagged`, `job.state`, `scan.progress` (at most 4/s per job),
 `tree.invalidated` (at most 2/s per root), `telemetry.sample`, `learning.updated`, `roots.changed`,
 `volumes.changed`, `health.warning`. Bindings in `commands.json`; ordering and replay in `semantics.md`.

@@ -1,18 +1,18 @@
-//! LW-121: `alerts.list` and `alerts.configure`. Alerts are advice evaluated on demand from facts the
+//! LW-121: alerts and their recorded history. Alerts are advice evaluated on demand from facts the
 //! service already holds: the volume space observation `volumes.list` reports, and the size each
 //! completed scan run recorded for its root. No scheduler, no network, no file or process effect.
 //! The only write is the owner's threshold record in `state.db` (`meta` key `alert_settings`).
 use crate::placement::Input;
-use crate::{db, fail, now_ns, sql_error, Inner, Out, ReadWork};
+use crate::{db, fail, now_ns, sql_error, ts_ns, Inner, Out, ReadWork};
 use loomward_engine::alerts::{self, RootInput, Sample, VolumeInput};
 use loomward_protocol::*;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use serde_json::Value;
 use std::time::{Duration, Instant};
 
 type Handled = Result<Out, ErrorBody>;
 
-/// Newest completed runs read per root; far more than any window of weekly or daily scans needs.
+/// Retained completed runs per root; a busy root may not cover the entire configured window.
 const MAX_SAMPLES: i64 = 64;
 
 fn settings(conn: &Connection) -> Result<AlertSettings, ErrorBody> {
@@ -23,9 +23,38 @@ fn settings(conn: &Connection) -> Result<AlertSettings, ErrorBody> {
         .unwrap_or_else(alerts::default_settings))
 }
 
-/// Completed runs of `root` that recorded a size, oldest first. A run without the counters
-/// (an older row, or a catalogue rebuilt since) is not a sample: unknown, never zero.
-fn samples(conn: &Connection, root: i64) -> Result<Vec<Sample>, ErrorBody> {
+struct RecordedScan {
+    finished_at_ns: i64,
+    logical_bytes: Option<u64>,
+    complete: Option<bool>,
+}
+
+impl RecordedScan {
+    // Preserve the evaluator's existing treatment of missing size and completeness counters.
+    fn sample(&self) -> Option<Sample> {
+        Some(Sample {
+            finished_at_ns: self.finished_at_ns,
+            logical_bytes: self.logical_bytes?,
+            complete: self.complete == Some(true),
+        })
+    }
+
+    fn observation(&self) -> AlertSample {
+        AlertSample {
+            finished_at: ts_ns(self.finished_at_ns),
+            logical_bytes: self.logical_bytes.map(Bytes),
+            coverage: match (self.logical_bytes, self.complete) {
+                (Some(_), Some(true)) => CoverageState::Complete,
+                (_, Some(false)) => CoverageState::Partial,
+                _ => CoverageState::Unknown,
+            },
+        }
+    }
+}
+
+/// The extra row proves truncation without counting all history. Trim before interpreting counters
+/// so malformed rows do not change which 64 records the existing evaluator considers.
+fn recorded(conn: &Connection, root: i64) -> Result<(Vec<RecordedScan>, bool), ErrorBody> {
     let mut stmt = conn
         .prepare_cached(
             "SELECT finished_at_ns,counters_json FROM main.scan_run
@@ -33,26 +62,36 @@ fn samples(conn: &Connection, root: i64) -> Result<Vec<Sample>, ErrorBody> {
              ORDER BY finished_at_ns DESC,id DESC LIMIT ?2",
         )
         .map_err(sql_error)?;
-    let rows = stmt
-        .query_map(rusqlite::params![root, MAX_SAMPLES], |r| {
+    let mut rows = stmt
+        .query_map(rusqlite::params![root, MAX_SAMPLES + 1], |r| {
             Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
         })
         .map_err(sql_error)?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(sql_error)?;
-    let mut out: Vec<Sample> = rows
+    let truncated = rows.len() > MAX_SAMPLES as usize;
+    rows.truncate(MAX_SAMPLES as usize);
+    let mut out: Vec<RecordedScan> = rows
         .into_iter()
-        .filter_map(|(finished_at_ns, json)| {
-            let v: Value = serde_json::from_str(&json).ok()?;
-            Some(Sample {
+        .map(|(finished_at_ns, json)| {
+            let v: Value = serde_json::from_str(&json).unwrap_or(Value::Null);
+            RecordedScan {
                 finished_at_ns,
-                logical_bytes: v.get("logical_bytes")?.as_u64()?,
-                complete: v.get("complete").and_then(Value::as_bool) == Some(true),
-            })
+                logical_bytes: v.get("logical_bytes").and_then(Value::as_u64),
+                complete: v.get("complete").and_then(Value::as_bool),
+            }
         })
         .collect();
     out.reverse();
-    Ok(out)
+    Ok((out, truncated))
+}
+
+fn samples(conn: &Connection, root: i64) -> Result<Vec<Sample>, ErrorBody> {
+    Ok(recorded(conn, root)?
+        .0
+        .iter()
+        .filter_map(RecordedScan::sample)
+        .collect())
 }
 
 impl Inner {
@@ -120,6 +159,57 @@ impl Inner {
     pub(crate) fn alerts_list(&self, work: Option<&ReadWork>) -> Handled {
         let (report, revs) = self.alerts_report(work)?;
         self.alerts_out(report, revs)
+    }
+
+    pub(crate) fn alerts_history(
+        &self,
+        r: AlertHistoryRequest,
+        work: Option<&ReadWork>,
+    ) -> Handled {
+        let root = self.root_row(&r.root_id)?;
+        let deadline = work.map_or_else(|| Instant::now() + Duration::from_secs(2), |w| w.deadline);
+        let input = Input::open(self, deadline, work)?;
+        #[cfg(test)]
+        self.hooks.gate(Command::AlertsHistory, "history_snapshot");
+        // Fetch only the active label: the general root projection also aggregates all scan runs.
+        let label: String = input
+            .conn
+            .query_row(
+                "SELECT g.display_path FROM main.root r JOIN st.root_grant g ON g.id=r.grant_id
+             WHERE r.id=?1 AND g.state='active'
+             AND NOT EXISTS(SELECT 1 FROM st.root_forgotten f WHERE f.grant_id=g.id)",
+                [root],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sql_error)?
+            .ok_or_else(|| fail(ErrorCode::NotFound, "Folder is not available."))?;
+        let settings = settings(&input.conn)?;
+        let (records, truncated) = recorded(&input.conn, root)?;
+        let report = alerts::evaluate(
+            &settings,
+            &[],
+            &[RootInput {
+                root_id: r.root_id,
+                label: label.chars().take(64).collect(),
+                samples: records.iter().filter_map(RecordedScan::sample).collect(),
+            }],
+            now_ns(),
+        );
+        let history = AlertHistory {
+            evaluated_at: report.evaluated_at,
+            growth_window_days: settings.growth_window_days,
+            check: report.items[0].clone(),
+            samples: BoundedVec::new(records.iter().map(RecordedScan::observation).collect())
+                .expect("at most 64 recorded scans"),
+            truncated,
+        };
+        Ok(Out {
+            result: serde_json::to_value(history)
+                .map_err(|_| fail(ErrorCode::InternalError, "encode alert history"))?,
+            catalog_rev: Some(input.revisions.0),
+            state_rev: Some(input.revisions.1),
+        })
     }
 
     /// Replaces the whole threshold record (every field is required), then answers with the

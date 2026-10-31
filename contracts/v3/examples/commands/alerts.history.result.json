@@ -1,0 +1,41 @@
+{
+  "evaluated_at": "2026-10-17T12:00:00.000Z",
+  "growth_window_days": 7,
+  "check": {
+    "kind": "fast_growth",
+    "status": "incomplete_coverage",
+    "label": "Synthetic root 1",
+    "volume_id": null,
+    "root_id": "rt_1",
+    "measured_bytes": null,
+    "threshold_bytes": "5368709120",
+    "capacity_bytes": null,
+    "window_start": "2026-10-11T12:00:00.000Z",
+    "window_end": "2026-10-17T11:00:00.000Z",
+    "coverage": "partial",
+    "note": "A scan in the window did not cover the whole root, so its size is not comparable; no growth is claimed."
+  },
+  "samples": [
+    {
+      "finished_at": "2026-10-01T12:00:00.000Z",
+      "logical_bytes": "9007199254740993",
+      "coverage": "complete"
+    },
+    {
+      "finished_at": "2026-10-11T12:00:00.000Z",
+      "logical_bytes": "0",
+      "coverage": "complete"
+    },
+    {
+      "finished_at": "2026-10-13T12:00:00.000Z",
+      "logical_bytes": null,
+      "coverage": "unknown"
+    },
+    {
+      "finished_at": "2026-10-17T11:00:00.000Z",
+      "logical_bytes": "1073741824",
+      "coverage": "partial"
+    }
+  ],
+  "truncated": false
+}

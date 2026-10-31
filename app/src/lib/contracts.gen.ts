@@ -2325,6 +2325,24 @@ export interface AlertReport {
   notifications_note: string;
 }
 
+export interface AlertHistoryRequest {
+  root_id: RootId;
+}
+
+export interface AlertSample {
+  finished_at: Timestamp;
+  logical_bytes: NullableBytes;
+  coverage: CoverageState;
+}
+
+export interface AlertHistory {
+  evaluated_at: Timestamp;
+  growth_window_days: number;
+  check: AlertItem;
+  samples: AlertSample[];
+  truncated: boolean;
+}
+
 /** Copy-and-verify operation (docs/47). */
 export type CopyOperationId = string;
 
@@ -2833,6 +2851,7 @@ export interface CommandMap {
   "diagnostics.preview": { request: EmptyRequest; result: DiagnosticsPreviewResult };
   "diagnostics.save": { request: DiagnosticsSaveRequest; result: DiagnosticsSaveResult };
   "alerts.list": { request: EmptyRequest; result: AlertReport };
+  "alerts.history": { request: AlertHistoryRequest; result: AlertHistory };
   "alerts.configure": { request: AlertSettings; result: AlertReport };
   "copy.preview": { request: CopyPreviewRequest; result: CopyPreview };
   "copy.approve": { request: CopyConsentRequest; result: CopyApproval };
@@ -2933,6 +2952,7 @@ export const COMMANDS = {
   "diagnostics.preview": { adapters: ["tauri", "http"], wave: 3, events: [] },
   "diagnostics.save": { adapters: ["tauri"], wave: 3, events: [] },
   "alerts.list": { adapters: ["tauri", "http"], wave: 2, events: [] },
+  "alerts.history": { adapters: ["tauri", "http"], wave: 2, events: [] },
   "alerts.configure": { adapters: ["tauri", "http"], wave: 2, events: [] },
   "copy.preview": { adapters: ["tauri", "http"], wave: 3, events: [] },
   "copy.approve": { adapters: ["tauri", "http"], wave: 3, events: [] },

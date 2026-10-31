@@ -80,3 +80,30 @@ pub struct AlertReport {
     pub items: BoundedVec<AlertItem, 0, 128>,
     pub notifications_note: Text<256>,
 }
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AlertHistoryRequest {
+    pub root_id: RootId,
+}
+
+/// One completed scan's recorded counters, not a fresh observation of the folder.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AlertSample {
+    pub finished_at: Timestamp,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub logical_bytes: Option<Bytes>,
+    pub coverage: CoverageState,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AlertHistory {
+    pub evaluated_at: Timestamp,
+    pub growth_window_days: Int<1, 90>,
+    pub check: AlertItem,
+    /// Newest 64 completed records, displayed oldest first; unknown counters remain visible.
+    pub samples: BoundedVec<AlertSample, 0, 64>,
+    pub truncated: bool,
+}

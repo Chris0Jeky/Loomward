@@ -57,6 +57,20 @@
       "window_end": "2026-10-17T11:00:00.000Z",
       "coverage": "partial",
       "note": "A scan in the window did not cover the whole root, so its size is not comparable; no growth is claimed."
+    },
+    {
+      "kind": "fast_growth",
+      "status": "insufficient_history",
+      "label": "Synthetic root 2",
+      "volume_id": null,
+      "root_id": "rt_2",
+      "measured_bytes": null,
+      "threshold_bytes": "5368709120",
+      "capacity_bytes": null,
+      "window_start": null,
+      "window_end": null,
+      "coverage": "unknown",
+      "note": "No recorded scans for this folder; no growth is claimed."
     }
   ],
   "notifications_note": "Notifications are off. Alerts show here only; no operating-system notification channel is wired yet."

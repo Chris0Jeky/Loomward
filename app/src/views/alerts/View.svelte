@@ -5,10 +5,11 @@
   import { untrack } from 'svelte';
   import { session } from '../../lib/stores/session.svelte';
   import { formatTime } from '../../lib/format/time';
+  import { formatBytes } from '../../lib/format/bytes';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
   import VolumeStatus from '../../lib/ui/VolumeStatus.svelte';
   import { Say } from '../../lib/ui/say.svelte';
-  import type { AlertReport } from '../../lib/contracts.gen';
+  import type { AlertHistory, AlertReport } from '../../lib/contracts.gen';
   import { COVERAGE_WORDS, formFrom, measured, settingsFrom, STATUS, threshold, type SettingsForm } from './model';
 
   let report = $state<AlertReport | null>(null);
@@ -22,6 +23,36 @@
   let generation = 0;
   let request: AbortController | null = null;
   const refreshResult = new Say();
+  let historyRoot = $state<string | null>(null);
+  let history = $state<AlertHistory | null>(null);
+  let historyLoading = $state(false);
+  let historyError = $state('');
+  let historyGeneration = 0;
+  let historyRequest: AbortController | null = null;
+
+  function closeHistory(restoreFocus = false): void {
+    const root = historyRoot;
+    historyGeneration++; historyRequest?.abort(); historyRequest = null;
+    historyRoot = null; history = null; historyLoading = false; historyError = '';
+    if (restoreFocus && root) document.getElementById(`alert-history-${root}`)?.focus();
+  }
+
+  async function showHistory(root: string | null): Promise<void> {
+    const client = session.client;
+    if (!root || !client || session.state !== 'connected' || loading || saving ||
+      (historyLoading && historyRoot === root)) return;
+    closeHistory();
+    historyRoot = root; historyLoading = true;
+    const ctl = historyRequest = new AbortController();
+    const mine = historyGeneration, epoch = session.epoch, connection = session.connectionEpoch;
+    const current = () => mine === historyGeneration && !ctl.signal.aborted && client === session.client &&
+      epoch === session.epoch && connection === session.connectionEpoch && session.state === 'connected';
+    try {
+      const { result } = await client.call('alerts.history', { root_id: root }, { signal: ctl.signal });
+      if (current()) history = result;
+    } catch (e) { if (current()) historyError = session.handle(e); }
+    finally { if (current()) { historyLoading = false; historyRequest = null; } }
+  }
 
   const active = $derived(report?.items.filter((i) => i.status === 'alert') ?? []);
   const unevaluated = $derived(report?.items.filter((i) => i.status !== 'alert' && i.status !== 'ok').length ?? 0);
@@ -29,6 +60,7 @@
   async function load(manual = false): Promise<void> {
     const client = session.client;
     if (!client || session.state !== 'connected' || (manual && (loading || saving))) return;
+    closeHistory();
     request?.abort();
     const ctl = request = new AbortController();
     const mine = ++generation, epoch = session.epoch, connection = session.connectionEpoch;
@@ -59,6 +91,7 @@
     notice = ''; error = ''; invalidField = '';
     const parsed = settingsFrom(form);
     if ('error' in parsed) { error = parsed.error; invalidField = parsed.field; return; }
+    closeHistory();
     // Shares load()'s generation: a reply superseded by a newer load or save is dropped, so it cannot show older thresholds.
     const mine = ++generation;
     saving = true;
@@ -77,10 +110,11 @@
   }
 
   $effect(() => {
-    session.epoch; session.state;
+    session.epoch; session.connectionEpoch; session.state; session.client;
     untrack(() => void load());
     return () => {
       generation++; request?.abort(); request = null; loading = false; refreshResult.clear();
+      closeHistory();
     };
   });
 </script>
@@ -121,7 +155,11 @@
           {#each report.items as i, n (n)}
             {@const s = STATUS[i.status]}
             <tr>
-              <th scope="row"><VisibleName name={i.label} /> <VolumeStatus id={i.volume_id} /></th>
+              <th scope="row"><VisibleName name={i.label} /> <VolumeStatus id={i.volume_id} />
+                {#if i.kind === 'fast_growth' && i.root_id}
+                  <button id={`alert-history-${i.root_id}`} class="btn history-open" type="button" aria-expanded={historyRoot === i.root_id} aria-controls="alert-history" aria-disabled={loading || saving || (historyLoading && historyRoot === i.root_id)} onclick={() => void showHistory(i.root_id)}>View scan history</button>
+                {/if}
+              </th>
               <td>{i.kind === 'low_space' ? 'Free space' : 'Growth'}</td>
               <td><span class="tag" class:bad={s.tone === 'bad'} class:ok={s.tone === 'ok'} class:warn={s.tone === 'warn'} class:unk={s.tone === 'unk'}>{s.label}</span><small>{i.note}</small></td>
               <td class:unknown={i.measured_bytes === null}>{measured(i)}{#if i.window_start && i.window_end}<small>{formatTime(i.window_start)} to {formatTime(i.window_end)}</small>{/if}</td>
@@ -136,6 +174,36 @@
 {:else if report}
   <section class="panel"><p class="empty">No granted folder yet, so there is nothing to check. <a href="#/health">Add a folder in Grants &amp; health</a>.</p></section>
 {/if}
+
+<section id="alert-history" class="panel" aria-labelledby="alert-history-title" hidden={!historyRoot}>
+  <div class="controls">
+    <h2 id="alert-history-title">Recorded scan history</h2>
+    <button class="btn" type="button" onclick={() => closeHistory(true)}>Close history</button>
+  </div>
+  {#if historyRoot}
+    <p><VisibleName name={report?.items.find(i => i.root_id === historyRoot)?.label ?? 'Selected folder'} /></p>
+  {/if}
+  <p class="live muted" class:has={historyLoading || !!history} role="status" aria-label="Scan history result">{historyLoading ? 'Loading recorded scans…' : history ? `${history.samples.length} recorded scans shown, oldest first.` : ''}</p>
+  <p class="live bad" class:has={!!historyError} role="alert">{historyError}</p>
+  {#if historyError}<button class="btn" type="button" onclick={() => void showHistory(historyRoot)}>Retry history</button>{/if}
+  {#if history}
+    <p>Saved check: <strong>{STATUS[history.check.status].label}</strong>. {history.check.note}</p>
+    <p class="muted small">Evaluated {formatTime(history.evaluated_at)} using the saved {history.growth_window_days}-day window and growth threshold of {formatBytes(history.check.threshold_bytes)}. Unsaved threshold edits do not apply here.</p>
+    <p class="note">Recorded logical sizes, not current disk contents or a forecast. Only complete scans inside the saved window are comparable; unknown is not zero. Retained history may not cover the entire window.</p>
+    {#if history.truncated}<p class="note">Older records omitted: showing the newest 64 completed scans.</p>{/if}
+    {#if history.samples.length}
+      <div class="tbl-wrap"><table class="tbl">
+        <caption class="sr-only">Recorded folder sizes and scan coverage, oldest first</caption>
+        <thead><tr><th scope="col">Scan finished</th><th scope="col">Logical size</th><th scope="col">Coverage</th></tr></thead>
+        <tbody>{#each history.samples as sample, n (n)}<tr>
+          <th scope="row">{formatTime(sample.finished_at)}</th>
+          <td class:unknown={sample.logical_bytes === null}>{sample.logical_bytes === null ? 'Unknown' : formatBytes(sample.logical_bytes)}{#if sample.logical_bytes !== null}<small>{sample.logical_bytes} bytes</small>{/if}</td>
+          <td>{COVERAGE_WORDS[sample.coverage] ?? sample.coverage}</td>
+        </tr>{/each}</tbody>
+      </table></div>
+    {:else}<p class="empty">No completed scans were recorded for this folder.</p>{/if}
+  {/if}
+</section>
 
 {#if form && report}
   <section class="panel" aria-labelledby="alerts-settings">
@@ -161,4 +229,5 @@
   .form { flex-wrap: wrap; align-items: end; }
   .check { display: inline-flex; gap: var(--sp-2); align-items: center; min-height: 24px; }
   .alert { margin: 0 0 var(--sp-2); }
+  .history-open { display: block; margin-top: var(--sp-2); }
 </style>

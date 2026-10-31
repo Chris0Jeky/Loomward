@@ -140,6 +140,7 @@ commands! {
     DiagnosticsPreview = "diagnostics.preview", EmptyRequest, DiagnosticsPreviewResult, [Tauri, Http], 3, [];
     DiagnosticsSave = "diagnostics.save", DiagnosticsSaveRequest, DiagnosticsSaveResult, [Tauri], 3, [];
     AlertsList = "alerts.list", EmptyRequest, AlertReport, [Tauri, Http], 2, [];
+    AlertsHistory = "alerts.history", AlertHistoryRequest, AlertHistory, [Tauri, Http], 2, [];
     AlertsConfigure = "alerts.configure", AlertSettings, AlertReport, [Tauri, Http], 2, [];
     CopyPreview = "copy.preview", CopyPreviewRequest, CopyPreview, [Tauri, Http], 3, [];
     CopyApprove = "copy.approve", CopyConsentRequest, CopyApproval, [Tauri, Http], 3, [];

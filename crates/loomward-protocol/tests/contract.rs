@@ -35,6 +35,48 @@ use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[test]
+fn alert_history_is_closed_bounded_and_lossless() {
+    let mut schema = Schema::load();
+    let mut history = read(&contracts().join("examples/commands/alerts.history.result.json"));
+    assert!(schema.errors("AlertHistory", &history).is_empty());
+    let decoded: loomward_protocol::AlertHistory = serde_json::from_value(history.clone()).unwrap();
+    assert_eq!(serde_json::to_value(decoded).unwrap(), history);
+    for bytes in [Value::Null, json!("0"), json!("9007199254740993")] {
+        history["samples"][0]["logical_bytes"] = bytes;
+        assert!(schema.errors("AlertHistory", &history).is_empty());
+        assert!(serde_json::from_value::<loomward_protocol::AlertHistory>(history.clone()).is_ok());
+    }
+    history["samples"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("logical_bytes");
+    assert!(!schema.errors("AlertHistory", &history).is_empty());
+    assert!(serde_json::from_value::<loomward_protocol::AlertHistory>(history.clone()).is_err());
+    history["samples"][0]["logical_bytes"] = json!(0);
+    assert!(!schema.errors("AlertHistory", &history).is_empty());
+    assert!(serde_json::from_value::<loomward_protocol::AlertHistory>(history.clone()).is_err());
+    history["samples"][0]["logical_bytes"] = json!("0");
+    history["samples"] = json!(vec![history["samples"][0].clone(); 65]);
+    assert!(!schema.errors("AlertHistory", &history).is_empty());
+    assert!(serde_json::from_value::<loomward_protocol::AlertHistory>(history).is_err());
+    for bad in [
+        json!({}),
+        json!({"root_id":"rt_1","path":"private"}),
+        json!({"root_id":"rt_1","limit":65}),
+    ] {
+        assert!(!schema.errors("AlertHistoryRequest", &bad).is_empty());
+        assert!(serde_json::from_value::<loomward_protocol::AlertHistoryRequest>(bad).is_err());
+    }
+    assert_eq!(
+        Command::AlertsHistory.adapters(),
+        &[
+            loomward_protocol::Adapter::Tauri,
+            loomward_protocol::Adapter::Http
+        ]
+    );
+}
+
 fn contracts() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../contracts/v3")
 }

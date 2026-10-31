@@ -18,6 +18,38 @@ class V3ContractTests(unittest.TestCase):
         self.defs = self.schema['$defs']
         self.commands = load('commands.json')
 
+    def test_alert_history_is_bounded_owner_only_and_read_only(self):
+        import jsonschema
+        jsonschema.Draft202012Validator({
+            '$defs': self.defs, '$ref': '#/$defs/AlertReport'}).validate(
+                load('examples/commands/alerts.list.result.json'))
+        self.assertIn('alerts.history', self.commands['commands'])
+        command = self.commands['commands']['alerts.history']
+        self.assertEqual(command['effects'], 'none')
+        self.assertEqual(command['adapters'], ['tauri', 'http'])
+        self.assertNotIn('client_result', command)
+        request = jsonschema.Draft202012Validator({
+            '$defs': self.defs, '$ref': '#/$defs/' + command['request']})
+        request.validate({'root_id': 'rt_1'})
+        for bad in ({}, {'root_id': 'rt_1', 'path': 'private'},
+                    {'root_id': 'rt_1', 'limit': 65}, {'root_id': None}):
+            self.assertFalse(request.is_valid(bad))
+        result = jsonschema.Draft202012Validator({
+            '$defs': self.defs, '$ref': '#/$defs/' + command['result']})
+        history = load('examples/commands/alerts.history.result.json')
+        result.validate(history)
+        self.assertTrue(any(s['logical_bytes'] == '9007199254740993'
+                            for s in history['samples']))
+        too_many = dict(history, samples=[history['samples'][0]] * 65)
+        self.assertFalse(result.is_valid(too_many))
+        sample = dict(history['samples'][0])
+        for value in (None, '0', '9007199254740993'):
+            result.validate(dict(history, samples=[dict(sample, logical_bytes=value)]))
+        for value in (0, -1, 'unknown'):
+            self.assertFalse(result.is_valid(dict(history, samples=[dict(sample, logical_bytes=value)])))
+        del sample['logical_bytes']
+        self.assertFalse(result.is_valid(dict(history, samples=[sample])))
+
     def test_feedback_history_is_bounded_owner_only_and_read_only(self):
         self.assertIn('feedback.history', self.commands['commands'])
         command = self.commands['commands']['feedback.history']

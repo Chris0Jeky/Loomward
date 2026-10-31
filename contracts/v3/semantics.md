@@ -1029,6 +1029,29 @@ Alerts are advice, never an action, and never an approval.
 - **Notifications** are off until the owner enables them. This slice records the setting and lists alerts in the
   app; it wires no operating-system notification channel, and `notifications_note` says so.
 
+`alerts.history({root_id})` is an owner-only Tauri/HTTP read of one actively granted root's recorded
+scan history. It accepts only a sealed root ID: no path, paging option, client/MCP or Ask exposure.
+The query reads at most 65 completed records ordered by finish time and row ID (newest first), trims
+to the newest 64, then returns them chronologically. `truncated` means older records were omitted;
+even an untruncated history need not cover the saved threshold window. Cancelled, failed, running
+and undated runs are not completed observations. Invalid/missing byte counters are `null`, never
+zero; valid byte counts are lossless decimal strings. Missing completeness is unknown coverage,
+and explicit incomplete coverage stays partial.
+
+The selected `check` reuses the existing growth evaluator and its same 64-record limit. Records
+outside the saved window remain visible but do not enter the calculation. The response includes
+the saved window and evaluation time, not a forecast or current filesystem measurement. It uses a
+query-only snapshot, active-grant filter, deadline/interrupt context and revision check. The existing
+history response-delivery policy invalidates prepared successes across revoke and forget; stale
+history is refused with no automatic retry. No history read starts a scan, probes a volume, updates
+settings or grants, repairs the catalogue, or writes a file.
+
+The Alerts inspector loads only on explicit activation. Selection changes, refresh, save, session
+or connection changes and unmount abort/discard superseded reads. Loading, error, explicit retry,
+empty, partial and truncated states are disclosed; closing restores focus to the folder control.
+Unsaved thresholds survive history reads and remain separate from the saved check. Refresh checks
+closes the inspector and still makes exactly one `alerts.list` read.
+
 ## Ask (LW-118, docs/46 section 8)
 
 - **Who may call.** Every `ask.*` command is the owner's. A client principal (`ask:local`, `mcp:<name>`) reaches

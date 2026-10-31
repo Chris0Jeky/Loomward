@@ -766,11 +766,11 @@ def live_backups(page: Page, token: str) -> None:
     expect(page.get_by_role('heading', name='Backups', level=1)).to_be_visible()
     expect(page.get_by_text('No backup evidence imported yet.')).to_be_visible()
     expect(page.get_by_text('Importing needs the desktop app in a personal session')).to_be_visible()
-    check(page.locator('main p.bad.live').inner_text() == '', 'backups: the view loaded from the engine with no error')
+    check(page.locator('#alerts-error').inner_text() == '', 'backups: the view loaded from the engine with no error')
     print('PASS live Backups: list and forget over HTTP, import refused, the view shows no evidence rather than demo data')
 
 
-def live_alerts(page: Page, token: str) -> None:
+def live_alerts(page: Page, token: str, state: Path) -> None:
     """LW-121 alerts over the real HTTP adapter: defaults first, nothing claimed about an unobserved volume or a root with no history."""
     listed = live_call(page, token, 'alerts.list', {})
     check(listed['ok'] and listed['result']['settings'] == listed['result']['defaults'] and listed['result']['settings']['notifications_enabled'] is False,
@@ -786,7 +786,7 @@ def live_alerts(page: Page, token: str) -> None:
     expect(page.get_by_role('heading', name='Alerts', level=1)).to_be_visible()
     expect(page.get_by_role('heading', name='Thresholds', level=2)).to_be_visible()
     expect(page.get_by_label('Low space: percent of capacity')).to_have_value('20')
-    check(page.locator('main p.bad.live').inner_text() == '', 'alerts: the view loaded from the engine with no error')
+    check(page.locator('#alerts-error').inner_text() == '', 'alerts: the view loaded from the engine with no error')
     before = live_call(page, token, 'alerts.list', {})
     draft = {'Low space: percent of capacity': '17', 'Low space: at least this many GiB free': '2.5',
              'Growth: window in days': '14', 'Growth: GiB added within the window': '20'}
@@ -880,8 +880,175 @@ def live_alerts(page: Page, token: str) -> None:
         page.set_viewport_size({'width': 1440, 'height': 900})
     after = live_call(page, token, 'alerts.list', {})
     check(after['result']['settings'] == before['result']['settings'] and after['meta']['state_rev'] == before['meta']['state_rev'], 'alerts refresh journey: persisted thresholds and revision unchanged')
+    live_alert_history(page, token, state)
     print('PASS live Alerts: defaults, unknowns suppressed, thresholds stored and refused out of range')
 
+
+
+def live_alert_history(page: Page, token: str, state: Path) -> None:
+    """Actual owner HTTP reads over disposable recorded rows; route holds test reply races only."""
+    with closing(sqlite3.connect(state / 'state.db')) as db:
+        db.execute("INSERT INTO root_grant(id,volume_key,root_file_id,display_path,origin,granted_via,state,granted_at_ns) VALUES(620001,'collection-fixture',zeroblob(16),'Synthetic growth history B','fixture','fixture','active',0)")
+        db.execute('UPDATE revision SET state_rev=state_rev+1')
+        db.commit()
+    with closing(sqlite3.connect(state / 'catalog.db')) as db:
+        db.execute("INSERT INTO root(id,grant_id,volume_id,root_file_id,generation,state) VALUES(620001,620001,1,zeroblob(16),1,'complete')")
+        for days, counters in [(20, {'logical_bytes': 9007199254740993, 'complete': True}),
+                               (4, {'logical_bytes': 0, 'complete': True}), (2, {}),
+                               (1, {'logical_bytes': 1073741824, 'complete': False})]:
+            db.execute("INSERT INTO scan_run(root_id,mode,strategy,state,started_at_ns,finished_at_ns,counters_json,budget_json) VALUES(1,'full','growth-history-browser-fixture','completed',0,?,?,'{}')",
+                       (time.time_ns() - days * 86400 * 10**9, json.dumps(counters)))
+        db.execute('UPDATE revision SET catalog_rev=catalog_rev+1')
+        db.commit()
+    before = live_call(page, token, 'alerts.list', {})
+    grants_before = live_call(page, token, 'grants.list', {})['result']
+    fixture = state / 'history-owner-witness.txt'
+    fixture.write_bytes(b'Synthetic witness, untouched by history reads.')
+    witness = (fixture.read_bytes(), fixture.stat().st_mtime_ns)
+    refresh = page.get_by_role('button', name='Refresh checks', exact=True)
+    refresh.click()
+    expect(page.get_by_role('status', name='Alert refresh result')).to_contain_text('Checks refreshed')
+    table = page.get_by_role('table', name='Low-space and growth checks with their coverage')
+    first = table.get_by_role('row', name=re.compile('^Synthetic collection root')).get_by_role('button', name='View scan history')
+    second = table.get_by_role('row', name=re.compile('^Synthetic growth history B')).get_by_role('button', name='View scan history')
+    history = page.get_by_role('region', name='Recorded scan history', exact=True)
+    draft = {name: page.get_by_label(name, exact=True).input_value() for name in [
+        'Low space: percent of capacity', 'Low space: at least this many GiB free',
+        'Growth: window in days', 'Growth: GiB added within the window']}
+    calls, held = [], []
+
+    def observe(request):
+        if request.method == 'POST' and request.url.endswith('/api/v3/call'):
+            calls.append(request.post_data_json)
+
+    def hold_history(route):
+        if route.request.post_data_json['command'] == 'alerts.history':
+            held.append((route, route.fetch()))
+        else:
+            route.continue_()
+
+    def fail_history(route):
+        request = route.request.post_data_json
+        if request['command'] == 'alerts.history':
+            route.fulfill(json={'protocol': 'loomward/3', 'request_id': request['request_id'], 'ok': False,
+                                'error': {'code': 'deadline', 'message': 'Synthetic history timeout.', 'retryable': True, 'detail': None}})
+        else:
+            route.continue_()
+
+    def release_held():
+        while held:
+            route, response = held.pop(0)
+            # The UI aborts obsolete fetches. Playwright may refuse to deliver to a closed request.
+            try:
+                route.fulfill(response=response)
+            except Exception as error:
+                if not any(word in str(error).lower() for word in ['closed', 'cancel', 'invalid interception', 'already handled']):
+                    raise
+
+    page.on('request', observe)
+    try:
+        for width in (1360, 390):
+            page.set_viewport_size({'width': width, 'height': 900 if width == 1360 else 844})
+            calls.clear()
+            first.focus()
+            with page.expect_response(lambda r: r.url.endswith('/api/v3/call') and r.request.post_data_json['command'] == 'alerts.history') as reply:
+                first.press('Enter')
+            result = reply.value.json()
+            check(result['ok'] and result['meta']['catalog_rev'] == before['meta']['catalog_rev']
+                  and result['meta']['state_rev'] == before['meta']['state_rev'], 'history: exact read snapshot revisions')
+            expect(history).to_contain_text('9007199254740993 bytes')
+            expect(history).to_contain_text('0 bytes')
+            expect(history.get_by_role('table')).to_contain_text('Unknown')
+            expect(history.get_by_role('table')).to_contain_text('Partial')
+            expect(history).to_contain_text('Unsaved threshold edits do not apply here.')
+            expect(first).to_be_focused()
+            for name, value in draft.items():
+                expect(page.get_by_label(name, exact=True)).to_have_value(value)
+            expect(page.get_by_label('Notify me when notifications arrive (stored now; no notification is sent yet)')).to_be_checked()
+            check([r['command'] for r in calls if r['command'].startswith('alerts.')] == ['alerts.history'], 'history: opening reads once')
+            check(page.evaluate('document.documentElement.scrollWidth <= innerWidth'), f'history: fits {width}px')
+            page.screenshot(path=str(ROOT / '.loomward' / f'search-root-alerts-history-{width}.png'), full_page=True)
+            history.get_by_role('button', name='Close history').press('Enter')
+            expect(history).to_be_hidden()
+            expect(first).to_be_focused()
+        page.route('**/api/v3/call', hold_history)
+        calls.clear()
+        first.click()
+        wait_until(page, lambda: len(held) == 1)
+        expect(history.get_by_role('status')).to_have_text('Loading recorded scans…')
+        first.press('Enter')
+        check(len([r for r in calls if r['command'] == 'alerts.history']) == 1, 'history: duplicate activation coalesces')
+        page.screenshot(path=str(ROOT / '.loomward' / 'search-root-alerts-history-loading-390.png'), full_page=True)
+        page.unroute('**/api/v3/call', hold_history)
+        second.click()
+        expect(history).to_contain_text('No completed scans were recorded for this folder.')
+        release_held()
+        expect(history).not_to_contain_text('9007199254740993')
+        expect(second).to_be_focused()
+        for action in ('refresh', 'save', 'unmount'):
+            page.route('**/api/v3/call', hold_history)
+            first.click()
+            wait_until(page, lambda: len(held) == 1)
+            calls.clear()
+            if action == 'refresh':
+                refresh.click()
+                expect(page.get_by_role('status', name='Alert refresh result')).to_contain_text('Checks refreshed')
+                check([r['command'] for r in calls if r['command'].startswith('alerts.')] == ['alerts.list'], 'history refresh: one list read, no history restart')
+            elif action == 'save':
+                # Save the unchanged persisted settings, keeping the independent draft checks below meaningful.
+                page.get_by_label('Low space: percent of capacity', exact=True).fill('20')
+                page.get_by_label('Low space: at least this many GiB free', exact=True).fill('10')
+                page.get_by_label('Growth: window in days', exact=True).fill('7')
+                page.get_by_label('Growth: GiB added within the window', exact=True).fill('5')
+                page.get_by_label('Notify me when notifications arrive (stored now; no notification is sent yet)').uncheck()
+                page.get_by_role('button', name='Save thresholds', exact=True).click()
+                expect(page.get_by_role('status', name='Alert settings result')).to_contain_text('Thresholds saved')
+                check([r['command'] for r in calls if r['command'].startswith('alerts.')] == ['alerts.configure'], 'history save: no history restart')
+            else:
+                page.evaluate("location.hash = '#/companion'")
+                expect(page.get_by_role('heading', name='Companion', level=1)).to_be_visible()
+            release_held()
+            expect(history).to_be_hidden()
+            page.unroute('**/api/v3/call', hold_history)
+            if action == 'unmount':
+                page.evaluate("location.hash = '#/alerts'")
+                expect(first).to_be_visible()
+        for name, value in draft.items():
+            page.get_by_label(name, exact=True).fill(value)
+        page.get_by_label('Notify me when notifications arrive (stored now; no notification is sent yet)').check()
+        calls.clear()
+        page.route('**/api/v3/call', fail_history)
+        first.click()
+        expect(history.get_by_role('alert')).to_have_text('Synthetic history timeout.')
+        check([r['command'] for r in calls if r['command'].startswith('alerts.')] == ['alerts.history'], 'history failure: no automatic retry')
+        page.screenshot(path=str(ROOT / '.loomward' / 'search-root-alerts-history-error-390.png'), full_page=True)
+        page.unroute('**/api/v3/call', fail_history)
+        history.get_by_role('button', name='Retry history').press('Enter')
+        expect(history).to_contain_text('9007199254740993 bytes')
+        for name, value in draft.items():
+            expect(page.get_by_label(name, exact=True)).to_have_value(value)
+        check([r['command'] for r in calls if r['command'].startswith('alerts.')] == ['alerts.history', 'alerts.history'], 'history recovery: explicit retry only')
+        check(not any(r['command'].startswith(('scan.', 'roots.', 'grants.')) for r in calls), 'history: no scan or grant action')
+        after = live_call(page, token, 'alerts.list', {})
+        check(after['result']['settings'] == before['result']['settings'], 'history: persisted thresholds unchanged')
+        check(live_call(page, token, 'grants.list', {})['result'] == grants_before, 'history: grants unchanged')
+        check((fixture.read_bytes(), fixture.stat().st_mtime_ns) == witness, 'history: fixture bytes and mtime unchanged')
+    finally:
+        page.unroute('**/api/v3/call', hold_history)
+        page.unroute('**/api/v3/call', fail_history)
+        release_held()
+        page.remove_listener('request', observe)
+        page.set_viewport_size({'width': 1360, 'height': 900})
+        with closing(sqlite3.connect(state / 'catalog.db')) as db:
+            db.execute("DELETE FROM scan_run WHERE strategy='growth-history-browser-fixture'")
+            db.execute('DELETE FROM root WHERE id=620001')
+            db.execute('UPDATE revision SET catalog_rev=catalog_rev+1')
+            db.commit()
+        with closing(sqlite3.connect(state / 'state.db')) as db:
+            db.execute('DELETE FROM root_grant WHERE id=620001')
+            db.execute('UPDATE revision SET state_rev=state_rev+1')
+            db.commit()
+    print('PASS live recorded history: exact bytes, two folders, keyboard, stale reply fences, error/retry and unchanged drafts')
 
 def live_diagnostics(page: Page, token: str) -> None:
     """The diagnostic bundle over the real HTTP adapter: previewed and checked, never saved (no Rust-owned dialog)."""
@@ -954,7 +1121,7 @@ def run_live_serve(browser_path: str | None) -> None:
             run_live_collections(page, token, Path(state.name), check)
             run_inventory(page, base, check, live=True)
             live_backups(page, token)
-            live_alerts(page, token)
+            live_alerts(page, token, Path(state.name))
             live_clutter(page, token, check, live_call)
             live_projects(page, token, Path(state.name), check, live_call)
             live_reclaim(browser, exe, DIST, check, live_call)

@@ -7,6 +7,7 @@ import searchExample from '../../../contracts/v3/examples/commands/search.query.
 import learningStatus from '../../../contracts/v3/examples/commands/learning.status.result.json';
 import learningQueue from '../../../contracts/v3/examples/commands/learning.queue.result.json';
 import alertReport from '../../../contracts/v3/examples/commands/alerts.list.result.json';
+import alertHistory from '../../../contracts/v3/examples/commands/alerts.history.result.json';
 import proposal from '../../../contracts/v3/examples/commands/proposals.get.result.json';
 import { formFrom, settingsFrom } from '../../src/views/alerts/model';
 import { formatBytes } from '../../src/lib/format/bytes';
@@ -48,6 +49,8 @@ function viewScript(view: string, state: Record<string, unknown>, effectContaini
     effect(): void;
     reload(): Promise<void>;
     refresh(): Promise<void>;
+    showHistory(root: string | null): Promise<void>;
+    closeHistory(restoreFocus?: boolean): void;
     load(cursor?: string | null, restarted?: boolean): Promise<void>;
     loadSaved(id: string): Promise<void>;
     save(): Promise<void>;
@@ -186,7 +189,7 @@ describe('Saved tier scenario source', () => {
 
 function alerts() {
   const report = { ...alertReport, settings: { ...alertReport.settings, growth_bytes: String(10 * 1024 ** 3) }, defaults: { ...alertReport.defaults, growth_bytes: String(10 * 1024 ** 3) } };
-  const call = vi.fn(async (command: string, settings?: unknown) => ({ result: command === 'alerts.configure' ? { ...report, settings } : report }));
+  const call = vi.fn(async (command: string, settings?: unknown, _options?: { signal?: AbortSignal }): Promise<{ result: unknown }> => ({ result: command === 'alerts.configure' ? { ...report, settings } : command === 'alerts.history' ? alertHistory : report }));
   const refreshResult = {
     text: '',
     say: vi.fn((text: string) => { refreshResult.text = text; }),
@@ -198,11 +201,29 @@ function alerts() {
     form: null as ReturnType<typeof formFrom> | null, generation: 0,
     loading: false, saving: false, error: '', notice: '', invalidField: '', refreshResult,
     request: null as AbortController | null,
+    historyRoot: null as string | null, history: null as typeof alertHistory | null,
+    historyLoading: false, historyError: '', historyGeneration: 0, historyRequest: null as AbortController | null,
   };
   return { state, call, code: viewScript('alerts', state, 'session.epoch') };
 }
 
 describe('Alert threshold edits survive refresh', () => {
+  it('offers a folder history control that reads once without saving the draft', async () => {
+    const { state, call, code } = alerts();
+    await code.load();
+    state.form!.growthGib = '20';
+    const draft = { ...state.form };
+    const item = state.report!.items.find(i => i.kind === 'fast_growth')!;
+    call.mockClear();
+    const source = readFileSync(new URL('../../src/views/alerts/View.svelte', import.meta.url), 'utf8');
+    const handler = source.match(/onclick=\{([^}]+)\}>View scan history<\/button>/)?.[1];
+    expect(handler, 'A folder check needs a keyboard control for its recorded observations').toBeDefined();
+    (code.evaluate(`(i => (${handler}))`) as (i: typeof item) => () => void)(item)();
+    await vi.waitFor(() => expect(call).toHaveBeenCalledTimes(1));
+    expect(call.mock.calls[0]!.slice(0, 2)).toEqual(['alerts.history', { root_id: item.root_id }]);
+    expect(state.form).toEqual(draft);
+  });
+
   it('offers a refresh control that reads checks without saving the draft', async () => {
     const { state, call, code } = alerts();
     await code.load();
@@ -366,6 +387,89 @@ describe('Alert threshold edits survive refresh', () => {
     await code.load();
     expect(state.form?.growthGib).toBe('20');
   });
+});
+
+describe('Recorded scan history reads', () => {
+  it('switches roots, aborts the old request and does not let its reply replace the new selection', async () => {
+    const { state, call, code } = alerts();
+    await code.load();
+    state.form!.days = '30';
+    const draft = { ...state.form };
+    const first = deferred<unknown>(), second = deferred<unknown>();
+    call.mockClear();
+    call.mockImplementationOnce(() => first.promise as never).mockImplementationOnce(() => second.promise as never);
+    const readingA = code.showHistory('rt_1'), signalA = state.historyRequest!.signal;
+    await code.showHistory('rt_1');
+    expect(call).toHaveBeenCalledTimes(1);
+    const readingB = code.showHistory('rt_2');
+    expect(signalA.aborted).toBe(true);
+    expect(call.mock.calls.map(args => args.slice(0, 2))).toEqual([
+      ['alerts.history', { root_id: 'rt_1' }], ['alerts.history', { root_id: 'rt_2' }],
+    ]);
+    first.resolve({ result: alertHistory });
+    await readingA;
+    expect(state.history).toBeNull();
+    expect(state.historyLoading).toBe(true);
+    const fresh = { ...alertHistory, check: { ...alertHistory.check, root_id: 'rt_2' }, samples: [] };
+    second.resolve({ result: fresh });
+    await readingB;
+    expect(state.historyRoot).toBe('rt_2');
+    expect(state.history).toEqual(fresh);
+    expect(state.historyLoading).toBe(false);
+    expect(state.form).toEqual(draft);
+  });
+
+  it('keeps errors visible and retries only on explicit activation without changing thresholds', async () => {
+    const { state, call, code } = alerts();
+    await code.load();
+    state.form!.percent = '17';
+    call.mockClear();
+    call.mockRejectedValueOnce(new Error('History unavailable'));
+    await code.showHistory('rt_1');
+    expect(state.historyError).toBe('History unavailable');
+    expect(state.history).toBeNull();
+    expect(state.historyLoading).toBe(false);
+    expect(call).toHaveBeenCalledTimes(1);
+    await code.showHistory('rt_1');
+    expect(call).toHaveBeenCalledTimes(2);
+    expect(state.historyError).toBe('');
+    expect(state.history).toEqual(alertHistory);
+    expect(state.form!.percent).toBe('17');
+  });
+
+  it.each(['close', 'refresh', 'save', 'unmount', 'epoch', 'connection', 'client', 'disconnect'] as const)(
+    'drops pending history success/error/finally after %s', async invalidation => {
+      for (const reject of [false, true]) {
+        const { state, call, code } = alerts();
+        const cleanup = code.effect() as unknown as () => void;
+        await vi.waitFor(() => expect(state.loading).toBe(false));
+        const held = deferred<unknown>();
+        call.mockImplementationOnce(() => held.promise as never);
+        const reading = code.showHistory('rt_1'), signal = state.historyRequest!.signal;
+        call.mockClear();
+        if (invalidation === 'close') code.closeHistory();
+        if (invalidation === 'refresh') { await code.refresh(); expect(call.mock.calls.map(args => args[0])).toEqual(['alerts.list']); }
+        if (invalidation === 'save') { await code.save(); expect(call.mock.calls.map(args => args[0])).toEqual(['alerts.configure']); }
+        if (invalidation === 'unmount') cleanup();
+        if (invalidation === 'epoch') state.session.epoch++;
+        if (invalidation === 'connection') state.session.connectionEpoch++;
+        if (invalidation === 'client') state.session.client = { call: vi.fn() };
+        if (invalidation === 'disconnect') state.session.state = 'unavailable';
+        if (['close', 'refresh', 'save', 'unmount'].includes(invalidation)) {
+          expect(signal.aborted).toBe(true);
+          expect(state.historyRoot).toBeNull();
+          expect(state.history).toBeNull();
+        }
+        state.historyError = 'Current error'; state.historyLoading = true;
+        if (reject) held.reject(new Error('Old history error'));
+        else held.resolve({ result: alertHistory });
+        await reading;
+        expect(state.history).toBeNull();
+        expect(state.historyError).toBe('Current error');
+        expect(state.historyLoading).toBe(true);
+        expect(state.session.handle).not.toHaveBeenCalled();
+      }
+    });
 });
 
 describe('Health resources refresh independently', () => {

@@ -387,3 +387,27 @@ describe('mock revocation', () => {
     expect(grants.find((x) => x.grant_id === 'gr_mock_root_1')!.revoked_at).toBeNull();
   });
 });
+
+
+describe('recorded alert history', () => {
+  it('keeps exact bytes, unknown and partial samples separate and reads a second empty folder', async () => {
+    const c = client();
+    const before = await c.call('alerts.list', {});
+    const first = await c.call('alerts.history', { root_id: 'rt_1' });
+    expect(first.result.samples.map(s => s.logical_bytes)).toEqual(['9007199254740993', '0', null, '1073741824']);
+    expect(first.result.samples.map(s => s.coverage)).toEqual(['complete', 'complete', 'unknown', 'partial']);
+    expect(first.result.truncated).toBe(false);
+    const second = await c.call('alerts.history', { root_id: 'rt_2' });
+    expect(second.result.samples).toEqual([]);
+    expect(second.result.check.root_id).toBe('rt_2');
+    expect(second.meta).toMatchObject({ catalog_rev: first.meta.catalog_rev, state_rev: first.meta.state_rev });
+    expect((await c.call('alerts.list', {})).result).toEqual(before.result);
+    await expect(c.call('alerts.history', { root_id: 'rt_missing' })).rejects.toMatchObject({ code: 'not_found' });
+    const settings = { ...before.result.settings, growth_window_days: 14, growth_bytes: '9007199254740993' };
+    await c.call('alerts.configure', settings);
+    const saved = await c.call('alerts.history', { root_id: 'rt_1' });
+    expect(saved.result.growth_window_days).toBe(14);
+    expect(saved.result.check.threshold_bytes).toBe('9007199254740993');
+    expect(saved.result.samples).toEqual(first.result.samples);
+  });
+});

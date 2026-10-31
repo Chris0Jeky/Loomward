@@ -1,11 +1,12 @@
 import reportFixture from '../../../../contracts/v3/examples/commands/alerts.list.result.json';
-import type { AlertReport, AlertSettings, ErrorCode } from '../contracts.gen';
+import historyFixture from '../../../../contracts/v3/examples/commands/alerts.history.result.json';
+import type { AlertHistory, AlertReport, AlertSettings, ErrorCode } from '../contracts.gen';
 
 const BYTES = /^(0|[1-9][0-9]{0,19})$/;
 
 /**
  * Alerts on the mock transport: the contract's invented report (one low-space alert, one unobserved
- * volume, one partial-coverage root). `alerts.configure` stores and echoes the thresholds only; the mock
+ * volume, a partial-coverage root and a root without scans). `alerts.configure` stores and echoes the thresholds only; the mock
  * does not re-evaluate, because nothing here is measured.
  */
 export function createAlertMock(now: () => Date, fail: (code: ErrorCode, message: string) => never) {
@@ -25,6 +26,14 @@ export function createAlertMock(now: () => Date, fail: (code: ErrorCode, message
     'alerts.list': (p: Record<string, unknown>): AlertReport => {
       if (Object.keys(p).length) fail('invalid_request', 'alerts.list takes no fields');
       return report();
+    },
+    'alerts.history': (p: Record<string, unknown>): AlertHistory => {
+      if (Object.keys(p).length !== 1 || typeof p.root_id !== 'string') fail('invalid_request', 'one root_id is required');
+      const check = report().items.find(i => i.kind === 'fast_growth' && i.root_id === p.root_id);
+      if (!check) return fail('not_found', 'Folder is not available.');
+      const base = structuredClone(historyFixture) as AlertHistory;
+      return { ...base, evaluated_at: now().toISOString(), growth_window_days: settings.growth_window_days,
+        check: { ...check, threshold_bytes: settings.growth_bytes }, samples: p.root_id === 'rt_1' ? base.samples : [] };
     },
     'alerts.configure': (p: Record<string, unknown>): AlertReport => {
       const keys = ['notifications_enabled', 'low_space_free_percent', 'low_space_free_bytes', 'growth_window_days', 'growth_bytes'];

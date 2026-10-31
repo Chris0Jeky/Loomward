@@ -441,6 +441,7 @@ impl Inner {
             CopyCancel | CopyAbandon => self.copy_cancel(req),
             CopyStatus => self.copy_status(req),
             AlertsList => self.alerts_list(work),
+            AlertsHistory => self.alerts_history(req.decode_payload()?, work),
             AlertsConfigure => self.alerts_configure(req.decode_payload()?),
             AskStatus => self.ask_status(),
             AskConfigure => self.ask_configure(req.decode_payload()?),

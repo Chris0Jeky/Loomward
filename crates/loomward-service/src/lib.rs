@@ -530,7 +530,7 @@ pub(crate) const MAX_PENDING: u64 = 64;
 const MAX_READS: usize = 8;
 
 fn guarded_observation(request: &RequestEnvelope, command: Command) -> bool {
-    command == Command::FeedbackHistory
+    matches!(command, Command::FeedbackHistory | Command::AlertsHistory)
         || request.expected_generation.is_some()
             && matches!(
                 command,
@@ -711,7 +711,7 @@ impl ViewService for Service {
         &self,
         command: Command,
     ) -> Option<loomward_protocol::ResponseDeliveryPolicy> {
-        if command == Command::FeedbackHistory {
+        if matches!(command, Command::FeedbackHistory | Command::AlertsHistory) {
             return Some(self.inner.history_delivery.clone());
         }
         matches!(
