@@ -18,7 +18,7 @@ selection, rather than claiming that every ID was newly removed. Label views rem
 
 The first source-bound behavior test failed against the base because the existing action had no
 selected-set submission. The raw red output is retained by the mission coordinator outside Git.
-At the implementation checkpoint, 109 focused tests passed in four files; Svelte diagnostics reported
+At the review correction checkpoint, 110 focused tests passed in four files; Svelte diagnostics reported
 zero errors and warnings, Rust formatting and Python syntax passed, and `git diff --check` was clean.
 
 Windows focused verification uses one worker:
@@ -37,6 +37,10 @@ views; cross-page selection; stale-page retry limits; restart/collection/client 
 errors and finally blocks; uncertain writes; failed post-write refresh; and late focus. They do not
 substitute for Svelte binding or rendered-browser evidence. The mock contract test checks atomic stale
 refusal, durable removal of revoked members, another collection and unchanged grants.
+The independent review found that a select change listener runs before Svelte's value binding. A retained
+red test invokes the real markup listener in that order; the handler now assigns the event's selected value
+before capturing a load context. The live journey switches to a label view and back and waits for both
+member reads to finish, rather than treating hidden controls as proof that the read completed.
 
 ## Hosted proof required before merge
 

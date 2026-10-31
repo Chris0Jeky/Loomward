@@ -157,7 +157,7 @@
 
 <section class="panel">
   <div class="controls pick">
-    <label class="lw-field"><span class="lbl">Collection</span> <select bind:value={selected} onchange={() => void load()} disabled={!collections.length}>
+    <label class="lw-field"><span class="lbl">Collection</span> <select bind:value={selected} onchange={(e) => { selected = e.currentTarget.value; void load(); }} disabled={!collections.length}>
       {#each collections as c (c.collection_id)}<option value={c.collection_id}>{escapedName(c.name)}</option>{/each}
     </select></label>
     <button class="btn" type="button" aria-disabled={loading} onclick={() => { if (!loading) void load(); }}>Refresh collections</button>

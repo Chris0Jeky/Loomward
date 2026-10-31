@@ -35,8 +35,10 @@ function curation(props: Record<string, any> = {}, transport?: ReturnType<typeof
       } else if (!(decl.name.text in state)) state[decl.name.text] = undefined;
     } else if (ts.isExpressionStatement(node) && ts.isCallExpression(node.expression) && node.expression.expression.getText(ast) === '$effect') effects.push(node.expression.arguments[0]!.getText(ast));
   }
-  const api = new Function('state', `with (state) { ${compile(`${functions.join('\n')}\nreturn { ${names.join(',')}, effects: [${effects.join(',')}] };`)} }`)(state) as {
+  const change = source.match(/<select bind:value=\{selected\} onchange=\{([\s\S]*?)\} disabled=/)![1]!;
+  const api = new Function('state', `with (state) { ${compile(`${functions.join('\n')}\nreturn { ${names.join(',')}, changeCollection: (${change}), effects: [${effects.join(',')}] };`)} }`)(state) as {
     remove(member?: { member_id: string }): Promise<void>; load(append?: boolean, restarted?: boolean): Promise<boolean>;
+    changeCollection(event: { currentTarget: { value: string } }): void;
     invalidate(): void; effects: (() => void)[];
   };
   return { state, api, call, result };
@@ -138,6 +140,19 @@ describe('collection curation', () => {
     await first;
     expect(state.selected).toBe('co_2');
     expect(state.members).toEqual([{ member_id: 'om_8' }]);
+  });
+
+  it('loads the new collection when change fires before the Svelte value binding', async () => {
+    const list = later();
+    const call = vi.fn(async (command: string) => command === 'collections.list' ? list.promise : page('co_2', [{ member_id: 'om_8' }]));
+    const { api, state } = curation({}, call);
+    api.changeCollection({ currentTarget: { value: 'co_2' } });
+    state.selected = 'co_2'; // Svelte updates bind:value after the explicit listener.
+    list.resolve({ result: { collections: [{ collection_id: 'co_1', kind: 'human' }, { collection_id: 'co_2', kind: 'human' }] } });
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    expect(call.mock.calls[1]).toMatchObject(['collections.members', { collection_id: 'co_2' }, { signal: expect.any(AbortSignal) }]);
+    expect(state.members).toEqual([{ member_id: 'om_8' }]);
+    expect(state.loading).toBe(false);
   });
 
   it('clears selection through the real session effect on engine restart', async () => {
