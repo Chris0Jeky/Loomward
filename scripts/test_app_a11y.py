@@ -66,6 +66,24 @@ def active(page: Page) -> str:
     return page.evaluate("(() => { const a = document.activeElement; return a ? `${a.tagName}|${(a.textContent || '').trim().slice(0, 60)}` : ''; })()")
 
 
+def visible_labels(page: Page, selector: str) -> list[dict]:
+    return page.locator(selector).evaluate_all("""elements => elements.map(el => ({
+      name: el.id || el.getAttribute('placeholder') || el.tagName,
+      ok: [...(el.labels || [])].some(label => {
+        const texts = document.createTreeWalker(label, NodeFilter.SHOW_TEXT);
+        for (let text = texts.nextNode(); text; text = texts.nextNode()) {
+          const parent = text.parentElement;
+          if (!text.textContent.trim() || parent.closest('input,select,textarea,button,.sr-only')) continue;
+          if (!parent.checkVisibility({checkOpacity: true, checkVisibilityCSS: true})) continue;
+          const range = document.createRange();
+          range.selectNodeContents(text);
+          if ([...range.getClientRects()].some(r => r.width > 0 && r.height > 0)) return true;
+        }
+        return false;
+      })
+    }))""")
+
+
 CONTEXTS = {'navigation', 'group', 'radiogroup', 'region', 'complementary', 'form', 'dialog', 'banner', 'contentinfo'}
 
 
@@ -180,6 +198,25 @@ def run_a11y(browser: Browser, base: str, check) -> None:
         p.on('pageerror', lambda e: errors.append(f'pageerror: {e}'))
         p.on('console', lambda m: m.type == 'error' and errors.append(f'console: {m.text}'))
         return p
+
+    # The label probe must accept both HTML associations, and reject names that are not visibly labelled.
+    page = new_page()
+    page.set_content('''
+      <label><span>Wrapped name</span><input id="wrapped"></label>
+      <label for="explicit">Explicit scope</label><select id="explicit"><option>All</option></select>
+      <input id="missing" aria-label="Accessible only">
+      <label for="nonexistent">Broken association</label><input id="broken">
+      <label for="hidden" hidden>Hidden label</label><input id="hidden">
+      <label style="visibility:hidden">Invisible label<input id="invisible"></label>
+      <label for="hidden-text"><span style="display:none">Hidden words</span></label><input id="hidden-text">
+      <label><span class="sr-only">Screen reader only</span><input id="sr-only"></label>
+      <label><select id="option-only"><option>An option is not a label</option></select></label>
+    ''')
+    found = {item['name']: item['ok'] for item in visible_labels(page, 'input,select')}
+    expected = {'wrapped': True, 'explicit': True, 'missing': False, 'broken': False, 'hidden': False,
+                'invisible': False, 'hidden-text': False, 'sr-only': False, 'option-only': False}
+    check(found == expected, f'3.3.2 label probe accepts both associations and refuses missing, broken or hidden labels: {found}')
+    page.context.close()
 
     # --- 1.4.10 / 1.4.4 / 2.4.11: the chrome does not eat a zoomed viewport ------------------------------------
     for w, h, label in ((320, 256, '400% zoom'), (640, 360, '200% zoom'), (640, 800, 'a narrow window'), (1280, 400, 'a short window')):
@@ -390,9 +427,7 @@ def run_a11y(browser: Browser, base: str, check) -> None:
     # --- 3.3.2: visible labels; 1.4.3: placeholders ----------------------------------------------------------------------
     page = new_page()
     goto(page, base, 'explorer', 'Explorer')
-    labels = page.evaluate("""() => [...document.querySelectorAll('main form input, main form select')].map((el) => {
-        const lab = el.closest('label'), t = lab ? [...lab.querySelectorAll('span')].find((s) => !s.classList.contains('sr-only')) : null;
-        const r = t ? t.getBoundingClientRect() : null; return { ok: !!r && r.width > 0 && r.height > 0, name: el.getAttribute('placeholder') || el.tagName }; })""")
+    labels = visible_labels(page, 'main form input, main form select')
     check(all(x['ok'] for x in labels), f'3.3.2 every Explorer filter has a visible label {labels}')
     ph = css_rgb(page.evaluate("getComputedStyle(document.querySelector('input[type=search]'), '::placeholder').color"))
     bg = css_rgb(page.evaluate("getComputedStyle(document.querySelector('input[type=search]')).backgroundColor"))
