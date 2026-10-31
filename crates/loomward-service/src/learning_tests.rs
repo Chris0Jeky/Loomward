@@ -141,6 +141,9 @@ fn learning_scrub_retries_after_a_blocked_wal_cut() {
 #[path = "learning_replay_tests.rs"]
 mod replay;
 
+#[path = "review_deferral_tests.rs"]
+mod deferral;
+
 fn learning_node(svc: &Service) -> String {
     fixture(svc, 3);
     let conn = svc.inner.db();

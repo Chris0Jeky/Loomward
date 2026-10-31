@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import ts from 'typescript';
 import { describe, expect, it, vi } from 'vitest';
 import { LoomwardError } from '../../src/lib/transport/client';
+import { ReviewQueue } from '../../src/views/review/queue.svelte';
 import { fallbackStep, onRefetchError, resolveTrail } from '../../src/views/explorer/refetch';
 import searchExample from '../../../contracts/v3/examples/commands/search.query.result.json';
 import learningStatus from '../../../contracts/v3/examples/commands/learning.status.result.json';
@@ -60,12 +61,12 @@ const deferred = <T>() => {
   return { promise, resolve };
 };
 
-function review(call: ReturnType<typeof vi.fn>) {
+function review(call: (command: string, payload: unknown) => Promise<{ result: unknown }>) {
   const state = {
-    session: { client: { call }, epoch: 0, handle: (e: Error) => e.message },
+    session: { client: { call: async (command: string, payload: unknown) => ({ ...await call(command, payload), meta: { state_rev: '1' } }) }, epoch: 0, handle: (e: Error) => e.message },
     untrack, LoomwardError, alive: true, generation: 0,
     status: learningStatus as typeof learningStatus | null,
-    queue: learningQueue as typeof learningQueue | null,
+    review: new ReviewQueue(), handle: (e: Error) => e.message,
     error: '', pending: null, selected: 'nd_old', working: false, active: false, gated: false, job: null,
   };
   return { state, code: viewScript('review', state, 'session.epoch') };
@@ -84,11 +85,11 @@ describe('Learning review refresh after concurrent feedback', () => {
     const { state, code } = review(call);
     await code.load('old_cursor');
     expect(state.status).toEqual(fresh);
-    expect(state.queue).toEqual(learningQueue);
+    expect(state.review.page).toEqual(learningQueue);
     expect(state.error).toBe('');
     expect(state.selected).toBe('');
-    expect(call.mock.calls.map(args => args[0])).toEqual(['learning.status', 'learning.queue', 'learning.status', 'learning.queue']);
-    expect((call.mock.calls.at(-1) as unknown as [string, { cursor: string | null }])[1].cursor).toBeNull();
+    expect(call.mock.calls.map(args => args[0])).toEqual(['learning.status', 'learning.queue', 'learning.queue', 'learning.status']);
+    expect((call.mock.calls.at(-2) as unknown as [string, { cursor: string | null }])[1].cursor).toBeNull();
   });
 
   it.each(['stale_generation', 'internal_error'] as const)('keeps %s failures honest and bounds retries', async code => {
@@ -100,8 +101,8 @@ describe('Learning review refresh after concurrent feedback', () => {
     const { state, code: view } = review(call);
     await view.load();
     expect(state.status).toEqual(learningStatus);
-    expect(state.queue).toBeNull();
-    expect(state.error).toBe('Learning unavailable.');
+    expect(state.review.page).toBeNull();
+    expect(state.review.problem).toBe('Learning unavailable.');
     expect(call).toHaveBeenCalledTimes(code === 'stale_generation' ? 4 : 2);
   });
 
@@ -113,6 +114,7 @@ describe('Learning review refresh after concurrent feedback', () => {
     const loading = code.load();
     if (mode === 'unmounted') state.alive = false;
     else state.generation++;
+    state.review.clear();
     reject(staleReview());
     await loading;
     expect(call).toHaveBeenCalledTimes(2);
@@ -132,8 +134,8 @@ describe('Learning resources fail independently', () => {
     const { state, code } = review(call);
     await code.load();
     expect(state.status).toEqual(fresh);
-    expect(state.queue).toBeNull();
-    expect(state.error).toContain('Queue exceeds');
+    expect(state.review.page).toBeNull();
+    expect(state.review.problem).toContain('Queue exceeds');
     expect(call).toHaveBeenCalledTimes(2);
     await code.refit();
     expect(call).toHaveBeenCalledWith('learning.refit', {});

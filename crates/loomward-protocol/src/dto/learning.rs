@@ -112,6 +112,38 @@ pub struct LearningQueueRequest {
     pub limit: Int<1, 100>,
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub cursor: Option<Cursor>,
+    /// Omitted means ordinary review, for older callers.
+    #[serde(
+        default,
+        deserialize_with = "crate::types::optional_present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub mode: Option<LearningQueueMode>,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LearningQueueMode {
+    #[default]
+    Review,
+    Deferred,
+}
+
+/// An owner preference, never a human label or permission. Requires expected_state_rev.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LearningDeferredRequest {
+    pub node_id: NodeId,
+    pub deferred: bool,
+    pub client_event_id: ClientEventId,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LearningDeferredResult {
+    pub deferred: bool,
+    pub revision: Generation,
+    pub idempotent_replay: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

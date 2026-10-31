@@ -59,7 +59,7 @@ pub enum FeedbackReplay {
 
 /// Feature snapshot left on a human event once its root's grant is no longer active.
 const REDACTED: &str = r#"{"name":"","extension":"","context":"","size_bytes":0}"#;
-type QueuePosition = (Option<RootId>, (i64, i64), usize);
+type QueuePosition = (Option<RootId>, LearningQueueMode, (i64, i64), usize);
 
 fn internal(_: impl std::fmt::Display) -> EngineError {
     EngineError::Internal {
@@ -106,6 +106,8 @@ impl Store {
             CREATE TABLE IF NOT EXISTS st.learning_node(node_id TEXT PRIMARY KEY, object_ref_id INTEGER NOT NULL REFERENCES object_ref(id)) STRICT;
             CREATE TABLE IF NOT EXISTS st.learning_redacted(event_id TEXT PRIMARY KEY) STRICT;
             CREATE TABLE IF NOT EXISTS st.learning_feature_grant(event_id TEXT PRIMARY KEY REFERENCES human_feedback(event_id) ON DELETE CASCADE, grant_id INTEGER NOT NULL REFERENCES root_grant(id)) STRICT;
+            CREATE TABLE IF NOT EXISTS st.learning_deferred(object_ref_id INTEGER PRIMARY KEY REFERENCES object_ref(id) ON DELETE CASCADE, grant_id INTEGER NOT NULL REFERENCES root_grant(id) ON DELETE CASCADE) STRICT;
+            CREATE TABLE IF NOT EXISTS st.learning_deferred_receipt(client_event_id TEXT PRIMARY KEY, object_ref_id INTEGER NOT NULL REFERENCES object_ref(id) ON DELETE CASCADE, grant_id INTEGER NOT NULL REFERENCES root_grant(id) ON DELETE CASCADE, digest TEXT NOT NULL, expected_revision INTEGER NOT NULL, result_json TEXT NOT NULL) STRICT;
             CREATE TEMP VIEW learning_resolved AS SELECT o.id FROM st.object_ref o
             LEFT JOIN st.pending_reference p ON p.object_ref_id=o.id
               AND p.catalog_instance=(SELECT value FROM main.meta WHERE key='instance_id')
@@ -136,6 +138,7 @@ impl Store {
     /// model's state carries name tokens). Idempotent; true when anything changed.
     fn redact(db: &Connection) -> EngineResult<bool> {
         let tx = db.unchecked_transaction().map_err(internal)?;
+        tx.execute("DELETE FROM st.learning_deferred WHERE grant_id IN (SELECT id FROM st.root_grant WHERE state!='active')", []).map_err(internal)?;
         let marked = tx.execute("INSERT OR IGNORE INTO st.learning_redacted SELECT p.event_id FROM st.learning_feature_grant p JOIN st.root_grant g ON g.id=p.grant_id WHERE g.state!='active'", []).map_err(internal)?;
         // Legacy snapshots lack original provenance. Keep their best-effort sweep pending the
         // owner's migration decision; a current binding cannot reconstruct a snapshot's origin.
@@ -460,14 +463,14 @@ impl Engine {
         let mut cursors = store.cursors.lock().unwrap();
         let offset = match &r.cursor {
             Some(c) => {
-                let (root, revs, offset) =
+                let (root, mode, revs, offset) =
                     cursors
                         .get(c.as_str())
                         .ok_or_else(|| EngineError::StaleGeneration {
                             message: "learning cursor expired".into(),
                             detail: None,
                         })?;
-                if root != &r.root_id {
+                if root != &r.root_id || *mode != r.mode.unwrap_or_default() {
                     return Err(invalid("learning cursor filters changed"));
                 }
                 if *revs != revisions {
@@ -502,7 +505,15 @@ impl Engine {
                 cursors.clear();
             }
             let c = crate::events::random_id("cu_");
-            cursors.insert(c.clone(), (r.root_id.clone(), revisions, end));
+            cursors.insert(
+                c.clone(),
+                (
+                    r.root_id.clone(),
+                    r.mode.unwrap_or_default(),
+                    revisions,
+                    end,
+                ),
+            );
             Some(Cursor::new(c).map_err(internal)?)
         } else {
             None

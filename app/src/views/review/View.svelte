@@ -9,10 +9,11 @@
   import { LoomwardError } from '../../lib/transport/client';
   import { formatTime } from '../../lib/format/time';
   import { HistoryPanel } from './history.svelte';
-  import type { FeedbackRequest, Job, LearningQueue, LearningStatus } from '../../lib/contracts.gen';
+  import { ReviewQueue } from './queue.svelte';
+  import type { FeedbackRequest, Job, LearningStatus } from '../../lib/contracts.gen';
 
   let status = $state<LearningStatus | null>(null);
-  let queue = $state<LearningQueue | null>(null);
+  const review = new ReviewQueue();
   let error = $state('');
   let message = $state('');
   let working = $state(false);
@@ -28,17 +29,21 @@
   const gated = $derived(status?.gate !== null && status?.gate !== undefined);
   const personal = $derived(status?.dataset_class === 'personal');
   const active = $derived(job !== null && ['queued', 'running', 'cancel_requested'].includes(job.state));
+  const busy = $derived(working || review.loading || review.saving);
 
   async function load(cursor: string | null = null, restarted = false): Promise<void> {
     const client = session.client;
     if (!client) return;
     const mine = ++generation;
-    const [s, q] = await Promise.allSettled([client.call('learning.status', {}), client.call('learning.queue', { root_id: null, limit: 20, cursor })]);
+    let [s, q] = await Promise.allSettled([client.call('learning.status', {}), review.load(client, handle, cursor)]);
     if (!alive || mine !== generation) return;
+    if (q.status === 'fulfilled' && q.value) {
+      [s] = await Promise.allSettled([client.call('learning.status', {})]);
+      if (!alive || mine !== generation) return;
+    }
     status = s.status === 'fulfilled' ? s.value.result : null;
-    queue = q.status === 'fulfilled' ? q.value.result : null;
     if (!pending) selected = '';
-    const failures = [s, q].filter(r => r.status === 'rejected');
+    const failures = [s].filter(r => r.status === 'rejected');
     // A concurrent label or root change invalidates the queue's revision-bound snapshot.
     if (!restarted && failures.some(r => r.reason instanceof LoomwardError && r.reason.code === 'stale_generation')) return await load(null, true);
     error = failures.map(r => session.handle(r.reason)).join(' ');
@@ -86,8 +91,12 @@
     catch (e) { error = session.handle(e); }
   }
   function refresh(): void { void load(); void history.load(session.client, handle); }
+  async function defer(node?: string, deferred?: boolean): Promise<void> {
+    selected = '';
+    await review.choose(session.client, handle, node, deferred);
+  }
   $effect(() => { void session.epoch; untrack(refresh); });
-  onDestroy(() => { alive = false; generation++; clearTimeout(timer); history.clear(); });
+  onDestroy(() => { alive = false; generation++; clearTimeout(timer); history.clear(); review.clear(); });
 </script>
 
 <section aria-labelledby="review-title">
@@ -108,8 +117,8 @@
         <p class="muted">{status.model_id ? `${personal ? 'Personal' : 'Synthetic'} candidate fitted; promotion has not run.` : 'No fitted model yet. Suggestions abstain until human evidence supports them.'} Relative scores, not probabilities.</p>
       {/if}
       <div class="controls">
-        <button class="btn primary" disabled={working || active || gated} onclick={() => void refit()}>Refit from human labels</button>
-        <button class="btn" disabled={working} onclick={refresh}>Refresh review</button>
+        <button class="btn primary" disabled={busy || active || gated || review.pending !== null} onclick={() => void refit()}>Refit from human labels</button>
+        <button class="btn" disabled={busy} onclick={refresh}>Refresh review</button>
         {#if active}<button class="btn" onclick={() => void cancel()}>Cancel refit</button>{/if}
       </div>
       {#if job}<p role="status">Refit {job.state}{#if job.error}: {job.error.message}{/if}</p>{/if}
@@ -120,21 +129,32 @@
       <button class="btn" onclick={() => void load()}>Retry learning status</button>
     </div>
   {/if}
-  {#if status && queue && !gated}
-    <div class="panel">
+  {#if status && !gated}
+    <section class="panel" aria-label="Learning review queue" aria-busy={review.loading || review.saving}>
+      <div class="controls" aria-label="Review queue choice">
+        <button class="btn" aria-pressed={review.mode === 'review'} disabled={busy || pending !== null || review.pending !== null} onclick={() => { selected = ''; void review.load(session.client, handle, null, 'review'); }}>Review now</button>
+        <button class="btn" aria-pressed={review.mode === 'deferred'} disabled={busy || pending !== null || review.pending !== null || !review.supported} onclick={() => { selected = ''; void review.load(session.client, handle, null, 'deferred'); }}>Deferred</button>
+      </div>
+      <p class="note">Not now keeps an item here until you bring it back. It records no label and has no automatic expiry.</p>
+      <p class="bad live" class:has={!!review.problem} role="alert">{review.problem}</p>
+      <p class="live" class:has={!!review.notice || review.loading || review.saving} role="status">{review.saving ? 'Saving review preference…' : review.loading ? 'Loading review…' : review.notice}</p>
+      {#if !review.supported}<p class="note">Review deferral is unavailable in this service. Labels and history remain available.</p>{/if}
+      {#if review.pending}<button class="btn" disabled={busy} onclick={() => void defer()}>Retry same review preference</button>{/if}
+      {#if review.page}
       <div class="tbl-wrap">
         <table class="tbl">
-          <caption>Review queue · relative scores, not probabilities</caption>
+          <caption>{review.mode === 'deferred' ? 'Deferred review' : 'Review queue'} · relative scores, not probabilities</caption>
           <thead><tr><th scope="col">Item</th><th scope="col">Suggestion</th><th scope="col">Evidence</th><th scope="col">Review</th></tr></thead>
           <tbody>
-            {#each queue.items as item (item.row.node_id)}
+            {#each review.page.items as item (item.row.node_id)}
               <tr>
                 <th scope="row"><VisibleName name={item.row.name} /></th>
                 <td>{#if item.suggestion.ranked[0]}{item.suggestion.ranked[0].label} · <span class="num">{typeof item.suggestion.ranked[0].score === 'number' && Number.isFinite(item.suggestion.ranked[0].score) && item.suggestion.ranked[0].score >= 0 && item.suggestion.ranked[0].score <= 1 ? item.suggestion.ranked[0].score.toFixed(3) : 'unknown'}</span>{:else}Unknown · <span class="unknown">unknown</span>{/if}</td>
                 <td><span class="tag" class:sim={!item.suggestion.abstain} class:unk={item.suggestion.abstain}>{item.suggestion.abstain ? 'Abstaining' : 'Advice only'}</span>{#if item.suggestion.reasons.length}<small>{item.suggestion.reasons.map(r => r.replaceAll('_', ' ')).join(', ')}</small>{/if}</td>
-                <td><button class="btn" disabled={working || pending !== null} aria-pressed={selected === item.row.node_id} onclick={() => { selected = item.row.node_id; message = ''; }}>Review <span class="sr-only"><VisibleName name={item.row.name} /></span></button></td>
+                <td><div class="controls"><button class="btn" disabled={busy || pending !== null || review.pending !== null} aria-pressed={selected === item.row.node_id} onclick={() => { selected = item.row.node_id; message = ''; }}>Review <span class="sr-only"><VisibleName name={item.row.name} /></span></button>
+                  {#if review.supported}<button class="btn" disabled={busy || pending !== null || review.pending !== null} onclick={() => void defer(item.row.node_id, review.mode !== 'deferred')}>{review.mode === 'deferred' ? 'Bring back' : 'Not now'} <span class="sr-only"><VisibleName name={item.row.name} /></span></button>{/if}</div></td>
               </tr>
-            {:else}<tr><td colspan="4" class="muted">No eligible durable files in this scope.</td></tr>{/each}
+            {:else}<tr><td colspan="4" class="muted">{review.mode === 'deferred' ? 'No eligible deferred files in this scope.' : 'No eligible files waiting for review. Check Deferred to bring an item back.'}</td></tr>{/each}
           </tbody>
         </table>
       </div>
@@ -150,9 +170,10 @@
           {:else}<button class="btn primary" disabled={working} onclick={() => void record()}>Record human label</button><button class="btn" disabled={working} onclick={() => void record(true)}>Withdraw human label</button>{/if}
         </div>
       {/if}
-      {#if queue.next_cursor}<div class="controls"><button class="btn" disabled={working} onclick={() => void load(queue?.next_cursor ?? null)}>Next review page</button></div>{/if}
+      {#if review.page.next_cursor}<div class="controls"><button class="btn" disabled={busy || pending !== null || review.pending !== null} onclick={() => void load(review.page?.next_cursor ?? null)}>Next review page</button></div>{/if}
+      {/if}
       <p class="muted small limits">{personal ? 'Advice only, never an approval.' : 'Synthetic smoke only.'} Limits: 10,000 eligible files and the latest labels for at most 10,000 resolved objects per refit. No teacher labels are trained here.</p>
-    </div>
+    </section>
   {/if}
   <section class="panel history" aria-labelledby="history-title" aria-busy={history.loading}>
     <h2 id="history-title">Human feedback history</h2>

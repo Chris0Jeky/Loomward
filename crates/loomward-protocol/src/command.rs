@@ -111,6 +111,7 @@ commands! {
     LearningStatus = "learning.status", EmptyRequest, LearningStatus, [Tauri, Http], 3, [];
     JobsCancel = "jobs.cancel", JobRefRequest, JobResult, [Tauri, Http], 2, [JobState];
     LearningQueue = "learning.queue", LearningQueueRequest, LearningQueue, [Tauri, Http], 3, [];
+    LearningSetDeferred = "learning.set_deferred", LearningDeferredRequest, LearningDeferredResult, [Tauri, Http], 3, [];
     LearningRefit = "learning.refit", EmptyRequest, JobResult, [Tauri, Http], 3, [JobState, LearningUpdated];
     CollectionsList = "collections.list", EmptyRequest, CollectionList, [Tauri, Http], 3, [];
     CollectionsCreate = "collections.create", CollectionCreateRequest, Collection, [Tauri, Http], 3, [];
