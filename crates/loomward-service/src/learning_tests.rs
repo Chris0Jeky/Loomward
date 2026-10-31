@@ -1421,7 +1421,7 @@ fn feedback_history_pages_bind_revisions_and_session_and_reject_clients() {
         Some("cursor_expired")
     );
     let root: RootId = serde_json::from_value(json!(svc.inner.root_id(1))).unwrap();
-    svc.grant_client("mcp:history", &[root], &["name", "size"], None)
+    svc.grant_client("mcp:history", &[root], &["size"], None)
         .unwrap();
     assert_eq!(
         err(svc.call(

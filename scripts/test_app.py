@@ -284,7 +284,7 @@ def live_learning_isolated(browser, exe: Path) -> None:
 def live_learning(page: Page, token: str, state: Path) -> dict:
     """Synthetic SQL fixture, no disk scan or native identity open. Real HTTP/service/student/UI."""
     with closing(sqlite3.connect(state / 'state.db')) as db, db:
-        db.execute("INSERT INTO root_grant(id,volume_key,root_file_id,display_path,origin,granted_via,state,granted_at_ns) VALUES(1,'learning_fixture',zeroblob(16),'Synthetic learning root','fixture','fixture','active',0)")
+        db.execute("INSERT INTO root_grant(id,volume_key,root_file_id,display_path,origin,granted_via,state,granted_at_ns,filesystem) VALUES(1,'learning_fixture',zeroblob(16),'Synthetic learning root','fixture','fixture','active',0,'NTFS')")
     with closing(sqlite3.connect(state / 'catalog.db')) as db, db:
         db.executescript("""
             INSERT INTO volume(id,volume_key,display_name,filesystem,identity_json,capabilities_json,device_json,online,observed_at_ns)
