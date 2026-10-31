@@ -7,6 +7,7 @@
   import { formatTime } from '../../lib/format/time';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
   import VolumeStatus from '../../lib/ui/VolumeStatus.svelte';
+  import { Say } from '../../lib/ui/say.svelte';
   import type { AlertReport } from '../../lib/contracts.gen';
   import { COVERAGE_WORDS, formFrom, measured, settingsFrom, STATUS, threshold, type SettingsForm } from './model';
 
@@ -19,28 +20,42 @@
   // The field the shown form error belongs to: marked invalid and described by the message (WCAG 3.3.1).
   let invalidField = $state<'' | keyof SettingsForm>('');
   let generation = 0;
+  let request: AbortController | null = null;
+  const refreshResult = new Say();
 
   const active = $derived(report?.items.filter((i) => i.status === 'alert') ?? []);
   const unevaluated = $derived(report?.items.filter((i) => i.status !== 'alert' && i.status !== 'ok').length ?? 0);
 
-  async function load(): Promise<void> {
-    if (!session.client) return;
-    const mine = ++generation;
+  async function load(manual = false): Promise<void> {
+    const client = session.client;
+    if (!client || session.state !== 'connected' || (manual && (loading || saving))) return;
+    request?.abort();
+    const ctl = request = new AbortController();
+    const mine = ++generation, epoch = session.epoch, connection = session.connectionEpoch;
+    const current = () => mine === generation && !ctl.signal.aborted && client === session.client &&
+      epoch === session.epoch && connection === session.connectionEpoch && session.state === 'connected';
     loading = true; error = '';
+    refreshResult.clear();
+    if (manual) { notice = ''; invalidField = ''; }
     try {
-      const { result } = await session.client.call('alerts.list', {});
-      if (mine !== generation) return;
+      const { result } = await client.call('alerts.list', {}, { signal: ctl.signal });
+      if (!current()) return;
       report = result;
       // Refresh observations without replacing thresholds the owner is editing.
       form ??= formFrom(result.settings);
+      if (manual) refreshResult.say('Checks refreshed from recorded observations. Unsaved threshold edits were kept.');
     } catch (e) {
-      if (mine !== generation) return;
+      if (!current()) return;
       error = session.handle(e); report = null;
-    } finally { if (mine === generation) loading = false; }
+    } finally { if (current()) { loading = false; request = null; } }
+  }
+
+  function refresh(): Promise<void> {
+    return load(true);
   }
 
   async function save(): Promise<void> {
-    if (!session.client || !form || saving) return;
+    if (!session.client || !form || saving || loading) return;
     notice = ''; error = ''; invalidField = '';
     const parsed = settingsFrom(form);
     if ('error' in parsed) { error = parsed.error; invalidField = parsed.field; return; }
@@ -62,15 +77,22 @@
   }
 
   $effect(() => {
-    session.epoch;
+    session.epoch; session.state;
     untrack(() => void load());
-    return () => { generation++; };
+    return () => {
+      generation++; request?.abort(); request = null; loading = false; refreshResult.clear();
+    };
   });
 </script>
 
 <h1>Alerts</h1>
 <p class="lede">Low free space on volumes that hold a granted folder, and folders that grew fast between complete scans.</p>
 <p class="note">Alerts are advice, computed on this machine from what Loomward already observed. They never move, delete or change anything. <strong>Unknown is not zero:</strong> a volume whose space was not observed, a folder without enough scan history, or a partial scan is listed as such and raises no alert.</p>
+<div class="controls">
+  <button class="btn" type="button" aria-disabled={loading || saving} aria-describedby="alerts-refresh-hint" onclick={() => void refresh()}>Refresh checks</button>
+  <span id="alerts-refresh-hint" class="muted small">Reevaluate recorded observations without starting a scan. Unsaved threshold edits are kept.</span>
+</div>
+<p class="live muted" class:has={loading || !!refreshResult.text} role="status" aria-label="Alert refresh result">{loading ? 'Refreshing checks…' : refreshResult.text}</p>
 <p class="live muted" class:has={!!notice} role="status" aria-label="Alert settings result">{notice}</p>
 <p id="alerts-error" class="live bad" class:has={!!error} role="alert">{error}</p>
 
@@ -129,7 +151,7 @@
       <label class="lw-field"><span class="lbl">Growth: GiB added within the window</span>
         <input type="text" inputmode="decimal" bind:value={form.growthGib} maxlength="12" autocomplete="off" aria-invalid={invalidField === 'growthGib' ? 'true' : undefined} aria-describedby={invalidField === 'growthGib' ? 'alerts-error' : undefined} /></label>
       <label class="check"><input type="checkbox" bind:checked={form.notifications} /> Notify me when notifications arrive (stored now; no notification is sent yet)</label>
-      <button class="btn primary" type="submit" aria-disabled={saving} onclick={(e) => { if (saving) e.preventDefault(); }}>{saving ? 'Saving' : 'Save thresholds'}</button>
+      <button class="btn primary" type="submit" aria-disabled={saving || loading} onclick={(e) => { if (saving || loading) e.preventDefault(); }}>{saving ? 'Saving' : 'Save thresholds'}</button>
       <button class="btn" type="button" onclick={reset}>Fill in defaults</button>
     </form>
   </section>

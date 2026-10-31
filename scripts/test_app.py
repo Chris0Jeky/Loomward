@@ -787,6 +787,99 @@ def live_alerts(page: Page, token: str) -> None:
     expect(page.get_by_role('heading', name='Thresholds', level=2)).to_be_visible()
     expect(page.get_by_label('Low space: percent of capacity')).to_have_value('20')
     check(page.locator('main p.bad.live').inner_text() == '', 'alerts: the view loaded from the engine with no error')
+    before = live_call(page, token, 'alerts.list', {})
+    draft = {'Low space: percent of capacity': '17', 'Low space: at least this many GiB free': '2.5',
+             'Growth: window in days': '14', 'Growth: GiB added within the window': '20'}
+    for name, value in draft.items():
+        page.get_by_label(name, exact=True).fill(value)
+    notify = page.get_by_label('Notify me when notifications arrive (stored now; no notification is sent yet)')
+    notify.check()
+    refresh = page.get_by_role('button', name='Refresh checks', exact=True)
+    result = page.get_by_role('status', name='Alert refresh result')
+    calls = []
+    held = []
+
+    def observe(request):
+        if request.method == 'POST' and request.url.endswith('/api/v3/call'):
+            calls.append(request.post_data_json['command'])
+
+    def fail_refresh(route):
+        request = route.request.post_data_json
+        if request['command'] == 'alerts.list':
+            route.fulfill(json={'protocol': 'loomward/3', 'request_id': request['request_id'], 'ok': False,
+                                'error': {'code': 'deadline', 'message': 'Synthetic alert refresh timeout.', 'retryable': True, 'detail': None}})
+        else:
+            route.continue_()
+
+    def hold_refresh(route):
+        if route.request.post_data_json['command'] == 'alerts.list':
+            held.append(route)
+        else:
+            route.continue_()
+
+    page.on('request', observe)
+    try:
+        page.route('**/api/v3/call', hold_refresh)
+        refresh.focus()
+        refresh.press('Enter')
+        wait_until(page, lambda: len(held) == 1)
+        expect(result).to_have_text('Refreshing checks…')
+        expect(refresh).to_have_attribute('aria-disabled', 'true')
+        save_button = page.get_by_role('button', name='Save thresholds', exact=True)
+        expect(save_button).to_have_attribute('aria-disabled', 'true')
+        refresh.press('Enter')
+        save_button.press('Enter')
+        check([command for command in calls if command.startswith('alerts.')] == ['alerts.list'], 'alerts refresh: repeated activation and save cannot start a second request')
+        held.pop().continue_()
+        expect(result).to_contain_text('Checks refreshed from recorded observations.')
+        expect(save_button).to_be_focused()  # Completion must not take focus back from the user's newer choice.
+        page.unroute('**/api/v3/call', hold_refresh)
+        for width in (1360, 390):
+            page.set_viewport_size({'width': width, 'height': 900 if width == 1360 else 844})
+            calls.clear()
+            refresh.focus()
+            with page.expect_response(lambda response: response.url.endswith('/api/v3/call') and response.request.post_data_json['command'] == 'alerts.list') as reply:
+                refresh.press('Enter')
+            expect(result).to_contain_text('Checks refreshed from recorded observations.')
+            response = reply.value.json()
+            check(response['ok'] and response['result']['settings'] == before['result']['settings']
+                  and response['meta']['state_rev'] == before['meta']['state_rev'], 'alerts refresh: real read leaves saved settings and state revision unchanged')
+            check([command for command in calls if command.startswith('alerts.')] == ['alerts.list'], 'alerts refresh: one list request and no configure request')
+            check(not any(command.startswith(('scans.', 'roots.', 'grants.')) for command in calls), 'alerts refresh: no scan or grant operation')
+            for name, value in draft.items():
+                expect(page.get_by_label(name, exact=True)).to_have_value(value)
+            expect(notify).to_be_checked()
+            expect(refresh).to_be_focused()
+            expect(page.get_by_role('status', name='Alert settings result')).to_be_empty()
+            check(page.evaluate('document.documentElement.scrollWidth <= innerWidth'), f'alerts refresh: controls fit {width}px')
+            (ROOT / '.loomward').mkdir(exist_ok=True)
+            page.screenshot(path=str(ROOT / '.loomward' / f'search-root-alerts-refresh-{width}.png'), full_page=True)
+        calls.clear()
+        page.route('**/api/v3/call', fail_refresh)
+        refresh.press('Enter')
+        expect(page.get_by_role('alert').filter(has_text='Synthetic alert refresh timeout.')).to_be_visible()
+        expect(page.get_by_text('Alerts unavailable.', exact=True)).to_be_visible()
+        expect(page.get_by_role('table', name='Low-space and growth checks with their coverage')).to_have_count(0)
+        expect(refresh).to_have_attribute('aria-disabled', 'false')
+        check([command for command in calls if command.startswith('alerts.')] == ['alerts.list'], 'alerts refresh failure: no automatic retry or configure')
+        page.screenshot(path=str(ROOT / '.loomward' / 'search-root-alerts-refresh-error-390.png'), full_page=True)
+        page.unroute('**/api/v3/call', fail_refresh)
+        calls.clear()
+        refresh.press('Enter')
+        expect(result).to_contain_text('Checks refreshed from recorded observations.')
+        for name, value in draft.items():
+            expect(page.get_by_label(name, exact=True)).to_have_value(value)
+        expect(notify).to_be_checked()
+        check([command for command in calls if command.startswith('alerts.')] == ['alerts.list'], 'alerts refresh recovery: explicit retry reads once and preserves the draft')
+    finally:
+        for route in held:
+            route.abort()
+        page.unroute('**/api/v3/call', hold_refresh)
+        page.unroute('**/api/v3/call', fail_refresh)
+        page.remove_listener('request', observe)
+        page.set_viewport_size({'width': 1440, 'height': 900})
+    after = live_call(page, token, 'alerts.list', {})
+    check(after['result']['settings'] == before['result']['settings'] and after['meta']['state_rev'] == before['meta']['state_rev'], 'alerts refresh journey: persisted thresholds and revision unchanged')
     print('PASS live Alerts: defaults, unknowns suppressed, thresholds stored and refused out of range')
 
 

@@ -1003,6 +1003,39 @@ def check_alerts(page: Page, base: str, shoot) -> None:
     ok(not any(FORBIDDEN_BUTTONS.search(b.inner_text()) for b in main.get_by_role('button').all()), 'alerts: no effect control')
     notify = main.get_by_label('Notify me when notifications arrive (stored now; no notification is sent yet)')
     expect(notify).not_to_be_checked()
+    # Refresh the report, not the unsaved threshold/notification draft.
+    draft = {'Low space: percent of capacity': '17', 'Low space: at least this many GiB free': '2.5',
+             'Growth: window in days': '14', 'Growth: GiB added within the window': '20'}
+    for name, value in draft.items():
+        main.get_by_label(name, exact=True).fill(value)
+    notify.check()
+    old_checks = table.inner_text()
+    refresh = page.get_by_role('button', name='Refresh checks', exact=True)
+    result = page.get_by_role('status', name='Alert refresh result')
+    region = result.element_handle()
+    region.evaluate("""el => {
+      el.refreshMessages = [];
+      el.refreshObserver = new MutationObserver(() => el.refreshMessages.push(el.textContent));
+      el.refreshObserver.observe(el, {childList: true, characterData: true, subtree: true});
+    }""")
+    try:
+        for count in (1, 2):
+            refresh.focus()
+            refresh.press('Enter')
+            expect(result).to_contain_text('Checks refreshed from recorded observations.')
+            wait_until(page, lambda: region.evaluate("el => el.refreshMessages.filter(t => t.includes('Checks refreshed from recorded observations.')).length") >= count)
+            expect(refresh).to_be_focused()
+            for name, value in draft.items():
+                expect(main.get_by_label(name, exact=True)).to_have_value(value)
+            expect(notify).to_be_checked()
+            ok(table.inner_text() == old_checks, 'refresh keeps persisted report thresholds separate from the draft')
+            expect(page.get_by_role('status', name='Alert settings result')).to_be_empty()
+        ok(region.evaluate('el => el.isConnected'), 'refresh announcements use the same persistent live region')
+    finally:
+        region.evaluate('el => el.refreshObserver.disconnect()')
+    print('PASS Alerts refresh: keyboard read, full draft preserved, stable focus and repeated success announcement')
+    # Leave the existing save/default checks with their original starting draft.
+    page.get_by_role('button', name='Fill in defaults').click()
     shoot('alerts')
     # a bad threshold is named on its field and nothing is saved
     main.get_by_label('Low space: percent of capacity').fill('0')
