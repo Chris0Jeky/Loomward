@@ -24,7 +24,16 @@ class V3ContractTests(unittest.TestCase):
         self.assertEqual(command['effects'], 'none')
         self.assertEqual(command['adapters'], ['tauri', 'http'])
         self.assertNotIn('client_result', command)
-        import jsonschema
+        self.assertEqual(self.defs['LearningQueueMode']['enum'], ['review', 'deferred'])
+        self.assertNotIn('mode', self.defs['LearningQueueRequest']['required'])
+
+    def test_review_deferral_schema_accepts_only_explicit_choices(self):
+        # The declared contract-tests extra supplies validation; the stdlib-only suite stays usable.
+        try:
+            import jsonschema
+        except ImportError:
+            self.skipTest('jsonschema not installed')
+        command = self.commands['commands']['learning.set_deferred']
         validator = lambda name: jsonschema.Draft202012Validator({
             '$defs': self.defs, '$ref': '#/$defs/' + name})
         request = {'node_id': 'nd_1', 'deferred': True, 'client_event_id': 'ce_defer_1'}

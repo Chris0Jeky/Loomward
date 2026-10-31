@@ -21,23 +21,25 @@ export class ReviewQueue {
     this.loading = this.saving = false;
   }
 
-  async load(client: Client | null, handle: (e: unknown) => string, cursor: string | null = null, mode = this.mode): Promise<void> {
-    if (this.saving) return;
+  async load(client: Client | null, handle: (e: unknown) => string, cursor: string | null = null, mode = this.mode): Promise<boolean> {
+    if (this.saving) return false;
     const mine = ++this.generation;
     this.page = null;
     this.revision = null;
     this.problem = '';
     this.mode = mode;
-    if (!client) return;
+    if (!client) return false;
     this.loading = true;
+    let restarted = false;
     const read = () => client.call('learning.queue', { root_id: null, limit: 20, cursor, ...(this.mode === 'deferred' ? { mode: 'deferred' as const } : {}) });
     try {
       let response;
       try { response = await read(); }
       catch (e) {
-        if (mine !== this.generation) return;
-        if (cursor && e instanceof LoomwardError && e.code === 'stale_generation') {
+        if (mine !== this.generation) return false;
+        if (e instanceof LoomwardError && e.code === 'stale_generation') {
           cursor = null;
+          restarted = true;
           this.notice = 'Review changed or expired. Showing the first page.';
         } else if (mode === 'deferred' && e instanceof LoomwardError && ['invalid_request', 'unknown_command', 'capability_unavailable'].includes(e.code)) {
           this.supported = false;
@@ -47,7 +49,7 @@ export class ReviewQueue {
         } else throw e;
         response = await read();
       }
-      if (mine !== this.generation) return;
+      if (mine !== this.generation) return false;
       this.page = response.result;
       this.revision = response.meta.state_rev;
     } catch (e) {
@@ -55,6 +57,7 @@ export class ReviewQueue {
     } finally {
       if (mine === this.generation) this.loading = false;
     }
+    return restarted;
   }
 
   async choose(client: Client | null, handle: (e: unknown) => string, node?: string, deferred?: boolean): Promise<void> {

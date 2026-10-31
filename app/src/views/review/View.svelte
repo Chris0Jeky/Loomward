@@ -35,8 +35,12 @@
     const client = session.client;
     if (!client) return;
     const mine = ++generation;
-    const [s] = await Promise.allSettled([client.call('learning.status', {}), review.load(client, handle, cursor)]);
+    let [s, q] = await Promise.allSettled([client.call('learning.status', {}), review.load(client, handle, cursor)]);
     if (!alive || mine !== generation) return;
+    if (q.status === 'fulfilled' && q.value) {
+      [s] = await Promise.allSettled([client.call('learning.status', {})]);
+      if (!alive || mine !== generation) return;
+    }
     status = s.status === 'fulfilled' ? s.value.result : null;
     if (!pending) selected = '';
     const failures = [s].filter(r => r.status === 'rejected');
