@@ -66,6 +66,28 @@ describe('collections', () => {
     expect((await c.call('collections.members', { collection_id, limit: 200, cursor: null })).result.items).toEqual([]);
     expect((await c.call('grants.list', {})).result).toEqual(revokedGrants);
   });
+  it('removes a durable batch atomically without changing another collection or grants', async () => {
+    const c = new Client(transport());
+    const a = (await c.call('collections.create', { name: 'A' })).result.collection_id;
+    const b = (await c.call('collections.create', { name: 'B' })).result.collection_id;
+    const ids = (await nodes(c)).slice(0, 3).map(n => n.node_id);
+    const read = (collection_id: string) => c.call('collections.members', { collection_id, limit: 200, cursor: null });
+    for (const collection_id of [a, b]) {
+      const { meta } = await read(collection_id);
+      await c.call('collections.update_members', { collection_id, add: ids, remove: [] }, { expectedStateRev: meta.state_rev! });
+    }
+    const root = (await c.call('node.inspect', { node_id: ids[0]! })).result.root_id;
+    await c.call('roots.revoke', { root_id: root, purge_catalog: false });
+    const beforeA = await read(a), beforeB = await read(b), grants = (await c.call('grants.list', {})).result;
+    expect(beforeA.result.items[0]).toMatchObject({ status: 'root_revoked', entry: null });
+    const payload = { collection_id: a, add: [], remove: [], remove_members: beforeA.result.items.slice(0, 2).map(m => m.member_id) };
+    await expect(c.call('collections.update_members', payload, { expectedStateRev: '0' })).rejects.toMatchObject({ code: 'stale_generation' });
+    expect((await read(a)).result).toEqual(beforeA.result);
+    await c.call('collections.update_members', payload, { expectedStateRev: beforeA.meta.state_rev! });
+    expect((await read(a)).result.items.map(m => m.member_id)).toEqual([beforeA.result.items[2]!.member_id]);
+    expect((await read(b)).result).toEqual(beforeB.result);
+    expect((await c.call('grants.list', {})).result).toEqual(grants);
+  });
   it.each(['\u007f', '\u0085', '\u009f'])('rejects Unicode control %j in names', async (control) => {
     const c = new Client(transport());
     await expect(c.call('collections.create', { name: `Projects${control}` })).rejects.toMatchObject({ code: 'invalid_request' });
