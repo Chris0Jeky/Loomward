@@ -967,6 +967,7 @@ def live_alert_history(page: Page, token: str, state: Path) -> None:
             expect(page.get_by_label('Notify me when notifications arrive (stored now; no notification is sent yet)')).to_be_checked()
             check([r['command'] for r in calls if r['command'].startswith('alerts.')] == ['alerts.history'], 'history: opening reads once')
             check(page.evaluate('document.documentElement.scrollWidth <= innerWidth'), f'history: fits {width}px')
+            page.evaluate('scrollTo(0, 0)')
             page.screenshot(path=str(ROOT / '.loomward' / f'search-root-alerts-history-{width}.png'), full_page=True)
             history.get_by_role('button', name='Close history').press('Enter')
             expect(history).to_be_hidden()

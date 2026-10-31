@@ -20,6 +20,9 @@ clock helper and shares the concurrent service through `Arc`. Python checks the 
 an optional import; required full JSON Schema/DTO validation stays in the native protocol tests.
 No skipped optional Python schema check counts as that validation. The independent review found the
 Backups regression, reproduced by the hosted browser log; no other blocking finding was raised.
+The second hosted head passed the app/browser/desktop and Python legs and the new Rust schema/DTO
+test, then stopped at the protocol command-table fixture's old count (83 instead of 84). The final
+proof head updates that adjacent count; it changes no production logic or review boundary.
 
 ## Executable proof
 
@@ -48,6 +51,7 @@ are unchanged. Native tests above are authored proof until the hosted receipt co
 ## Scope
 
 No schema migration, engine evaluator change, scheduler, scan, provider, dependency, MCP/client/Ask
-surface or operating-system notification. Two adjacent fixture/test updates are necessary: the DTO
-registry must enumerate the new definitions, and the canonical alert report adds a second synthetic
-folder for selection/empty-history proof. All previous proof seals and parked PR #1118 remain untouched.
+surface or operating-system notification. Three adjacent fixture/test updates are necessary: the DTO
+registry must enumerate the new definitions, the command-table count includes the new read, and the
+canonical alert report adds a second synthetic folder for selection/empty-history proof. All previous
+proof seals and parked PR #1118 remain untouched.

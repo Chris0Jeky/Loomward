@@ -491,11 +491,9 @@ fn history_deadline_discards_a_held_read_and_releases_its_worker() {
         .unwrap()
         .push((Command::AlertsHistory, "history_snapshot"));
     *svc.inner.hooks.read_ahead.lock().unwrap() = Duration::from_secs(61);
-    let response = call(
-        &svc,
-        "alerts.history",
-        json!({"root_id":svc.inner.root_id(root)}),
-    );
+    let mut req = request("alerts.history", json!({"root_id":svc.inner.root_id(root)}));
+    req.deadline_ms = Some(Int::new(60_000).unwrap());
+    let response = svc.call(req, &CallContext::http());
     assert_eq!(err(response).code, ErrorCode::DeadlineExceeded);
     svc.inner.hooks.until("history snapshot held", |h| {
         h.arrived
