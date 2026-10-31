@@ -932,7 +932,7 @@ def check_tiers(page: Page, base: str, shoot) -> None:
     # an owner what-if produces a proposal that is consent-gated and not executable
     model_row = rows(page).filter(has_text='synthetic-model-store').first
     model_row.get_by_role('combobox').select_option('0.1')
-    model_row.get_by_role('checkbox').check()
+    model_row.get_by_role('checkbox', name=re.compile('^Assume not pinned')).check()
     # 19% of the generic 2 TiB source (389 GiB) is within 184 GiB free plus 212 GiB relief: the target-met path
     page.get_by_label('Free space wanted on the source').fill('19')
     page.get_by_role('button', name='Simulate', exact=True).click()

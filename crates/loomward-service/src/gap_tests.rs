@@ -202,6 +202,7 @@ fn only_the_listed_commands_change_state() {
         RootsRevoke,
         RootsForget,
         VolumesDeclareTier,
+        VolumesDeclareReserve,
         ScanStart,
         ScanCancel,
         JobsCancel,

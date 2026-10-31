@@ -128,7 +128,7 @@
   }
 
   async function declareTier(id: string, value: string) {
-    if (!session.client || declaring) return;
+    if (!session.client || declaring || simulating) return;
     declaring = true;
     try {
       await session.client.call('volumes.declare_tier', { volume_id: id, tier: value === '' ? null : Number(value) });
@@ -151,7 +151,7 @@
     const c = session.client;
     const expectedStateRev = modelStateRev;
     const draft = reserves[id];
-    if (!c || declaring || loading || expectedStateRev === null || !draft) return;
+    if (!c || declaring || loading || simulating || expectedStateRev === null || !draft) return;
     const bytes = clear ? null : reserveBytes(draft.value, draft.unit);
     if (!clear && bytes === null) { error = 'Enter a whole number of bytes or GiB. The reserve must fit within the supported byte range.'; return; }
     const mine = modelTicket;
@@ -171,7 +171,7 @@
 
   async function loadSaved(id: string) {
     const c = session.client;
-    if (!c) return;
+    if (!c || simulating) return;
     const mine = ++savedTicket;
     try {
       const { result } = await c.call('proposals.get', { proposal_id: id });
@@ -189,7 +189,7 @@
   }
 
   function choose(id: string) {
-    if (!volume(id)?.source_eligible) return;
+    if (simulating || !volume(id)?.source_eligible) return;
     source = id;
     assume = {};
     void loadCandidates();
@@ -236,6 +236,20 @@
     const base = { source_volume_id: src.volume_id, target_free_bytes: target.toString(), max_transfer_bytes: cap_.toString(), relief_policy: relief, candidate_basis: 'largest_dirs' as const, max_groups: 50, overrides: overrides(), node_budget: 100000, save };
     const settled = await Promise.allSettled(HEAT.map((h) => c.call('placement.simulate', { ...base, heat_policy: h.id }, { deadlineMs: 10000 })));
     if (mine !== simTicket) return;
+    if (base.save) {
+      try {
+        // Saving scenarios advances owner state; read preferences with the revision for the next edit.
+        const { result, meta } = await c.call('tiers.model', {});
+        if (mine !== simTicket) return;
+        model = result;
+        modelStateRev = meta.state_rev;
+        reserves = Object.fromEntries(result.volumes.map(v => [v.volume_id, reserveDraft(v.declared_reserve_bytes)]));
+      } catch (e) {
+        if (mine !== simTicket) return;
+        modelStateRev = null;
+        error = session.handle(e);
+      }
+    }
     simulating = false;
     savedDetail = null;
     outcomes = Object.fromEntries(HEAT.map((h, i) => {
@@ -296,7 +310,7 @@
           <p class="num">{formatBytes(v.free_bytes)} free of {formatBytes(v.capacity_bytes)} · {percent(v.free_fraction)} <span class={`tag pr-${v.pressure}`}>{PRESSURE[v.pressure]}</span></p>
           <p class="muted small">{v.tier.note}</p>
           <label class="field">Declared tier
-            <select aria-label={`Declared tier for ${escapedName(v.display_name)}`} value={v.tier.declared_tier ?? ''} disabled={declaring} onchange={(e) => void declareTier(v.volume_id, e.currentTarget.value)}>
+            <select aria-label={`Declared tier for ${escapedName(v.display_name)}`} value={v.tier.declared_tier ?? ''} disabled={declaring || simulating} onchange={(e) => void declareTier(v.volume_id, e.currentTarget.value)}>
               <option value="">Unknown / use device hint</option>
               {#each Array.from({ length: 10 }, (_, i) => i) as tier (tier)}<option value={tier}>Tier {tier}</option>{/each}
             </select>
@@ -304,21 +318,21 @@
           {#if v.declared_reserve_bytes !== undefined && reserves[v.volume_id]}
             <form class="reserve" onsubmit={(event) => { event.preventDefault(); void declareReserve(v.volume_id); }}>
               <label class="field">Keep at least free
-                <input type="text" inputmode="numeric" aria-label={`Keep at least free for ${escapedName(v.display_name)}`} bind:value={reserves[v.volume_id]!.value} disabled={declaring || loading || modelStateRev === null} />
+                <input type="text" inputmode="numeric" aria-label={`Keep at least free for ${escapedName(v.display_name)}`} bind:value={reserves[v.volume_id]!.value} disabled={declaring || loading || simulating || modelStateRev === null} />
               </label>
               <label class="field">Unit
-                <select aria-label={`Reserve unit for ${escapedName(v.display_name)}`} bind:value={reserves[v.volume_id]!.unit} disabled={declaring || loading}>
+                <select aria-label={`Reserve unit for ${escapedName(v.display_name)}`} bind:value={reserves[v.volume_id]!.unit} disabled={declaring || loading || simulating}>
                   <option value="GiB">GiB</option><option value="B">bytes</option>
                 </select>
               </label>
               <div class="reserve-actions">
-                <button class="btn" type="submit" aria-label={`Save reserve for ${escapedName(v.display_name)}`} disabled={declaring || loading || modelStateRev === null}>Save reserve</button>
-                <button class="btn" type="button" aria-label={`Clear reserve for ${escapedName(v.display_name)}`} disabled={declaring || loading || modelStateRev === null || v.declared_reserve_bytes === null} onclick={() => void declareReserve(v.volume_id, true)}>Clear reserve</button>
+                <button class="btn" type="submit" aria-label={`Save reserve for ${escapedName(v.display_name)}`} disabled={declaring || loading || simulating || modelStateRev === null}>Save reserve</button>
+                <button class="btn" type="button" aria-label={`Clear reserve for ${escapedName(v.display_name)}`} disabled={declaring || loading || simulating || modelStateRev === null || v.declared_reserve_bytes === null} onclick={() => void declareReserve(v.volume_id, true)}>Clear reserve</button>
               </div>
               <p class="small muted reserve-note">{v.declared_reserve_bytes === null ? 'No reserve set; simulations assume 0 B.' : `Keep at least ${formatBytes(v.declared_reserve_bytes)} free (${v.declared_reserve_bytes} bytes).`}</p>
             </form>
           {:else}<p class="small muted">This service does not report reserve preferences.</p>{/if}
-          <button class="btn" type="button" aria-pressed={v.volume_id === source} disabled={!v.source_eligible} onclick={() => choose(v.volume_id)}>
+          <button class="btn" type="button" aria-pressed={v.volume_id === source} disabled={simulating || !v.source_eligible} onclick={() => choose(v.volume_id)}>
             {v.volume_id === source ? 'Source volume' : 'Use as source'}<span class="sr-only">: {escapedName(v.display_name)}</span>
           </button>
         </article>
@@ -393,7 +407,7 @@
         <option value="entry_allocation_whatif">Entry allocation (what-if)</option>
       </select>
     </label>
-    <label class="chk"><input type="checkbox" bind:checked={save} /> Keep these scenarios</label>
+    <label class="chk"><input type="checkbox" bind:checked={save} disabled={simulating} /> Keep these scenarios</label>
     <button class="btn primary" type="submit" disabled={!cands || !cands.groups.length} aria-disabled={simulating}>{simulating ? 'Simulating' : 'Simulate'}</button>
   </form>
   <p class="bad live" class:has={!!formError} role="alert">{formError}</p>
@@ -442,7 +456,7 @@
   <p class="muted small">Stored simulations only. Catalogue, tier or root changes are marked stale; free-space and capacity drift alone are not. Compare now with this simulation; nothing can be executed here.</p>
   <ul class="list">
     {#each saved as scenario (scenario.proposal_id)}
-      <li><button class="btn" type="button" onclick={() => void loadSaved(scenario.proposal_id)}>Show saved scenario {formatTime(scenario.created_at)}</button> <span class="tag">{scenario.status === 'stale' ? 'Stale' : 'Simulation only'}</span></li>
+      <li><button class="btn" type="button" disabled={simulating} onclick={() => void loadSaved(scenario.proposal_id)}>Show saved scenario {formatTime(scenario.created_at)}</button> <span class="tag">{scenario.status === 'stale' ? 'Stale' : 'Simulation only'}</span></li>
     {:else}<li class="muted">{savedError ? 'Saved scenarios unavailable.' : 'No saved scenarios.'}</li>{/each}
   </ul>
 </section>
