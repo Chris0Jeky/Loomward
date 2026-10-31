@@ -143,7 +143,7 @@ def run_live_collections(page, token: str, state: Path, check) -> None:
                        [(i, f'curation-{i:03}.txt', f'curation-{i:07}'.encode()) for i in range(2, 54)])
         db.execute('UPDATE revision SET catalog_rev=catalog_rev+1')
         db.commit()
-    found = call('search.query', {'root_id': None, 'text': 'curation', 'extension': None, 'min_bytes': None, 'max_bytes': None, 'modified_after': None, 'modified_before': None, 'kind': 'file', 'limit': 200, 'cursor': None}, 'curation_nodes')
+    found = call('search.query', {'root_id': None, 'text': 'curation', 'extension': None, 'min_bytes': None, 'max_bytes': None, 'modified_after': None, 'modified_before': None, 'kind': 'file', 'limit': 100, 'cursor': None}, 'curation_nodes')
     check(found['ok'] and len(found['result']['hits']) == 52, 'curation: 52 synthetic current identities')
     ids = [hit['row']['node_id'] for hit in sorted(found['result']['hits'], key=lambda hit: hit['row']['name'])]
     other = call('collections.create', {'name': 'Keep these members'}, 'curation_other')['result']['collection_id']
