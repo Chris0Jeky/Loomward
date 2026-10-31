@@ -47,6 +47,7 @@ function viewScript(view: string, state: Record<string, unknown>, effectContaini
     loadStarts(recovery?: unknown, refreshOnly?: boolean): Promise<boolean>;
     effect(): void;
     reload(): Promise<void>;
+    refresh(): Promise<void>;
     load(cursor?: string | null, restarted?: boolean): Promise<void>;
     loadSaved(id: string): Promise<void>;
     save(): Promise<void>;
@@ -62,8 +63,9 @@ function viewScript(view: string, state: Record<string, unknown>, effectContaini
 const untrack = <T>(fn: () => T) => fn();
 const deferred = <T>() => {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>(r => { resolve = r; });
-  return { promise, resolve };
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((r, fail) => { resolve = r; reject = fail; });
+  return { promise, resolve, reject };
 };
 
 function review(call: ReturnType<typeof vi.fn>) {
@@ -185,16 +187,158 @@ describe('Saved tier scenario source', () => {
 function alerts() {
   const report = { ...alertReport, settings: { ...alertReport.settings, growth_bytes: String(10 * 1024 ** 3) }, defaults: { ...alertReport.defaults, growth_bytes: String(10 * 1024 ** 3) } };
   const call = vi.fn(async (command: string, settings?: unknown) => ({ result: command === 'alerts.configure' ? { ...report, settings } : report }));
+  const refreshResult = {
+    text: '',
+    say: vi.fn((text: string) => { refreshResult.text = text; }),
+    clear: vi.fn(() => { refreshResult.text = ''; }),
+  };
   const state = {
-    session: { client: { call }, epoch: 0, handle: (e: Error) => e.message },
+    session: { client: { call }, epoch: 0, connectionEpoch: 0, state: 'connected', handle: vi.fn((e: Error) => e.message) },
     untrack, formFrom, settingsFrom, report: null as typeof alertReport | null,
     form: null as ReturnType<typeof formFrom> | null, generation: 0,
-    loading: false, saving: false, error: '', notice: '', invalidField: '',
+    loading: false, saving: false, error: '', notice: '', invalidField: '', refreshResult,
+    request: null as AbortController | null,
   };
   return { state, call, code: viewScript('alerts', state, 'session.epoch') };
 }
 
 describe('Alert threshold edits survive refresh', () => {
+  it('offers a refresh control that reads checks without saving the draft', async () => {
+    const { state, call, code } = alerts();
+    await code.load();
+    state.form!.growthGib = '20';
+    state.form!.notifications = true;
+    const draft = { ...state.form };
+    call.mockClear();
+    const source = readFileSync(new URL('../../src/views/alerts/View.svelte', import.meta.url), 'utf8');
+    const handler = source.match(/onclick=\{([^}]+)\}>Refresh checks<\/button>/)?.[1];
+    expect(handler, 'Alerts needs an explicit keyboard button to refresh the report').toBeDefined();
+    (code.evaluate(`(${handler})`) as () => void)();
+    await vi.waitFor(() => expect(call).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(state.loading).toBe(false));
+    expect(call.mock.calls.map(args => args[0])).toEqual(['alerts.list']);
+    expect(state.form).toEqual(draft);
+    expect(state.report?.settings.notifications_enabled).toBe(false);
+    expect(state.notice).not.toContain('Thresholds saved');
+    expect(state.refreshResult.text).toContain('recorded observations');
+  });
+
+  it('keeps the full draft separate from fresh persisted settings on repeated reads', async () => {
+    const { state, call, code } = alerts();
+    await code.load();
+    state.form = { percent: '17', freeGib: '2.5', days: '14', growthGib: '20', notifications: true };
+    const draft = { ...state.form };
+    const fresh = { ...state.report!, evaluated_at: '2026-10-31T10:00:00Z', settings: { ...state.report!.settings, low_space_free_percent: 12 } };
+    call.mockResolvedValue({ result: fresh });
+    await code.refresh();
+    await code.refresh();
+    expect(state.report).toEqual(fresh);
+    expect(state.form).toEqual(draft);
+    expect(state.refreshResult.say).toHaveBeenCalledTimes(2);
+    expect(state.refreshResult.clear).toHaveBeenCalledTimes(3);
+    expect(call.mock.calls.map(args => args[0])).toEqual(['alerts.list', 'alerts.list', 'alerts.list']);
+  });
+
+  it('coalesces duplicate activation and refuses a save while a manual read is pending', async () => {
+    const { state, call, code } = alerts();
+    await code.load();
+    const held = deferred<unknown>();
+    call.mockImplementationOnce(() => held.promise as never);
+    call.mockClear();
+    const reading = code.refresh();
+    await code.refresh();
+    await code.save();
+    expect(state.loading).toBe(true);
+    expect(call.mock.calls.map(args => args[0])).toEqual(['alerts.list']);
+    held.resolve({ result: state.report });
+    await reading;
+    expect(state.loading).toBe(false);
+  });
+
+  it('does not refresh while saving and permits a read once the save finishes', async () => {
+    const { state, call, code } = alerts();
+    await code.load();
+    const held = deferred<unknown>();
+    call.mockImplementationOnce(() => held.promise as never);
+    call.mockClear();
+    const saving = code.save();
+    await code.refresh();
+    expect(call.mock.calls.map(args => args[0])).toEqual(['alerts.configure']);
+    held.resolve({ result: state.report });
+    await saving;
+    await code.refresh();
+    expect(call.mock.calls.map(args => args[0])).toEqual(['alerts.configure', 'alerts.list']);
+  });
+
+  it('clears a failed report, retains the draft and only retries on explicit activation', async () => {
+    const { state, call, code } = alerts();
+    await code.load();
+    state.form!.percent = '17';
+    call.mockClear();
+    call.mockRejectedValueOnce(new Error('Synthetic read failed'));
+    await code.refresh();
+    expect(state.report).toBeNull();
+    expect(state.form!.percent).toBe('17');
+    expect(state.error).toBe('Synthetic read failed');
+    expect(state.refreshResult.text).toBe('');
+    expect(state.loading).toBe(false);
+    expect(call).toHaveBeenCalledTimes(1);
+    await code.refresh();
+    expect(call).toHaveBeenCalledTimes(2);
+    expect(state.report).not.toBeNull();
+    expect(state.form!.percent).toBe('17');
+    expect(state.error).toBe('');
+  });
+
+  it.each(['epoch', 'connection', 'client', 'disconnect', 'unmount'] as const)('drops late refresh success/error/finally after %s', async invalidation => {
+    for (const reject of [false, true]) {
+      const { state, call, code } = alerts();
+      const cleanup = code.effect() as unknown as () => void;
+      await vi.waitFor(() => expect(state.loading).toBe(false));
+      const held = deferred<unknown>();
+      call.mockImplementationOnce(() => held.promise as never);
+      const reading = code.refresh();
+      const request = state.request!;
+      if (invalidation === 'epoch') state.session.epoch++;
+      if (invalidation === 'connection') state.session.connectionEpoch++;
+      if (invalidation === 'client') state.session.client = { call: vi.fn() };
+      if (invalidation === 'disconnect') state.session.state = 'unavailable';
+      if (invalidation === 'unmount') { cleanup(); expect(request.signal.aborted).toBe(true); }
+      const current = { ...state.report!, evaluated_at: '2026-10-31T11:00:00Z' };
+      state.report = current;
+      state.error = 'Current error';
+      state.loading = true;
+      state.refreshResult.say.mockClear();
+      if (reject) held.reject(new Error('Old failure'));
+      else held.resolve({ result: alertReport });
+      await reading;
+      expect(state.report).toBe(current);
+      expect(state.error).toBe('Current error');
+      expect(state.loading).toBe(true);
+      expect(state.session.handle).not.toHaveBeenCalled();
+      expect(state.refreshResult.say).not.toHaveBeenCalled();
+    }
+  });
+
+  it('aborts an invalidated read and lets only its replacement complete the busy state', async () => {
+    const { state, call, code } = alerts();
+    await code.load();
+    const old = deferred<unknown>(), fresh = deferred<unknown>();
+    call.mockImplementationOnce(() => old.promise as never).mockImplementationOnce(() => fresh.promise as never);
+    const older = code.refresh(), request = state.request!;
+    state.session.epoch++;
+    const newer = code.load();
+    expect(request.signal.aborted).toBe(true);
+    old.reject(new Error('Old failure'));
+    await older;
+    expect(state.loading).toBe(true);
+    expect(state.error).toBe('');
+    fresh.resolve({ result: alertReport });
+    await newer;
+    expect(state.loading).toBe(false);
+    expect(state.report).toEqual(alertReport);
+  });
+
   it('preserves edits across scan invalidation and saves the edited threshold', async () => {
     const { state, call, code } = alerts();
     await code.load();
