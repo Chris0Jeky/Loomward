@@ -1431,7 +1431,10 @@ fn feedback_history_pages_bind_revisions_and_session_and_reject_clients() {
         .code,
         ErrorCode::PermissionDenied
     );
-    assert!(!Command::FeedbackHistory.available_on(Adapter::Mcp));
+    assert_eq!(
+        Command::FeedbackHistory.adapters(),
+        &[Adapter::Tauri, Adapter::Http]
+    );
     ok(
         "feedback.record",
         call(
