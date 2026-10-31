@@ -522,6 +522,13 @@ CREATE TABLE proposal (
   inputs_digest TEXT NOT NULL, inputs_json TEXT NOT NULL, plan_json TEXT NOT NULL, created_at_ns INTEGER NOT NULL) STRICT;
 ```
 
+The Collections view removes either one member or an explicit selection of up to 500 stable member IDs
+across loaded pages of one human collection. Unresolved members can be selected without resolving a file.
+The update binds the displayed state revision and is atomic; refresh, collection changes and session
+invalidation clear the selection. Late replies cannot relabel a new view, and an uncertain submitted
+update requires a reread without automatic replay. Label views stay read-only; other collections, grants
+and files are unchanged. Selection itself is temporary, while completed membership updates persist.
+
 ### 6.3 Identity rules
 
 - **Node IDs.** `NodeId` = base64url of `(kind, row_id, born_run, catalogue instance)` plus an HMAC tag over those

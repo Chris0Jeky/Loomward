@@ -567,6 +567,89 @@ fn collections_remove_unresolved_by_member_id() {
 }
 
 #[test]
+fn collections_selected_batch_is_atomic_scoped_and_durable() {
+    let (dir, svc, ids) = setup(DatasetClass::Synthetic);
+    let path = dir.path().join("untouched-fixture.txt");
+    std::fs::write(&path, b"Synthetic collection curation fixture").unwrap();
+    let snapshot = || {
+        (
+            std::fs::read(&path).unwrap(),
+            std::fs::metadata(&path).unwrap().modified().unwrap(),
+        )
+    };
+    let file_before = snapshot();
+    let a = create(&svc, "Curate");
+    ok(
+        "collections.update_members",
+        update(&svc, &a, &ids, &[], svc.inner.revisions().unwrap().1),
+    );
+    let b = create(&svc, "Keep");
+    ok(
+        "collections.update_members",
+        update(&svc, &b, &ids, &[], svc.inner.revisions().unwrap().1),
+    );
+    svc.inner
+        .db()
+        .execute_batch(
+            "DELETE FROM main.file WHERE id=1; UPDATE main.revision SET catalog_rev=catalog_rev+1;",
+        )
+        .unwrap();
+    let (before, meta) = ok("collections.members", members(&svc, &a, 200, Value::Null));
+    assert_eq!(before["items"][0]["status"], "unresolved");
+    assert_eq!(before["items"][1]["status"], "resolved");
+    let other_before = ok("collections.members", members(&svc, &b, 200, Value::Null)).0;
+    let grants = ok("grants.list", call(&svc, "grants.list", json!({}))).0;
+    let mut req = request(
+        "collections.update_members",
+        json!({"collection_id":a,"add":[],"remove":[],"remove_members":[before["items"][0]["member_id"],before["items"][1]["member_id"]]}),
+    );
+    req.expected_state_rev = Some(Generation(meta.state_rev.unwrap().get() - 1));
+    let revisions = svc.inner.revisions().unwrap();
+    assert_eq!(
+        err(svc.call(req.clone(), &CallContext::http())).code,
+        ErrorCode::StaleGeneration
+    );
+    assert_eq!(svc.inner.revisions().unwrap(), revisions);
+    assert_eq!(
+        ok("collections.members", members(&svc, &a, 200, Value::Null)).0,
+        before
+    );
+    req.request_id = RequestId::new("curation_current").unwrap();
+    req.expected_state_rev = meta.state_rev;
+    let (updated, after_meta) = ok(
+        "collections.update_members",
+        svc.call(req, &CallContext::http()),
+    );
+    assert_eq!(updated["member_count"], 1);
+    assert_eq!(after_meta.state_rev.unwrap().get(), revisions.1 as u64 + 1);
+    assert_eq!(
+        ok("collections.members", members(&svc, &b, 200, Value::Null)).0,
+        other_before
+    );
+    drop(svc);
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    let remaining = ok("collections.members", members(&svc, &a, 200, Value::Null)).0;
+    assert_eq!(remaining["total"], 1);
+    assert_eq!(
+        remaining["items"][0]["member_id"],
+        before["items"][2]["member_id"]
+    );
+    let retained = ok("collections.members", members(&svc, &b, 200, Value::Null)).0;
+    assert_eq!(retained["total"], 3);
+    for i in 0..3 {
+        assert_eq!(
+            retained["items"][i]["member_id"],
+            before["items"][i]["member_id"]
+        );
+    }
+    assert_eq!(
+        ok("grants.list", call(&svc, "grants.list", json!({}))).0,
+        grants
+    );
+    assert_eq!(snapshot(), file_before);
+}
+
+#[test]
 fn collections_non_revoked_inactive_grant_is_unavailable() {
     let (_dir, svc, ids) = setup(DatasetClass::Synthetic);
     let id = create(&svc, "Projects");
