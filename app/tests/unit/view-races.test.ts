@@ -10,6 +10,9 @@ import alertReport from '../../../contracts/v3/examples/commands/alerts.list.res
 import proposal from '../../../contracts/v3/examples/commands/proposals.get.result.json';
 import { formFrom, settingsFrom } from '../../src/views/alerts/model';
 import { formatBytes } from '../../src/lib/format/bytes';
+import { planFind } from '../../src/lib/search/find';
+import rootList from '../../../contracts/v3/examples/commands/roots.list.result.json';
+import type { Root } from '../../src/lib/contracts.gen';
 
 /** Run the real instance-script functions/effect without a DOM or canvas. State is supplied by
  * the test; imports and rendering are excluded, so deferred replies control the interleaving. */
@@ -38,9 +41,12 @@ function viewScript(view: string, state: Record<string, unknown>, effectContaini
   }).outputText;
   return new Function('state', `with (state) { return (() => { ${code} })(); }`)(state) as {
     show(append?: boolean): Promise<void>;
+    commit(): boolean;
+    clearSearch(): void;
+    preset(text: string): void;
     loadStarts(recovery?: unknown, refreshOnly?: boolean): Promise<boolean>;
     effect(): void;
-    reload(): void;
+    reload(): Promise<void>;
     load(cursor?: string | null, restarted?: boolean): Promise<void>;
     loadSaved(id: string): Promise<void>;
     save(): Promise<void>;
@@ -271,16 +277,19 @@ describe('map slice installation', () => {
 function explorer(call: ReturnType<typeof vi.fn>) {
   const state = {
     route: { search: '' },
-    session: { client: { call }, epoch: 0, handle: (e: Error) => e.message },
+    session: { client: { call }, epoch: 0, connectionEpoch: 0, state: 'connected', handle: (e: Error) => e.message },
     untrack, tick: async () => {}, document: { activeElement: null }, HTMLElement: class {},
-    LoomwardError, fallbackStep, onRefetchError, resolveTrail,
+    LoomwardError, fallbackStep, onRefetchError, resolveTrail, planFind,
     PAGE: 50, gen: 0, startsRequest: 0, inspection: 0, abort: null, inspectAbort: null, pageGen: null,
     starts: [] as { id: string; name: string }[], trail: [] as { id: string; name: string }[],
     get here() { return this.trail.at(-1); },
     rows: [] as typeof searchExample.hits[number]['row'][], found: new Map(), seenIds: new Set(),
     searching: false, query: '', extension: '', minBytes: '', kind: 'any', basis: 'logical', sort: 'size_desc',
-    next: null, total: null, error: '', busy: false,
+    next: null as string | null, total: null, error: '', busy: false,
     notice: '', gone: null as { lost: string; now: string | null } | null,
+    rootChoices: [] as Root[], rootChoice: '' as string | null, submittedRoot: null as Root | null,
+    rootsRequest: 0, rootsAbort: null, rootsLoading: false, rootProblem: '', scopeBlocked: false,
+    scopedSearchOpen: false, mountedConnection: 0, reconnectScopePending: false,
   };
   return { state, code: viewScript('explorer', state, 'session.epoch') };
 }
@@ -306,6 +315,153 @@ describe('Explorer live-index pagination', () => {
   });
 });
 
+const grantedA = { ...rootList.roots[0]!, root_id: 'rt_a', grant_state: 'active', display_path: { text: 'Synthetic A', truncated: false } } as Root;
+const grantedB = { ...grantedA, root_id: 'rt_b', display_path: { text: 'Synthetic B', truncated: false } };
+
+describe('Explorer submitted root scope', () => {
+  it('freezes the chosen root for paging while a draft points at its same-named twin', async () => {
+    const hit = searchExample.hits[0]!;
+    const a = { ...hit, root_id: grantedA.root_id, row: { ...hit.row, node_id: 'nd_a', name: 'shared.pdf' } };
+    const b = { ...a, root_id: grantedB.root_id, row: { ...a.row, node_id: 'nd_b' } };
+    const call = vi.fn(async (_command: string, request: { root_id: string | null; cursor: string | null }) => ({
+      result: { ...searchExample, hits: request.root_id === grantedA.root_id ? [a] : [a, b], next_cursor: request.cursor ? null : 'next' },
+    }));
+    const { state, code } = explorer(call);
+    state.rootChoices = [grantedA, grantedB];
+    state.rootChoice = grantedA.root_id;
+    state.query = 'shared';
+    expect(code.commit()).toBe(true);
+    await code.show();
+    expect(state.rows).toEqual([a.row]);
+    state.rootChoice = grantedB.root_id;
+    await code.show(true);
+    expect(call.mock.calls.map(([, request]) => request.root_id)).toEqual(['rt_a', 'rt_a']);
+    expect(state.submittedRoot).toEqual(grantedA);
+    expect(call.mock.calls[1]![1].cursor).toBe('next');
+    state.rootChoice = '';
+    expect(code.commit()).toBe(true);
+    await code.show();
+    expect(state.rows).toEqual([a.row, b.row]);
+    expect(state.submittedRoot).toBeNull();
+  });
+
+  const reply = (command: string, available = [grantedA, grantedB]) => ({ result: command === 'roots.list'
+    ? { roots: available } : command === 'tree.slice' ? { nodes: [] } : searchExample });
+
+  it('offers the complete active root list, including roots beyond the Atlas sample', async () => {
+    const all = Array.from({ length: 64 }, (_, i) => ({ ...grantedA, root_id: `rt_${i}` }));
+    all[0] = { ...all[0]!, grant_state: 'revoked' };
+    const { state, code } = explorer(vi.fn(async command => reply(command, all)));
+    await code.reload();
+    expect(state.rootChoices).toEqual(all.slice(1));
+    state.rootChoice = 'rt_63'; state.query = 'shared';
+    expect(code.commit()).toBe(true);
+    expect(state.submittedRoot?.root_id).toBe('rt_63');
+  });
+
+  it('drops a late A result after B is submitted, even when abort is ignored', async () => {
+    const pending = deferred<{ result: typeof searchExample }>();
+    const a = searchExample.hits[0]!;
+    const b = { ...a, row: { ...a.row, node_id: 'nd_b', name: 'shared.pdf' } };
+    const call = vi.fn().mockReturnValueOnce(pending.promise).mockResolvedValue({ result: { ...searchExample, hits: [b] } });
+    const { state, code } = explorer(call);
+    state.rootChoices = [grantedA, grantedB]; state.rootChoice = 'rt_a'; state.query = 'shared';
+    code.commit(); const older = code.show();
+    state.rootChoice = 'rt_b'; code.commit(); await code.show();
+    pending.resolve({ result: { ...searchExample, hits: [a] } }); await older;
+    expect(state.rows).toEqual([b.row]);
+    expect(state.submittedRoot).toEqual(grantedB);
+    expect(call.mock.calls[0]![2].signal.aborted).toBe(true);
+  });
+
+  it.each(['removed', 'revoked', 'unreachable'])('clears %s scoped results and never widens a pending page', async reason => {
+    const pending = deferred<{ result: typeof searchExample }>();
+    let changed = false;
+    const call = vi.fn(async (command: string, request: { cursor?: string | null }) => {
+      if (command === 'search.query' && request.cursor) return pending.promise;
+      if (changed && reason === 'unreachable' && command === 'roots.list') throw new Error('Synthetic root list failure');
+      return reply(command, changed ? reason === 'revoked' ? [{ ...grantedA, grant_state: 'revoked' }, grantedB] : [grantedB] : [grantedA, grantedB]);
+    });
+    const { state, code } = explorer(call);
+    state.rootChoices = [grantedA, grantedB]; state.rootChoice = 'rt_a'; state.query = 'shared';
+    code.commit(); await code.show();
+    state.next = 'next';
+    const older = code.show(true);
+    changed = true; state.session.epoch++;
+    const reload = code.reload();
+    expect(state.rows).toEqual([]);
+    await reload;
+    expect(state.scopeBlocked).toBe(true);
+    expect(state.submittedRoot).toBeNull();
+    expect(state.rootChoice).toBeNull();
+    pending.resolve({ result: searchExample }); await older;
+    expect(state.rows).toEqual([]);
+    expect(state.found.size).toBe(0);
+    expect(code.commit()).toBe(false);
+    await code.show();
+    expect(call.mock.calls.filter(([c]) => c === 'search.query')).toHaveLength(2);
+    state.rootChoice = ''; expect(code.commit()).toBe(true); await code.show();
+    expect(state.rows).toEqual(searchExample.hits.map(h => h.row));
+    expect(state.scopeBlocked).toBe(false);
+  });
+
+  it('ignores an obsolete root list and blocks sealed IDs after a reconnect', async () => {
+    const pending = deferred<{ result: { roots: Root[] } }>();
+    let delay = true;
+    const call = vi.fn(async (command: string) => command === 'roots.list' && delay ? pending.promise : reply(command, [grantedB]));
+    const { state, code } = explorer(call);
+    state.rootChoices = [grantedA]; state.rootChoice = 'rt_a'; state.query = 'shared'; code.commit();
+    const older = code.reload();
+    delay = false; state.session.connectionEpoch++; state.session.epoch++;
+    await code.reload();
+    pending.resolve({ result: { roots: [grantedA] } }); await older;
+    expect(state.rootChoices).toEqual([grantedB]);
+    expect(state.scopeBlocked).toBe(true);
+    expect(call.mock.calls.filter(([c]) => c === 'search.query')).toEqual([]);
+  });
+
+  it('requires a new choice after remount and does not replay an old global link', async () => {
+    const call = vi.fn(async (command: string) => reply(command));
+    const { state, code } = explorer(call);
+    state.rootChoices = [grantedA]; state.rootChoice = 'rt_a'; state.query = 'shared'; code.commit();
+    const cleanup = viewScript('explorer', state, 'rootsRequest++').effect() as unknown as () => void;
+    state.session.state = 'unavailable'; state.session.connectionEpoch++; cleanup();
+    expect(state.scopedSearchOpen).toBe(true);
+    // A fresh instance keeps only the boolean intent, never the old root ID or results.
+    const next = explorer(call);
+    next.state.scopedSearchOpen = next.state.reconnectScopePending = next.state.scopeBlocked = next.state.searching = true;
+    next.state.rootChoice = null; next.state.route.search = 'q=shared';
+    next.code.effect();
+    await vi.waitFor(() => expect(next.state.rootsLoading).toBe(false));
+    expect(call.mock.calls.filter(([c]) => c === 'search.query')).toEqual([]);
+    expect(next.state.rootChoice).toBeNull();
+    next.state.route.search = 'q=another'; next.code.effect();
+    await vi.waitFor(() => expect(call.mock.calls.filter(([c]) => c === 'search.query')).toHaveLength(1));
+    expect(next.state.submittedRoot).toBeNull();
+  });
+
+  it('keeps partial empty coverage, chosen-scope presets and clear-search honest', async () => {
+    const call = vi.fn(async (command: string) => command === 'search.query'
+      ? { result: { ...searchExample, hits: [], partial: true } } : reply(command));
+    const { state, code } = explorer(call);
+    state.rootChoices = [grantedA]; state.rootChoice = 'rt_a';
+    code.preset('ext:iso size:>1gb');
+    await vi.waitFor(() => expect(state.busy).toBe(false));
+    expect(call.mock.calls[0]![0]).toBe('search.query');
+    expect(state.submittedRoot).toEqual(grantedA);
+    expect(code.evaluate('scope')).toMatchObject({ partial: true });
+    expect(state.rows).toEqual([]);
+    code.clearSearch();
+    expect(state.searching).toBe(false);
+    expect(state.scopedSearchOpen).toBe(false);
+    expect(state.rootChoice).toBe('rt_a');
+    state.route.search = 'q=shared'; code.effect();
+    await vi.waitFor(() => expect(state.searching).toBe(true));
+    expect(state.submittedRoot).toBeNull();
+    expect(state.rootChoice).toBe('');
+  });
+});
+
 const rootA = { id: 'root_a', name: 'Synthetic A' }, rootB = { id: 'root_b', name: 'Synthetic B' };
 const roots = (...items: typeof rootA[]) => ({ nodes: items.map(r => ({ node_id: r.id, name: r.name, parent: 0 })) });
 const children = { generation: 'g1', items: [], next_cursor: null, total: 0, budget_hit: false };
@@ -313,7 +469,7 @@ const children = { generation: 'g1', items: [], next_cursor: null, total: 0, bud
 describe('Explorer starting points after invalidation', () => {
   it.each([false, true])('removes a revoked sibling while preserving the current trail and searching=%s', async searching => {
     let revoked = false;
-    const call = vi.fn(async (command: string) => ({ result: command === 'tree.slice'
+    const call = vi.fn(async (command: string) => ({ result: command === 'roots.list' ? rootList : command === 'tree.slice'
       ? revoked ? roots(rootA) : roots(rootA, rootB)
       : command === 'search.query' ? searchExample : children }));
     const { state, code } = explorer(call);
@@ -341,7 +497,7 @@ describe('Explorer starting points after invalidation', () => {
   it('binds the root it lands on to its granted path, so a restart that re-mints every ID still restores the trail (#198)', async () => {
     const afterRestart = { id: 'root_after_restart', name: 'Synthetic A' }, other = { id: 'root_other', name: 'Synthetic A' };
     let restarted = false;
-    const call = vi.fn(async (command: string, req: { node_id?: string }) => ({ result: command === 'tree.slice' ? roots(...(restarted ? [other, afterRestart] : [rootA]))
+    const call = vi.fn(async (command: string, req: { node_id?: string }) => ({ result: command === 'roots.list' ? rootList : command === 'tree.slice' ? roots(...(restarted ? [other, afterRestart] : [rootA]))
       : command === 'node.inspect' ? inspected(req.node_id === other.id ? 'synthetic/other' : 'synthetic/a')
       : { ...children, items: [{ node_id: restarted ? 'child_after' : 'child_a', name: 'Synthetic child', kind: 'dir' }] } }));
     const { state, code } = explorer(call);
@@ -358,7 +514,7 @@ describe('Explorer starting points after invalidation', () => {
 
   it('does not tell the reader a different root of the same name was restored (#198)', async () => {
     const twin = { id: 'root_twin', name: 'Synthetic A' };
-    const call = vi.fn(async (command: string, req: { node_id?: string }) => ({ result: command === 'tree.slice' ? roots(twin)
+    const call = vi.fn(async (command: string, req: { node_id?: string }) => ({ result: command === 'roots.list' ? rootList : command === 'tree.slice' ? roots(twin)
       : command === 'node.inspect' ? inspected('synthetic/twin') : { ...children, items: req.node_id === twin.id ? [{ node_id: 'child_t', name: 'Synthetic child', kind: 'dir' }] : [] } }));
     const { state, code } = explorer(call);
     const saved = [{ ...rootA, root: 'synthetic/a' }, { id: 'child_a', name: 'Synthetic child' }];
@@ -372,7 +528,7 @@ describe('Explorer starting points after invalidation', () => {
     let fail = false;
     const { state, code } = explorer(vi.fn(async (command: string) => {
       if (command === 'tree.slice' && fail) throw new Error('synthetic offline catalogue');
-      return { result: command === 'tree.slice' ? roots(rootA, rootB) : children };
+      return { result: command === 'roots.list' ? rootList : command === 'tree.slice' ? roots(rootA, rootB) : children };
     }));
     await code.loadStarts();
     fail = true;
@@ -407,7 +563,7 @@ describe('Explorer starting points after invalidation', () => {
   it('aborts an obsolete root refresh without letting its late reply restore a revoked root', async () => {
     const pending = deferred<{ result: ReturnType<typeof roots> }>();
     const call = vi.fn()
-      .mockImplementation(async (command: string) => ({ result: command === 'tree.slice' ? roots(rootA) : children }));
+      .mockImplementation(async (command: string) => ({ result: command === 'roots.list' ? rootList : command === 'tree.slice' ? roots(rootA) : children }));
     const { state, code } = explorer(call);
     await code.loadStarts();
     call.mockImplementationOnce(() => pending.promise);
@@ -423,7 +579,7 @@ describe('Explorer starting points after invalidation', () => {
 
 describe('Explorer linked node is applied once per value (#1082)', () => {
   it('does not re-inspect a linked node after a reconnect, but applies a different or re-followed link', async () => {
-    const call = vi.fn(async (command: string) => ({ result: command === 'tree.slice' ? roots(rootA)
+    const call = vi.fn(async (command: string) => ({ result: command === 'roots.list' ? rootList : command === 'tree.slice' ? roots(rootA)
       : command === 'node.inspect' ? { display_path: { text: 'synthetic/a', truncated: false } } : children }));
     // The root binding also reads node.inspect for the starting root (background bookkeeping): count only linked nodes.
     const inspectedNodes = () => (call.mock.calls as unknown as Array<[string, { node_id: string }]>)
@@ -454,7 +610,7 @@ describe('Explorer linked node is applied once per value (#1082)', () => {
     let first = true;
     const call = vi.fn(async (command: string, params: { node_id?: string }) => {
       if (command === 'node.inspect' && params.node_id?.startsWith('nd_') && first) { first = false; return pending.promise; }
-      return { result: command === 'tree.slice' ? roots(rootA)
+      return { result: command === 'roots.list' ? rootList : command === 'tree.slice' ? roots(rootA)
         : command === 'node.inspect' ? { display_path: { text: 'synthetic/a', truncated: false } } : children };
     });
     const inspectedNodes = () => (call.mock.calls as unknown as Array<[string, { node_id: string }]>)
@@ -475,7 +631,7 @@ describe('Explorer linked node is applied once per value (#1082)', () => {
     let first = true;
     const call = vi.fn(async (command: string, params: { node_id?: string }) => {
       if (command === 'node.inspect' && params.node_id === 'nd_a' && first) { first = false; return never; }
-      return { result: command === 'tree.slice' ? roots(rootA)
+      return { result: command === 'roots.list' ? rootList : command === 'tree.slice' ? roots(rootA)
         : command === 'node.inspect' ? { display_path: { text: 'synthetic/b', truncated: false } } : children };
     });
     const inspectedNodes = () => (call.mock.calls as unknown as Array<[string, { node_id: string }]>)
