@@ -51,6 +51,7 @@
   let trail = $state<Crumb[]>([]);
   let rows = $state<EntryRow[]>([]);
   let selected = $state<CopyItem[]>([]);
+  let selectionConnection = session.connectionEpoch;
   let total = $state<number | null>(null);
   let next = $state<string | null>(null);
   let budgetHit = $state(false);
@@ -446,10 +447,12 @@
   let linkedAt = 0; // the inspection counter the linked inspection holds; any later inspect or navigation moves it
   $effect(() => {
     void session.epoch;
+    const connection = session.connectionEpoch;
     const params = new URLSearchParams(route.search);
     if (!session.client) return;
     let current = true;
     untrack(() => {
+      if (selectionConnection !== connection) { selectionConnection = connection; selected = []; }
       inspection++; inspectAbort?.abort(); detail = null;
       const linked = params.get('q');
       if (linked && linked !== appliedQ) {
@@ -589,8 +592,7 @@
     <span class="muted num" role="status">{formatCount(selected.length)} selected across folders</span>
     {#if selected.length}<button class="btn" type="button" onclick={() => { selected = []; }}>Clear selection</button>{/if}
   </div>
-  {#if selected.length}<AddToCollection nodeIds={selected.map(item => item.node_id)} contextKey={gen} />
-  {:else}<p class="muted small">Select rows to add them to a virtual collection. Files stay in place.</p>{/if}
+  <AddToCollection nodeIds={selected.map(item => item.node_id)} contextKey={gen} />
   <div class="tbl-wrap" aria-busy={busy}>
     <table class="tbl" bind:this={tableEl}>
       <caption class="sr-only">{searching ? 'Search results' : 'Folder contents'}</caption>

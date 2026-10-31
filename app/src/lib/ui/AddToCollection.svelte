@@ -73,6 +73,7 @@
     finally { if (mine === generation) { busy = false; sending = false; request = null; } }
   }
 </script>
+{#if !batch || ids.length}
 <div class="controls">
   <div class="lw-field"><label class="lbl" for={fieldId}>{batch ? 'Collection for selected rows' : 'Add to collection'}</label> <select id={fieldId} bind:value={selected} disabled={busy || loading || !collections.length}>
     {#each collections as c (c.collection_id)}<option value={c.collection_id}>{escapedName(c.name)}</option>{/each}
@@ -83,6 +84,7 @@
 {:else if !collections.length && !error}<p class="empty">Create a collection in the <a href="#/collections">Collections view</a> first.</p>{/if}
 {#if batch}<p class="muted small">{ids.length} selected {ids.length === 1 ? 'row' : 'rows'} · virtual membership only; files stay in place.</p>{/if}
 {#if ids.length > 500}<p class="bad" role="alert">Choose at most 500 rows for one collection update.</p>{/if}
+{:else}<p class="muted small">Select rows to add them to a virtual collection. Files stay in place.</p>{/if}
 <p class="live muted" class:has={!!result.text} role="status" aria-label="Membership result">{result.text}</p>
 <p class="live bad" class:has={!!error} role="alert">{error}</p>
 <style>

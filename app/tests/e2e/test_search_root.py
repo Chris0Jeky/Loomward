@@ -108,7 +108,7 @@ def run(ctx):
       const realFetch = window.fetch.bind(window);
       let seq = 0;
       window.scopeEmit = (event, data) => {
-        const frame = {protocol:'loomward/3', epoch:'e_search_scope', seq:seq++, event,
+        const frame = {protocol:'loomward/3', epoch:window.scopeEpoch ?? 'e_search_scope', seq:seq++, event,
           at:'2026-10-01T00:00:00Z', catalog_rev:'1', state_rev:'1', data};
         window.scopeStream.enqueue(new TextEncoder().encode(
           `id: ${frame.epoch}.${frame.seq}\\nevent: ${event}\\ndata: ${JSON.stringify(frame)}\\n\\n`));
@@ -120,16 +120,16 @@ def run(ctx):
           const kind = command === 'collections.members' ? 'Read' : command === 'collections.update_members' ? 'Write' : null;
           if (kind && window[`collectionHold${kind}`]) {
             window[`collectionHold${kind}`] = false;
-            window[`collection${kind}Waiting`] = true;
+            document.documentElement.setAttribute('data-collection-waiting', kind);
             await new Promise(resolve => { window[`collectionRelease${kind}`] = resolve; });
-            window[`collection${kind}Waiting`] = false;
+            document.documentElement.removeAttribute('data-collection-waiting');
           }
           return response;
         });
         if (window.scopeOffline) return Promise.reject(new Error('Synthetic disconnect'));
         return Promise.resolve(new Response(new ReadableStream({start(controller) {
           window.scopeStream = controller;
-          window.scopeEmit('stream.hello', {session_started_at:'2026-10-01T00:00:00Z', epoch:'e_search_scope',
+          window.scopeEmit('stream.hello', {session_started_at:'2026-10-01T00:00:00Z', epoch:window.scopeEpoch ?? 'e_search_scope',
             last_seq:seq, oldest_replayable_seq:0, dataset_class:'synthetic'});
           init.signal.addEventListener('abort', () => { try { controller.close(); } catch {} }, {once:true});
         }}), {headers:{'Content-Type':'text/event-stream'}}));
@@ -237,6 +237,7 @@ def run(ctx):
         expect(rows).to_have_count(50)
         rows.first.get_by_role('checkbox').check()
         target = page.get_by_role('combobox', name='Collection for selected rows', exact=True)
+        target.select_option('co_papers')
         expect(target).to_have_value('co_papers')
         add = page.get_by_role('button', name='Add selected to collection', exact=True)
         add.click()
@@ -249,7 +250,7 @@ def run(ctx):
         before = len(updates)
         page.evaluate('window.collectionHoldRead = true')
         add.click()
-        page.wait_for_function('window.collectionReadWaiting === true')
+        expect(page.locator('html')).to_have_attribute('data-collection-waiting', 'Read')
         rows.nth(1).get_by_role('checkbox').check()
         expect(add).to_have_attribute('aria-disabled', 'false')
         page.evaluate('async () => { window.collectionReleaseRead(); await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame); }')
@@ -259,13 +260,26 @@ def run(ctx):
         frozen = ['nd_rt_scope_0_0', 'nd_rt_scope_1_0', 'nd_rt_scope_1_1']
         page.evaluate('window.collectionHoldWrite = true')
         add.click()
-        page.wait_for_function('window.collectionWriteWaiting === true')
+        expect(page.locator('html')).to_have_attribute('data-collection-waiting', 'Write')
         rows.nth(2).get_by_role('checkbox').check()
         expect(membership).to_contain_text('may already have been saved')
         page.evaluate('async () => { window.collectionReleaseWrite(); await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame); }')
         expect(membership).to_contain_text('may already have been saved')
         ctx.check(updates[-1]['payload']['add'] == frozen and members['co_papers'] == set(frozen),
                   'The committed frozen set survives a late response without being relabelled as the newer selection')
+
+        page.evaluate('window.collectionHoldWrite = true')
+        add.click()
+        expect(page.locator('html')).to_have_attribute('data-collection-waiting', 'Write')
+        page.get_by_role('button', name='Clear selection', exact=True).click()
+        expect(add).to_have_count(0)
+        expect(membership).to_contain_text('may already have been saved')
+        page.evaluate('async () => { window.collectionReleaseWrite(); await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame); }')
+        expect(membership).to_contain_text('may already have been saved')
+        ctx.check(updates[-1]['payload']['add'] == frozen + ['nd_rt_scope_1_2']
+                  and members['co_papers'] == set(frozen + ['nd_rt_scope_1_2']),
+                  'Clearing the final selection preserves the unknown-outcome notice and never implies rollback')
+        rows.first.get_by_role('checkbox').check()
 
         for collection_failure in [('stale_generation', 'Collection state changed; refresh before retrying.'),
                                    ('not_found', 'A selected identity was replaced or its root was revoked.'),
@@ -281,11 +295,27 @@ def run(ctx):
 
         page.get_by_role('button', name='Clear selection', exact=True).click()
         human_collections = False
+        page.reload()
+        expect(rows).to_have_count(50)
         rows.first.get_by_role('checkbox').check()
         expect(page.get_by_text('Create a collection in the', exact=False)).to_be_visible()
         expect(page.get_by_role('button', name='Add selected to collection', exact=True)).to_be_disabled()
         page.get_by_role('button', name='Clear selection', exact=True).click()
         human_collections = True
+        page.reload()
+        expect(rows).to_have_count(50)
+        rows.first.get_by_role('checkbox').check()
+        before_restart = len(updates)
+        page.evaluate("""() => {
+          window.scopeEpoch = 'e_search_scope_restart';
+          window.scopeEmit('stream.hello', {session_started_at:'2026-10-01T00:00:00Z', epoch:window.scopeEpoch,
+            last_seq:0, oldest_replayable_seq:0, dataset_class:'synthetic'});
+        }""")
+        expect(page.get_by_role('heading', name='Explorer', exact=True)).to_be_visible()
+        expect(page.get_by_role('group', name='Selected rows')).to_contain_text('0 selected across folders')
+        expect(add).to_have_count(0)
+        expect(rows).to_have_count(50)
+        ctx.check(len(updates) == before_restart, 'A connected engine restart clears sealed selection without replaying membership')
         rows.first.get_by_role('checkbox').check()
         before_disconnect = len(updates)
 
@@ -335,7 +365,8 @@ def run(ctx):
         ctx.check(calls[-1]['root_id'] is None and calls[-1]['text'] == 'another', 'An explicit new unscoped link restores the global default')
         ctx.check(not any(c.startswith('copy.') for c in commands), 'Membership never invokes a copy effect')
         return {'scope': 'pass', 'keyboard_widths': [1440, 390], 'roots': 64, 'reconnect': 'pass',
-                'selected_collection': 'pass', 'atomic_refusals': 3, 'late_read_and_write': 'pass'}
+                'selected_collection': 'pass', 'atomic_refusals': 3, 'late_read_and_write': 'pass',
+                'clear_selection_during_write': 'pass', 'connected_restart': 'pass'}
     except Exception:
         print(f'Search scope failure URL: {page.url}')
         print(page.locator('body').inner_text()[:6000])

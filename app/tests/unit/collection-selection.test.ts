@@ -90,14 +90,15 @@ describe('selected rows into a collection', () => {
     expect(state.result.text).toBe('');
   });
 
-  it('keeps a frozen payload and an honest unknown outcome when a submitted write is superseded', async () => {
+  it.each(['changed', 'cleared'])('keeps a frozen payload and an honest unknown outcome when selection is %s after submission', async change => {
     const write = later();
     const call = vi.fn(async (command: string) => command === 'collections.members' ? response : write.promise);
     const { api, state, result } = membership({ nodeIds: ['nd_A', 'nd_B'], expectedGeneration: undefined }, call);
     const pending = api.add();
     await Promise.resolve();
     expect(call).toHaveBeenCalledTimes(2);
-    state.nodeIds.push('nd_C'); state.selected = 'co_2';
+    if (change === 'cleared') state.nodeIds = [];
+    else { state.nodeIds.push('nd_C'); state.selected = 'co_2'; }
     api.effects.forEach(effect => effect());
     expect((call.mock.calls[1] as any[])[1]).toEqual({ collection_id: 'co_1', add: ['nd_A', 'nd_B'], remove: [] });
     expect((call.mock.calls[1] as any[])[2].signal.aborted).toBe(true);
