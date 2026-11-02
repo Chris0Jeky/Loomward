@@ -87,6 +87,8 @@
   let tableEl = $state<HTMLTableElement>();
   let error = $state('');
   let notice = $state('');
+  // A rejected Find submission remains visible while navigation refreshes its own notices.
+  let findNotice = $state('');
   /** A saved folder vanished from the catalogue (#198): its name, and where the view moved to (null: the top level). */
   let gone = $state<{ lost: string; now: string | null } | null>(null);
   let busy = $state(false);
@@ -285,10 +287,12 @@
     // Re-plan with the current clock: `plan` is only re-derived when the box or controls change,
     // so a resubmitted `modified:<1h` would otherwise keep the earlier "now".
     const fresh = planFind(query, { extension, kind, minBytes }, Date.now());
+    if (fresh.blocked) { findNotice = `${fresh.blocked} No search was run.`; return false; }
     if (fresh.unconstrained) {
-      notice = 'Nothing in that query can be searched yet, so no search was run.';
+      findNotice = 'Nothing in that query can be searched yet, so no search was run.';
       return false;
     }
+    findNotice = '';
     sent = fresh.request;
     submittedRoot = chosen ?? null;
     scopeBlocked = false;
@@ -311,6 +315,7 @@
   }
 
   function clearSearch() {
+    findNotice = '';
     searching = false;
     scopedSearchOpen = false;
     scopeBlocked = false; submittedRoot = null;
@@ -322,6 +327,7 @@
   }
 
   function go(to: Crumb[]) {
+    findNotice = '';
     trail = to;
     searching = false;
     scopedSearchOpen = false;
@@ -423,7 +429,7 @@
     const starting = loadStarts(undefined, !!(trail.length || searching));
     const [loaded] = await Promise.all([starting, loadRoots()]);
     if (mine === gen && (trail.length || searching)) {
-      if (!loaded || (searching && scopeBlocked)) busy = false;
+      if (searching ? scopeBlocked || !!rootProblem : !loaded) busy = false;
       else await show();
     }
   }
@@ -518,16 +524,18 @@
     {#if rootsLoading}Refreshing available search scopes…{:else if rootProblem}Root choices could not be refreshed: {rootProblem}{:else if rootChoice === null}The previous scope is unavailable. Choose a scope explicitly to search again.{:else}Scope changes apply when you search. Cleanup searches use the chosen scope.{/if}
   </p>
 
-  <p id="find-hint" class="muted small hint">Filters in the box: <code>ext:pdf</code> <code>size:&gt;100mb</code> <code>modified:&lt;30d</code> (newer) <code>modified:&gt;1y</code> (older) <code>kind:dir</code>. The Extension, Kind and Size boxes fill in only what the query leaves out.</p>
+  <p id="find-hint" class="muted small hint">Filters in the box: <code>ext:pdf</code> <code>size:&gt;100mb</code> <code>modified:&lt;30d</code> (newer) <code>modified:&gt;1y</code> (older) <code>kind:dir</code>. Sizes use binary units: <code>kb</code>/<code>mb</code>/<code>gb</code> mean KiB/MiB/GiB. Dates are UTC; <code>1mo</code> is 30 days and <code>1y</code> is 365 days. Name words of three or more characters also match inside names. The Extension, Kind and Size boxes fill in only what the query leaves out.</p>
   <div class="bar" role="group" aria-label="Cleanup searches">
     {#each PRESETS as p (p.label)}<button class="btn" type="button" title={p.query} onclick={() => preset(p.query)}>{p.label}</button>{/each}
   </div>
-  <div id="find-notes">
+  <div id="find-notes" aria-live="polite" aria-atomic="true">
+    {#if plan.chips.length || plan.notices.length}<p class="small">Draft filters · apply when you search</p>{/if}
+    {#if findNotice}<p class="bad">{findNotice}</p>{/if}
     {#if plan.chips.length}
       <ul class="chips" aria-label="Search filters">{#each plan.chips as c, i (i)}<li class="chip">{c}</li>{/each}</ul>
     {/if}
     {#if plan.notices.length}
-      <ul class="scope muted small" aria-label="Search notes">{#each plan.notices as n, i (i)}<li>{n}</li>{/each}</ul>
+      <ul class="scope" aria-label="Search notes">{#each plan.notices as n, i (i)}<li>{n}</li>{/each}</ul>
     {/if}
   </div>
 
@@ -552,8 +560,9 @@
     </div>
   {/if}
 
+  <div aria-live="polite" aria-atomic="true">
   {#if searching}
-    <p class="where">Search results {#if ran}for <q><VisibleName name={ran} /></q>{/if}</p>
+    <p class="where"><strong>Showing:</strong> Search results {#if ran}for <q><VisibleName name={ran} /></q>{/if}</p>
     <p class="where" aria-label="Applied search scope">
       {#if scopeBlocked}Search paused: choose an available scope and search again.
       {:else if submittedRoot}Scope: <VisibleName name={submittedRoot.display_path.text} />{#if submittedRoot.display_path.truncated} <span class="tag warn">truncated</span>{/if}
@@ -563,8 +572,11 @@
       <ul class="chips" aria-label="Filters applied to these results">{#each shown.chips as c, i (i)}<li class="chip">{c}</li>{/each}</ul>
     {/if}
     {#if shown?.notices.length}
-      <ul class="scope muted small" aria-label="Notes on these results">{#each shown.notices as n, i (i)}<li>{n}</li>{/each}</ul>
+      <ul class="scope" aria-label="Notes on these results">{#each shown.notices as n, i (i)}<li>{n}</li>{/each}</ul>
     {/if}
+  {/if}
+  </div>
+  {#if searching}
     {#if scope && (scope.index_state !== 'current' || scope.partial || !scope.substring_searched)}
       <ul class="scope muted small" aria-label="Search coverage">
         {#if scope.index_state === 'building'}<li class="bad">A searched folder is still being scanned, so more results may appear.</li>{/if}

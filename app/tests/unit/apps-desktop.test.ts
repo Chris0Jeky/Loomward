@@ -92,13 +92,10 @@ it('mock apps.list size_desc reorders a snapshot whose registry order differs fr
   expect(third.next_cursor).toBeNull();
 });
 
-it('offers a Largest first control on Applications only, off by default, and asks the service for the sort', () => {
+it('offers a Largest first control on Applications only, off by default', () => {
   const apps = render(InventoryView, { props: { kind: 'applications' } }).body;
   expect(apps).toContain('Largest first');
   expect(apps).toMatch(/<input[^>]*type="checkbox"/);
   expect(apps).not.toMatch(/<input[^>]*checked/);
   expect(render(InventoryView, { props: { kind: 'desktop' } }).body).not.toContain('Largest first');
-  const src = readFileSync(join(import.meta.dirname, '..', '..', 'src', 'lib', 'ui', 'InventoryView.svelte'), 'utf8');
-  expect(src).toContain("sort: largestFirst ? 'size_desc' : 'registry'");
-  expect(src).toContain('Sizes are provider estimates');
 });

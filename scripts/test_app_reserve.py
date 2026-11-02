@@ -53,38 +53,37 @@ def run_live_reserve(browser, exe: Path, dist: Path, check, call, evidence: Path
             expect(page.get_by_role('button', name='Save reserve for Reserve target', exact=True)).to_be_enabled()
 
         def simulate(page):
+            previous = call(page, token, 'proposals.list', {})
+            check(previous['ok'], 'reserve: read saved scenarios before the UI simulation')
+            previous_ids = {p['proposal_id'] for p in previous['result']['proposals']}
             page.get_by_label('Assumed heat for Reserve group').select_option('0.1')
             group = page.locator('main table.tbl tbody tr').filter(has_text='Reserve group').first
             group.get_by_role('checkbox', name=re.compile('^Assume not pinned')).check()
             group.get_by_role('checkbox', name=re.compile('^Assume no move')).check()
             page.get_by_label('Space freed counted from').select_option('entry_allocation_whatif')
             page.get_by_label('Keep these scenarios').check()
-            def assumed(request):
-                if not request.url.endswith('/api/v3/call') or request.method != 'POST':
-                    return False
-                body = request.post_data_json
-                return body.get('command') == 'placement.simulate' and body['payload']['heat_policy'] == 'assumed_only'
-            # Chromium may evict a response body from the DevTools buffer before Response.json() reads it
-            # (#1111), so Playwright fetches the reply itself and hands the same bytes to the page.
-            replies = []
-            def capture(route):
-                if not assumed(route.request):
-                    route.continue_()
-                    return
-                reply = route.fetch()
-                replies.append(reply.json())
-                route.fulfill(response=reply)
-            page.route('**/api/v3/call', capture)
-            try:
-                with page.expect_response(lambda response: assumed(response.request)):
-                    page.get_by_role('button', name='Simulate', exact=True).click()
-            finally:
-                page.unroute('**/api/v3/call', capture)
-            check(len(replies) == 1, 'reserve: the app sent one assumed-only simulation')
-            envelope = replies[0]
-            check(envelope['ok'], 'reserve: app simulation succeeds over native HTTP')
+            page.get_by_role('button', name='Simulate', exact=True).click()
+            # The app consumes streamed fetch bodies. CDP response-body retention is not
+            # the persistence contract: read the UI-created scenarios after all three
+            # alternatives have settled, as live_placement does.
+            expect(page.get_by_role('button', name='Simulate', exact=True)).to_have_attribute('aria-disabled', 'false')
             expect(page.get_by_role('heading', name='Placement plan', exact=True)).to_be_visible()
-            return envelope['result']
+            expect(page.get_by_role('button', name=re.compile('Show saved scenario'))).to_have_count(len(previous_ids) + 3)
+            current = call(page, token, 'proposals.list', {})
+            check(current['ok'], 'reserve: read the UI-created saved scenarios')
+            created = [p for p in current['result']['proposals'] if p['proposal_id'] not in previous_ids]
+            check(len(created) == 3, 'reserve: this UI simulation saved exactly three new alternatives')
+            plans = []
+            for summary in created:
+                detail = call(page, token, 'proposals.get', {'proposal_id': summary['proposal_id']})
+                check(detail['ok'] and detail['result']['summary']['status'] == 'simulation_only', 'reserve: new saved scenario is current')
+                plan = detail['result']['plan']
+                check(plan['proposal_id'] == summary['proposal_id'], 'reserve: saved detail matches its identity')
+                plans.append(plan)
+            check({p['heat_policy'] for p in plans} == {'unknown_is_ineligible', 'mtime_proxy_whatif', 'assumed_only'}, 'reserve: saved alternatives cover each heat policy exactly once')
+            assumed = next(p for p in plans if p['heat_policy'] == 'assumed_only')
+            page.get_by_role('button', name='Show Only the heat I assume below', exact=True).click()
+            return assumed
 
         try:
             page, token = start()
@@ -124,7 +123,28 @@ def run_live_reserve(browser, exe: Path, dist: Path, check, call, evidence: Path
                 page.screenshot(path=str(evidence / 'reserve-80-restarted-wide.png'), full_page=True)
             page.get_by_role('button', name=re.compile('Show saved scenario')).first.click()
             expect(page.get_by_role('heading', name='Placement plan', exact=True)).to_be_visible()
+            # A second browser client keeps an open saved plan and an unsaved edit.
+            # Only the first client writes; SSE must refresh the second one's facts
+            # and historical warning without submitting or replacing its draft.
+            observer = context.new_page()
+            observer.set_default_timeout(10000)
+            observer.on('pageerror', lambda error: errors.append(str(error)))
+            observer.goto(page.url.split('#', 1)[0] + '#token=' + token)
+            expect(observer.get_by_role('status', name='Session status')).to_contain_text('Connected')
+            observer.evaluate("location.hash = '#/tiers'")
+            expect(observer.get_by_label('Keep at least free for Reserve target', exact=True)).to_have_value('80')
+            observer.get_by_role('button', name=re.compile('Show saved scenario')).first.click()
+            expect(observer.get_by_role('heading', name='Placement plan', exact=True)).to_be_visible()
+            observer.get_by_label('Keep at least free for Reserve target', exact=True).fill('75')
             save_reserve(page, '60')
+            observer_target = observer.locator('.vol').filter(has=observer.get_by_role('heading', name='Reserve target', exact=True))
+            expect(observer_target).to_contain_text(f'({60 * gib} bytes)')
+            expect(observer.get_by_label('Keep at least free for Reserve target', exact=True)).to_have_value('75')
+            expect(observer.get_by_role('note').filter(has_text='Historical scenario')).to_be_visible()
+            expect(observer.locator('section[aria-labelledby="h-saved"] .tag').filter(has_text='Stale')).to_have_count(3)
+            expect(observer.get_by_role('status').filter(has_text='Your unsaved reserve edits are preserved')).to_be_visible()
+            check(True, 'reserve: second client refreshes committed reserve and historical plan while preserving its unsaved draft')
+            observer.close()
             expect(page.get_by_role('heading', name='Placement plan', exact=True)).to_have_count(0)
             expect(page.locator('section[aria-labelledby="h-saved"] .tag').filter(has_text='Stale')).to_have_count(3)
             page.get_by_role('button', name=re.compile('Show saved scenario')).first.click()
@@ -138,10 +158,11 @@ def run_live_reserve(browser, exe: Path, dist: Path, check, call, evidence: Path
             expect(page.get_by_text('Target met in the simulation', exact=True)).to_be_visible()
             if evidence:
                 page.screenshot(path=str(evidence / 'reserve-60-wide.png'), full_page=True)
-                page.set_viewport_size({'width': 390, 'height': 844})
-                page.get_by_label('Keep at least free for Reserve target', exact=True).scroll_into_view_if_needed()
-                expect(page.get_by_role('button', name='Save reserve for Reserve target', exact=True)).to_be_visible()
-                check(page.evaluate('document.documentElement.scrollWidth <= innerWidth'), 'reserve: narrow viewport has no page overflow')
+            page.set_viewport_size({'width': 390, 'height': 844})
+            page.get_by_label('Keep at least free for Reserve target', exact=True).scroll_into_view_if_needed()
+            expect(page.get_by_role('button', name='Save reserve for Reserve target', exact=True)).to_be_visible()
+            check(page.evaluate('document.documentElement.scrollWidth <= innerWidth'), 'reserve: narrow viewport has no page overflow')
+            if evidence:
                 page.screenshot(path=str(evidence / 'reserve-60-narrow.png'), full_page=True)
                 (evidence / 'reserve-native-plans.json').write_text(json.dumps({'blocked80': blocked, 'historical': old, 'permitted60': permitted}, indent=2) + '\n', encoding='utf-8')
             check(grants() == original_grants and (original.read_bytes(), original.stat().st_mtime_ns) == before, 'reserve: original bytes, modification time and grants are unchanged')

@@ -63,6 +63,7 @@ re-send as stated.
 | Command | May have committed? | Retained action key | Read (step 2) | Replay (step 3) |
 |---|---|---|---|---|
 | `feedback.record` | Yes | `client_event_id`, forever: an identical replay returns the original result with `idempotent_replay: true` | `learning.status`, `learning.queue` | Not needed: the durable key makes a resend with the same `client_event_id` safe. Reuse with different content is `invalid_request` |
+| `learning.set_deferred` | Yes | Durable `client_event_id`: identical preference and original `expected_state_rev` return the original receipt, before the revision check | `learning.queue` in review/deferred mode | Retry the same choice and original revision only after an unknown outcome. A new choice requires the latest queue revision. |
 | `volumes.declare_tier` | Yes | `request_id`, 10 min | `volumes.list` | Re-declare only with `expected_state_rev` from that read |
 | `volumes.declare_reserve` | Yes | `request_id`, 10 min | `tiers.model` | An identical retry replays its retained result. A new declaration requires `expected_state_rev` from the current model read. |
 | `collections.create` | Yes | `request_id`, 10 min | `collections.list`; a duplicate name is `invalid_request` with `detail.existing_id` | Not needed: the name is the key |
@@ -149,6 +150,25 @@ features were redacted, or the durable reference is unresolved or excluded. Read
 redaction, refit, repair or grant mutations. A forgotten root's records disappear, and an
 undelivered history response is withheld across revocation or forget using the existing
 delivery-fence refusal (`permission_denied`, `forgotten_result`).
+
+`learning.set_deferred` records only an explicit owner review preference, keyed to a durable
+object reference and its active grant. It requires envelope `expected_state_rev`; a new request
+at a stale revision refuses with `stale_generation`, `state_rev_changed`, without partial writes.
+The receipt binds `client_event_id`, desired `deferred` boolean and original revision. Exact replay
+of the original opaque ID remains a receipt read; replay with a new session ID additionally proves
+the same current native reference and active original grant. Changed content is `invalid_request`.
+Reference creation, preference, revision and receipt commit together. Labels, features, teacher
+rows, model state and grants are unchanged. Forget cascades the preference and its receipts;
+revocation removes the preference. Unresolved, retired, excluded and reused references cannot
+transfer it to another object or reveal a stale name.
+
+`learning.queue` defaults to mode `review`; explicit mode `deferred` shows only eligible deferred
+objects. The selector is applied before the 10,000-candidate budget and ranking, and is bound into
+the cursor along with root and both revisions. Both modes retain the 100-item page bound and withhold
+pending responses across root revoke/forget. The UI provides **Not now**, **Deferred** and **Bring back**.
+Refresh, page close, nonresponse and elapsed time never create a preference or label. There is no
+automatic expiry. Older services can continue ordinary review and history without the extension.
+Quiet windows, interruption budgets, batches and broader feedback evaluation remain LW-026 work.
 
 `learning.refit` produces a persisted **candidate**, without promotion (LW-027). Status and queue
 use the latest candidate for advice only; `calibrated` and `autonomy_allowed` remain false. Scores

@@ -2104,6 +2104,82 @@ def check_narrow_wide_fonts(page: Page, base: str) -> None:
     page.set_viewport_size({'width': 1360, 'height': 900})
 
 
+def check_covers_result_retry(browser) -> None:
+    """Retry only a completed job's retained report; never start another content read."""
+    report = json.loads((ROOT / 'contracts/v3/examples/commands/coverage.result.result.json').read_text())
+    job = json.loads((ROOT / 'contracts/v3/examples/commands/coverage.start.result.json').read_text())['job']
+    job.update(state='completed', rev=2, started_at=job['created_at'], finished_at=report['observed_at'])
+
+    class CoversEngine(FakeEngine):
+        def __init__(self):
+            super().__init__()
+            self.reads = []
+            self.starts = []
+            self.expired = False
+            self.lists = 0
+            self.retry_arrived = threading.Event()
+            self.retry_release = threading.Event()
+
+        def result(self, req):
+            cmd, payload = req['command'], req['payload']
+            if cmd == 'jobs.list' and payload.get('kinds') == ['coverage']:
+                self.lists += 1
+                return {'jobs': [job]}
+            if cmd == 'coverage.start':
+                self.starts.append(payload)
+                return ('permission_denied', 'Synthetic witness forbids a new content read')
+            if cmd == 'coverage.result':
+                self.reads.append(payload)
+                if self.expired:
+                    return ('not_found', 'Synthetic retained report expired')
+                if len(self.reads) == 1:
+                    return ('internal_error', 'Synthetic result read failed')
+                self.retry_arrived.set()
+                if not self.retry_release.wait(8):
+                    return ('internal_error', 'Synthetic retry witness timed out')
+                return report
+            return super().result(req)
+
+    engine = CoversEngine()
+    engine.start()
+    page = browser.new_page()
+    try:
+        page.goto(f'{engine.base}/#token={TOKEN}')
+        page.get_by_role('link', name='Duplicates', exact=True).click()
+        retry = page.get_by_role('button', name='Retry result', exact=True)
+        expect(retry).to_be_visible()
+        expect(page.get_by_role('status').filter(has_text='Synthetic result read failed')).to_be_visible()
+        ok(engine.reads == [{'job_id': job['job_id']}], 'coverage: a failed read retains the completed job without retrying automatically')
+        lists = engine.lists
+        engine.invalidate()
+        wait_until(page, lambda: engine.lists > lists)
+        expect(retry).to_be_visible()
+        retry.focus()
+        retry.press('Enter')
+        wait_until(page, engine.retry_arrived.is_set)
+        expect(retry).to_be_visible()
+        expect(retry).to_be_disabled()
+        engine.retry_release.set()
+        expect(page.locator('main .covers-verdict')).to_contain_text('Partial result:')
+        expect(page.get_by_role('heading', name='Coverage result', exact=True)).to_be_focused()
+        expect(retry).to_have_count(0)
+        ok(engine.reads == [{'job_id': job['job_id']}] * 2 and not engine.starts,
+           'coverage: Retry result reads the same retained job and never starts another check')
+
+        engine.expired = True
+        engine.reads.clear()
+        page.reload()
+        expect(page.get_by_role('status').filter(has_text='its report is no longer available')).to_be_visible()
+        expect(retry).to_have_count(0)
+        expect(page.locator('main .covers-verdict')).to_have_count(0)
+        ok(engine.reads == [{'job_id': job['job_id']}] and not engine.starts,
+           'coverage: not_found stays expired without a retry control or a new content read')
+    finally:
+        engine.retry_release.set()
+        page.close()
+        engine.stop()
+
+
 def run_views(page: Page, base: str, shots: Path | None) -> None:
     """Runs every L13 scenario. `shots` is the evidence directory, or None to skip screenshots."""
     if shots:
@@ -2119,6 +2195,7 @@ def run_views(page: Page, base: str, shots: Path | None) -> None:
         page.set_viewport_size({'width': 1360, 'height': 900})
 
     page.set_viewport_size({'width': 1360, 'height': 900})
+    check_covers_result_retry(page.context.browser)
     check_process_strip(page.context.browser, base, shots)
     check_process_strip_failures(page.context.browser)
     check_resource_trends(page.context.browser)

@@ -260,7 +260,7 @@ export interface RequestEnvelope {
   payload: Record<string, unknown>;
   deadline_ms?: number;
   expected_generation?: Generation;
-  /** Revision precondition for owner-state mutations (volumes.declare_tier, volumes.declare_reserve (required), collections.update_members): the call commits only while state.db is still at this revision, else stale_generation with detail.reason state_rev_changed (semantics.md sections 3 and 5). Elsewhere invalid_request. */
+  /** Revision precondition for owner-state mutations (volumes.declare_tier, volumes.declare_reserve (required), collections.update_members, learning.set_deferred (required), roots.forget): the call commits only while state.db is still at this revision, else stale_generation with detail.reason state_rev_changed (semantics.md sections 3 and 5). Elsewhere invalid_request. */
   expected_state_rev?: Generation;
 }
 
@@ -1257,8 +1257,25 @@ export interface FeedbackHistory {
   next_cursor: Cursor | null;
 }
 
+/** Owner-only; envelope expected_state_rev is required. Exact durable replay precedes the revision precondition. No label or permission is recorded. */
+export interface LearningDeferredRequest {
+  node_id: NodeId;
+  deferred: boolean;
+  client_event_id: string;
+}
+
+export interface LearningDeferredResult {
+  deferred: boolean;
+  revision: Generation;
+  idempotent_replay: boolean;
+}
+
+export type LearningQueueMode = "review" | "deferred";
+
 export interface LearningQueueRequest {
   root_id: RootId | null;
+  /** Omitted means review. */
+  mode?: LearningQueueMode;
   limit: number;
   cursor: Cursor | null;
 }
@@ -2818,6 +2835,7 @@ export interface CommandMap {
   "feedback.history": { request: FeedbackHistoryRequest; result: FeedbackHistory };
   "learning.status": { request: EmptyRequest; result: LearningStatus };
   "learning.queue": { request: LearningQueueRequest; result: LearningQueue };
+  "learning.set_deferred": { request: LearningDeferredRequest; result: LearningDeferredResult };
   "learning.refit": { request: EmptyRequest; result: JobResult };
   "jobs.cancel": { request: JobRefRequest; result: JobResult };
   "collections.list": { request: EmptyRequest; result: CollectionList };
@@ -2919,6 +2937,7 @@ export const COMMANDS = {
   "feedback.history": { adapters: ["tauri", "http"], wave: 3, events: [] },
   "learning.status": { adapters: ["tauri", "http"], wave: 3, events: [] },
   "learning.queue": { adapters: ["tauri", "http"], wave: 3, events: [] },
+  "learning.set_deferred": { adapters: ["tauri", "http"], wave: 3, events: [] },
   "learning.refit": { adapters: ["tauri", "http"], wave: 3, events: ["job.state", "learning.updated"] },
   "jobs.cancel": { adapters: ["tauri", "http"], wave: 2, events: ["job.state"] },
   "collections.list": { adapters: ["tauri", "http"], wave: 3, events: [] },

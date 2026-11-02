@@ -3,7 +3,7 @@
 </script>
 
 <script lang="ts">
-  import { untrack } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
   import { formatBytes, parseBytes } from '../../lib/format/bytes';
   import { escapedName } from '../../lib/format/names';
   import { formatCount, formatTime } from '../../lib/format/time';
@@ -56,8 +56,12 @@
   let simulating = $state(false);
   let formError = $state('');
   let declaring = $state(false);
+  let reserving = $state(false);
   let modelStateRev = $state<string | null>(null);
   let reserves = $state<Record<string, ReserveDraft>>({});
+  let preferenceEvent = $state<{ state_rev: string | null } | undefined>();
+  let preferenceSavedId: string | null = null;
+  let preferenceNotice = $state('');
   let save = $state(false);
   let saved = $state<ProposalSummary[]>([]);
   let savedDetail = $state<ProposalDetail | null>(null);
@@ -66,6 +70,7 @@
   let now = $state(Date.now());
   let modelTicket = 0;
   let savedTicket = 0;
+  let proposalsTicket = 0;
   let candTicket = 0;
   let simTicket = 0;
 
@@ -81,6 +86,7 @@
 
   async function loadCandidates(): Promise<void> {
     const c = session.client;
+    const connection = session.connectionEpoch;
     const v = src;
     outcomes = null;
     savedDetail = null;
@@ -91,27 +97,46 @@
     if (!c || !v?.source_eligible) return;
     try {
       const { result } = await c.call('placement.candidates', { source_volume_id: v.volume_id, basis: 'largest_dirs', max_groups: 50, min_bytes: '0' });
-      if (mine === candTicket) {
+      if (mine === candTicket && c === session.client && connection === session.connectionEpoch) {
         assume = Object.fromEntries(Object.entries(assume).filter(([id]) => result.groups.some((g) => g.group_id === id)));
         cands = result;
       }
     } catch (e) {
-      if (mine === candTicket) error = session.handle(e);
+      if (mine === candTicket && c === session.client && connection === session.connectionEpoch) error = session.handle(e);
     }
   }
 
-  async function loadModel(): Promise<void> {
+  function refreshReserveDrafts(result: TierModel, previous: TierModel | null, preserveDrafts: boolean): void {
+    let keptDraft = false;
+    const drafts = Object.fromEntries(result.volumes.map(v => {
+      const draft = reserves[v.volume_id];
+      const before = previous?.volumes.find(p => p.volume_id === v.volume_id);
+      const original = reserveDraft(before?.declared_reserve_bytes);
+      if (preserveDrafts && draft && before && (draft.value !== original.value || draft.unit !== original.unit)) {
+        keptDraft = true;
+        return [v.volume_id, draft];
+      }
+      return [v.volume_id, reserveDraft(v.declared_reserve_bytes)];
+    }));
+    reserves = drafts;
+    if (preserveDrafts) preferenceNotice = keptDraft ? 'Volume preferences updated. Your unsaved reserve edits are preserved; save to apply them.' : 'Volume preferences updated.';
+  }
+
+  async function loadModel(preserveDrafts = false): Promise<boolean> {
     const c = session.client;
-    if (!c) return;
+    const connection = session.connectionEpoch;
+    if (!c) return false;
     const mine = ++modelTicket;
+    const previous = model;
     savedTicket++;
+    proposalsTicket++;
     loading = true;
     try {
       const { result, meta } = await c.call('tiers.model', {});
-      if (mine !== modelTicket) return;
+      if (mine !== modelTicket || (c !== session.client || connection !== session.connectionEpoch)) return false;
+      refreshReserveDrafts(result, previous, preserveDrafts);
       model = result;
       modelStateRev = meta.state_rev;
-      reserves = Object.fromEntries(result.volumes.map(v => [v.volume_id, reserveDraft(v.declared_reserve_bytes)]));
       error = '';
       const keep = result.volumes.find((v) => v.volume_id === source && v.source_eligible);
       const next = (keep ?? result.volumes.find((v) => v.pressure === 'pressure' && v.source_eligible) ?? result.volumes.find((v) => v.source_eligible))?.volume_id ?? '';
@@ -119,9 +144,12 @@
       if (next !== source) assume = {};
       source = next;
       await loadCandidates();
-      await loadProposals();
+      if (mine !== modelTicket || (c !== session.client || connection !== session.connectionEpoch)) return false;
+      const proposalsLoaded = await loadProposals();
+      return mine === modelTicket && c === session.client && connection === session.connectionEpoch && !error && proposalsLoaded;
     } catch (e) {
-      if (mine === modelTicket) { model = null; error = session.handle(e); }
+      if (mine === modelTicket && c === session.client && connection === session.connectionEpoch) { model = null; modelStateRev = null; error = session.handle(e); }
+      return false;
     } finally {
       if (mine === modelTicket) loading = false;
     }
@@ -138,13 +166,21 @@
     finally { declaring = false; }
   }
 
-  async function loadProposals() {
-    if (!session.client) return;
+  async function loadProposals(): Promise<boolean> {
+    const c = session.client;
+    const connection = session.connectionEpoch;
+    const mine = ++proposalsTicket;
+    if (!c) return false;
     try {
-      const { result } = await session.client.call('proposals.list', {});
+      const { result } = await c.call('proposals.list', {});
+      if (mine !== proposalsTicket || c !== session.client || connection !== session.connectionEpoch) return false;
       saved = result.proposals;
       savedError = '';
-    } catch (e) { saved = []; savedError = session.handle(e); }
+      return true;
+    } catch (e) {
+      if (mine === proposalsTicket && c === session.client && connection === session.connectionEpoch) { saved = []; savedError = session.handle(e); }
+      return false;
+    }
   }
 
   async function declareReserve(id: string, clear = false) {
@@ -156,40 +192,94 @@
     if (!clear && bytes === null) { error = 'Enter a whole number of bytes or GiB. The reserve must fit within the supported byte range.'; return; }
     const mine = modelTicket;
     declaring = true;
+    reserving = true;
+    preferenceNotice = '';
+    // Submission can commit even when its reply is lost. Hide old plans before
+    // sending, and require a successful read before displaying current inputs.
+    savedTicket++;
+    proposalsTicket++;
+    outcomes = null;
+    savedDetail = null;
+    saved = [];
+    modelStateRev = null;
     try {
       await c.call('volumes.declare_reserve', { volume_id: id, reserve_bytes: bytes }, { expectedStateRev });
       if (c !== session.client || mine !== modelTicket) return;
-      await loadModel();
-      say.say(clear ? 'Reserve cleared. Simulations assume zero reserve.' : 'Destination reserve recorded. Saved scenarios have been refreshed. Nothing is moved.');
+      const refreshed = await loadModel();
+      const recorded = clear ? 'Reserve cleared. Simulations assume zero reserve.' : 'Destination reserve recorded.';
+      say.say(refreshed ? `${recorded} Saved scenarios have been refreshed. Nothing is moved.` : `${recorded} Current preferences or scenarios could not be refreshed.`);
     } catch (e) {
       if (c !== session.client || mine !== modelTicket) return;
       const message = session.handle(e);
       await loadModel();
       error = message;
-    } finally { declaring = false; }
+    } finally { declaring = false; reserving = false; }
   }
 
   async function loadSaved(id: string) {
     const c = session.client;
-    if (!c || simulating) return;
+    const connection = session.connectionEpoch;
+    if (!c || simulating || reserving) return;
     const mine = ++savedTicket;
     try {
       const { result } = await c.call('proposals.get', { proposal_id: id });
-      if (mine !== savedTicket) return;
+      if (mine !== savedTicket || (c !== session.client || connection !== session.connectionEpoch)) return;
       if (volume(result.summary.source_volume_id)?.source_eligible) {
         if (source !== result.summary.source_volume_id) assume = {};
         source = result.summary.source_volume_id;
         await loadCandidates();
       }
-      if (mine !== savedTicket) return;
+      if (mine !== savedTicket || (c !== session.client || connection !== session.connectionEpoch)) return;
       savedDetail = result;
       savedError = '';
       say.say(`Saved scenario shown. ${result.summary.status === 'stale' ? 'Its inputs have changed; this is historical.' : 'Simulation only.'}`);
-    } catch (e) { if (mine === savedTicket) savedError = session.handle(e); }
+    } catch (e) { if (mine === savedTicket && c === session.client && connection === session.connectionEpoch) savedError = session.handle(e); }
+  }
+
+  function onVolumeEvent(event: { event: string; state_rev: string | null }): void {
+    if (event.event !== 'volumes.changed') return;
+    preferenceEvent = { state_rev: event.state_rev };
+    preferenceNotice = '';
+    preferenceSavedId = savedDetail?.summary.proposal_id ?? preferenceSavedId;
+    savedTicket++;
+    proposalsTicket++;
+    savedDetail = null;
+    outcomes = null;
+    saved = [];
+  }
+
+  async function refreshVolumePreferences(): Promise<void> {
+    if (!preferenceEvent || declaring || simulating || loading) return;
+    const event = preferenceEvent;
+    preferenceEvent = undefined;
+    // A simulation already in flight may have published its earlier outcomes
+    // after the event, even if its later model read includes the new preference.
+    outcomes = null;
+    // Our own mutation refresh may already cover this event. Reads never write
+    // preferences or emit volumes.changed, so cross-client refresh cannot loop.
+    if (event.state_rev !== null && modelStateRev !== null && BigInt(event.state_rev) <= BigInt(modelStateRev)) {
+      const id = preferenceSavedId;
+      const detailTicket = savedTicket;
+      const listed = await loadProposals();
+      if (listed && !preferenceEvent && detailTicket === savedTicket && id) await loadSaved(id);
+      if (!preferenceEvent) preferenceSavedId = null;
+      return;
+    }
+    const c = session.client;
+    const connection = session.connectionEpoch;
+    const id = preferenceSavedId;
+    const read = loadModel(true);
+    const detailTicket = savedTicket;
+    const refreshed = await read;
+    if (!refreshed || (c !== session.client || connection !== session.connectionEpoch) || preferenceEvent || detailTicket !== savedTicket) return;
+    if (id) await loadSaved(id);
+    if (!preferenceEvent) preferenceSavedId = null;
   }
 
   function choose(id: string) {
     if (simulating || !volume(id)?.source_eligible) return;
+    savedTicket++;
+    preferenceSavedId = null;
     source = id;
     assume = {};
     void loadCandidates();
@@ -207,6 +297,11 @@
     void session.epoch;
     untrack(() => void loadModel());
   });
+  $effect(() => session.listen(onVolumeEvent));
+  $effect(() => {
+    if (preferenceEvent && !declaring && !simulating && !loading) untrack(() => void refreshVolumePreferences());
+  });
+  onDestroy(() => { modelTicket++; savedTicket++; proposalsTicket++; candTicket++; simTicket++; });
 
   function overrides(): GroupOverride[] {
     const out: GroupOverride[] = [];
@@ -239,11 +334,12 @@
     if (base.save) {
       try {
         // Saving scenarios advances owner state; read preferences with the revision for the next edit.
+        const previous = model;
         const { result, meta } = await c.call('tiers.model', {});
         if (mine !== simTicket) return;
+        refreshReserveDrafts(result, previous, true);
         model = result;
         modelStateRev = meta.state_rev;
-        reserves = Object.fromEntries(result.volumes.map(v => [v.volume_id, reserveDraft(v.declared_reserve_bytes)]));
       } catch (e) {
         if (mine !== simTicket) return;
         modelStateRev = null;
@@ -287,6 +383,7 @@
 <h1>Tiers</h1>
 <p class="simbanner" role="note"><strong>Simulation only.</strong> This page shows what a placement plan could look like. Nothing is moved, and Loomward v0.3 cannot move anything.</p>
 <p class="bad live" class:has={!!error} role="alert">{error}</p>
+<p class="live" class:has={!!preferenceNotice} role="status">{preferenceNotice}</p>
 <p class="sr-only" role="status">{say.text}</p>
 
 <section class="panel" aria-labelledby="h-vol" aria-busy={loading}>
@@ -456,7 +553,7 @@
   <p class="muted small">Stored simulations only. Catalogue, tier or root changes are marked stale; free-space and capacity drift alone are not. Compare now with this simulation; nothing can be executed here.</p>
   <ul class="list">
     {#each saved as scenario (scenario.proposal_id)}
-      <li><button class="btn" type="button" disabled={simulating} onclick={() => void loadSaved(scenario.proposal_id)}>Show saved scenario {formatTime(scenario.created_at)}</button> <span class="tag">{scenario.status === 'stale' ? 'Stale' : 'Simulation only'}</span></li>
+      <li><button class="btn" type="button" disabled={simulating || reserving} onclick={() => void loadSaved(scenario.proposal_id)}>Show saved scenario {formatTime(scenario.created_at)}</button> <span class="tag">{scenario.status === 'stale' ? 'Stale' : 'Simulation only'}</span></li>
     {:else}<li class="muted">{savedError ? 'Saved scenarios unavailable.' : 'No saved scenarios.'}</li>{/each}
   </ul>
 </section>

@@ -193,10 +193,11 @@ def theme_snapshot(page: Page) -> dict:
     }""")
 
 
-def live_call(page: Page, token: str, command: str, payload: dict) -> dict:
-    return page.evaluate("""async ([token, command, payload]) => (await (await fetch('/api/v3/call', {method: 'POST',
+def live_call(page: Page, token: str, command: str, payload: dict, expected_state_rev: str | None = None) -> dict:
+    return page.evaluate("""async ([token, command, payload, revision]) => (await (await fetch('/api/v3/call', {method: 'POST',
         headers: {'Content-Type': 'application/json', 'X-Loomward-Token': token},
-        body: JSON.stringify({protocol: 'loomward/3', request_id: 'live_' + crypto.randomUUID().replaceAll('-', ''), command, payload})})).json())""", [token, command, payload])
+        body: JSON.stringify({protocol: 'loomward/3', request_id: 'live_' + crypto.randomUUID().replaceAll('-', ''), command, payload,
+          ...(revision === null ? {} : {expected_state_rev: revision})})})).json())""", [token, command, payload, expected_state_rev])
 
 
 def meaning_weft(page: Page, base: str) -> None:
@@ -274,12 +275,143 @@ def live_learning_isolated(browser, exe: Path) -> None:
         live_history_restart(page, token, Path(state.name), evidence)
         check(not errors, 'history: no browser errors after restart and paging')
         check((original.read_bytes(), original.stat().st_mtime_ns) == before_original, 'history: original bytes and modification time unchanged')
+        deferred = live_review_deferral(page, token, Path(state.name))
+        page.context.close()
+        proc.kill()
+        proc.wait(timeout=10)
+        proc = subprocess.Popen([str(exe), '--state-dir', state.name, '--static', str(DIST)], stdout=subprocess.PIPE, text=True)
+        url = (proc.stdout.readline() if proc.stdout else '').strip()
+        check('/#token=' in url, 'deferral: native service restarted with its durable preferences')
+        _, token = url.split('/#token=')
+        page = browser.new_context(viewport={'width': 1440, 'height': 900}).new_page()
+        page.set_default_timeout(8000)
+        page.on('pageerror', lambda e: errors.append(str(e)))
+        page.goto(url)
+        expect(page.get_by_role('status', name='Session status')).to_contain_text('Connected')
+        live_review_deferral_restart(page, token, Path(state.name), deferred)
+        check(not errors, 'deferral: no browser errors')
+        check((original.read_bytes(), original.stat().st_mtime_ns) == before_original, 'deferral: original bytes and modification time unchanged')
         page.context.close()
     finally:
         if proc.poll() is None:
             proc.kill()
             proc.wait(timeout=10)
         state.cleanup()
+
+
+def review_unchanged(page: Page, token: str, state: Path) -> dict:
+    with closing(sqlite3.connect(state / 'state.db')) as db:
+        tables = {name: db.execute(f'SELECT * FROM {name} ORDER BY 1').fetchall()
+                  for name in ('root_grant', 'human_feedback', 'teacher_label', 'student_model')}
+    return {'tables': tables, 'learning': live_call(page, token, 'learning.status', {})['result'],
+            'history': live_call(page, token, 'feedback.history', {'limit': 100, 'cursor': None})['result']}
+
+
+def live_review_deferral(page: Page, token: str, state: Path) -> dict:
+    """Real owner HTTP and keyboard UI; only catalogue fixtures, never a personal scan."""
+    with closing(sqlite3.connect(state / 'catalog.db')) as db, db:
+        db.executemany('''INSERT INTO file(id,dir_id,name,file_id,logical,allocated,created_ft,attrs,born_run,seen_run)
+            VALUES(?,1,?,?,128,128,1,0,1,1)''',
+            [(i, f'Synthetic defer {i:02}.txt', f'{i:016}'.encode()) for i in range(2, 26)])
+        db.execute('UPDATE revision SET catalog_rev=catalog_rev+1')
+    before = review_unchanged(page, token, state)
+    page.evaluate("location.hash = '#/review'")
+    page.get_by_role('button', name='Refresh review').click()
+    panel = page.get_by_role('region', name='Learning review queue')
+    expect(panel.get_by_role('row')).to_have_count(21)
+    # An absent extension on an older service cannot break labels, history or ordinary paging.
+    def old_service(route):
+        request = route.request.post_data_json
+        if request['command'] == 'learning.queue' and request['payload'].get('mode') == 'deferred':
+            route.fulfill(json={'protocol': 'loomward/3', 'request_id': request['request_id'], 'ok': False,
+                                'error': {'code': 'invalid_request', 'message': 'Unknown queue field.', 'retryable': False, 'detail': None}})
+        else:
+            route.continue_()
+    page.route('**/api/v3/call', old_service)
+    panel.get_by_role('button', name='Deferred', exact=True).press('Enter')
+    expect(panel.get_by_text('Review deferral is unavailable in this service.', exact=False)).to_be_visible()
+    expect(panel.get_by_role('row')).to_have_count(21)
+    expect(page.get_by_role('region', name='Human feedback history').get_by_role('row')).to_have_count(21)
+    page.unroute('**/api/v3/call', old_service)
+    page.reload()
+    expect(panel.get_by_role('row')).to_have_count(21)
+    response = live_call(page, token, 'learning.queue', {'root_id': None, 'limit': 100, 'cursor': None})
+    nodes = response['result']['items']
+    revision = response['meta']['state_rev']
+    requests = []
+    for i, item in enumerate(nodes):
+        payload = {'node_id': item['row']['node_id'], 'deferred': True, 'client_event_id': f'ce_live_defer_{i}' }
+        result = live_call(page, token, 'learning.set_deferred', payload, revision)
+        check(result['ok'], f'deferral: explicit preference {i}')
+        requests.append({'payload': payload, 'revision': revision, 'result': result['result'], 'name': item['row']['name']})
+        revision = result['meta']['state_rev']
+    page.get_by_role('button', name='Refresh review').press('Enter')
+    expect(panel.get_by_text('No eligible files waiting for review.', exact=False)).to_be_visible()
+    panel.get_by_role('button', name='Deferred', exact=True).press('Space')
+    expect(panel.get_by_role('row')).to_have_count(21)
+    panel.get_by_role('button', name='Next review page').press('Enter')
+    expect(panel.get_by_role('row')).to_have_count(6)
+    page.get_by_role('button', name='Refresh review').press('Enter')
+    expect(panel.get_by_role('row')).to_have_count(21)
+    check(review_unchanged(page, token, state) == before, 'deferral: preferences leave complete grants, human history, teacher labels, training inputs and model unchanged')
+    return {'before': before, 'requests': requests}
+
+
+def live_review_deferral_restart(page: Page, token: str, state: Path, evidence: dict) -> None:
+    ordinary = live_call(page, token, 'learning.queue', {'root_id': None, 'limit': 100, 'cursor': None})
+    check(ordinary['ok'] and not ordinary['result']['items'], 'deferral: all-deferred ordinary queue stays empty after native restart')
+    deferred = live_call(page, token, 'learning.queue', {'root_id': None, 'limit': 100, 'cursor': None, 'mode': 'deferred'})
+    check(deferred['ok'] and len(deferred['result']['items']) == 25, 'deferral: all 25 durable preferences survive restart')
+    saved = evidence['requests'][0]
+    current = next(item for item in deferred['result']['items'] if item['row']['name'] == saved['name'])
+    check(current['row']['node_id'] != saved['payload']['node_id'], 'deferral: restarted service has fresh session IDs')
+    for node in (saved['payload']['node_id'], current['row']['node_id']):
+        replay = live_call(page, token, 'learning.set_deferred', {**saved['payload'], 'node_id': node}, saved['revision'])
+        check(replay['ok'] and replay['result'] == {**saved['result'], 'idempotent_replay': True}, 'deferral: restart replay returns the original durable receipt')
+    page.evaluate("location.hash = '#/review'")
+    panel = page.get_by_role('region', name='Learning review queue')
+    expect(panel.get_by_text('No eligible files waiting for review.', exact=False)).to_be_visible()
+    panel.get_by_role('button', name='Deferred', exact=True).press('Enter')
+    expect(panel.get_by_role('row')).to_have_count(21)
+    # Change the revision outside the displayed page, then exercise its stale next-page recovery.
+    last = deferred['result']['items'][-1]['row']['node_id']
+    restored = live_call(page, token, 'learning.set_deferred', {'node_id': last, 'deferred': False, 'client_event_id': 'ce_live_defer_stale'}, deferred['meta']['state_rev'])
+    check(restored['ok'], 'deferral: one explicit restore changes the page revision')
+    panel.get_by_role('button', name='Next review page').press('Enter')
+    expect(panel.get_by_role('status')).to_contain_text('Review changed or expired')
+    expect(panel.get_by_role('row')).to_have_count(21)
+    panel.get_by_role('button', name='Bring back', exact=False).first.press('Space')
+    expect(panel.get_by_role('status')).to_contain_text('Returned to review. No label recorded.')
+    panel.get_by_role('button', name='Review now', exact=True).press('Enter')
+    expect(panel.get_by_role('row')).to_have_count(3)
+    panel.get_by_role('button', name='Not now', exact=False).first.press('Enter')
+    expect(panel.get_by_role('status')).to_contain_text('Deferred until you choose Bring back. No label recorded.')
+    expect(panel.get_by_role('row')).to_have_count(2)
+    page.reload()
+    expect(panel.get_by_role('row')).to_have_count(2)
+    panel.get_by_role('button', name='Deferred', exact=True).press('Enter')
+    expect(panel.get_by_role('row')).to_have_count(21)
+    # Retain the hostile filename in the captured deferred page, regardless of opaque-ID ordering.
+    current = live_call(page, token, 'learning.queue', {'root_id': None, 'limit': 100, 'cursor': None})
+    hostile = next((item for item in current['result']['items'] if item['row']['name'].startswith('<img')), None)
+    if hostile:
+        result = live_call(page, token, 'learning.set_deferred', {'node_id': hostile['row']['node_id'], 'deferred': True, 'client_event_id': 'ce_live_defer_hostile'}, current['meta']['state_rev'])
+        check(result['ok'], 'deferral: hostile-name item explicitly returned to Deferred')
+        page.get_by_role('button', name='Refresh review').press('Enter')
+        expect(panel.get_by_role('row')).to_have_count(21)
+    hostile_name = panel.get_by_role('table').get_by_text('<img src=x onerror=alert(1)>.txt', exact=True).first
+    if not hostile_name.is_visible():
+        panel.get_by_role('button', name='Next review page').press('Enter')
+    expect(hostile_name).to_be_visible()
+    shots = ROOT / '.loomward'
+    shots.mkdir(exist_ok=True)
+    for width in (1440, 390):
+        page.set_viewport_size({'width': width, 'height': 900 if width == 1440 else 844})
+        check(page.evaluate('document.documentElement.scrollWidth <= innerWidth'), f'deferral: no page overflow at {width}px')
+        check(panel.locator('img').count() == 0, f'deferral: hostile filenames are text at {width}px')
+        expect(panel.get_by_role('button', name='Bring back', exact=False).first).to_be_visible()
+        page.screenshot(path=str(shots / f'review-deferral-{width}.png'), full_page=True)
+    check(review_unchanged(page, token, state) == evidence['before'], 'deferral: restart, UI choices and refresh preserve all learning and grants')
 
 
 def live_learning(page: Page, token: str, state: Path) -> dict:
@@ -1057,7 +1189,7 @@ def main() -> None:
         check(nav.get_by_role('link').count() >= 2, 'views are discovered into the navigation')
         expect(nav.get_by_role('link', name='Today')).to_have_attribute('aria-current', 'page')
         # Today links the find bar's cleanup searches: one opens Explorer with the query run (#1068 ?q=).
-        page.get_by_role('list', name='Cleanup searches').get_by_role('link', name='Files over 4 GB', exact=True).click()
+        page.get_by_role('list', name='Cleanup searches').get_by_role('link', name='Files over 4 GiB', exact=True).click()
         expect(page.get_by_placeholder('Search names')).to_have_value('size:>4gb kind:file')
         expect(page.get_by_text('Search results for')).to_be_visible()
         print('PASS today: a cleanup search link opens Explorer with the query run')
@@ -1150,6 +1282,9 @@ def main() -> None:
         # the find bar speaks the docs/46 grammar: chips while typing, notices for what the request cannot carry
         box = page.get_by_placeholder('Search names')
         box.fill('delta kind:dir ext:pdf;docx in:Tax')
+        expect(page.locator('#find-notes')).to_have_attribute('aria-live', 'polite')
+        expect(page.locator('#find-hint')).to_contain_text('KiB/MiB/GiB')
+        expect(page.locator('#find-hint')).to_contain_text('also match inside names')
         chips = page.get_by_role('list', name='Search filters')
         expect(chips).to_contain_text('Kind: folders')
         expect(chips).to_contain_text('Extension: .pdf')
@@ -1174,14 +1309,16 @@ def main() -> None:
         expect(page.get_by_role('list', name='Search notes')).to_have_count(0)
         print('PASS find bar: notes on the results follow the search shown, not the draft')
         page.get_by_role('button', name='Clear search').click()
-        page.get_by_role('group', name='Cleanup searches').get_by_role('button', name='Disk images over 1 GB').click()
+        page.get_by_role('group', name='Cleanup searches').get_by_role('button', name='Disk images over 1 GiB').click()
         expect(box).to_have_value('ext:iso size:>1gb')
         expect(page.get_by_role('list', name='Search filters')).to_contain_text('Extension: .iso')
         expect(page.get_by_text('Search results for')).to_be_visible()
         page.get_by_role('button', name='Clear search').click()
         print('PASS find bar: grammar chips, notices, typed filter and cleanup preset')
 
-        # a link from another view: ?q= fills the box and searches
+        # A real cross-view navigation: ?q= fills the box and searches.
+        nav.get_by_role('link', name='Today', exact=True).click()
+        expect(page.get_by_role('heading', name='Today', level=1)).to_be_visible()
         page.evaluate("location.hash = '#/explorer?q=ext%3Apdf'")
         expect(box).to_have_value('ext:pdf')
         expect(page.get_by_text('Search results for')).to_be_visible()
@@ -1189,7 +1326,11 @@ def main() -> None:
         names = page.locator('main table tbody tr th:first-child').all_inner_texts()
         check(len(names) > 0 and all(n.split('\n')[0].endswith('.pdf') for n in names), '?q=ext:pdf runs the search from the route')
         page.get_by_role('button', name='Clear search').click()
-        print('PASS find bar: ?q= route parameter')
+        print('PASS find bar: ?q= route parameter across views')
+        page.evaluate("location.hash = '#/explorer?q=in%3ATax'")
+        expect(box).to_have_value('in:Tax')
+        expect(page.locator('main .tbl-wrap')).to_have_attribute('aria-busy', 'false')
+        expect(page.locator('#find-notes')).to_contain_text('no search was run')
 
         # drill down, then breadcrumb back
         page.locator('main table tbody tr th button.crumb').first.click()

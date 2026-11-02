@@ -70,6 +70,7 @@ impl RequestEnvelope {
                 | Command::VolumesDeclareReserve
                 | Command::CollectionsUpdateMembers
                 | Command::RootsForget
+                | Command::LearningSetDeferred
         );
         if self.expected_state_rev.is_some() && !takes_precondition {
             return Err(ErrorBody::invalid_request(

@@ -2882,6 +2882,7 @@ fn every_command_answers_a_complete_envelope_and_core_reads_serve_the_catalogue(
                     | Command::FeedbackHistory
                     | Command::LearningStatus
                     | Command::LearningQueue
+                    | Command::LearningSetDeferred
                     | Command::LearningRefit
                     | Command::ThreadsMeaning
                     | Command::CollectionsList

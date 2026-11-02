@@ -24,8 +24,32 @@ describe('find bar: query to request', () => {
     expect(plan('modified:>1y').request.modified_before).toBe('2025-10-30T12:00:00.000Z');
     const y = plan('modified:2025').request;
     expect([y.modified_after, y.modified_before]).toEqual(['2025-01-01T00:00:00.000Z', '2025-12-31T23:59:59.999Z']);
-    expect(plan('modified:2025').chips).toEqual(['Modified from 2025-01-01', 'Modified until 2025-12-31']);
+    expect(plan('modified:2025').chips).toEqual(['Modified from 2025-01-01 UTC', 'Modified until 2025-12-31 UTC']);
     expect(planFind('modified:>1y', NONE, NOW + 86_400_000).request.modified_before).toBe('2025-10-31T12:00:00.000Z');
+  });
+
+  it('explains contradictory size bounds without silently widening either one', () => {
+    const p = plan('size:<1kb', { minBytes: '1048576' });
+    expect(p.request).toMatchObject({ min_bytes: '1048576', max_bytes: '1023' });
+    expect(p.blocked).toContain('minimum size exceeds the maximum');
+    expect(p.notices).toContain(p.blocked);
+    expect(plan('size:>=1023 size:<=1023').blocked).toBeNull();
+    expect(plan('size:>2gb size:<1gb').blocked).not.toBeNull();
+  });
+
+  it('describes effective control filters and exact time units', () => {
+    expect(plan('report', { extension: 'zip', kind: 'file', minBytes: '1048576' }).chips)
+      .toEqual(['Extension: .zip', 'Size: at least 1 MiB', 'Kind: files']);
+    expect(plan('modified:>1y').chips).toContain('Modified more than 1 year (365 days) ago');
+    expect(plan('modified:<2mo').chips).toContain('Modified in the last 2 months (60 days)');
+    expect(plan('modified:2025').chips.every(c => c.endsWith('UTC'))).toBe(true);
+  });
+
+  it('explains an unclosed filter quote without claiming it became a phrase', () => {
+    const p = plan('ext:"pdf');
+    expect(p.request.extension).toBe('pdf');
+    expect(p.notices.join(' ')).toContain('is not closed');
+    expect(p.notices.join(' ')).not.toContain('one quoted phrase');
   });
 
   it('keeps chip sizes exact', () => {
@@ -117,6 +141,18 @@ describe('cleanup searches', () => {
 describe('find bar against the mock engine', () => {
   const c = new Client(createMockTransport({ now: () => new Date('2026-10-01T00:00:00Z') }));
   const run = async (input: string) => (await c.call('search.query', { root_id: null, ...plan(input).request, limit: 100, cursor: null })).result.hits;
+
+  it('applies both size bounds and both UTC date bounds to real mock catalogue rows', async () => {
+    const hits = await run('kind:file size:>=1mb size:<=1gb modified:2025');
+    expect(hits.length).toBeGreaterThan(0);
+    for (const { row } of hits) {
+      expect(BigInt(row.logical_bytes!)).toBeGreaterThanOrEqual(1n << 20n);
+      expect(BigInt(row.logical_bytes!)).toBeLessThanOrEqual(1n << 30n);
+      expect(row.modified_at).not.toBeNull();
+      expect(row.modified_at! >= '2025-01-01T00:00:00.000Z').toBe(true);
+      expect(row.modified_at! <= '2025-12-31T23:59:59.999Z').toBe(true);
+    }
+  });
 
   it('serves a request built from the box, with no federated field in it', async () => {
     expect(Object.keys(plan('ext:txt').request).sort()).toEqual(['extension', 'kind', 'max_bytes', 'min_bytes', 'modified_after', 'modified_before', 'text']);

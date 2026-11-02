@@ -1,5 +1,6 @@
 """Synthetic Applications/Desktop checks, reused by mock, accessibility and live-serve legs."""
 import re
+from copy import deepcopy
 
 from playwright.sync_api import expect
 
@@ -71,3 +72,90 @@ def run_inventory(page, base, check, *, live=False, shots=None):
         expect(page.locator('main table tbody tr')).to_have_count(2)
         expect(page.locator('main p.bad')).to_have_count(0)
         check(True, 'Applications: recovery uses real synthetic service data')
+        run_inventory_sort(page, check)
+
+
+def run_inventory_sort(page, check):
+    """Exercise the rendered toggle and paging with routed synthetic inventory, not host apps."""
+    requests = []
+    template = None
+    # More than the UI's 200-row page: registry order starts small/unknown and the largest
+    # estimates are on page two. Sorting only the visible page cannot satisfy these assertions.
+    names = [f'Synthetic sort app {i:03}' for i in range(203)]
+    size_order = list(range(202, 1, -1)) + [0, 1]
+
+    def inventory(route):
+        nonlocal template
+        req = route.request.post_data_json
+        if req['command'] != 'apps.list':
+            route.continue_()
+            return
+        payload = req['payload']
+        requests.append(payload)
+        assert payload['limit'] == 200
+        order = payload['sort']
+        assert order in ('registry', 'size_desc')
+        cursor = payload['cursor']
+        assert cursor in (None, f'synthetic_{order}_200'), 'cursor must belong to the requested sort'
+        if template is None:
+            assert cursor is None
+            template = route.fetch().json()
+            assert template['ok'], 'synthetic service inventory must be available'
+        response = deepcopy(template)
+        response['request_id'] = req['request_id']
+        indices = list(range(203)) if order == 'registry' else size_order
+        offset = 0 if cursor is None else 200
+        rows = []
+        for i in indices[offset:offset + 200]:
+            row = deepcopy(template['result']['applications'][0])
+            row['registry_key'] = f'SyntheticSort{i:03}'
+            row['name']['value'] = names[i]
+            row['estimated_size_bytes'] = None if i == 1 else str(i + 1)
+            row['size_reason'] = 'synthetic unknown estimate' if i == 1 else None
+            rows.append(row)
+        response['result']['applications'] = rows
+        response['result']['next_cursor'] = f'synthetic_{order}_200' if offset == 0 else None
+        route.fulfill(json=response)
+
+    page.route('**/api/v3/call', inventory)
+    try:
+        refresh = page.get_by_role('button', name='Refresh applications', exact=True)
+        next_page = page.get_by_role('button', name='Next page', exact=True)
+        largest = page.get_by_role('checkbox', name=re.compile('^Largest first'))
+        status = page.locator('main [role=status]')
+        rows = page.locator('main table tbody tr')
+        headings = rows.locator('th[scope=row]')
+        expect(largest).not_to_be_checked()
+        refresh.click()
+        expect(headings).to_have_text(names[:200])
+        expect(status).to_contain_text('page 1 loaded')
+        expect(rows.nth(1)).to_contain_text('synthetic unknown estimate')
+        next_page.click()
+        expect(headings).to_have_text(names[200:])
+        expect(status).to_contain_text('page 2 loaded')
+        expect(next_page).to_be_disabled()
+
+        largest.click()
+        expect(largest).to_be_checked()
+        expect(largest).to_be_focused()
+        expect(headings).to_have_text([names[i] for i in size_order[:200]])
+        expect(page.locator('main')).to_contain_text('Sizes are provider estimates, not disk measurements.')
+        expect(status).to_contain_text('page 1 loaded')
+        expect(largest).to_be_focused()
+        next_page.click()
+        expect(headings).to_have_text([names[i] for i in size_order[200:]])
+        expect(status).to_contain_text('page 2 loaded')
+        expect(rows.last).to_contain_text('synthetic unknown estimate')
+        expect(next_page).to_be_disabled()
+
+        largest.click()
+        expect(largest).not_to_be_checked()
+        expect(headings).to_have_text(names[:200])
+        expect(status).to_contain_text('page 1 loaded')
+        expect(largest).to_be_focused()
+        check([(r['sort'], r['cursor']) for r in requests] == [
+            ('registry', None), ('registry', 'synthetic_registry_200'),
+            ('size_desc', None), ('size_desc', 'synthetic_size_desc_200'), ('registry', None),
+        ], 'Applications: Largest first changes rendered order, resets paging in both directions, and keeps unknown estimates last (203 routed synthetic apps)')
+    finally:
+        page.unroute('**/api/v3/call', inventory)

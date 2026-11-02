@@ -6,6 +6,9 @@ use loomward_engine::learning::FeedbackReplay;
 use loomward_protocol::*;
 use serde_json::{json, Value};
 
+#[path = "review_deferral.rs"]
+mod deferral;
+
 pub(super) fn features(reader: &mut Reader, key: NodeKey) -> Result<(EntryRow, Value), ErrorBody> {
     let detail = reader.inspect(key).map_err(catalog_error)?;
     features_of(reader, key, detail)
@@ -260,7 +263,19 @@ impl Inner {
         let revs = self.revisions()?;
         let ids = {
             let db = self.db();
-            let ids=db.prepare("SELECT f.id FROM main.file f JOIN main.dir d ON d.id=f.dir_id JOIN main.root rt ON rt.id=d.root_id JOIN st.root_grant g ON g.id=rt.grant_id JOIN main.volume v ON v.id=rt.volume_id WHERE g.state='active' AND (?1 IS NULL OR rt.id=?1) AND f.flags=0 AND d.listing_state NOT IN ('excluded','absent_pending') AND v.filesystem IN ('NTFS','ReFS') AND f.created_ft IS NOT NULL AND f.file_id IS NOT NULL AND (v.filesystem!='ReFS' OR length(f.file_id)=16) ORDER BY f.id LIMIT 10001").map_err(sql_error)?.query_map([root],|row|row.get::<_,i64>(0)).map_err(sql_error)?.collect::<rusqlite::Result<Vec<_>>>().map_err(sql_error)?;
+            let sql = format!("{} SELECT f.id FROM main.file f JOIN main.dir d ON d.id=f.dir_id JOIN main.root rt ON rt.id=d.root_id JOIN st.root_grant g ON g.id=rt.grant_id JOIN main.volume v ON v.id=rt.volume_id WHERE g.state='active' AND (?1 IS NULL OR rt.id=?1) AND f.flags=0 AND d.listing_state NOT IN ('excluded','absent_pending') AND v.filesystem IN ('NTFS','ReFS') AND f.created_ft IS NOT NULL AND f.file_id IS NOT NULL AND (v.filesystem!='ReFS' OR length(f.file_id)=16)
+                AND ?2 = (f.id IN (SELECT r.node_row FROM review_references r JOIN st.learning_deferred p ON p.object_ref_id=r.reference_id AND p.grant_id=r.grant_id))
+                ORDER BY f.id LIMIT 10001", deferral::CURRENT_REFERENCES);
+            let ids = db
+                .prepare(&sql)
+                .map_err(sql_error)?
+                .query_map(
+                    rusqlite::params![root, r.mode == Some(LearningQueueMode::Deferred)],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(sql_error)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(sql_error)?;
             ids
         };
         if ids.len() > 10000 {

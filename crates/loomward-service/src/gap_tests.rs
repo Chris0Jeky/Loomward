@@ -212,6 +212,7 @@ fn only_the_listed_commands_change_state() {
         ReclaimObserve,
         ReclaimSample,
         FeedbackRecord,
+        LearningSetDeferred,
         LearningRefit,
         CollectionsCreate,
         CollectionsUpdateMembers,
