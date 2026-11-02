@@ -472,6 +472,9 @@ impl Inner {
             GrantsList => self.grants_list(),
             VolumesList => self.placement_command(req, command, work),
             VolumesDeclareTier => self.declare_tier(req.decode_payload()?, req.expected_state_rev),
+            VolumesDeclareReserve => {
+                self.declare_reserve(req.decode_payload()?, req.expected_state_rev)
+            }
             CollectionsList => self.collections_list(work),
             CollectionsCreate => self.collections_create(req),
             CollectionsUpdateMembers => self.collections_update(req),
@@ -1530,6 +1533,46 @@ impl Inner {
         Ok(Out {
             result: json!({"volume": volume_json, "preference_recorded_at": ts_ns(at)}),
             catalog_rev: Some(catalog_rev),
+            state_rev: Some(state_rev),
+        })
+    }
+
+    fn declare_reserve(&self, r: DeclareReserveRequest, expected: Option<Generation>) -> Handled {
+        let expected = expected
+            .ok_or_else(|| fail(ErrorCode::InvalidRequest, "expected_state_rev is required"))?;
+        let volume = self.volume_row(&r.volume_id)?;
+        let presence = self.observe_root_presence()?;
+        let _m = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
+        let key = db::volumes(&self.db(), Some(volume))
+            .map_err(sql_error)?
+            .first()
+            .map(|v| v.key.clone())
+            .ok_or_else(|| fail(ErrorCode::NotFound, "unknown volume"))?;
+        let at = now_ns();
+        let state_rev = db::declare_reserve(
+            &mut self.db(),
+            &key,
+            r.reserve_bytes.map(Bytes::get),
+            expected.get(),
+            at,
+        )
+        .map_err(sql_error)?
+        .map_err(|_| {
+            stale(
+                "state.db changed since your read; read the current reserve before saving again",
+                "state_rev_changed",
+            )
+        })?;
+        let all = self.volumes(None, &presence)?;
+        self.publish(
+            EventName::VolumesChanged,
+            json!({"volumes":all}),
+            None,
+            Some(state_rev),
+        );
+        Ok(Out {
+            result: json!({"volume_id":self.volume_id(volume),"reserve_bytes":r.reserve_bytes,"preference_recorded_at":ts_ns(at)}),
+            catalog_rev: Some(self.revisions()?.0),
             state_rev: Some(state_rev),
         })
     }

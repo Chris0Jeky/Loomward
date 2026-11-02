@@ -188,6 +188,8 @@ pub fn roundtrip(def: &str, v: &Value) -> Option<Result<Value, String>> {
         "VolumeList" => rt::<VolumeList>(v),
         "DeclareTierRequest" => rt::<DeclareTierRequest>(v),
         "DeclareTierResult" => rt::<DeclareTierResult>(v),
+        "DeclareReserveRequest" => rt::<DeclareReserveRequest>(v),
+        "DeclareReserveResult" => rt::<DeclareReserveResult>(v),
         "AskTurnId" => rt::<AskTurnId>(v),
         "AskField" => rt::<AskField>(v),
         "AskProviderState" => rt::<AskProviderState>(v),

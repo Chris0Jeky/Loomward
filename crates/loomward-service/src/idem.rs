@@ -42,7 +42,7 @@ impl ReplyPrivacy {
         match fingerprint.get("command").and_then(Value::as_str) {
             Some("roots.request_grant") => Self::RootGrant,
             Some("alerts.configure") => Self::Alerts,
-            Some("volumes.declare_tier") => fingerprint
+            Some("volumes.declare_tier" | "volumes.declare_reserve") => fingerprint
                 .get("payload")
                 .and_then(|p| p.get("volume_id"))
                 .and_then(Value::as_str)

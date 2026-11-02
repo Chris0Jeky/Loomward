@@ -486,6 +486,7 @@ pub(crate) fn is_mutation(c: Command) -> bool {
             | RootsRevoke
             | RootsForget
             | VolumesDeclareTier
+            | VolumesDeclareReserve
             | ScanStart
             | ScanCancel
             | JobsCancel
@@ -719,6 +720,7 @@ impl ViewService for Service {
             Command::RootsRequestGrant
                 | Command::RootsList
                 | Command::VolumesDeclareTier
+                | Command::VolumesDeclareReserve
                 | Command::VolumesList
                 | Command::TiersModel
                 | Command::AlertsList

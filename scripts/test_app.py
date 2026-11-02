@@ -43,6 +43,7 @@ from test_app_collections import run_collections, run_live_collections
 from test_app_server import ThreadingHTTPServer
 from test_app_a11y import run_a11y
 import test_app_views
+from test_app_reserve import run_live_reserve
 from test_app_views import run_views, wait_until
 from test_app_copy import run_copy
 from test_app_inventory import run_inventory
@@ -962,6 +963,7 @@ def run_live_serve(browser_path: str | None) -> None:
             live_scan_refusals(browser, exe)
             live_personal_scan(browser, exe)
             live_placement(browser, exe)
+            run_live_reserve(browser, exe, DIST, check, live_call)
             live_learning_isolated(browser, exe)
             live_personal_learning_isolated(browser, exe)
             live_ask_isolated(browser, exe, DIST, check, live_call)

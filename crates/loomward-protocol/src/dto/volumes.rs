@@ -231,3 +231,21 @@ pub struct DeclareTierResult {
     pub volume: Volume,
     pub preference_recorded_at: Timestamp,
 }
+
+/// Absolute owner preference; null clears it. Requires expected_state_rev on the envelope.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeclareReserveRequest {
+    pub volume_id: VolumeId,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub reserve_bytes: Option<Bytes>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeclareReserveResult {
+    pub volume_id: VolumeId,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub reserve_bytes: Option<Bytes>,
+    pub preference_recorded_at: Timestamp,
+}
