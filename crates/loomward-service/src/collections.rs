@@ -487,4 +487,273 @@ impl Inner {
             revs,
         ))
     }
+    /// Bounded direct membership walk. Nonmatches consume work, never result slots.
+    /// The continuation is the last examined durable member, not an OFFSET into matches.
+    pub(crate) fn collections_search(
+        &self,
+        req: &RequestEnvelope,
+        work: Option<&ReadWork>,
+    ) -> Handled {
+        const MAX_EXAMINED: usize = 2_000;
+        let r: CollectionSearchRequest = req.decode_payload()?;
+        let id = collection_row(&r.collection_id)?;
+        if r.min_bytes
+            .zip(r.max_bytes)
+            .is_some_and(|(a, b)| a.get() > b.get())
+        {
+            return Err(fail(ErrorCode::InvalidRequest, "minimum size exceeds maximum"));
+        }
+        let to_ft = |t: &Timestamp| {
+            loomward_catalog::filetime(t.as_ref())
+                .ok_or_else(|| fail(ErrorCode::InvalidRequest, "timestamp out of range"))
+        };
+        let modified_after = r.modified_after.as_ref().map(to_ft).transpose()?;
+        let modified_before = r.modified_before.as_ref().map(to_ft).transpose()?;
+        if modified_after
+            .zip(modified_before)
+            .is_some_and(|(a, b)| a > b)
+        {
+            return Err(fail(ErrorCode::InvalidRequest, "modified range is reversed"));
+        }
+        let conn = self.collection_read(work)?;
+        let revs = db::revisions(&conn).map_err(sql_error)?;
+        let kind: Option<String> = conn
+            .query_row("SELECT kind FROM st.collection WHERE id=?1", [id], |r| r.get(0))
+            .optional()
+            .map_err(sql_error)?;
+        match kind.as_deref() {
+            Some("human") => {}
+            Some(_) => {
+                return Err(fail(
+                    ErrorCode::CapabilityUnavailable,
+                    "search requires a human collection",
+                ))
+            }
+            None => return Err(fail(ErrorCode::NotFound, "unknown collection")),
+        }
+        let total: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM st.collection_member WHERE collection_id=?1",
+                [id],
+                |r| r.get(0),
+            )
+            .map_err(sql_error)?;
+        let mut fields = req.payload.clone();
+        fields.remove("cursor");
+        fields.remove("limit");
+        let bind = Value::Object(fields).to_string();
+        let after = match &r.cursor {
+            None => 0,
+            Some(cursor) => match self
+                .cursors
+                .resume(cursor, Command::CollectionsSearch, &bind, Some(revs.1))
+            {
+                Ok(Position::Members { after, catalog_rev }) if catalog_rev == revs.0 => after,
+                Ok(Position::Members { .. }) => {
+                    return Err(with_reason(
+                        fail(
+                            ErrorCode::StaleGeneration,
+                            "catalogue changed; restart searching",
+                        ),
+                        "catalog_rev_changed",
+                    ))
+                }
+                Err(Resume::StateChanged) => {
+                    return Err(with_reason(
+                        fail(
+                            ErrorCode::StaleGeneration,
+                            "collection or grants changed; restart searching",
+                        ),
+                        "state_rev_changed",
+                    ))
+                }
+                Err(Resume::Expired) => {
+                    return Err(with_reason(
+                        fail(ErrorCode::StaleGeneration, "cursor expired"),
+                        "cursor_expired",
+                    ))
+                }
+                _ => {
+                    return Err(fail(
+                        ErrorCode::InvalidRequest,
+                        "cursor belongs to another request",
+                    ))
+                }
+            },
+        };
+        // Restrict the resolution CTE itself to this bounded member window. No descendant traversal
+        // or global name search is involved; REFERENCES only checks each member's ancestors.
+        let references = REFERENCES.replace(
+            "FROM st.object_ref o LEFT JOIN",
+            "FROM (SELECT o.* FROM st.collection_member m JOIN st.object_ref o ON o.id=m.object_ref_id WHERE m.collection_id=?1 AND m.object_ref_id>?2 ORDER BY m.object_ref_id LIMIT ?3) o LEFT JOIN",
+        ).replace(
+            "a(id,parent_id,listing_state)",
+            "a(id,parent_id,listing_state,listing_outcome,flags,attrs)",
+        ).replace(
+            "SELECT id,parent_id,listing_state FROM main.dir",
+            "SELECT id,parent_id,listing_state,listing_outcome,flags,attrs FROM main.dir",
+        ).replace(
+            "SELECT x.id,x.parent_id,x.listing_state FROM main.dir",
+            "SELECT x.id,x.parent_id,x.listing_state,x.listing_outcome,x.flags,x.attrs FROM main.dir",
+        ).replace(
+            "WHERE listing_state='absent_pending'",
+            &format!("WHERE listing_state NOT IN ('complete','incomplete') OR listing_outcome IN ('denied','excluded','unscanned') OR flags & {} != 0 OR attrs & 1024 != 0", loomward_catalog::EXCLUDED_FLAGS | (1 << 1) | (1 << 6)),
+        );
+        let sql = format!("{references} SELECT m.object_ref_id,r.kind,r.row_id,r.born_run,r.grant_state FROM (SELECT object_ref_id FROM st.collection_member WHERE collection_id=?1 AND object_ref_id>?2 ORDER BY object_ref_id LIMIT ?3) m LEFT JOIN resolved r ON r.id=m.object_ref_id ORDER BY m.object_ref_id");
+        let rows = conn
+            .prepare(&sql)
+            .map_err(sql_error)?
+            .query_map(params![id, after, MAX_EXAMINED + 1], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, Option<i64>>(2)?,
+                    r.get::<_, Option<i64>>(3)?,
+                    r.get::<_, Option<String>>(4)?,
+                ))
+            })
+            .map_err(sql_error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(sql_error)?;
+        let mut reader = match work {
+            Some(work) => work.reader(&self.catalog)?,
+            None => self.catalog.reader().map_err(catalog_error)?,
+        };
+        let mut freshness_by_root = std::collections::BTreeMap::new();
+        let text = r.text.trim().to_lowercase();
+        let extension = r.extension.as_ref().map(|e| e.to_lowercase());
+        let mut hits = Vec::new();
+        let mut examined = 0;
+        let mut unavailable = 0;
+        let mut partial = false;
+        let mut last = after;
+        #[cfg(test)]
+        self.hooks.gate(Command::CollectionsSearch, "hydrate");
+        for (reference, kind, row, born, grant) in rows.iter().take(MAX_EXAMINED) {
+            if hits.len() >= r.limit.get() as usize {
+                break;
+            }
+            if work.is_some_and(|w| self.past(w.deadline)) {
+                return Err(fail(ErrorCode::DeadlineExceeded, "the read deadline expired"));
+            }
+            examined += 1;
+            last = *reference;
+            let (Some(kind), Some(row), Some(born), Some("active")) = (kind, row, born, grant.as_deref())
+            else {
+                unavailable += 1;
+                continue;
+            };
+            let key = if kind == "file" {
+                NodeKey::File(*row)
+            } else {
+                NodeKey::Dir(*row)
+            };
+            let (mut entry, path) = match reader.entry_with_path(key) {
+                Ok(value) => value,
+                Err(loomward_catalog::Error::NotFound) => {
+                    unavailable += 1;
+                    continue;
+                }
+                Err(e) => return Err(catalog_error(e)),
+            };
+            if matches!(
+                entry.coverage.as_str(),
+                "excluded" | "denied" | "unscanned" | "unknown"
+            ) {
+                unavailable += 1;
+                continue;
+            }
+            partial |= entry.coverage != "complete";
+            let root = path
+                .root_id
+                .as_deref()
+                .and_then(|s| s.strip_prefix("rt_"))
+                .and_then(|s| s.parse::<i64>().ok())
+                .ok_or_else(|| fail(ErrorCode::InternalError, "missing member root"))?;
+            // Coverage belongs to the examined scope, including entries filtered out below.
+            let freshness = freshness_by_root
+                .entry(root)
+                .or_insert_with(|| self.hit_freshness(root));
+            partial |= matches!(
+                freshness.state,
+                SearchFreshnessState::Stale | SearchFreshnessState::SemanticStale
+            );
+            if !entry.name.to_lowercase().contains(&text)
+                || !matches!(
+                    (&r.kind, kind.as_str()),
+                    (SearchRequestKind::Any, _)
+                        | (SearchRequestKind::File, "file")
+                        | (SearchRequestKind::Dir, "dir")
+                )
+                || extension.as_ref().is_some_and(|e| {
+                    entry.extension.as_ref().map(|s| s.to_lowercase()).as_ref() != Some(e)
+                })
+            {
+                continue;
+            }
+            let bytes = entry
+                .logical_bytes
+                .as_ref()
+                .and_then(|s| s.parse::<u64>().ok());
+            if r.min_bytes
+                .is_some_and(|min| bytes.is_none_or(|n| n < min.get()))
+                || r.max_bytes
+                    .is_some_and(|max| bytes.is_none_or(|n| n > max.get()))
+            {
+                continue;
+            }
+            let modified = entry
+                .modified_at
+                .as_deref()
+                .and_then(loomward_catalog::filetime);
+            if modified_after.is_some_and(|a| modified.is_none_or(|m| m < a))
+                || modified_before.is_some_and(|b| modified.is_none_or(|m| m > b))
+            {
+                continue;
+            }
+            entry.node_id = self.ids.seal(key, *born, &self.instance);
+            let relative = path
+                .ancestors
+                .iter()
+                .skip(1)
+                .map(|p| p.name.as_str())
+                .collect::<Vec<_>>()
+                .join("\\");
+            let truncated = path.truncated || relative.chars().count() > 1024;
+            let path = json!({"text":relative.chars().take(1024).collect::<String>(),"truncated":truncated});
+            entry.location_hint = None;
+            hits.push(json!({"row":entry,"root_id":self.root_id(root),"path":path,
+                "match_kind":if text.is_empty() { "filter" } else { "substring" },"freshness":freshness,"highlights":[]}));
+        }
+        #[cfg(test)]
+        self.hooks.gate(Command::CollectionsSearch, "hydrated");
+        if self.revisions()? != revs {
+            return Err(with_reason(
+                fail(
+                    ErrorCode::StaleGeneration,
+                    "collection changed while reading",
+                ),
+                "revision_changed",
+            ));
+        }
+        let more = rows.len() > examined;
+        let budget_hit = more && examined == MAX_EXAMINED;
+        let next = more.then(|| {
+            self.cursors.issue(
+                Command::CollectionsSearch,
+                bind,
+                Position::Members {
+                    after: last,
+                    catalog_rev: revs.0,
+                },
+                Some(revs.1),
+            )
+        });
+        Ok(out(
+            json!({"collection_id":r.collection_id,"hits":hits,"next_cursor":next,
+                "total_members":total,"examined_members":examined,"unavailable_members":unavailable,
+                "budget_hit":budget_hit,"partial":partial || unavailable > 0}),
+            revs,
+        ))
+    }
 }

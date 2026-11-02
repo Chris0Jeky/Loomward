@@ -343,6 +343,8 @@ export interface SessionInfoFeatures {
   gpu_available: boolean;
   /** The desktop adapter's Rust-side save dialog for diagnostics.save (docs/42 ADR-V3-24). */
   diagnostics_save: boolean;
+  /** Optional for older engines: absent means unsupported. Owner-local direct human collection member search; does not enable federated search. */
+  collection_search?: boolean;
   /** The engine honours the federated search extension of search.query (docs/46 section 4, F1): sources, terms, extensions, collection_id, under_node_id and the per-hit source, freshness and score. False: search.query serves the v1 fields only and answers any extension field with capability_unavailable. */
   federated_search: boolean;
 }
@@ -1327,6 +1329,31 @@ export interface CollectionMembersUpdate {
   remove: NodeId[];
   /** Optional stable member IDs to remove from this collection, including unresolved members. Omission means an empty set. */
   remove_members?: string[];
+}
+
+export interface CollectionSearchRequest {
+  collection_id: CollectionId;
+  text: string;
+  extension: string | null;
+  min_bytes: NullableBytes;
+  max_bytes: NullableBytes;
+  modified_after: NullableTimestamp;
+  modified_before: NullableTimestamp;
+  kind: "any" | "file" | "dir";
+  limit: number;
+  cursor: Cursor | null;
+}
+
+/** Counts describe direct membership, not matching totals. examined_members and unavailable_members describe this page only. budget_hit means more memberships remain beyond the per-page work limit; cursor resumes without skipping them. */
+export interface CollectionSearchPage {
+  collection_id: CollectionId;
+  hits: SearchHit[];
+  next_cursor: Cursor | null;
+  budget_hit: boolean;
+  total_members: Count;
+  examined_members: Count;
+  unavailable_members: Count;
+  partial: boolean;
 }
 
 export interface CollectionMembersRequest {
@@ -2841,6 +2868,7 @@ export interface CommandMap {
   "collections.list": { request: EmptyRequest; result: CollectionList };
   "collections.create": { request: CollectionCreateRequest; result: Collection };
   "collections.update_members": { request: CollectionMembersUpdate; result: Collection };
+  "collections.search": { request: CollectionSearchRequest; result: CollectionSearchPage };
   "collections.members": { request: CollectionMembersRequest; result: CollectionMemberPage };
   "teacher.preview": { request: TeacherPreviewRequest; result: TeacherPreview };
   "grants.list": { request: EmptyRequest; result: GrantList };
@@ -2943,6 +2971,7 @@ export const COMMANDS = {
   "collections.list": { adapters: ["tauri", "http"], wave: 3, events: [] },
   "collections.create": { adapters: ["tauri", "http"], wave: 3, events: [] },
   "collections.update_members": { adapters: ["tauri", "http"], wave: 3, events: [] },
+  "collections.search": { adapters: ["tauri", "http"], wave: 3, events: [] },
   "collections.members": { adapters: ["tauri", "http"], wave: 3, events: [] },
   "teacher.preview": { adapters: ["tauri", "http"], wave: 3, events: [] },
   "grants.list": { adapters: ["tauri", "http"], wave: 2, events: [] },

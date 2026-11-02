@@ -308,10 +308,12 @@ const REASON_WORDS: Record<NewSinceReason, string> = {
 };
 const MOVED_NOTE = 'Logical size. Moved or recreated files count as new.';
 
-/** UTC calendar date of a wire timestamp, or null when it is missing or unparsable. */
+/** Local calendar date of a wire timestamp, or null when it is missing or unparsable. */
 const dateOf = (at: string | null | undefined): string | null => {
   const t = at ? Date.parse(at) : NaN;
-  return Number.isNaN(t) ? null : new Date(t).toISOString().slice(0, 10);
+  if (Number.isNaN(t)) return null;
+  const d = new Date(t);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 };
 
 /**
@@ -358,7 +360,7 @@ export function newSinceLines(volumes: Volume[], roots: Root[], reads: NewSinceR
     const anyFolder = folder || file ? null : folders[0];
     const target = folder ?? file ?? anyFolder;
     return [{
-      ...base, text: `New since ${since}: ${formatBytes(String(bytes))} in ${plural(files, 'file')}.`, notes, unknown: false,
+      ...base, text: `New since ${since}: ${counted.length < answers.length ? 'At least ' : ''}${formatBytes(String(bytes))} in ${plural(files, 'file')}.`, notes, unknown: false,
       href: target ? `#/explorer?node=${encodeURIComponent(target.node_id)}` : null,
       linkText: folder ? 'Open the largest new folder in Explorer' : file ? 'Open the largest new file in Explorer' : 'Open a new folder in Explorer',
     }];

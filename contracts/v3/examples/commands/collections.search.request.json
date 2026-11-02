@@ -1,0 +1,12 @@
+{
+  "collection_id": "co_1",
+  "text": "report",
+  "extension": null,
+  "min_bytes": null,
+  "max_bytes": null,
+  "modified_after": null,
+  "modified_before": null,
+  "kind": "any",
+  "limit": 50,
+  "cursor": null
+}

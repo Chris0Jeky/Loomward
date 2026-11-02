@@ -535,6 +535,14 @@ impl Reader {
     pub fn path(&mut self, key: NodeKey) -> Result<NodePath> {
         self.read(|conn| node_path(conn, key))
     }
+    /// Metadata row and ancestor path only: no subtree accounting or descendant expansion.
+    pub fn entry_with_path(&mut self, key: NodeKey) -> Result<(EntryRow, NodePath)> {
+        let deadline = self.deadline;
+        self.read_observations(|conn| {
+            let _guard = WorkGuard::new(conn, 2_000_000, deadline)?;
+            Ok((get(conn, key)?.entry(), node_path(conn, key)?))
+        })
+    }
     pub fn inspect(&mut self, key: NodeKey) -> Result<NodeDetail> {
         self.inspect_count += 1;
         let repair_on_read = self.writer.is_some();

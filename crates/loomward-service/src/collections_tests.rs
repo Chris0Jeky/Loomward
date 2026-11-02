@@ -994,3 +994,453 @@ fn collections_list_resolves_references_once_for_all_collections() {
         );
     }
 }
+
+// Decode dynamically so the tests-only checkpoint compiles on the pre-feature engine:
+// absence of the operation is a behavioral assertion failure, not a compiler failure.
+fn search_members(
+    svc: &Service,
+    id: &str,
+    text: &str,
+    limit: i64,
+    cursor: Value,
+) -> ResponseEnvelope {
+    let parsed = serde_json::from_value::<RequestEnvelope>(json!({
+        "protocol":"loomward/3", "request_id":format!("cs{}", NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)),
+        "deadline_ms":60_000,
+        "command":"collections.search", "payload":{
+            "collection_id":id,"text":text,"extension":null,"min_bytes":null,
+            "max_bytes":null,"modified_after":null,"modified_before":null,
+            "kind":"any","limit":limit,"cursor":cursor
+        }
+    }));
+    assert!(
+        parsed.is_ok(),
+        "collections.search must be a supported owner-local read: {parsed:?}"
+    );
+    svc.call(parsed.unwrap(), &CallContext::http())
+}
+
+#[test]
+fn collection_search_advertises_without_federated_search() {
+    let (_dir, svc, _) = setup(DatasetClass::Synthetic);
+    let (hello, _) = ok("session.hello", call(&svc, "session.hello", json!({})));
+    assert_eq!(hello["features"]["federated_search"], false);
+    assert_eq!(hello["features"]["collection_search"], true);
+}
+
+#[test]
+fn collection_search_scopes_before_page_limit_and_binds_filters() {
+    let (_dir, svc, ids) = setup(DatasetClass::Synthetic);
+    let a = create(&svc, "Search A");
+    let b = create(&svc, "Search B");
+    let rev = svc.inner.revisions().unwrap().1;
+    ok(
+        "collections.update_members",
+        update(&svc, &a, &ids[1..], &[], rev),
+    );
+    let rev = svc.inner.revisions().unwrap().1;
+    ok(
+        "collections.update_members",
+        update(&svc, &b, &ids[..1], &[], rev),
+    );
+    let (first, _) = ok(
+        "collections.search",
+        search_members(&svc, &a, "", 1, Value::Null),
+    );
+    assert_eq!(first["hits"].as_array().unwrap().len(), 1);
+    assert_eq!(first["hits"][0]["row"]["node_id"], ids[1]);
+    assert_eq!(first["total_members"], 2);
+    let cursor = first["next_cursor"].clone();
+    assert!(!cursor.is_null());
+    let (second, _) = ok(
+        "collections.search",
+        search_members(&svc, &a, "", 1, cursor.clone()),
+    );
+    assert_eq!(second["hits"][0]["row"]["node_id"], ids[2]);
+    assert!(second["next_cursor"].is_null());
+    assert_eq!(
+        err(search_members(&svc, &b, "", 1, cursor.clone())).code,
+        ErrorCode::InvalidRequest
+    );
+    assert_eq!(
+        err(search_members(&svc, &a, "other", 1, cursor.clone())).code,
+        ErrorCode::InvalidRequest
+    );
+    let rev = svc.inner.revisions().unwrap().1;
+    ok(
+        "collections.update_members",
+        update(&svc, &a, &ids[..1], &[], rev),
+    );
+    assert_eq!(
+        err(search_members(&svc, &a, "", 1, cursor)).code,
+        ErrorCode::StaleGeneration
+    );
+    assert_eq!(
+        err(search_members(&svc, "co_999999", "", 1, Value::Null)).code,
+        ErrorCode::NotFound
+    );
+}
+
+#[test]
+fn collection_search_literal_predicates_and_direct_directory_only() {
+    let (_dir, svc, ids) = setup(DatasetClass::Synthetic);
+    let id = create(&svc, "Literal");
+    ok(
+        "collections.update_members",
+        update(&svc, &id, &ids, &[], 2),
+    );
+    svc.inner.db().execute_batch("UPDATE main.file SET name='Tiny_%[literal].TXT',modified_ft=134116992000000000 WHERE id=3; UPDATE main.revision SET catalog_rev=catalog_rev+1;").unwrap();
+    let (page, _) = ok(
+        "collections.search",
+        search_members(&svc, &id, "_%[LITERAL]", 1, Value::Null),
+    );
+    assert_eq!(page["hits"][0]["row"]["node_id"], ids[2]);
+    assert_eq!(page["examined_members"], 3);
+    assert!(page["next_cursor"].is_null());
+    let query = |extra: Value| {
+        let mut payload = json!({"collection_id":id,"text":"", "extension":null,"min_bytes":null,"max_bytes":null,"modified_after":null,"modified_before":null,"kind":"any","limit":100,"cursor":null});
+        payload
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        call(&svc, "collections.search", payload)
+    };
+    for extra in [
+        json!({"min_bytes":"1002"}),
+        json!({"modified_after":"2026-01-01T00:00:00Z"}),
+    ] {
+        let (page, _) = ok("collections.search", query(extra));
+        assert_eq!(page["hits"].as_array().unwrap().len(), 1);
+        assert_eq!(page["hits"][0]["row"]["node_id"], ids[2]);
+    }
+    assert!(ok("collections.search", query(json!({"kind":"dir"}))).0["hits"].as_array().unwrap().is_empty());
+    assert!(ok("collections.search", query(json!({"extension":"pdf"}))).0["hits"].as_array().unwrap().is_empty());
+    assert_eq!(err(query(json!({"min_bytes":"1002","max_bytes":"1"}))).code, ErrorCode::InvalidRequest);
+    assert_eq!(err(query(json!({"modified_after":"2026-01-02T00:00:00Z","modified_before":"2026-01-01T00:00:00Z"}))).code, ErrorCode::InvalidRequest);
+    assert_eq!(err(query(json!({"root_id":null}))).code, ErrorCode::InvalidRequest);
+    let folder = create(&svc, "Folder only");
+    svc.inner.db().execute_batch("UPDATE main.dir SET file_id=CAST('folder-native-id' AS BLOB),created_ft=123 WHERE parent_id IS NOT NULL; UPDATE main.file SET dir_id=(SELECT id FROM main.dir WHERE parent_id IS NOT NULL LIMIT 1) WHERE id=1; UPDATE main.revision SET catalog_rev=catalog_rev+1;").unwrap();
+    let folder_node = {
+        let conn = svc.inner.db();
+        let (row, born) = conn.query_row("SELECT id,born_run FROM main.dir WHERE parent_id IS NOT NULL", [], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?))).unwrap();
+        svc.inner.ids.seal(NodeKey::Dir(row), born, &svc.inner.instance)
+    };
+    let rev = svc.inner.revisions().unwrap().1;
+    ok(
+        "collections.update_members",
+        update(&svc, &folder, std::slice::from_ref(&folder_node), &[], rev),
+    );
+    let (page, _) = ok(
+        "collections.search",
+        search_members(&svc, &folder, "", 100, Value::Null),
+    );
+    assert_eq!(page["hits"].as_array().unwrap().len(), 1);
+    assert_eq!(page["hits"][0]["row"]["node_id"], folder_node);
+    assert!(ok("collections.search", search_members(&svc, &folder, "report", 100, Value::Null)).0["hits"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn collection_search_unavailable_restart_catalogue_and_client_fences() {
+    let (dir, svc, ids) = setup(DatasetClass::Synthetic);
+    let id = create(&svc, "Durable search");
+    ok(
+        "collections.update_members",
+        update(&svc, &id, &ids, &[], 2),
+    );
+    let (first, _) = ok(
+        "collections.search",
+        search_members(&svc, &id, "", 1, Value::Null),
+    );
+    svc.inner
+        .db()
+        .execute("UPDATE main.revision SET catalog_rev=catalog_rev+1", [])
+        .unwrap();
+    assert_eq!(reason(&err(search_members(&svc, &id, "", 1, first["next_cursor"].clone()))), Some("catalog_rev_changed"));
+    let (first, _) = ok(
+        "collections.search",
+        search_members(&svc, &id, "", 1, Value::Null),
+    );
+    drop(svc);
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    assert_eq!(err(search_members(&svc, &id, "", 1, first["next_cursor"].clone())).code, ErrorCode::StaleGeneration);
+    assert_eq!(ok("collections.search", search_members(&svc, &id, "", 100, Value::Null)).0["hits"].as_array().unwrap().len(), 3);
+    let req = request("collections.search", json!({"collection_id":id,"text":"","extension":null,"min_bytes":null,"max_bytes":null,"modified_after":null,"modified_before":null,"kind":"any","limit":1,"cursor":null}));
+    assert_eq!(err(svc.call(req, &CallContext::client("mcp:collection-test"))).code, ErrorCode::PermissionDenied);
+    svc.inner.db().execute_batch("DELETE FROM main.file WHERE id=1; UPDATE main.revision SET catalog_rev=catalog_rev+1;").unwrap();
+    let (page, _) = ok(
+        "collections.search",
+        search_members(&svc, &id, "", 100, Value::Null),
+    );
+    assert_eq!(page["total_members"], 3);
+    assert_eq!(page["unavailable_members"], 1);
+    assert_eq!(page["partial"], true);
+    assert_eq!(page["hits"].as_array().unwrap().len(), 2);
+    svc.inner.db().execute_batch("UPDATE st.root_grant SET state='revoked',revoked_at_ns=1; UPDATE st.revision SET state_rev=state_rev+1;").unwrap();
+    let (page, _) = ok(
+        "collections.search",
+        search_members(&svc, &id, "", 100, Value::Null),
+    );
+    assert_eq!(page["unavailable_members"], 3);
+    assert!(page["hits"].as_array().unwrap().is_empty());
+    assert!(!page.to_string().contains("report"));
+    ok(
+        "roots.forget",
+        call(&svc, "roots.forget", json!({"root_id":svc.inner.root_id(1)})),
+    );
+    let (forgotten, _) = ok(
+        "collections.search",
+        search_members(&svc, &id, "", 100, Value::Null),
+    );
+    // The already-missing reference cannot be attributed to a current root; it remains an
+    // unavailable durable member. Forgetting must never turn it into a global search.
+    assert_eq!(forgotten["total_members"], 1);
+    assert_eq!(forgotten["unavailable_members"], 1);
+    assert!(forgotten["hits"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn collection_search_bounded_empty_pages_make_progress_without_broadening() {
+    let (_dir, svc, _) = setup(DatasetClass::Synthetic);
+    let id = create(&svc, "Unavailable search");
+    svc.inner.db().execute_batch("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<2001) INSERT INTO st.object_ref(volume_key,file_id,creation_ft,kind,state,incarnation,catalog_instance,row_id,born_run) SELECT 'fixture',CAST(printf('%016d',i) AS BLOB),123,'file','resolved',1,'old-instance',i,1 FROM n; INSERT INTO st.collection_member SELECT 1,id,0 FROM st.object_ref; UPDATE st.revision SET state_rev=state_rev+1;").unwrap();
+    let (first, _) = ok(
+        "collections.search",
+        search_members(&svc, &id, "report", 100, Value::Null),
+    );
+    assert_eq!(first["total_members"], 2001);
+    assert_eq!(first["examined_members"], 2000);
+    assert_eq!(first["unavailable_members"], 2000);
+    assert_eq!(first["budget_hit"], true);
+    assert!(first["hits"].as_array().unwrap().is_empty());
+    assert!(!first["next_cursor"].is_null());
+    let (last, _) = ok(
+        "collections.search",
+        search_members(&svc, &id, "report", 100, first["next_cursor"].clone()),
+    );
+    assert_eq!(last["examined_members"], 1);
+    assert_eq!(last["unavailable_members"], 1);
+    assert_eq!(last["budget_hit"], false);
+    assert!(last["next_cursor"].is_null());
+}
+
+#[test]
+fn collection_search_rejects_publication_during_hydration_and_deadline_stops_work() {
+    for expire in [false, true] {
+        let (_dir, svc, ids) = setup(DatasetClass::Synthetic);
+        let id = create(&svc, "Concurrent search");
+        ok(
+        "collections.update_members",
+        update(&svc, &id, &ids, &[], 2),
+    );
+        let svc = Arc::new(svc);
+        let phase = if expire { "hydrate" } else { "hydrated" };
+        svc.inner
+            .hooks
+            .closed
+            .lock()
+            .unwrap()
+            .push((Command::CollectionsSearch, phase));
+        let worker = svc.clone();
+        let read = std::thread::spawn(move || search_members(&worker, &id, "", 100, Value::Null));
+        svc.inner.hooks.until(phase, |h| {
+            h.arrived
+                .lock()
+                .unwrap()
+                .contains(&(Command::CollectionsSearch, phase))
+        });
+        if expire {
+            *svc.inner.hooks.skew.lock().unwrap() = Duration::from_secs(61);
+        } else {
+            svc.inner
+        .db()
+        .execute("UPDATE main.revision SET catalog_rev=catalog_rev+1", [])
+        .unwrap();
+        }
+        svc.inner.hooks.open(Command::CollectionsSearch, phase);
+        let error = err(read.join().unwrap());
+        assert_eq!(
+            error.code,
+            if expire {
+                ErrorCode::DeadlineExceeded
+            } else {
+                ErrorCode::StaleGeneration
+            }
+        );
+        svc.inner.hooks.until("collection search slot released", |_| {
+            *svc.inner.reads.lock().unwrap() == 0
+        });
+    }
+}
+
+#[test]
+fn collection_search_nonmatching_stale_members_keep_partial_coverage() {
+    let (_dir, svc, ids) = setup(DatasetClass::Synthetic);
+    let id = create(&svc, "Stale nonmatches");
+    ok(
+        "collections.update_members",
+        update(&svc, &id, &ids[..1], &[], 2),
+    );
+    // Synthetic metadata has complete rows but no live watcher. Pin both facts so the
+    // regression cannot pass merely because row coverage or unavailable counts set partial.
+    assert_eq!(svc.inner.hit_freshness(1).state, SearchFreshnessState::Stale);
+    let (baseline, _) = ok(
+        "collections.search",
+        search_members(&svc, &id, "", 100, Value::Null),
+    );
+    assert_eq!(baseline["hits"][0]["row"]["coverage"], "complete");
+    assert_eq!(baseline["hits"][0]["freshness"]["state"], "stale");
+    for predicate in [
+        json!({"text":"no-literal-match"}),
+        json!({"kind":"dir"}),
+        json!({"extension":"pdf"}),
+        json!({"min_bytes":"999999"}),
+        json!({"modified_after":"2099-01-01T00:00:00Z"}),
+    ] {
+        let mut payload = json!({"collection_id":id,"text":"","extension":null,"min_bytes":null,"max_bytes":null,"modified_after":null,"modified_before":null,"kind":"any","limit":100,"cursor":null});
+        payload
+            .as_object_mut()
+            .unwrap()
+            .extend(predicate.as_object().unwrap().clone());
+        let (page, _) = ok("collections.search", call(&svc, "collections.search", payload));
+        assert!(page["hits"].as_array().unwrap().is_empty(), "{predicate}");
+        assert_eq!(page["examined_members"], 1);
+        assert_eq!(page["unavailable_members"], 0);
+        assert_eq!(page["budget_hit"], false);
+        assert!(page["next_cursor"].is_null());
+        assert_eq!(page["partial"], true, "stale nonmatch: {predicate}");
+    }
+}
+
+#[test]
+fn collection_search_retained_descendant_metadata_is_hidden_below_unavailable_ancestors() {
+    let (_dir, svc, ids) = setup(DatasetClass::Synthetic);
+    let id = create(&svc, "Ancestor boundary");
+    svc.inner
+        .db()
+        .execute(
+            "UPDATE main.file SET dir_id=(SELECT id FROM main.dir WHERE parent_id IS NOT NULL LIMIT 1) WHERE id=1",
+            [],
+        )
+        .unwrap();
+    ok(
+        "collections.update_members",
+        update(&svc, &id, &ids[..1], &[], 2),
+    );
+    let (baseline, _) = ok(
+        "collections.search",
+        search_members(&svc, &id, "report", 100, Value::Null),
+    );
+    assert_eq!(baseline["hits"].as_array().unwrap().len(), 1);
+    assert_eq!(baseline["hits"][0]["row"]["coverage"], "complete");
+    // The immediate parent and file retain complete metadata. Only their grandparent changes;
+    // checking the hydrated row's own coverage cannot enforce this boundary.
+    for (outcome, flags, attrs) in [
+        ("denied", 0, 0),
+        ("excluded", 0, 0),
+        ("unscanned", 0, 0),
+        ("complete", 1 << 1, 0),
+        ("complete", 1 << 3, 0),
+        ("complete", 1 << 4, 0),
+        ("complete", 1 << 5, 0),
+        ("complete", 1 << 6, 0),
+        ("complete", 0, 1024),
+    ] {
+        svc.inner
+            .db()
+            .execute(
+                "UPDATE main.dir SET listing_state='incomplete',listing_outcome=?1,flags=?2,attrs=?3 WHERE parent_id IS NULL",
+                rusqlite::params![outcome, flags, attrs],
+            )
+            .unwrap();
+        svc.inner
+            .db()
+            .execute("UPDATE main.revision SET catalog_rev=catalog_rev+1", [])
+            .unwrap();
+        let (page, _) = ok(
+            "collections.search",
+            search_members(&svc, &id, "report", 100, Value::Null),
+        );
+        assert!(page["hits"].as_array().unwrap().is_empty(), "{outcome}/{flags}/{attrs}");
+        assert_eq!(page["total_members"], 1);
+        assert_eq!(page["examined_members"], 1);
+        assert_eq!(page["unavailable_members"], 1);
+        assert_eq!(page["partial"], true);
+        assert!(page["next_cursor"].is_null());
+        assert!(!page.to_string().contains("report"));
+        assert!(!page.to_string().contains("Synthetic"));
+    }
+}
+
+#[test]
+fn collection_search_does_not_repair_dirty_members_or_unrelated_roots() {
+    let (_dir, svc, ids) = setup(DatasetClass::Synthetic);
+    let id = create(&svc, "Metadata only");
+    svc.inner
+        .db()
+        .execute_batch("UPDATE main.dir SET file_id=CAST('folder-native-id' AS BLOB),created_ft=123 WHERE parent_id IS NOT NULL;")
+        .unwrap();
+    let directory = {
+        let conn = svc.inner.db();
+        let (row, born) = conn
+            .query_row("SELECT id,born_run FROM main.dir WHERE parent_id IS NOT NULL", [], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+            })
+            .unwrap();
+        svc.inner.ids.seal(NodeKey::Dir(row), born, &svc.inner.instance)
+    };
+    ok(
+        "collections.update_members",
+        update(&svc, &id, &[ids[0].clone(), directory.clone()], &[], 2),
+    );
+    let WriteReply::Root { grant_id, dir_id, .. } = svc
+        .inner
+        .catalog
+        .writer()
+        .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_guid: None,
+            volume_key: "unrelated-fixture".into(),
+            display_name: "Unrelated synthetic root".into(),
+            display_path: "Unrelated synthetic root".into(),
+            root_file_id: Some(vec![2; 16]),
+            filesystem: Some("NTFS".into()),
+            origin: "fixture".into(),
+            granted_via: "fixture".into(),
+            observed_at_ns: 0,
+        }))
+        .unwrap()
+    else {
+        panic!()
+    };
+    relist(&svc, grant_id, dir_id, 1);
+    svc.inner
+        .db()
+        .execute_batch("UPDATE main.dir SET dirty_rev=agg_valid_rev+100; UPDATE main.revision SET catalog_rev=catalog_rev+1;")
+        .unwrap();
+    let aggregates = || {
+        let conn = svc.inner.db();
+        let mut statement = conn
+            .prepare("SELECT id,dirty_rev,agg_valid_rev,sub_logical,sub_files FROM main.dir ORDER BY id")
+            .unwrap();
+        statement
+            .query_map([], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?, r.get::<_, i64>(4)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    };
+    let before = aggregates();
+    let revisions = svc.inner.revisions().unwrap();
+    let (page, _) = ok(
+        "collections.search",
+        search_members(&svc, &id, "", 100, Value::Null),
+    );
+    assert_eq!(page["hits"].as_array().unwrap().len(), 2);
+    let folder = page["hits"].as_array().unwrap().iter()
+        .find(|hit| hit["row"]["node_id"] == directory)
+        .unwrap();
+    assert_eq!(folder["row"]["coverage"], "stale");
+    assert_eq!(page["partial"], true);
+    assert_eq!(aggregates(), before, "search must not repair any aggregate");
+    assert_eq!(svc.inner.revisions().unwrap(), revisions, "search must not publish repairs");
+}

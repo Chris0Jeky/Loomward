@@ -257,3 +257,137 @@ def run_live_collections(page, token: str, state: Path, check) -> None:
     expect(page.get_by_text('Showing 49 of 49 members', exact=True)).to_be_visible()
     expect(rows.get_by_role('checkbox')).to_have_count(49)
     print('PASS live collection curation: multi-page keyboard selection, unavailable member, atomic stale refusal, exact removal, other collection/grants unchanged, committed unknown outcome without retry, and label-view protection')
+    run_live_collection_search(page, state, check, call, other)
+
+
+def run_live_collection_search(page, state: Path, check, call, collection_id: str) -> None:
+    """Production Explorer over the disposable native collection; no filesystem inventory."""
+    subset = call('collections.create', {'name': 'Retained search subset'}, 'collection_search_subset')['result']['collection_id']
+    filters = {'collection_id': collection_id, 'text': 'CURATION', 'extension': None, 'min_bytes': None,
+               'max_bytes': None, 'modified_after': None, 'modified_before': None, 'kind': 'any', 'limit': 50, 'cursor': None}
+    initial = call('collections.search', filters, 'collection_search_initial')
+    check(initial['ok'] and len(initial['result']['hits']) == 50 and initial['result']['total_members'] == 52,
+          'collection search: direct scope before native page limit, durable unavailable membership included in total')
+    check(initial['result']['unavailable_members'] == 1, 'collection search: unavailable member counted without metadata')
+    next_page = call('collections.search', {**filters, 'cursor': initial['result']['next_cursor']}, 'collection_search_second')
+    check(next_page['ok'] and len(next_page['result']['hits']) == 1 and next_page['result']['next_cursor'] is None,
+          'collection search: native cursor reaches the last match')
+    changed = call('collections.search', {**filters, 'text': 'different', 'cursor': initial['result']['next_cursor']}, 'collection_search_wrong_query')
+    check(not changed['ok'] and changed['error']['code'] == 'invalid_request', 'collection search: cursor refuses another query')
+    # Empty and paused views render a placeholder row; count actual search hits only.
+    rows = page.locator('main table tbody tr:has(button[data-inspect])')
+    page.get_by_role('link', name='Explorer', exact=True).click()
+    scope = page.get_by_role('combobox', name='Search scope', exact=True)
+    scope.select_option(value=collection_id)
+    search = page.get_by_role('searchbox', name='Search names', exact=True)
+    search.fill('curation')
+    search.press('Enter')
+    expect(rows).to_have_count(50)
+    expect(page.get_by_label('Applied search scope', exact=True)).to_contain_text('direct members only')
+    expect(page.get_by_label('Collection search coverage', exact=True)).to_contain_text('1 unavailable')
+    # Keyboard inspection uses the same production inspector as root search.
+    search.focus()
+    search.press('ArrowDown')
+    expect(rows.first.get_by_role('button', name=re.compile('^Inspect '))).to_be_focused()
+    page.keyboard.press('Enter')
+    expect(page.get_by_role('region', name='Node inspector')).to_be_visible()
+    rows.first.get_by_role('checkbox').focus()
+    page.keyboard.press('Space')
+    # A changed draft scope must not alter the submitted page cursor.
+    scope.select_option(value=subset)
+    more = page.get_by_role('button', name='Load more', exact=True)
+    more.focus()
+    more.press('Enter')
+    expect(rows).to_have_count(51)
+    expect(rows.first.get_by_role('checkbox')).to_be_checked()
+    rows.last.get_by_role('checkbox').check()
+    selected_ids = [initial['result']['hits'][0]['row']['node_id'], next_page['result']['hits'][0]['row']['node_id']]
+    page.get_by_role('combobox', name='Collection for selected rows', exact=True).select_option(value=subset)
+    page.get_by_role('button', name='Add selected to collection', exact=True).click()
+    expect(page.get_by_role('status', name='Selected rows result', exact=True)).to_contain_text('Saved selection of 2 rows')
+    saved = call('collections.members', {'collection_id': subset, 'limit': 100, 'cursor': None}, 'collection_search_saved')
+    check(saved['ok'] and sorted(m['entry']['node_id'] for m in saved['result']['items']) == sorted(selected_ids),
+          'collection search: explicit cross-page subset retained through existing revision-fenced action')
+    page.get_by_role('link', name='Collections', exact=True).click()
+    page.get_by_role('combobox', name='Collection', exact=True).select_option(value=subset)
+    page.get_by_role('link', name='Search direct members', exact=True).click()
+    expect(page.get_by_label('Applied search scope', exact=True)).to_contain_text('Retained search subset')
+    expect(rows).to_have_count(2)
+    page.reload()
+    expect(rows).to_have_count(2)
+    expect(page.get_by_label('Applied search scope', exact=True)).to_contain_text('Retained search subset')
+    for width in [1360, 390]:
+        page.set_viewport_size({'width': width, 'height': 900})
+        check(page.evaluate('document.documentElement.scrollWidth <= innerWidth'), f'collection search: controls fit {width}px')
+        captures = Path(__file__).resolve().parents[1] / '.loomward'
+        captures.mkdir(exist_ok=True)
+        page.screenshot(path=str(captures / f'search-root-collection-search-{width}.png'), full_page=True)
+    page.set_viewport_size({'width': 1360, 'height': 900})
+
+    # Capture a valid native response, then return it after a newer submitted request. The client
+    # request identity/generation must reject the cancelled old page even if it reaches the browser.
+    held = []
+    def hold_search(route):
+        request = route.request.post_data_json
+        if request['command'] == 'collections.search' and request['payload']['text'] == 'curation':
+            held.append((route, route.fetch().json()))
+        else:
+            route.continue_()
+    page.route('**/api/v3/call', hold_search)
+    try:
+        search.fill('curation')
+        with page.expect_request(lambda request: request.method == 'POST' and request.post_data_json.get('command') == 'collections.search'):
+            search.press('Enter')
+        # A DOM action yields to request routing; the pending first request is deliberately held.
+        search.fill('no-literal-match')
+        search.press('Enter')
+        expect(page.get_by_label('Collection search coverage', exact=True)).to_contain_text('0 matches loaded')
+        for route, response in held:
+            route.fulfill(json=response)
+        held.clear()
+        expect(rows).to_have_count(0)
+        expect(page.get_by_label('Collection search coverage', exact=True)).to_contain_text('0 matches loaded')
+    finally:
+        for route, _ in held:
+            route.abort()
+        page.unroute('**/api/v3/call', hold_search)
+
+    # A transport loss unmounts the view. Its restored collection search requires a new explicit
+    # scope choice; the durable collection ID in the route is not a session authorization.
+    dropped = []
+    def disconnect_once(route):
+        if route.request.post_data_json['command'] == 'collections.search' and not dropped:
+            dropped.append(True)
+            route.abort('failed')
+        else:
+            route.continue_()
+    page.route('**/api/v3/call', disconnect_once)
+    try:
+        search.fill('curation')
+        search.press('Enter')
+        expect(page.get_by_label('Applied search scope', exact=True)).to_contain_text('Search paused', timeout=15000)
+        expect(rows).to_have_count(0)
+        scope.select_option(value=subset)
+        search.fill('curation')
+        search.press('Enter')
+        expect(rows).to_have_count(2)
+    finally:
+        page.unroute('**/api/v3/call', disconnect_once)
+
+    def old_engine(route):
+        response = route.fetch().json()
+        if route.request.post_data_json['command'] == 'session.hello' and response.get('ok'):
+            response['result']['features'].pop('collection_search', None)
+        route.fulfill(json=response)
+    page.route('**/api/v3/call', old_engine)
+    try:
+        page.reload()
+        expect(scope).to_be_visible()
+        expect(scope.locator('optgroup')).to_have_count(0)
+        expect(page.get_by_label('Applied search scope', exact=True)).to_contain_text('Search paused')
+        page.get_by_role('link', name='Collections', exact=True).click()
+        expect(page.get_by_role('link', name='Search direct members', exact=True)).to_have_count(0)
+    finally:
+        page.unroute('**/api/v3/call', old_engine)
+    page.reload()
+    print('PASS native collection search: scope/filter pages, honest unavailable counts, inspection, keyboard cross-page subset retention/reload, late cancellation, reconnect refusal, old-engine absence and narrow layout')

@@ -372,7 +372,7 @@ describe('new since the last scan', () => {
       ['rt_3', noBaseline()],
       ['rt_4', null],
     ));
-    expect(lines[0]!.text).toBe("New since each folder's previous scan (the oldest on 2026-10-16): 13.3 GiB in 350 files.");
+    expect(lines[0]!.text).toBe("New since each folder's previous scan (the oldest on 2026-10-16): At least 13.3 GiB in 350 files.");
     expect(lines[0]!.href).toBe('#/explorer?node=nd_d2');
     expect(lines[0]!.notes).toEqual([
       '1 granted folder has no earlier scan to compare with, so it is not counted.',
@@ -396,6 +396,14 @@ describe('new since the last scan', () => {
     const lines = newSinceLines([volume()], [root()], reads(['rt_1', answer({ partial: true, partial_reasons: ['baseline_incomplete', 'scan_running'] })]));
     expect(lines[0]!.notes[0]).toBe('Partial, so the figure may be off: the earlier scan was not complete; a scan is running.');
     expect(lines[0]!.text).toBe('New since the scan on 2026-10-23: 12.3 GiB in 340 files.');
+  });
+
+  it('uses the local calendar date on both sides of UTC midnight', () => {
+    for (const hour of [0, 23]) {
+      const local = new Date(2026, 9, 23, hour, 30);
+      const lines = newSinceLines([volume()], [root()], reads(['rt_1', answer({ baseline: baseline({ finished_at: local.toISOString() }) })]));
+      expect(lines[0]!.text).toContain('the scan on 2026-10-23:');
+    }
   });
 
   it('never invents a date: a baseline without a finish time reads as an unknown date', () => {

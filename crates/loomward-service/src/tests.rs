@@ -2890,6 +2890,7 @@ fn every_command_answers_a_complete_envelope_and_core_reads_serve_the_catalogue(
                     | Command::CollectionsList
                     | Command::CollectionsCreate
                     | Command::CollectionsUpdateMembers
+                    | Command::CollectionsSearch
                     | Command::CollectionsMembers
                     | Command::BackupsList
                     | Command::BackupsImport

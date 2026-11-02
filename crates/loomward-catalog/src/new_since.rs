@@ -9,13 +9,13 @@ use crate::{query, DisplayPath, Error, NodeKey, Reader, Result, EXCLUDED_FLAGS};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::{cmp::Reverse, collections::BinaryHeap, time::Instant};
 
-/// Rows of the root's visible tree, exactly as `stats.breakdown` walks it (excluded and
-/// absent-pending directories, and what is under them, are never counted).
+/// Rows of the root's visible tree. Excluded flags and excluded or absent-pending directory
+/// states prune the entire branch, consistently for file totals, folder totals and rankings.
 const TREE: &str = "WITH RECURSIVE tree(id) AS (
-    SELECT id FROM dir WHERE root_id=?1 AND parent_id IS NULL AND listing_state!='excluded'
+    SELECT id FROM dir WHERE root_id=?1 AND parent_id IS NULL AND listing_state NOT IN ('absent_pending','excluded') AND flags & ?3=0
     UNION ALL
     SELECT d.id FROM dir d JOIN tree t ON d.parent_id=t.id
-    WHERE d.listing_state NOT IN ('absent_pending','excluded'))";
+    WHERE d.listing_state NOT IN ('absent_pending','excluded') AND d.flags & ?3=0)";
 /// SQLite VM steps for the whole answer; also stopped at the request deadline.
 const WORK_BUDGET: u64 = 32_000_000;
 
@@ -161,6 +161,10 @@ fn read(conn: &Connection, root: i64, baseline: Option<i64>, cap: usize) -> Resu
             if state == "running" {
                 return Err(Error::Invalid("the baseline run is still running"));
             }
+            if state != "completed" {
+                out.partial_reasons.push("baseline_not_completed");
+                return Ok(out);
+            }
             out.baseline = Some(run);
             state
         }
@@ -182,9 +186,8 @@ fn read(conn: &Connection, root: i64, baseline: Option<i64>, cap: usize) -> Resu
         }
     };
     let base = out.baseline.as_ref().expect("set above").clone();
-    if baseline_state != "completed" {
-        out.partial_reasons.push("baseline_not_completed");
-    } else if !base.complete {
+    debug_assert_eq!(baseline_state, "completed");
+    if !base.complete {
         out.partial_reasons.push("baseline_incomplete");
     }
     let root_dir: i64 = conn.query_row(
@@ -234,8 +237,8 @@ fn read(conn: &Connection, root: i64, baseline: Option<i64>, cap: usize) -> Resu
     }
     totals.allocated_bytes = (totals.allocation_unknown_files == 0).then_some(allocated);
     totals.new_dirs = u(conn.query_row(
-        &format!("{TREE} SELECT count(*) FROM dir d JOIN tree t ON t.id=d.id WHERE d.born_run>?2"),
-        params![root, base.run],
+        &format!("{TREE} SELECT count(*) FROM dir d JOIN tree t ON t.id=d.id WHERE d.born_run>?2 AND d.parent_id IS NOT NULL"),
+        params![root, base.run, EXCLUDED_FLAGS],
         |r| r.get(0),
     )?)?;
     out.totals = Some(totals);
@@ -258,7 +261,7 @@ fn read(conn: &Connection, root: i64, baseline: Option<i64>, cap: usize) -> Resu
     let tops = conn
         .prepare(&format!(
             "{TREE} SELECT d.id FROM dir d JOIN tree t ON t.id=d.id JOIN dir p ON p.id=d.parent_id
-             WHERE d.born_run>?2 AND p.born_run<=?2 AND d.flags & ?3=0
+             WHERE d.born_run>?2 AND (p.born_run<=?2 OR p.parent_id IS NULL)
              ORDER BY d.sub_logical DESC,d.id LIMIT ?4"
         ))?
         .query_map(params![root, base.run, EXCLUDED_FLAGS, cap as i64], |r| {

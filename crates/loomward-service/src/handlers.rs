@@ -478,6 +478,7 @@ impl Inner {
             CollectionsList => self.collections_list(work),
             CollectionsCreate => self.collections_create(req),
             CollectionsUpdateMembers => self.collections_update(req),
+            CollectionsSearch => self.collections_search(req, work),
             CollectionsMembers => self.collections_members(req, work),
             DuplicatesInspect => self.duplicates_inspect(req, work),
             DuplicatesCancel => self.duplicates_cancel(req.decode_payload()?),
@@ -823,6 +824,7 @@ impl Inner {
                     // The lane that serves the federated fields (F2 to F4) flips this constant,
                     // and the guard in `search` goes with it.
                     "federated_search": crate::FEDERATED_SEARCH,
+                    "collection_search": true,
                 },
                 "limits": {
                     "max_request_bytes": limits::MAX_REQUEST_BYTES,

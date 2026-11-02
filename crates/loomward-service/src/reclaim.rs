@@ -441,7 +441,8 @@ impl Inner {
                 .candidates
                 .iter()
                 .map(|c| (c.node, c.class, c.logical_bytes, c.allocated_bytes));
-            // Same order and de-duplication as the plan, so a node is observed as the plan shows it.
+            // Observe each raw detector node once. The displayed plan additionally hides nested
+            // candidates, so this read job's candidate total can exceed the number of listed rows.
             for (node, class, logical, allocated) in developer.chain(machine) {
                 if !seen.insert(node) {
                     continue;

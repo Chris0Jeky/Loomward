@@ -1255,20 +1255,26 @@ the previous scan"). The result names that `baseline` and the `latest` completed
 `finished_at`, `mode` and whether it was `complete`: a clean full traversal), so a client words the date from
 the run, not from the clock. With fewer than two completed full-root runs and no `baseline_run`, `outcome` is
 `no_baseline`: the baseline and every figure are null and the lists are empty. That is "no earlier scan", never
-zero, and it is what a re-granted root reports until it has been scanned twice.
+zero, and it is what a re-granted root reports until it has been scanned twice. An explicitly requested
+failed or cancelled run also returns `no_baseline`, with `partial: true` and `baseline_not_completed`;
+its unfinished observations cannot establish a comparison. The outcome/baseline/figure/list coupling is
+enforced by both schema and DTO: `ok` requires a baseline and non-null counts and logical bytes, while
+allocation can remain unknown.
 
 For `ok`, `new_files` and `new_dirs` count the rows born after the baseline in the root's visible tree
 (entries the scan saw but did not follow, and directories pending removal, are never counted, as for
 `stats.breakdown`); `logical_bytes` sums the new files and `allocated_bytes` is null as soon as one new
 file's allocation is unknown (`allocation_unknown_files` says how many), never a partial sum. `largest_files`
 are the `limit` largest new files by logical size (row order breaking ties); `largest_folders` are new
-folders whose parent is not new, largest first, each with its whole recorded size now and its coverage.
+folders whose parent is not new (or is the granted root), largest first, each with its whole recorded size
+now and its coverage. The granted root itself is not a new folder. Excluded flags and excluded or
+absent-pending directory states prune that directory and all descendants from both totals and rankings.
 `node_id`s open in Explorer like any other. All figures come from one bounded pass over the root's files; a
 root too large for the work budget is `resource_budget` and an expired deadline `deadline_exceeded`, never a
 short count.
 
-`partial` is true, with `partial_reasons`, when the figures are not a clean answer: `baseline_not_completed`
-(the baseline run was cancelled or failed), `baseline_incomplete` (it finished without being a clean full
+`partial` is true, with `partial_reasons`, when an explicitly requested baseline is unusable
+(`baseline_not_completed`) or the figures are not a clean answer: `baseline_incomplete` (it finished without being a clean full
 traversal, or has no recorded counter), `coverage_partial`, `scan_running` (rows a running scan has listed so
 far are included), `catalogue_repairing` (folder sizes are not current) and `changes_since_scan` (the watcher
 saw changes after the scan, so the figures describe an earlier state). Anything an earlier run could not
@@ -1389,3 +1395,34 @@ never manage `ask:` (use `ask.grant`/`ask.revoke`) or the teacher's `grants.*` c
 Before creating a grant that includes `path`, the Agent access panel displays: "The agent's host
 may send what it reads to its model provider. Loomward cannot see or control that."
 The connection command is `claude mcp add loomward -- "%LOCALAPPDATA%\Loomward\loomward-mcp.exe" --client <name>`.
+
+### Direct collection-member search (#1124)
+
+`features.collection_search: true` advertises the additive owner-local `collections.search` read.
+Absence (older engines) or false means unavailable. It is not available to client principals or MCP,
+and leaves `search.query` federated-field refusal and ranked-index gates unchanged. The required
+collection ID selects one existing human collection; malformed, missing, unavailable or stale scope
+never means all roots. Label views refuse this operation.
+
+The request carries the v1 kind, one extension, logical size and modified-time predicates. Name text
+is a case-insensitive literal substring, including one-character text and punctuation; no wildcard,
+regex, ranking or descendant expansion. Empty text permits filter-only search or all direct members.
+Dates and size bounds are inclusive; unknown values cannot satisfy a bound; reversed ranges refuse.
+Direct durable membership and current root grants are resolved before result slots are counted.
+Unavailable members contribute no metadata or guessed matches. Directory entries do not include
+descendants and use already-recorded aggregate size and completeness.
+
+Each page examines at most 2,000 memberships and returns at most 100 hits. `total_members` counts
+unfiltered durable memberships; it is not a matching total. `examined_members` and
+`unavailable_members` count this page's examined references only. Clients may sum them across a
+cursor chain, resetting on a new search or stale cursor. An empty hit page can have `next_cursor`:
+continue it to inspect the remaining membership window. `budget_hit` means the examination bound
+was reached with more memberships remaining. `partial` reports unavailable, incomplete or stale
+observations; no-match does not establish absence in unavailable metadata.
+Deadline expiry refuses the page and stops work; no cursor is silently advanced on an error.
+
+Order is stable durable member ID. Opaque cursors bind operation, all filters, collection ID,
+service session, catalogue revision and state revision (including grants and memberships). Page
+limit may change. A concurrent publication or preference change during hydration discards the
+page. Collection search reads metadata only, never opens a member's contents, creates a grant,
+changes membership, activates a provider or changes catalogue schema.

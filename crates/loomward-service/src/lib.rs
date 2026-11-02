@@ -812,6 +812,7 @@ impl ViewService for Service {
                     | Command::CollectionsList
                     | Command::CollectionsCreate
                     | Command::CollectionsUpdateMembers
+                    | Command::CollectionsSearch
                     | Command::CollectionsMembers
                     | Command::BackupsList
                     | Command::BackupsImport

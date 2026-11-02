@@ -164,6 +164,9 @@
   </div>
   {#if current}
     <h2><VisibleName name={current.name} /></h2>
+    {#if current.kind === 'human' && session.info?.features.collection_search === true}
+      <a class="btn" href={`#/explorer?collection=${encodeURIComponent(current.collection_id)}`}>Search direct members</a>
+    {/if}
     <p class="muted">{current.member_count} members · virtual size {formatBytes(current.logical_bytes)}. Overlapping entries may count the same bytes.</p>
   {:else if !loading && !error}<p class="empty">No collections yet. Create one, then add a node from Explorer’s inspector.</p>{/if}
   {#if current?.kind === 'human'}

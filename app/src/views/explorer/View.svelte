@@ -13,6 +13,7 @@
   import { fallbackStep, onRefetchError, resolveTrail, type Crumb } from './refetch';
   import { session } from '../../lib/stores/session.svelte';
   import { route } from '../../lib/stores/route.svelte';
+  import { collectionCoverage, searchableCollections, type CollectionCoverage } from './collection-search';
   import { planFind, PRESETS, type FindPlan, type FindRequest } from '../../lib/search/find';
   import NodeMeaning from '../../lib/ui/NodeMeaning.svelte';
   import AddToCollection from '../../lib/ui/AddToCollection.svelte';
@@ -20,7 +21,7 @@
   import FolderInsight from '../../lib/ui/FolderInsight.svelte';
   import type { CopyItem } from '../../lib/stores/copy.svelte';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
-  import type { Basis, EntryPage, EntryRow, NodeId, NodeDetail, Root, SearchHit, SearchPage } from '../../lib/contracts.gen';
+  import type { Collection, CollectionSearchPage, Basis, EntryPage, EntryRow, NodeId, NodeDetail, Root, SearchHit, SearchPage } from '../../lib/contracts.gen';
 
   type Sort = 'size_desc' | 'name_asc' | 'modified_desc';
   interface Recovery { lost: string; saved: Crumb[]; focus: HTMLElement | null }
@@ -64,10 +65,14 @@
   let searching = $state(scopedSearchOpen);
   let rootChoices = $state<Root[]>([]);
   let rootChoice = $state<string | null>(scopedSearchOpen ? null : '');
+  let collectionChoices = $state<Collection[]>([]);
+  let submittedCollection = $state<Collection | null>(null);
+  let collectionProgress = $state<CollectionCoverage | null>(null);
   let submittedRoot = $state<Root | null>(null);
   let scopeBlocked = $state(scopedSearchOpen);
   let rootsLoading = $state(false);
   let rootProblem = $state('');
+  let collectionProblem = $state('');
   let rootsRequest = 0;
   let rootsAbort: AbortController | null = null;
   const mountedConnection = session.connectionEpoch;
@@ -113,10 +118,14 @@
 
   const here = $derived(trail[trail.length - 1]);
 
-  type Page = Pick<EntryPage, 'generation' | 'items' | 'next_cursor' | 'total' | 'budget_hit'> & { search?: SearchPage };
+  type Page = Pick<EntryPage, 'generation' | 'items' | 'next_cursor' | 'total' | 'budget_hit'> & { search?: SearchPage; collection?: CollectionSearchPage };
   async function fetchPage(cursor: string | null, signal: AbortSignal): Promise<{ result: Page }> {
     const c = session.client!;
     if (searching) {
+      if (submittedCollection) {
+        const { result } = await c.call('collections.search', { collection_id: submittedCollection.collection_id, ...sent!, limit: PAGE, cursor }, { signal });
+        return { result: { generation: null, items: result.hits.map(h => h.row), next_cursor: result.next_cursor, total: null, budget_hit: result.budget_hit, collection: result } };
+      }
       const { result } = await c.call('search.query', { root_id: submittedRoot?.root_id ?? null, ...sent!, limit: PAGE, cursor }, { signal });
       // No generation: a search cursor is a keyset over the live index, so a root's generation moving
       // between pages (every watcher run) is no reason to restart the results from the top.
@@ -214,7 +223,12 @@
       // The fallback's notice is true only once the ancestor has listed: a failed one shows just its error.
       if (recovery && here) gone = { lost: recovery.lost, now: here.name };
       rows = append ? [...new Map([...rows, ...page.items].map(r => [r.node_id, r])).values()] : page.items;
-      if (page.search) {
+      if (page.collection) {
+        collectionProgress = collectionCoverage(page.collection, append ? collectionProgress : null);
+        const seen = append ? new Map(found) : new Map<NodeId, SearchHit>();
+        for (const h of page.collection.hits) seen.set(h.row.node_id, h);
+        found = seen; scope = null;
+      } else if (page.search) {
         const seen = append ? new Map(found) : new Map<NodeId, SearchHit>();
         for (const h of page.search.hits) seen.set(h.row.node_id, h);
         found = seen;
@@ -280,7 +294,8 @@
   /** Freeze what the box says as the request to run. False (nothing is started) when it would match the whole catalogue. */
   function commit(): boolean {
     const chosen = rootChoices.find(r => r.root_id === rootChoice);
-    if (rootChoice === null || (rootChoice && (rootsLoading || !chosen))) {
+    const collection = collectionChoices.find(c => c.collection_id === rootChoice);
+    if (rootChoice === null || (rootChoice && (rootsLoading || (!chosen && !collection)))) {
       notice = 'Choose an available search scope, then search again.';
       return false;
     }
@@ -288,15 +303,16 @@
     // so a resubmitted `modified:<1h` would otherwise keep the earlier "now".
     const fresh = planFind(query, { extension, kind, minBytes }, Date.now());
     if (fresh.blocked) { findNotice = `${fresh.blocked} No search was run.`; return false; }
-    if (fresh.unconstrained) {
+    if (fresh.unconstrained && !collection) {
       findNotice = 'Nothing in that query can be searched yet, so no search was run.';
       return false;
     }
     findNotice = '';
     sent = fresh.request;
     submittedRoot = chosen ?? null;
+    submittedCollection = collection ?? null;
     scopeBlocked = false;
-    scopedSearchOpen = !!submittedRoot;
+    scopedSearchOpen = !!submittedRoot || !!submittedCollection;
     shown = fresh;
     ran = query.trim();
     searching = true;
@@ -304,7 +320,7 @@
   }
 
   function search() {
-    if (!query.trim() && !extension.trim()) return clearSearch();
+    if (!query.trim() && !extension.trim() && !rootChoice?.startsWith('co_')) return clearSearch();
     if (commit()) void show();
   }
 
@@ -318,7 +334,7 @@
     findNotice = '';
     searching = false;
     scopedSearchOpen = false;
-    scopeBlocked = false; submittedRoot = null;
+    scopeBlocked = false; submittedRoot = null; submittedCollection = null;
     gen++; abort?.abort(); clearResults(); busy = false;
     query = '';
     extension = '';
@@ -390,7 +406,7 @@
   }
 
   function clearResults() {
-    rows = []; found = new Map(); scope = null; total = null; next = null; budgetHit = false; pageGen = null;
+    rows = []; found = new Map(); scope = null; collectionProgress = null; total = null; next = null; budgetHit = false; pageGen = null;
     inspection++; inspectAbort?.abort(); detail = null; inspectError = '';
   }
 
@@ -403,20 +419,26 @@
     rootsLoading = true;
     rootProblem = '';
     try {
-      const { result } = await c.call('roots.list', {}, { signal: ctl.signal });
+      const [roots, collections] = await Promise.allSettled([
+        c.call('roots.list', {}, { signal: ctl.signal }),
+        session.info?.features.collection_search === true ? c.call('collections.list', {}, { signal: ctl.signal }) : Promise.resolve(null),
+      ]);
       if (mine !== rootsRequest || c !== session.client || epoch !== session.epoch) return;
-      rootChoices = result.roots.filter(r => r.grant_state === 'active');
+      rootChoices = roots.status === 'fulfilled' ? roots.value.result.roots.filter(r => r.grant_state === 'active') : [];
+      rootProblem = roots.status === 'rejected' ? session.handle(roots.reason) : '';
+      collectionChoices = searchableCollections(session.info?.features, collections.status === 'fulfilled' ? collections.value?.result.collections ?? [] : []);
+      collectionProblem = collections.status === 'rejected' ? session.handle(collections.reason) : '';
     } catch (e) {
       if (mine !== rootsRequest || c !== session.client || epoch !== session.epoch) return;
-      rootChoices = [];
+      rootChoices = []; collectionChoices = [];
       rootProblem = session.handle(e);
     } finally {
       if (mine === rootsRequest) rootsLoading = false;
     }
-    if (rootChoice && !rootChoices.some(r => r.root_id === rootChoice)) rootChoice = null;
-    if (searching && submittedRoot && !rootChoices.some(r => r.root_id === submittedRoot?.root_id)) {
+    if (rootChoice && !rootChoices.some(r => r.root_id === rootChoice) && !collectionChoices.some(c => c.collection_id === rootChoice)) rootChoice = null;
+    if (searching && ((submittedRoot && !rootChoices.some(r => r.root_id === submittedRoot?.root_id)) || (submittedCollection && !collectionChoices.some(c => c.collection_id === submittedCollection?.collection_id)))) {
       gen++; abort?.abort(); clearResults(); busy = false;
-      submittedRoot = null;
+      submittedRoot = null; submittedCollection = null;
       scopeBlocked = true;
     }
   }
@@ -429,7 +451,7 @@
     const starting = loadStarts(undefined, !!(trail.length || searching));
     const [loaded] = await Promise.all([starting, loadRoots()]);
     if (mine === gen && (trail.length || searching)) {
-      if (searching ? scopeBlocked || !!rootProblem : !loaded) busy = false;
+      if (searching ? scopeBlocked || !!(submittedCollection ? collectionProblem : rootProblem) : !loaded) busy = false;
       else await show();
     }
   }
@@ -448,6 +470,7 @@
   // forgets the applied value, so the same link followed again inspects again. A reconnect that aborts the
   // linked inspection before it settles un-applies it, so the link is not consumed unseen.
   let appliedQ: string | null = null;
+  let appliedCollection: string | null = null;
   let appliedNode: string | null = null;
   let linkedPending: Promise<void> | null = null;
   let linkedAt = 0; // the inspection counter the linked inspection holds; any later inspect or navigation moves it
@@ -458,18 +481,37 @@
     if (!session.client) return;
     let current = true;
     untrack(() => {
-      if (selectionConnection !== connection) { selectionConnection = connection; selected = []; }
+      if (selectionConnection !== connection) {
+        selectionConnection = connection; selected = [];
+        if (submittedCollection || submittedRoot || scopedSearchOpen) {
+          rootChoice = null; submittedCollection = null; submittedRoot = null; scopeBlocked = true;
+          gen++; abort?.abort(); clearResults();
+        }
+      }
       inspection++; inspectAbort?.abort(); detail = null;
       const linked = params.get('q');
       if (linked && linked !== appliedQ) {
         appliedQ = linked;
         query = linked.slice(0, 256);
-        if (!reconnectScopePending) { rootChoice = ''; commit(); }
+        if (!reconnectScopePending && !params.has('collection')) { rootChoice = ''; commit(); }
       }
+      const reconnecting = reconnectScopePending;
       reconnectScopePending = false;
+      const collectionLink = params.get('collection');
+      if (!collectionLink) appliedCollection = null;
+      if (collectionLink && collectionLink !== appliedCollection) {
+        searching = true; scopeBlocked = true; scopedSearchOpen = true; clearResults();
+      }
       const node = params.get('node'), observed = params.get('generation');
       if (!node) appliedNode = null;
       void reload().then(() => {
+        if (current && collectionLink && collectionLink !== appliedCollection) {
+          if (reconnecting) { appliedCollection = collectionLink; return; }
+          appliedCollection = collectionLink;
+          rootChoice = collectionChoices.some(c => c.collection_id === collectionLink) ? collectionLink : null;
+          if (rootChoice && commit()) void show();
+          else { searching = true; scopeBlocked = true; scopedSearchOpen = true; clearResults(); }
+        }
         if (!trail.length && starts[0]) trail = [starts[0]]; // so Clear search has a folder to go back to
         if (current && node && node !== appliedNode) {
           appliedNode = node;
@@ -506,6 +548,9 @@
         {#each rootChoices as root (root.root_id)}
           <option value={root.root_id}>{escapedName(root.display_path.text)}{root.display_path.truncated ? ' (truncated)' : ''}</option>
         {/each}
+        {#if collectionChoices.length}<optgroup label="Collections · direct members">
+          {#each collectionChoices as collection (collection.collection_id)}<option value={collection.collection_id}>{escapedName(collection.name)}</option>{/each}
+        </optgroup>{/if}
       </select>
     </div>
     <label class="field stack"><span class="lbl">Extension</span>
@@ -517,12 +562,14 @@
     <label class="field stack"><span class="lbl">Size</span>
       <select bind:value={minBytes}>{#each SIZES as [label, v] (label)}<option value={v}>{label}</option>{/each}</select>
     </label>
-    <button class="btn" type="submit" disabled={!query.trim() && !extension.trim()}>Search</button>
+    <button class="btn" type="submit" disabled={!query.trim() && !extension.trim() && !rootChoice?.startsWith('co_')}>Search</button>
     {#if searching}<button class="btn" type="button" onclick={clearSearch}>Clear search</button>{/if}
   </form>
   <p id="root-scope-note" class="muted small hint" role="status">
     {#if rootsLoading}Refreshing available search scopes…{:else if rootProblem}Root choices could not be refreshed: {rootProblem}{:else if rootChoice === null}The previous scope is unavailable. Choose a scope explicitly to search again.{:else}Scope changes apply when you search. Cleanup searches use the chosen scope.{/if}
   </p>
+
+  {#if collectionProblem}<p class="muted small" role="status">Collection choices could not be refreshed: {collectionProblem}</p>{/if}
 
   <p id="find-hint" class="muted small hint">Filters in the box: <code>ext:pdf</code> <code>size:&gt;100mb</code> <code>modified:&lt;30d</code> (newer) <code>modified:&gt;1y</code> (older) <code>kind:dir</code>. Sizes use binary units: <code>kb</code>/<code>mb</code>/<code>gb</code> mean KiB/MiB/GiB. Dates are UTC; <code>1mo</code> is 30 days and <code>1y</code> is 365 days. Name words of three or more characters also match inside names. The Extension, Kind and Size boxes fill in only what the query leaves out.</p>
   <div class="bar" role="group" aria-label="Cleanup searches">
@@ -565,6 +612,7 @@
     <p class="where"><strong>Showing:</strong> Search results {#if ran}for <q><VisibleName name={ran} /></q>{/if}</p>
     <p class="where" aria-label="Applied search scope">
       {#if scopeBlocked}Search paused: choose an available scope and search again.
+      {:else if submittedCollection}Scope: <VisibleName name={submittedCollection.name} /> · direct members only; names use a case-insensitive literal substring.
       {:else if submittedRoot}Scope: <VisibleName name={submittedRoot.display_path.text} />{#if submittedRoot.display_path.truncated} <span class="tag warn">truncated</span>{/if}
       {:else}Scope: All granted roots{/if}
     </p>
@@ -577,6 +625,9 @@
   {/if}
   </div>
   {#if searching}
+    {#if collectionProgress}
+      <p class="muted small" aria-label="Collection search coverage">Examined {formatCount(collectionProgress.examined)} of {formatCount(collectionProgress.total)} direct members; {formatCount(rows.length)} matches loaded. {formatCount(collectionProgress.unavailable)} unavailable members encountered; their metadata was not searched. {#if next}More members remain to be checked.{/if} {#if collectionProgress.partial}Some observations are incomplete or unavailable; a missing match is not proof of absence.{/if}</p>
+    {/if}
     {#if scope && (scope.index_state !== 'current' || scope.partial || !scope.substring_searched)}
       <ul class="scope muted small" aria-label="Search coverage">
         {#if scope.index_state === 'building'}<li class="bad">A searched folder is still being scanned, so more results may appear.</li>{/if}

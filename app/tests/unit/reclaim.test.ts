@@ -91,14 +91,42 @@ describe('reclaim view', () => {
   function reader(call: (command: string, payload: unknown) => Promise<unknown>) {
     const read = source.slice(source.indexOf('  async function read('), source.indexOf('\n  $effect('));
     return new Function('session', `
-      let report = null, loading = true, error = '', generation = 0, members = [], selectionResult = null;
+      let report = null, loading = true, error = '', generation = 0, members = [], selectionResult = null, selectionNotice = '';
       ${transpileModule(read, { compilerOptions: { target: ScriptTarget.ES2022 } }).outputText}
-      return { read, state: () => ({ report, loading, error }) };
+      return { read, toggle, state: () => ({ report, loading, error, members, selectionResult, selectionNotice }) };
     `)({ client: { call }, handle: String }) as {
       read: (id: string) => Promise<void>;
-      state: () => { report: ReclaimPlan | null; loading: boolean; error: string };
+      toggle: (id: string, checked: boolean) => void;
+      state: () => { report: ReclaimPlan | null; loading: boolean; error: string; members: string[]; selectionResult: ReclaimSelection | null; selectionNotice: string };
     };
   }
+
+  it('drops newly hidden selected candidates and their old union estimate after a successful read', async () => {
+    const shown = resultFixture.groups[0]!.candidates[0]!;
+    const report = { ...resultFixture,
+      groups: resultFixture.groups.map((g, i) => ({ ...g, candidates: i === 0 ? [{ ...shown, node_id: 'nd_shown' }] : [] })),
+      selection: { members: ['nd_shown', 'nd_nested'], status: 'recorded', observed_at: '2026-10-29T00:00:00Z', reclaimable_bytes: '999', reason: null },
+    };
+    const view = reader(async () => ({ result: report }));
+    view.toggle('nd_shown', true);
+    view.toggle('nd_nested', true);
+    await view.read(report.volume.volume_id);
+    expect(view.state().members).toEqual(['nd_shown']);
+    expect(view.state().selectionResult).toBeNull();
+    expect(view.state().selectionNotice).toBe('1 selected candidate is no longer listed and was removed from the selection.');
+  });
+
+  it('retains visible choices and accepts only an estimate for the unchanged selected set', async () => {
+    const shown = resultFixture.groups[0]!.candidates[0]!;
+    const selection = { members: ['nd_shown'], status: 'recorded', observed_at: '2026-10-29T00:00:00Z', reclaimable_bytes: '12', reason: null };
+    const report = { ...resultFixture,
+      groups: resultFixture.groups.map((g, i) => ({ ...g, candidates: i === 0 ? [{ ...shown, node_id: 'nd_shown' }] : [] })), selection,
+    };
+    const view = reader(async () => ({ result: report }));
+    view.toggle('nd_shown', true);
+    await view.read(report.volume.volume_id);
+    expect(view.state()).toMatchObject({ members: ['nd_shown'], selectionResult: selection, selectionNotice: '' });
+  });
 
   it('offers read-only selection, target and observe/cancel controls, with owner steps as text', () => {
     expect(source.match(/<button\b/g)).toHaveLength(7);
@@ -155,10 +183,10 @@ describe('reclaim view', () => {
     let calls = 0;
     const view = reader(async () => { calls++; throw new Error('plan refused'); });
     await view.read('');
-    expect(view.state()).toEqual({ report: null, loading: false, error: '' });
+    expect(view.state()).toEqual({ report: null, loading: false, error: '', members: [], selectionResult: null, selectionNotice: '' });
     expect(calls).toBe(0);
     await view.read('missing');
-    expect(view.state()).toEqual({ report: null, loading: false, error: 'Error: plan refused' });
+    expect(view.state()).toEqual({ report: null, loading: false, error: 'Error: plan refused', members: [], selectionResult: null, selectionNotice: '' });
   });
 });
 

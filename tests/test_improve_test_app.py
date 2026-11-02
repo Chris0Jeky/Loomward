@@ -19,7 +19,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 _STUB_NAMES = ('playwright', 'playwright.sync_api', 'test_app_collections',
-               'test_app_a11y', 'test_app_views', 'test_app_inventory', 'test_app_copy', 'test_app_ask', 'test_app_clutter', 'test_app_reclaim', 'test_app_projects', 'test_app_agent_access', 'test_app_reserve')
+               'test_app_a11y', 'test_app_views', 'test_app_inventory', 'test_app_copy', 'test_app_ask', 'test_app_clutter', 'test_app_reclaim', 'test_app_projects', 'test_app_agent_access', 'test_app_reserve', 'test_app_new_since')
 _ISOLATED_NAMES = (*_STUB_NAMES, 'test_app_server')
 
 
@@ -47,7 +47,9 @@ def _load_test_app():
         stub('test_app_copy', run_copy=lambda *a, **k: None)
         stub('test_app_ask', run_ask=lambda *a, **k: None, live_ask_isolated=lambda *a, **k: None)
         stub('test_app_clutter', run_clutter=lambda *a, **k: None, live_clutter=lambda *a, **k: None)
-        stub('test_app_reclaim', live_reclaim=lambda *a, **k: None)
+        stub('test_app_reclaim', live_reclaim=lambda *a, **k: None,
+             run_reclaim_visible_selection=lambda *a, **k: None)
+        stub('test_app_new_since', run_new_since=lambda *a, **k: None)
         stub('test_app_reserve', run_live_reserve=lambda *a, **k: None)
         stub('test_app_projects', live_projects=lambda *a, **k: None)
         stub('test_app_agent_access', run_agent_access=lambda *a, **k: None)
