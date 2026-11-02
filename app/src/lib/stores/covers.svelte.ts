@@ -15,6 +15,7 @@ export class Covers {
   job = $state<Job | null>(null);
   report = $state<CoverageReport | null>(null);
   pending = $state(false);
+  resultPending = $state(false);
   problem = $state('');
   private epoch: string | null = null;
   /** Bumped when the engine restarts: an answer requested before that belongs to the previous lifetime and is dropped (as the Duplicates store does). */
@@ -22,6 +23,7 @@ export class Covers {
   private sessionStartedAt: string | null = null;
   /** The job whose report was asked for, so a finished job is fetched once. */
   private fetched: string | null = null;
+  private resultTicket = 0;
 
   private alignEpoch(): void {
     const startedAt = session.info?.session_started_at;
@@ -30,7 +32,7 @@ export class Covers {
       this.sessionStartedAt = startedAt;
     }
   }
-  private forget(): void { this.job = null; this.report = null; this.fetched = null; this.generation++; this.epoch = null; }
+  private forget(): void { this.job = null; this.report = null; this.fetched = null; this.resultTicket++; this.resultPending = false; this.problem = ''; this.generation++; this.epoch = null; }
   private capture(): () => boolean {
     this.alignEpoch();
     const generation = this.generation, client = session.client;
@@ -38,12 +40,23 @@ export class Covers {
   }
 
   get active(): boolean { return this.job !== null && isActive(this.job.state); }
+  get canRetryResult(): boolean {
+    return this.job?.state === 'completed' && !this.report && this.fetched === null && !!this.problem && !this.resultPending && !this.pending;
+  }
+
+  /** Read the completed job's retained result again; never restart its content read. */
+  async retryResult(): Promise<void> {
+    this.alignEpoch();
+    if (this.canRetryResult && this.job) await this.load(this.job);
+  }
 
   apply(job: Job): void {
     if (job.kind !== 'coverage') return;
     const old = this.job;
     if (old && (job.seq < old.seq || (job.job_id === old.job_id && job.rev < old.rev))) return;
-    if (old && old.job_id !== job.job_id) { this.report = null; this.fetched = null; } // a newer run replaces the old report
+    if (old && old.job_id !== job.job_id) {
+      this.report = null; this.fetched = null; this.resultTicket++; this.resultPending = false; this.problem = '';
+    } // a newer run replaces the old report and its pending read
     this.job = job;
     // Only a run that finished has a report: a cancelled or failed one has none, and says so by its state.
     if (job.state === 'completed' && this.fetched !== job.job_id) void this.load(job);
@@ -64,7 +77,8 @@ export class Covers {
       if (!current()) return;
       const newest = result.jobs[0];
       if (newest && !this.job) this.apply(newest);
-      this.problem = '';
+      // A successful job-list read does not recover a failed result read or remove its retry.
+      if (!this.canRetryResult) this.problem = '';
       await this.revalidate(current);
     } catch (e) { const message = session.handle(e); if (current()) this.problem = message; }
   }
@@ -93,16 +107,21 @@ export class Covers {
   private async load(job: Job): Promise<void> {
     const c = session.client;
     if (!c) return;
-    this.fetched = job.job_id;
     const current = this.capture();
+    const ticket = ++this.resultTicket;
+    this.fetched = job.job_id;
+    this.resultPending = true;
+    this.problem = '';
+    const ownsResult = () => current() && ticket === this.resultTicket && this.job?.job_id === job.job_id;
     try {
       const { result } = await c.call('coverage.result', { job_id: job.job_id });
-      if (current() && this.job?.job_id === job.job_id) this.report = result;
+      if (ownsResult()) this.report = result;
     } catch (e) {
       // not_found: the report expired or its folder's grant ended. The job's own state stands, with no answer.
+      if (!ownsResult()) return;
       const message = session.handle(e);
-      if (current() && !(e instanceof LoomwardError && e.code === 'not_found')) { this.problem = message; this.fetched = null; }
-    }
+      if (ownsResult() && !(e instanceof LoomwardError && e.code === 'not_found')) { this.problem = message; this.fetched = null; }
+    } finally { if (ticket === this.resultTicket) this.resultPending = false; }
   }
   async start(a: string, b: string, budget: CoversBudget = {}): Promise<void> {
     const c = session.client;

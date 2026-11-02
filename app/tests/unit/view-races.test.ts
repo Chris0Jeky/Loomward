@@ -10,7 +10,9 @@ import learningQueue from '../../../contracts/v3/examples/commands/learning.queu
 import alertReport from '../../../contracts/v3/examples/commands/alerts.list.result.json';
 import proposal from '../../../contracts/v3/examples/commands/proposals.get.result.json';
 import { formFrom, settingsFrom } from '../../src/views/alerts/model';
-import { formatBytes } from '../../src/lib/format/bytes';
+import { formatBytes, parseBytes } from '../../src/lib/format/bytes';
+import { formatCount } from '../../src/lib/format/time';
+import { isSound } from '../../src/views/tiers/plan';
 import { planFind } from '../../src/lib/search/find';
 import { reserveBytes, reserveDraft } from '../../src/views/tiers/reserve';
 import rootList from '../../../contracts/v3/examples/commands/roots.list.result.json';
@@ -356,6 +358,7 @@ describe('Saved tier scenario source', () => {
     const state = {
       session: { client: { call }, handle: (e: Error) => e.message }, untrack, reserveDraft,
       model: { volumes }, source: 'vol_b', src: volumes[1], volume: (id: string) => volumes.find(v => v.volume_id === id),
+      reserves: {},
       modelStateRev: '7', modelTicket: 0, savedTicket: 0, proposalsTicket: 0, candTicket: 0, simTicket: 0,
       loading: false, declaring: false, reserving: false, simulating: false,
       savedDetail: null, savedError: '', saved: [historical.summary], outcomes: null,
@@ -486,6 +489,152 @@ describe('Saved tier scenario source', () => {
     const target = source.match(/<dt>Target free<\/dt><dd[^>]*>(.*?)<\/dd>/)![1]!;
     const label = target.replace(/\{([^{}]+)\}/g, (_, expression: string) => String(code.evaluate(expression)));
     expect(label).toBe(`${formatBytes(proposal.plan.target_free_bytes)} on Synthetic A`);
+  });
+});
+
+describe('Tiers volume preference notifications', () => {
+  function tiers() {
+    const target = { volume_id: 'vo_target', display_name: 'Target', source_eligible: true, declared_reserve_bytes: '85899345920' };
+    const historical = { ...proposal, summary: { ...proposal.summary, source_volume_id: 'vo_target', status: 'stale' } };
+    const call = vi.fn(async (command: string) => ({
+      result: command === 'tiers.model' ? { volumes: [{ ...target, declared_reserve_bytes: '64424509440' }] }
+        : command === 'placement.candidates' ? { groups: [] }
+        : command === 'proposals.list' ? { proposals: [historical.summary] } : historical,
+      meta: { state_rev: '8' },
+    }));
+    const state = {
+      session: { client: { call }, connectionEpoch: 1, handle: (e: Error) => e.message }, untrack, reserveDraft,
+      model: { volumes: [target] }, modelStateRev: '7', reserves: { vo_target: reserveDraft('85899345920') },
+      source: 'vo_target', src: target, assume: {}, savedDetail: proposal as typeof proposal | null, saved: [proposal.summary],
+      outcomes: { old: true } as { old: boolean } | null, loading: false, declaring: false, simulating: false,
+      modelTicket: 0, savedTicket: 0, proposalsTicket: 0, candTicket: 0, simTicket: 0, cands: null,
+      preferenceEvent: undefined as { state_rev: string | null } | undefined,
+      preferenceSavedId: null as string | null,
+      preferenceNotice: '', error: '', savedError: '', say: { say: vi.fn() },
+      volume: () => target,
+    };
+    return { state, call, historical, code: viewScript('tiers', state, 'session.epoch') };
+  }
+
+  it('refreshes another client’s reserve and open saved scenario while retaining an unsaved draft', async () => {
+    const { state, call, historical, code } = tiers();
+    state.reserves.vo_target.value = '75';
+    code.evaluate("onVolumeEvent({ event: 'volumes.changed', state_rev: '8' })");
+    await code.evaluate('refreshVolumePreferences()');
+    expect(state.model.volumes[0]!.declared_reserve_bytes).toBe('64424509440');
+    expect(state.modelStateRev).toBe('8');
+    expect(state.reserves.vo_target).toEqual({ value: '75', unit: 'GiB' });
+    expect(state.savedDetail).toEqual(historical);
+    expect(state.outcomes).toBeNull();
+    expect(state.preferenceNotice).toContain('unsaved');
+    expect(call.mock.calls.every(([command]) => !command.startsWith('volumes.declare'))).toBe(true);
+  });
+
+  it('updates untouched drafts, defers notifications during a save, and reuses a model already covering the event', async () => {
+    const { state, call, code } = tiers();
+    state.declaring = true;
+    code.evaluate("onVolumeEvent({ event: 'volumes.changed', state_rev: '8' })");
+    await code.evaluate('refreshVolumePreferences()');
+    expect(call).not.toHaveBeenCalled();
+    state.declaring = false;
+    await code.evaluate('refreshVolumePreferences()');
+    expect(state.reserves.vo_target).toEqual({ value: '60', unit: 'GiB' });
+    call.mockClear();
+    code.evaluate("onVolumeEvent({ event: 'volumes.changed', state_rev: '8' })");
+    await code.evaluate('refreshVolumePreferences()');
+    expect(call.mock.calls.some(([command]) => command === 'tiers.model')).toBe(false);
+    expect(call.mock.calls.every(([command]) => !command.startsWith('volumes.declare'))).toBe(true);
+  });
+
+  it.each(['client', 'connection'] as const)('hides stale results immediately and drops a refresh from a replaced %s', async changed => {
+    const { state, call, code } = tiers();
+    const pending = deferred<Awaited<ReturnType<typeof call>>>();
+    call.mockImplementationOnce(() => pending.promise);
+    code.evaluate("onVolumeEvent({ event: 'volumes.changed', state_rev: '8' })");
+    expect(state.savedDetail).toBeNull();
+    expect(state.outcomes).toBeNull();
+    expect(state.saved).toEqual([]);
+    const refresh = code.evaluate('refreshVolumePreferences()');
+    if (changed === 'client') state.session.client = { call: vi.fn() };
+    else state.session.connectionEpoch++;
+    pending.resolve({ result: { volumes: [] }, meta: { state_rev: '8' } } as never);
+    await refresh;
+    expect(state.model.volumes).toHaveLength(1);
+    expect(state.modelStateRev).toBe('7');
+    expect(call).toHaveBeenCalledTimes(1);
+    expect(state.savedDetail).toBeNull();
+  });
+
+  it('does not reopen the old scenario when the reader chooses a source during refresh', async () => {
+    const { state, call, code } = tiers();
+    const pending = deferred<Awaited<ReturnType<typeof call>>>();
+    call.mockImplementationOnce(() => pending.promise);
+    code.evaluate("onVolumeEvent({ event: 'volumes.changed', state_rev: '8' })");
+    const refresh = code.evaluate('refreshVolumePreferences()');
+    code.evaluate("choose('vo_target')");
+    pending.resolve({ result: state.model, meta: { state_rev: '8' } } as never);
+    await refresh;
+    expect(state.savedDetail).toBeNull();
+    expect(call.mock.calls.some(([command]) => command === 'proposals.get')).toBe(false);
+  });
+
+  it('withholds an old saved list after a preference event', async () => {
+    const { state, call, code } = tiers();
+    const pending = deferred<Awaited<ReturnType<typeof call>>>();
+    call.mockImplementationOnce(() => pending.promise);
+    const read = code.evaluate('loadProposals()');
+    code.evaluate("onVolumeEvent({ event: 'volumes.changed', state_rev: '8' })");
+    pending.resolve({ result: { proposals: [proposal.summary] }, meta: { state_rev: '7' } } as never);
+    await read;
+    expect(state.saved).toEqual([]);
+  });
+
+  it('invalidates outcomes republished by a pending simulation even when its later model read covered the event', async () => {
+    const { state, code } = tiers();
+    state.savedDetail = null;
+    state.simulating = true;
+    code.evaluate("onVolumeEvent({ event: 'volumes.changed', state_rev: '8' })");
+    state.modelStateRev = '8'; // simulation refreshes the model after its earlier plans finish
+    state.outcomes = { old: true };
+    state.simulating = false;
+    await code.evaluate('refreshVolumePreferences()');
+    expect(state.outcomes).toBeNull();
+  });
+
+  it.each(['plan', 'list'] as const)('invalidates an older displayed %s when its event arrives after a newer model read', async displayed => {
+    const { state, code } = tiers();
+    state.savedDetail = null;
+    if (displayed === 'list') state.outcomes = null;
+    state.modelStateRev = '8';
+    code.evaluate("onVolumeEvent({ event: 'volumes.changed', state_rev: '8' })");
+    expect(state.outcomes).toBeNull();
+    await code.evaluate('refreshVolumePreferences()');
+    expect(state.saved[0]?.status).toBe('stale');
+  });
+
+  it('keeps the dirty reserve draft when a saved simulation rereads another client’s changed preference', async () => {
+    const { state, call, code } = tiers();
+    const pending = deferred<Awaited<ReturnType<typeof call>>>();
+    const read = call.getMockImplementation()!;
+    call.mockImplementation(command => command === 'placement.simulate' ? pending.promise : read(command));
+    Object.assign(state.src, { capacity_bytes: '214748364800' });
+    Object.assign(state, {
+      parseBytes, formatBytes, formatCount, isSound, pct: 20, transferGiB: 60,
+      relief: 'entry_allocation_whatif', save: true,
+      HEAT: ['unknown_is_ineligible', 'mtime_proxy_whatif', 'assumed_only'].map(id => ({ id, label: id })),
+    });
+    state.savedDetail = null;
+    state.reserves.vo_target.value = '75';
+    const simulation = code.evaluate('simulate()');
+    code.evaluate("onVolumeEvent({ event: 'volumes.changed', state_rev: '8' })");
+    pending.resolve({ result: proposal.plan, meta: { state_rev: '7' } } as never);
+    await simulation;
+    await code.evaluate('refreshVolumePreferences()');
+    expect(state.model.volumes[0]!.declared_reserve_bytes).toBe('64424509440');
+    expect(state.modelStateRev).toBe('8');
+    expect(state.reserves.vo_target).toEqual({ value: '75', unit: 'GiB' });
+    expect(state.preferenceNotice).toContain('unsaved');
+    expect(state.outcomes).toBeNull();
   });
 });
 
@@ -743,6 +892,53 @@ function explorer(call: ReturnType<typeof vi.fn>) {
   };
   return { state, code: viewScript('explorer', state, 'session.epoch') };
 }
+
+describe('Explorer applied Find plan', () => {
+  it('freezes notices, filters and relative dates for paging, then replans on resubmit', async () => {
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.UTC(2026, 10, 1));
+    try {
+      const call = vi.fn(async (_command: string, _request: Record<string, unknown>) => ({ result: { ...searchExample, next_cursor: 'next' } }));
+      const { state, code } = explorer(call);
+      state.query = 'report in:Tax modified:<1mo';
+      expect(code.commit()).toBe(true);
+      const shown = structuredClone(code.evaluate('shown'));
+      await code.show();
+      state.query = 'something else'; state.extension = 'zip'; state.minBytes = '1048576';
+      clock.mockReturnValue(Date.UTC(2026, 10, 2));
+      await code.show(true);
+      expect(code.evaluate('shown')).toEqual(shown);
+      expect(code.evaluate('shown.notices')).toContain('in:Tax is not supported yet, so it was not applied.');
+      expect(call.mock.calls[1]![1]).toEqual({ ...call.mock.calls[0]![1], cursor: 'next' });
+      state.query = 'report in:Tax modified:<1mo'; state.extension = ''; state.minBytes = '';
+      expect(code.commit()).toBe(true);
+      await code.show();
+      expect(call.mock.calls[2]![1].modified_after).not.toBe(call.mock.calls[0]![1].modified_after);
+    } finally { clock.mockRestore(); }
+  });
+
+  it('refuses contradictory bounds while retaining the previous applied plan', () => {
+    const call = vi.fn(); const { state, code } = explorer(call);
+    state.query = 'report'; expect(code.commit()).toBe(true);
+    const previous = code.evaluate('shown');
+    state.query = 'size:<1kb'; state.minBytes = '1048576';
+    expect(code.commit()).toBe(false);
+    expect(code.evaluate('findNotice')).toContain('minimum size exceeds the maximum');
+    expect(code.evaluate('shown')).toBe(previous);
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  it('retains a rejected query-link notice after its initial folder listing', async () => {
+    const call = vi.fn(async (command: string) => ({ result: command === 'roots.list' ? rootList
+      : command === 'tree.slice' ? { nodes: [{ parent: 0, node_id: 'nd_start', name: 'Synthetic start' }] }
+      : { generation: '1', items: [], next_cursor: null, total: 0, budget_hit: false } }));
+    const { state, code } = explorer(call);
+    state.route.search = 'q=in%3ATax'; code.effect();
+    await vi.waitFor(() => expect(call).toHaveBeenCalledWith('tree.children', expect.anything(), expect.anything()));
+    await vi.waitFor(() => expect(state.busy).toBe(false));
+    expect(code.evaluate('findNotice')).toContain('no search was run');
+    expect(call.mock.calls.some(([command]) => command === 'search.query')).toBe(false);
+  });
+});
 
 describe('Explorer live-index pagination', () => {
   it('updates a repeated node in place and appends new nodes without duplicate keys', async () => {

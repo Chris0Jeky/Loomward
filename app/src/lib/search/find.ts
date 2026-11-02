@@ -26,18 +26,20 @@ export interface FindControls { extension: string; kind: 'any' | 'file' | 'dir';
 
 export interface FindPlan {
   request: FindRequest;
-  /** One per typed filter that the request carries, as plain text. */
+  /** Applied typed and control filters that the request carries, as plain text. */
   chips: string[];
   /** Everything typed that the request does not carry, and each issue the grammar raised. */
   notices: string[];
   /** True when the request would match the whole catalogue: nothing the engine can narrow by. */
   unconstrained: boolean;
+  /** A contradictory range must be corrected before submission. */
+  blocked: string | null;
 }
 
 /** One-click cleanup searches. Each one parses with no issue and is carried whole by the request. */
 export const PRESETS: { label: string; query: string }[] = [
-  { label: 'Files over 4 GB', query: 'size:>4gb kind:file' },
-  { label: 'Disk images over 1 GB', query: 'ext:iso size:>1gb' },
+  { label: 'Files over 4 GiB', query: 'size:>4gb kind:file' },
+  { label: 'Disk images over 1 GiB', query: 'ext:iso size:>1gb' },
   { label: 'Large and untouched for a year', query: 'size:>500mb modified:>1y kind:file' },
   { label: 'Old zip archives', query: 'ext:zip modified:>2y' },
 ];
@@ -74,14 +76,15 @@ function maxLabel(max: bigint): string {
 }
 
 function when(b: TimeBound, side: 'after' | 'before'): string {
-  if ('at' in b) return `${side === 'after' ? 'from' : 'until'} ${b.at.slice(0, 10)}`;
+  if ('at' in b) return `${side === 'after' ? 'from' : 'until'} ${b.at.slice(0, 10)} UTC`;
   const { n, unit } = b.ago;
-  const span = `${n} ${UNIT_WORD[unit]}${n === 1 ? '' : 's'}`;
+  const days = unit === 'mo' ? n * 30 : unit === 'y' ? n * 365 : null;
+  const span = `${n} ${UNIT_WORD[unit]}${n === 1 ? '' : 's'}${days === null ? '' : ` (${days} days)`}`;
   return side === 'after' ? `in the last ${span}` : `more than ${span} ago`;
 }
 
 const ISSUE: Record<QueryIssueCode, (t: string) => string> = {
-  unterminated_quote: (t) => `The quote in ${t} is not closed, so the rest of the query was read as one quoted phrase.`,
+  unterminated_quote: (t) => `The quote in ${t} is not closed. Its value runs to the end of the query; check the filters and notes below.`,
   bad_value: (t) => `${t} is not a valid filter, so it was not applied.`,
   negated_filter: (t) => `${t} cannot be negated, so it was not applied.`,
   too_many_terms: (t) => `${t} was not used: a query takes at most 8 words or phrases.`,
@@ -103,13 +106,15 @@ export function planFind(input: string, controls: FindControls, nowMs: number): 
 
   const typedExt = p.extensions[0] ?? null;
   const control = controls.extension.trim().replace(/^\./, '').toLowerCase();
+  const effectiveExt = typedExt ?? (control || null);
+  if (effectiveExt !== null) chips.push(`Extension: .${escapedName(effectiveExt)}`);
   if (typedExt !== null) {
-    chips.push(`Extension: .${escapedName(typedExt)}`);
     if (p.extensions.length > 1) notices.push(`Only one extension can be searched at a time, so ${p.extensions.slice(1).map((e) => q(`.${e}`)).join(', ')} was not applied.`);
     if (control && control !== typedExt) notices.push(`The Extension box (${q(control)}) is ignored because the query says ext:${escapedName(typedExt)}.`);
   }
 
-  if (p.min_bytes !== null) chips.push(`Size: ${minLabel(BigInt(p.min_bytes))}`);
+  const effectiveMin = p.min_bytes ?? (controls.minBytes || null);
+  if (effectiveMin !== null) chips.push(`Size: ${minLabel(BigInt(effectiveMin))}`);
   if (p.max_bytes !== null) chips.push(`Size: ${maxLabel(BigInt(p.max_bytes))}`);
   if (controls.minBytes && p.min_bytes !== null && controls.minBytes !== p.min_bytes) {
     notices.push(`The Size box (at least ${size(parseBytes(controls.minBytes) ?? 0n)}) is ignored because the query sets its own minimum size.`);
@@ -121,8 +126,9 @@ export function planFind(input: string, controls: FindControls, nowMs: number): 
   if (p.modified_after || p.modified_before) notices.push('Entries with no recorded modified time are left out by a date filter.');
   const bounds = modifiedBounds(p, nowMs);
 
+  const effectiveKind = p.kind !== 'any' ? p.kind : controls.kind;
+  if (effectiveKind !== 'any') chips.push(`Kind: ${effectiveKind === 'dir' ? 'folders' : 'files'}`);
   if (p.kind !== 'any') {
-    chips.push(`Kind: ${p.kind === 'dir' ? 'folders' : 'files'}`);
     if (controls.kind !== 'any' && controls.kind !== p.kind) notices.push(`The Kind box is ignored because the query says kind:${p.kind}.`);
   }
   if (p.in_collection !== null) notices.push(`in:${escapedName(p.in_collection)} is not supported yet, so it was not applied.`);
@@ -130,14 +136,17 @@ export function planFind(input: string, controls: FindControls, nowMs: number): 
 
   const request: FindRequest = {
     text: words.join(' '),
-    extension: typedExt ?? (control || null),
-    min_bytes: p.min_bytes ?? (controls.minBytes || null),
+    extension: effectiveExt,
+    min_bytes: effectiveMin,
     max_bytes: p.max_bytes,
     modified_after: bounds.after,
     modified_before: bounds.before,
-    kind: p.kind !== 'any' ? p.kind : controls.kind,
+    kind: effectiveKind,
   };
   const unconstrained = request.text === '' && request.extension === null && request.min_bytes === null && request.max_bytes === null
     && request.modified_after === null && request.modified_before === null && request.kind === 'any';
-  return { request, chips, notices, unconstrained };
+  const blocked = request.min_bytes !== null && request.max_bytes !== null && BigInt(request.min_bytes) > BigInt(request.max_bytes)
+    ? 'The minimum size exceeds the maximum. Adjust the query or Size box before searching.' : null;
+  if (blocked) notices.push(blocked);
+  return { request, chips, notices, unconstrained, blocked };
 }

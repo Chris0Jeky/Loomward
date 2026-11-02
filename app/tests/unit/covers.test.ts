@@ -85,6 +85,78 @@ async function mock() {
 }
 
 describe('covers store', () => {
+  it('keeps a failed result readable again after a successful job-list resync', async () => {
+    const finished = job({ state: 'completed' });
+    const call = vi.fn(async (command: string) => {
+      if (command === 'jobs.list') return { result: { jobs: [finished] } };
+      throw error('internal_error', 'Synthetic result read failed');
+    });
+    session.client = { call } as unknown as Client;
+    const store = new Covers();
+    store.apply(finished);
+    await vi.waitFor(() => expect(store.canRetryResult).toBe(true));
+    await store.sync();
+    expect(store.problem).toBe('Synthetic result read failed');
+    expect(store.canRetryResult).toBe(true);
+    expect(call.mock.calls.map(([command]) => command)).toEqual(['coverage.result', 'jobs.list']);
+  });
+
+  it('retries a failed result read without starting another content check', async () => {
+    const call = vi.fn().mockRejectedValueOnce(error('internal_error', 'Synthetic result read failed')).mockResolvedValue({ result: report() });
+    session.client = { call } as unknown as Client;
+    const store = new Covers();
+    store.apply(job({ state: 'completed' }));
+    await vi.waitFor(() => expect(store.problem).toBe('Synthetic result read failed'));
+    expect(store.canRetryResult).toBe(true);
+    await store.retryResult();
+    expect(store.report).toEqual(report());
+    expect(store.problem).toBe('');
+    expect(store.canRetryResult).toBe(false);
+    expect(call.mock.calls.map(([command]) => command)).toEqual(['coverage.result', 'coverage.result']);
+  });
+
+  it('coalesces repeated result retries and never retries an expired result', async () => {
+    let resolve!: (value: { result: CoverageReport }) => void;
+    const pending = new Promise<{ result: CoverageReport }>(r => { resolve = r; });
+    const call = vi.fn().mockRejectedValueOnce(error('internal_error', 'Synthetic result read failed')).mockReturnValueOnce(pending);
+    session.client = { call } as unknown as Client;
+    const store = new Covers();
+    store.apply(job({ state: 'completed' }));
+    await vi.waitFor(() => expect(store.problem).toBe('Synthetic result read failed'));
+    const retry = store.retryResult();
+    await store.retryResult();
+    expect(store.resultPending).toBe(true);
+    expect(call).toHaveBeenCalledTimes(2);
+    resolve({ result: report() }); await retry;
+    expect(store.resultPending).toBe(false);
+    const expired = new Covers();
+    call.mockRejectedValueOnce(error('not_found', 'Synthetic expired result'));
+    expired.apply(job({ state: 'completed' }));
+    await vi.waitFor(() => expect(expired.resultPending).toBe(false));
+    const before = call.mock.calls.length;
+    await expired.retryResult();
+    expect(expired.canRetryResult).toBe(false);
+    expect(call).toHaveBeenCalledTimes(before);
+    expect(expired.report).toBeNull();
+  });
+
+  it('drops an old result-read failure after a newer coverage job succeeds', async () => {
+    let reject!: (error: Error) => void;
+    const pending = new Promise<never>((_, fail) => { reject = fail; });
+    const fresh = report({ job_id: 'jb_2' });
+    const call = vi.fn().mockReturnValueOnce(pending).mockResolvedValue({ result: fresh });
+    session.client = { call } as unknown as Client;
+    const store = new Covers();
+    store.apply(job({ state: 'completed' }));
+    store.apply(job({ job_id: 'jb_2', seq: 2, state: 'completed' }));
+    await vi.waitFor(() => expect(store.report).toEqual(fresh));
+    reject(error('internal_error', 'Obsolete result failure'));
+    await Promise.resolve(); await Promise.resolve();
+    expect(store.problem).toBe('');
+    expect(store.report).toEqual(fresh);
+    expect(store.canRetryResult).toBe(false);
+  });
+
   it('starts, follows the job and fetches the report once it completes', async () => {
     const { store } = await mock();
     await store.start('rt_mock_10', 'rt_mock_11', { bytes: '1073741824', secs: 60 });

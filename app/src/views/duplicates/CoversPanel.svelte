@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { tick } from 'svelte';
+  import { onDestroy, tick } from 'svelte';
   import type { Root } from '../../lib/contracts.gen';
   import { session } from '../../lib/stores/session.svelte';
   import { Covers } from '../../lib/stores/covers.svelte';
@@ -20,12 +20,27 @@
   let secs = $state<number>(SECOND_CHOICES[0].value);
   let now = $state(Date.now());
   let resultHeading = $state<HTMLElement>();
+  let retrying = $state(false);
+  let alive = true;
+  onDestroy(() => { alive = false; });
+
+  async function retryResult(button: HTMLButtonElement): Promise<void> {
+    if (retrying) return;
+    const hadFocus = document.activeElement === button;
+    retrying = true;
+    try { await covers.retryResult(); }
+    finally { retrying = false; }
+    await tick();
+    // Disabling or removing the initiating button can leave focus on the body. Respect a move
+    // to another control, and never focus a result belonging to a view that was navigated away.
+    if (alive && hadFocus && (document.activeElement === button || document.activeElement === document.body)) resultHeading?.focus();
+  }
 
   const job = $derived(covers.job);
   const report = $derived(covers.report);
   const active = $derived(covers.active);
   const summary = $derived(report ? headline(report) : null);
-  const status = $derived(covers.problem || statusText(job, report, covers.pending, now, secs));
+  const status = $derived(covers.problem || (covers.resultPending ? 'Loading the completed check result…' : statusText(job, report, covers.pending, now, secs)));
   const nameOf = (id: string) => escapedName(roots.find((r) => r.root_id === id)?.display_path.text ?? id);
   const canStart = $derived(!loading && !!a && !!b && a !== b && !active && !covers.pending);
 
@@ -92,6 +107,10 @@
 
 <section class="panel" aria-labelledby="covers-results">
   <h2 id="covers-results" tabindex="-1" bind:this={resultHeading}>Coverage result</h2>
+  {#if covers.canRetryResult || retrying}
+    <p>The check has finished. Its result could not be loaded.</p>
+    <button class="btn" disabled={retrying} onclick={(e) => retryResult(e.currentTarget)}>Retry result</button>
+  {/if}
   {#if job?.error}<p class="bad" role="alert">{job.error.message}</p>{/if}
   {#if report && summary}
     <p class="covers-line"><span class="muted">A:</span> <VisibleName name={nameOf(report.a_root_id)} /> · <span class="muted">B:</span> <VisibleName name={nameOf(report.b_root_id)} /></p>

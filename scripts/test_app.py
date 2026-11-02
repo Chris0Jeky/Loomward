@@ -1189,7 +1189,7 @@ def main() -> None:
         check(nav.get_by_role('link').count() >= 2, 'views are discovered into the navigation')
         expect(nav.get_by_role('link', name='Today')).to_have_attribute('aria-current', 'page')
         # Today links the find bar's cleanup searches: one opens Explorer with the query run (#1068 ?q=).
-        page.get_by_role('list', name='Cleanup searches').get_by_role('link', name='Files over 4 GB', exact=True).click()
+        page.get_by_role('list', name='Cleanup searches').get_by_role('link', name='Files over 4 GiB', exact=True).click()
         expect(page.get_by_placeholder('Search names')).to_have_value('size:>4gb kind:file')
         expect(page.get_by_text('Search results for')).to_be_visible()
         print('PASS today: a cleanup search link opens Explorer with the query run')
@@ -1282,6 +1282,9 @@ def main() -> None:
         # the find bar speaks the docs/46 grammar: chips while typing, notices for what the request cannot carry
         box = page.get_by_placeholder('Search names')
         box.fill('delta kind:dir ext:pdf;docx in:Tax')
+        expect(page.locator('#find-notes')).to_have_attribute('aria-live', 'polite')
+        expect(page.locator('#find-hint')).to_contain_text('KiB/MiB/GiB')
+        expect(page.locator('#find-hint')).to_contain_text('also match inside names')
         chips = page.get_by_role('list', name='Search filters')
         expect(chips).to_contain_text('Kind: folders')
         expect(chips).to_contain_text('Extension: .pdf')
@@ -1306,14 +1309,16 @@ def main() -> None:
         expect(page.get_by_role('list', name='Search notes')).to_have_count(0)
         print('PASS find bar: notes on the results follow the search shown, not the draft')
         page.get_by_role('button', name='Clear search').click()
-        page.get_by_role('group', name='Cleanup searches').get_by_role('button', name='Disk images over 1 GB').click()
+        page.get_by_role('group', name='Cleanup searches').get_by_role('button', name='Disk images over 1 GiB').click()
         expect(box).to_have_value('ext:iso size:>1gb')
         expect(page.get_by_role('list', name='Search filters')).to_contain_text('Extension: .iso')
         expect(page.get_by_text('Search results for')).to_be_visible()
         page.get_by_role('button', name='Clear search').click()
         print('PASS find bar: grammar chips, notices, typed filter and cleanup preset')
 
-        # a link from another view: ?q= fills the box and searches
+        # A real cross-view navigation: ?q= fills the box and searches.
+        nav.get_by_role('link', name='Today', exact=True).click()
+        expect(page.get_by_role('heading', name='Today', level=1)).to_be_visible()
         page.evaluate("location.hash = '#/explorer?q=ext%3Apdf'")
         expect(box).to_have_value('ext:pdf')
         expect(page.get_by_text('Search results for')).to_be_visible()
@@ -1321,7 +1326,11 @@ def main() -> None:
         names = page.locator('main table tbody tr th:first-child').all_inner_texts()
         check(len(names) > 0 and all(n.split('\n')[0].endswith('.pdf') for n in names), '?q=ext:pdf runs the search from the route')
         page.get_by_role('button', name='Clear search').click()
-        print('PASS find bar: ?q= route parameter')
+        print('PASS find bar: ?q= route parameter across views')
+        page.evaluate("location.hash = '#/explorer?q=in%3ATax'")
+        expect(box).to_have_value('in:Tax')
+        expect(page.locator('main .tbl-wrap')).to_have_attribute('aria-busy', 'false')
+        expect(page.locator('#find-notes')).to_contain_text('no search was run')
 
         # drill down, then breadcrumb back
         page.locator('main table tbody tr th button.crumb').first.click()

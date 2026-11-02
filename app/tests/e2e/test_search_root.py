@@ -58,6 +58,10 @@ def run(ctx):
         elif command == 'search.query':
             calls.append(payload)
             selected = [h for h in hits if payload['root_id'] is None or h['root_id'] == payload['root_id']]
+            if payload['extension'] == 'iso':
+                image = deepcopy(hits[-1])
+                image['row'].update(node_id='nd_synthetic_iso', name='synthetic-disk.iso', extension='iso', logical_bytes=str(2 << 30))
+                selected = [image] if payload['root_id'] in (None, image['root_id']) else []
             if payload['text'] == 'missing':
                 selected = []
             offset = int(payload['cursor'] or '0')
@@ -354,10 +358,15 @@ def run(ctx):
         expect(page.get_by_role('list', name='Search coverage')).to_contain_text('not proof of absence')
         page.get_by_role('button', name='Clear search', exact=True).click()
         expect(box).to_be_focused()
-        page.get_by_role('group', name='Cleanup searches').get_by_role('button', name='Disk images over 1 GB').click()
+        page.get_by_role('group', name='Cleanup searches').get_by_role('button', name='Disk images over 1 GiB').click()
         expect(applied).to_have_text('Scope: Synthetic B')
         expect(page.locator('main .tbl-wrap')).to_have_attribute('aria-busy', 'false')
-        ctx.check(calls[-1]['root_id'] == 'rt_scope_1' and calls[-1]['extension'] == 'iso', 'Presets retain the chosen scope')
+        ctx.check(calls[-1]['root_id'] == 'rt_scope_1' and calls[-1]['extension'] == 'iso'
+                  and calls[-1]['min_bytes'] == str((1 << 30) + 1), 'Presets retain the chosen scope and exact size bound')
+        expect(rows).to_have_count(1)
+        expect(rows).to_contain_text('synthetic-disk.iso')
+        names = rows.locator('th:first-child').all_inner_texts()
+        ctx.check(all(name.split('\n')[0].endswith('.iso') for name in names), 'Disk-image preset renders only .iso results')
         page.evaluate("location.hash = '#/explorer?q=another'")
         expect(applied).to_have_text('Scope: All granted roots')
         expect(page.locator('main .tbl-wrap')).to_have_attribute('aria-busy', 'false')
