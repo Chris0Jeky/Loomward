@@ -994,3 +994,92 @@ fn collections_list_resolves_references_once_for_all_collections() {
         );
     }
 }
+
+// Decode dynamically so the tests-only checkpoint compiles on the pre-feature engine:
+// absence of the operation is a behavioral assertion failure, not a compiler failure.
+fn search_members(
+    svc: &Service,
+    id: &str,
+    text: &str,
+    limit: i64,
+    cursor: Value,
+) -> ResponseEnvelope {
+    let parsed = serde_json::from_value::<RequestEnvelope>(json!({
+        "protocol":"loomward/3", "request_id":format!("cs{}", NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)),
+        "deadline_ms":60_000,
+        "command":"collections.search", "payload":{
+            "collection_id":id,"text":text,"extension":null,"min_bytes":null,
+            "max_bytes":null,"modified_after":null,"modified_before":null,
+            "kind":"any","limit":limit,"cursor":cursor
+        }
+    }));
+    assert!(
+        parsed.is_ok(),
+        "collections.search must be a supported owner-local read: {parsed:?}"
+    );
+    svc.call(parsed.unwrap(), &CallContext::http())
+}
+
+#[test]
+fn collection_search_advertises_without_federated_search() {
+    let (_dir, svc, _) = setup(DatasetClass::Synthetic);
+    let (hello, _) = ok(
+        "session.hello",
+        call(&svc, "session.hello", json!({})),
+    );
+    assert_eq!(hello["features"]["federated_search"], false);
+    assert_eq!(hello["features"]["collection_search"], true);
+}
+
+#[test]
+fn collection_search_scopes_before_page_limit_and_binds_filters() {
+    let (_dir, svc, ids) = setup(DatasetClass::Synthetic);
+    let a = create(&svc, "Search A");
+    let b = create(&svc, "Search B");
+    let rev = svc.inner.revisions().unwrap().1;
+    ok(
+        "collections.update_members",
+        update(&svc, &a, &ids[1..], &[], rev),
+    );
+    let rev = svc.inner.revisions().unwrap().1;
+    ok(
+        "collections.update_members",
+        update(&svc, &b, &ids[..1], &[], rev),
+    );
+    let (first, _) = ok(
+        "collections.search",
+        search_members(&svc, &a, "", 1, Value::Null),
+    );
+    assert_eq!(first["hits"].as_array().unwrap().len(), 1);
+    assert_eq!(first["hits"][0]["row"]["node_id"], ids[1]);
+    assert_eq!(first["total_members"], 2);
+    let cursor = first["next_cursor"].clone();
+    assert!(!cursor.is_null());
+    let (second, _) = ok(
+        "collections.search",
+        search_members(&svc, &a, "", 1, cursor.clone()),
+    );
+    assert_eq!(second["hits"][0]["row"]["node_id"], ids[2]);
+    assert!(second["next_cursor"].is_null());
+    assert_eq!(
+        err(search_members(&svc, &b, "", 1, cursor.clone())).code,
+        ErrorCode::InvalidRequest
+    );
+    assert_eq!(
+        err(search_members(&svc, &a, "other", 1, cursor.clone())).code,
+        ErrorCode::InvalidRequest
+    );
+    let rev = svc.inner.revisions().unwrap().1;
+    ok(
+        "collections.update_members",
+        update(&svc, &a, &ids[..1], &[], rev),
+    );
+    assert_eq!(
+        err(search_members(&svc, &a, "", 1, cursor)).code,
+        ErrorCode::StaleGeneration
+    );
+    assert_eq!(
+        err(search_members(&svc, "co_999999", "", 1, Value::Null)).code,
+        ErrorCode::NotFound
+    );
+}
