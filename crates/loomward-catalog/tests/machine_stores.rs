@@ -721,7 +721,10 @@ fn hugging_face_caches_under_a_comfyui_models_folder_report_huggingface() {
         .into_iter()
         .find(|c| c.node == NodeKey::Dir(diffusers))
         .unwrap();
-    assert!(c.owner_step.contains("huggingface-cli delete-cache"));
+    assert!(c.owner_step.contains("hf cache ls --cache-dir"));
+    assert!(c.owner_step.contains("this detected folder"));
+    assert!(c.uncertainty.contains("unique"));
+    assert_eq!(c.relocation, Some("extra_model_paths.yaml (ComfyUI)"));
     assert_eq!(
         provider(&lab, checkpoints),
         Some(("comfyui", "model_store"))
@@ -735,6 +738,84 @@ fn hugging_face_caches_under_a_comfyui_models_folder_report_huggingface() {
         )
         .unwrap();
     assert_eq!(provider(&lab, diffusers), Some(("comfyui", "model_store")));
+}
+
+#[test]
+fn a_comfyui_cache_always_has_one_provider_when_its_hf_signature_is_unusable() {
+    for damaged in [
+        "none",
+        "model_stale",
+        "model_shielded",
+        "blobs_excluded",
+        "snapshots_flagged",
+    ] {
+        let lab = Lab::new();
+        let (_, models) = comfy_install(&lab, lab.dir, "ComfyUI");
+        let cache = lab.directory(models, "diffusers", 40);
+        let model = lab.directory(cache, "models--synthetic", 40);
+        let blobs = lab.directory(model, "blobs", 0);
+        let snapshots = lab.directory(model, "snapshots", 0);
+        match damaged {
+            "model_stale" => {
+                lab.db
+                    .execute("UPDATE dir SET listing_outcome='stale' WHERE id=?1", [model])
+                    .unwrap();
+            }
+            "model_shielded" => {
+                lab.db
+                    .execute(
+                        "UPDATE dir SET flags=?2 WHERE id=?1",
+                        params![model, EXCLUDED_FLAGS],
+                    )
+                    .unwrap();
+            }
+            "blobs_excluded" => {
+                lab.db
+                    .execute("UPDATE dir SET listing_state='excluded' WHERE id=?1", [blobs])
+                    .unwrap();
+            }
+            "snapshots_flagged" => {
+                lab.db
+                    .execute(
+                        "UPDATE dir SET flags=?2 WHERE id=?1",
+                        params![snapshots, EXCLUDED_FLAGS],
+                    )
+                    .unwrap();
+            }
+            _ => {}
+        }
+        let report = lab.report(200);
+        let matches: Vec<_> = report
+            .candidates
+            .iter()
+            .filter(|c| c.node == NodeKey::Dir(cache))
+            .collect();
+        assert_eq!(matches.len(), 1, "{damaged}");
+        assert_eq!(
+            matches[0].provider,
+            if damaged == "none" {
+                "huggingface"
+            } else {
+                "comfyui"
+            }
+        );
+    }
+}
+
+#[test]
+fn model_and_game_children_need_context_inside_the_grant() {
+    for root_name in ["models", "common"] {
+        let lab = Lab::new();
+        lab.db
+            .execute(
+                "UPDATE dir SET name=?2 WHERE id=?1",
+                params![lab.dir, root_name],
+            )
+            .unwrap();
+        let child = lab.directory(lab.dir, "synthetic-content", 7);
+        lab.file(child, "unique.bin", 7, Some(7));
+        assert!(lab.report(200).candidates.is_empty(), "{root_name}");
+    }
 }
 
 #[test]
