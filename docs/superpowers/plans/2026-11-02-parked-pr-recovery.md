@@ -34,6 +34,7 @@
 - [x] Compare complete durable grant rows across reopen in `collections_tests.rs`, retain same-session wire comparisons, and identify the Collections dropdown by its combobox role in the browser journey.
 - [x] Reproduce Explorer's Atlas/search coupling and failed root-validation behavior; test the actual instance functions before changing `reload()`.
 - [x] Independently review the feature changes and combined seams; correct actionable findings before publication.
+- [x] Repair the first hosted browser failure without weakening its concurrent saved-scenario journey: separate reserve submission from tier declaration, and fence old scenario-list replies before reserve submission. Four new actual-function interleaving tests pass within the 87-test lifecycle suite.
 - [ ] Require the integration PR's exact-source Linux/Windows native, desktop and browser checks before merge. Record the definitive results in that PR.
 
 ## Local validation and limitations
@@ -41,3 +42,5 @@
 The combined Python suite ran 440 tests successfully with five platform-specific skips. The combined app suite passed 1,032 tests across 73 files before the final uncertain-outcome regression was added; the final focused lifecycle check and type check are recorded in the PR. Production build and generated-contract comparison passed. The existing large-bundle advisory remains.
 
 Local Rust and live browser execution are unavailable. Chromium installation returned an invalid download archive. Initial Python attempts exposed sandbox socket restrictions and Git-ancestor guards on temporary directories; the successful run used synthetic loopback servers and `/var/tmp`. Those environment failures are not classified as product failures or passing tests. Hosted proof remains required, and this document does not claim physical-device, WebView2 or assistive-technology acceptance.
+
+The first published head, `b10e6117ca4804e07d68295e43fba4bc38a4cf4c`, passed Linux native, desktop, Windows app and all four Python jobs. Ubuntu app exposed the saved-scenario loading regression in `check_tiers_loading_followups`; runs 41385000577 and 41385030679 retain that failure. The repair keeps this browser assertion and the reserve uncertain-outcome protections. Its focused lifecycle suite passes 87 tests, and app check reports zero errors and warnings. The replacement head still requires the complete hosted gates.

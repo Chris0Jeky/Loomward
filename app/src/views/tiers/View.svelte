@@ -56,6 +56,7 @@
   let simulating = $state(false);
   let formError = $state('');
   let declaring = $state(false);
+  let reserving = $state(false);
   let modelStateRev = $state<string | null>(null);
   let reserves = $state<Record<string, ReserveDraft>>({});
   let save = $state(false);
@@ -66,6 +67,7 @@
   let now = $state(Date.now());
   let modelTicket = 0;
   let savedTicket = 0;
+  let proposalsTicket = 0;
   let candTicket = 0;
   let simTicket = 0;
 
@@ -105,6 +107,7 @@
     if (!c) return false;
     const mine = ++modelTicket;
     savedTicket++;
+    proposalsTicket++;
     loading = true;
     try {
       const { result, meta } = await c.call('tiers.model', {});
@@ -141,13 +144,20 @@
   }
 
   async function loadProposals(): Promise<boolean> {
-    if (!session.client) return false;
+    const c = session.client;
+    const connection = session.connectionEpoch;
+    const mine = ++proposalsTicket;
+    if (!c) return false;
     try {
-      const { result } = await session.client.call('proposals.list', {});
+      const { result } = await c.call('proposals.list', {});
+      if (mine !== proposalsTicket || c !== session.client || connection !== session.connectionEpoch) return false;
       saved = result.proposals;
       savedError = '';
       return true;
-    } catch (e) { saved = []; savedError = session.handle(e); return false; }
+    } catch (e) {
+      if (mine === proposalsTicket && c === session.client && connection === session.connectionEpoch) { saved = []; savedError = session.handle(e); }
+      return false;
+    }
   }
 
   async function declareReserve(id: string, clear = false) {
@@ -159,9 +169,11 @@
     if (!clear && bytes === null) { error = 'Enter a whole number of bytes or GiB. The reserve must fit within the supported byte range.'; return; }
     const mine = modelTicket;
     declaring = true;
+    reserving = true;
     // Submission can commit even when its reply is lost. Hide old plans before
     // sending, and require a successful read before displaying current inputs.
     savedTicket++;
+    proposalsTicket++;
     outcomes = null;
     savedDetail = null;
     saved = [];
@@ -177,12 +189,12 @@
       const message = session.handle(e);
       await loadModel();
       error = message;
-    } finally { declaring = false; }
+    } finally { declaring = false; reserving = false; }
   }
 
   async function loadSaved(id: string) {
     const c = session.client;
-    if (!c || simulating || declaring) return;
+    if (!c || simulating || reserving) return;
     const mine = ++savedTicket;
     try {
       const { result } = await c.call('proposals.get', { proposal_id: id });
@@ -467,7 +479,7 @@
   <p class="muted small">Stored simulations only. Catalogue, tier or root changes are marked stale; free-space and capacity drift alone are not. Compare now with this simulation; nothing can be executed here.</p>
   <ul class="list">
     {#each saved as scenario (scenario.proposal_id)}
-      <li><button class="btn" type="button" disabled={simulating || declaring} onclick={() => void loadSaved(scenario.proposal_id)}>Show saved scenario {formatTime(scenario.created_at)}</button> <span class="tag">{scenario.status === 'stale' ? 'Stale' : 'Simulation only'}</span></li>
+      <li><button class="btn" type="button" disabled={simulating || reserving} onclick={() => void loadSaved(scenario.proposal_id)}>Show saved scenario {formatTime(scenario.created_at)}</button> <span class="tag">{scenario.status === 'stale' ? 'Stale' : 'Simulation only'}</span></li>
     {:else}<li class="muted">{savedError ? 'Saved scenarios unavailable.' : 'No saved scenarios.'}</li>{/each}
   </ul>
 </section>

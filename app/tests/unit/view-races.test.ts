@@ -338,6 +338,106 @@ describe('Learning resources fail independently', () => {
 });
 
 describe('Saved tier scenario source', () => {
+  it('opens a historical scenario while a tier change waits for candidates', async () => {
+    const candidates = deferred<{ result: { groups: never[] } }>();
+    const historical = { ...proposal, summary: { ...proposal.summary, source_volume_id: 'vol_a', status: 'stale' } };
+    const volumes = [
+      { volume_id: 'vol_a', source_eligible: false, declared_reserve_bytes: null },
+      { volume_id: 'vol_b', source_eligible: true, declared_reserve_bytes: null },
+    ];
+    const call = vi.fn(async (command: string) => {
+      if (command === 'volumes.declare_tier') return { result: {} };
+      if (command === 'tiers.model') return { result: { volumes }, meta: { state_rev: '8' } };
+      if (command === 'placement.candidates') return candidates.promise;
+      if (command === 'proposals.get') return { result: historical };
+      if (command === 'proposals.list') return { result: { proposals: [historical.summary] } };
+      throw new Error(`Unexpected command: ${command}`);
+    });
+    const state = {
+      session: { client: { call }, handle: (e: Error) => e.message }, untrack, reserveDraft,
+      model: { volumes }, source: 'vol_b', src: volumes[1], volume: (id: string) => volumes.find(v => v.volume_id === id),
+      modelStateRev: '7', modelTicket: 0, savedTicket: 0, proposalsTicket: 0, candTicket: 0, simTicket: 0,
+      loading: false, declaring: false, reserving: false, simulating: false,
+      savedDetail: null, savedError: '', saved: [historical.summary], outcomes: null,
+      assume: {}, error: '', say: { say: vi.fn() },
+    };
+    const code = viewScript('tiers', state, 'session.epoch');
+    const changing = code.evaluate("declareTier('vol_b', '2')");
+    await vi.waitFor(() => expect(call).toHaveBeenCalledWith('placement.candidates', expect.anything()));
+    expect(state.loading).toBe(true);
+    expect(state.declaring).toBe(true);
+    await code.loadSaved(historical.summary.proposal_id);
+    expect(state.savedDetail).toEqual(historical);
+    candidates.resolve({ result: { groups: [] } });
+    await changing;
+    expect(state.loading).toBe(false);
+    expect(state.declaring).toBe(false);
+    expect(state.savedDetail).toEqual(historical);
+  });
+
+  it('blocks saved reads throughout an uncertain reserve write and recovery', async () => {
+    const reply = deferred<never>();
+    const recovery = deferred<never>();
+    const call = vi.fn((command: string) => {
+      if (command === 'volumes.declare_reserve') return reply.promise;
+      if (command === 'tiers.model') return recovery.promise;
+      return Promise.resolve({ result: proposal });
+    });
+    const state = {
+      session: { client: { call }, handle: (e: Error) => e.message }, untrack, reserveBytes, reserveDraft,
+      modelStateRev: '7', reserves: { vo_target: { value: '60', unit: 'GiB' } },
+      model: {}, modelTicket: 0, savedTicket: 0, proposalsTicket: 0, loading: false, declaring: false, reserving: false, simulating: false,
+      outcomes: { old: true }, savedDetail: proposal, saved: [proposal.summary],
+      error: '', say: { say: vi.fn() },
+    };
+    const code = viewScript('tiers', state, 'session.epoch');
+    const changing = code.evaluate("declareReserve('vo_target')");
+    await code.loadSaved(proposal.summary.proposal_id);
+    expect(call).toHaveBeenCalledTimes(1);
+    expect(state.savedDetail).toBeNull();
+    reply.reject(new Error('Reply lost'));
+    await vi.waitFor(() => expect(call).toHaveBeenCalledWith('tiers.model', {}));
+    await code.loadSaved(proposal.summary.proposal_id);
+    expect(call).toHaveBeenCalledTimes(2);
+    recovery.reject(new Error('Recovery unavailable'));
+    await changing;
+    expect(state.reserving).toBe(false);
+    expect(state.savedDetail).toBeNull();
+  });
+
+  it.each(['during submission', 'after failed recovery'])('drops a pre-reserve scenario list arriving %s', async arrival => {
+    const list = deferred<{ result: { proposals: typeof proposal.summary[] } }>();
+    const reply = deferred<never>();
+    const call = vi.fn((command: string) => {
+      if (command === 'proposals.list') return list.promise;
+      if (command === 'volumes.declare_reserve') return reply.promise;
+      return Promise.reject(new Error('Current preferences unavailable'));
+    });
+    const state = {
+      session: { client: { call }, handle: (e: Error) => e.message }, untrack, reserveBytes, reserveDraft,
+      modelStateRev: '7', reserves: { vo_target: { value: '60', unit: 'GiB' } },
+      model: {}, modelTicket: 0, savedTicket: 0, proposalsTicket: 0, loading: false, declaring: false, reserving: false, simulating: false,
+      outcomes: { old: true }, savedDetail: proposal, saved: [proposal.summary], savedError: '',
+      error: '', say: { say: vi.fn() },
+    };
+    const code = viewScript('tiers', state, 'session.epoch');
+    const listing = code.evaluate('loadProposals()');
+    const changing = code.evaluate("declareReserve('vo_target')");
+    if (arrival === 'after failed recovery') {
+      reply.reject(new Error('Reply lost'));
+      await changing;
+    }
+    list.resolve({ result: { proposals: [proposal.summary] } });
+    await listing;
+    expect(state.saved).toEqual([]);
+    if (arrival === 'during submission') {
+      reply.reject(new Error('Reply lost'));
+      await changing;
+    }
+    expect(state.saved).toEqual([]);
+    expect(state.modelStateRev).toBeNull();
+  });
+
   it.each(['committed', 'deadline_exceeded', 'stale_generation'] as const)('hides old plans after a %s reserve outcome when the model refresh fails', async outcome => {
     const call = vi.fn(async (command: string) => {
       if (command === 'volumes.declare_reserve') {
@@ -349,7 +449,7 @@ describe('Saved tier scenario source', () => {
     const state = {
       session: { client: { call }, handle: (e: Error) => e.message }, untrack, reserveBytes, reserveDraft,
       modelStateRev: '7', reserves: { vo_target: { value: '60', unit: 'GiB' } },
-      model: {}, modelTicket: 0, savedTicket: 0, loading: false, declaring: false, simulating: false,
+      model: {}, modelTicket: 0, savedTicket: 0, proposalsTicket: 0, loading: false, declaring: false, reserving: false, simulating: false,
       outcomes: { old: true }, savedDetail: proposal, saved: [proposal.summary],
       error: '', say: { say: vi.fn() },
     };
