@@ -466,6 +466,61 @@ mod native {
         assert!(r["unknown"][0]["reason"].is_string());
     }
 
+    /// A held real coverage read must consume the same pool as scans and duplicates.
+    /// Uses only the existing service API and read gate, so the old implementation
+    /// compiles and fails behaviorally (zero workers instead of one).
+    #[test]
+    fn coverage_worker_is_accounted_until_the_held_read_returns() {
+        let Some(p) = pair(|a, b| {
+            put(a, "one.txt", b"same");
+            put(b, "two.txt", b"same");
+        }) else {
+            return;
+        };
+        let hooks = &p.svc.inner.hooks;
+        let held = (Command::CoverageStart, "orphan_read");
+        hooks.closed.lock().unwrap().push(held);
+        let started = start(&p, json!({}));
+        hooks.until("coverage read holding its worker", |h| {
+            h.arrived.lock().unwrap().contains(&held)
+        });
+        let workers = || {
+            p.svc
+                .inner
+                .engine
+                .budgets_get()
+                .unwrap()
+                .pools
+                .iter()
+                .find(|pool| pool.pool == PoolName::ScanEnumerate)
+                .unwrap()
+                .current_workers
+                .get()
+        };
+        let during_read = workers();
+        ok(
+            "jobs.cancel",
+            call(&p.svc, "jobs.cancel", json!({"job_id":started.job_id})),
+        );
+        let during_cancel = workers();
+        // Always release before asserting, including on the expected old-code failure.
+        hooks.open(held.0, held.1);
+        assert_eq!(finished(&p.svc, &started.job_id).state, JobState::Cancelled);
+        assert_eq!(
+            during_read, 1,
+            "coverage read bypassed the shared worker pool"
+        );
+        assert_eq!(
+            during_cancel, 1,
+            "cancellation released a still-running reader"
+        );
+        let until = Instant::now() + Duration::from_secs(5);
+        while workers() != 0 {
+            assert!(Instant::now() < until, "coverage worker reservation leaked");
+            std::thread::yield_now();
+        }
+    }
+
     #[test]
     fn cancelling_ends_the_job_cancelled_and_keeps_no_result() {
         let Some(p) = pair(|a, b| {
