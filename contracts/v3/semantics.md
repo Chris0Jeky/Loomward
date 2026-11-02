@@ -139,6 +139,17 @@ Human events are stored only in
 `human_feedback`; teacher rows remain separate and never enter this lane's refit. Unresolved human
 events are excluded and counted in `learning.status.unresolved_human_events`.
 
+`feedback.history` is an owner-only, read-only page of the durable human ledger, newest event
+first, with at most 100 records. Its opaque cursor binds the session, command, catalogue and
+state revisions; changes refuse the next page with `stale_generation`. `is_current` marks the
+latest event for that durable object, including a withdrawal; it does not imply training
+eligibility. The recorded label remains visible on a withdrawal. `name` is the recorded name,
+not a current path, and is hidden when the original grant is inactive, provenance is unavailable,
+features were redacted, or the durable reference is unresolved or excluded. Reads do not run
+redaction, refit, repair or grant mutations. A forgotten root's records disappear, and an
+undelivered history response is withheld across revocation or forget using the existing
+delivery-fence refusal (`permission_denied`, `forgotten_result`).
+
 `learning.refit` produces a persisted **candidate**, without promotion (LW-027). Status and queue
 use the latest candidate for advice only; `calibrated` and `autonomy_allowed` remain false. Scores
 are **relative scores, not probabilities**. When no current fitted candidate exists, status,

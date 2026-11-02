@@ -32,6 +32,7 @@ mod db;
 mod desktop;
 mod diagnostics;
 mod duplicates;
+mod feedback_history;
 mod freshness;
 mod handlers;
 #[cfg(feature = "test-support")]
@@ -134,6 +135,8 @@ pub(crate) struct Inner {
     idem: idem::Idempotency,
     /// Pending root/volume replies in adapters; no root identifiers or generation history.
     reply_delivery: loomward_protocol::ResponseDeliveryPolicy,
+    /// Human history also withholds pending names across revocation.
+    history_delivery: loomward_protocol::ResponseDeliveryPolicy,
     /// Serialises owner-state mutations (revocation, declarations, grants).
     // ponytail: one lock for every owner-state mutation; per-resource locks if contention shows.
     mutation: Mutex<()>,
@@ -378,6 +381,7 @@ impl Service {
             cursors: cursors::Cursors::new(4096),
             idem: idem::Idempotency::new(ttl),
             reply_delivery: loomward_protocol::ResponseDeliveryPolicy::default(),
+            history_delivery: loomward_protocol::ResponseDeliveryPolicy::default(),
             mutation: Mutex::new(()),
             turn: (Mutex::new(Queue::default()), std::sync::Condvar::new()),
             dialog: Mutex::new(()),
@@ -527,11 +531,12 @@ pub(crate) const MAX_PENDING: u64 = 64;
 const MAX_READS: usize = 8;
 
 fn guarded_observation(request: &RequestEnvelope, command: Command) -> bool {
-    request.expected_generation.is_some()
-        && matches!(
-            command,
-            Command::NodeInspect | Command::StatsBreakdown | Command::TreeChildren
-        )
+    command == Command::FeedbackHistory
+        || request.expected_generation.is_some()
+            && matches!(
+                command,
+                Command::NodeInspect | Command::StatsBreakdown | Command::TreeChildren
+            )
 }
 
 struct ReadPermit(Arc<Inner>);
@@ -707,6 +712,9 @@ impl ViewService for Service {
         &self,
         command: Command,
     ) -> Option<loomward_protocol::ResponseDeliveryPolicy> {
+        if command == Command::FeedbackHistory {
+            return Some(self.inner.history_delivery.clone());
+        }
         matches!(
             command,
             Command::RootsRequestGrant
@@ -794,6 +802,7 @@ impl ViewService for Service {
             && !matches!(
                 command,
                 Command::FeedbackRecord
+                    | Command::FeedbackHistory
                     | Command::LearningStatus
                     | Command::LearningQueue
                     | Command::LearningRefit
@@ -1183,7 +1192,7 @@ impl Inner {
                 if out.catalog_rev != Some(catalog) || out.state_rev != Some(state) {
                     return Err(fail(
                         ErrorCode::StaleGeneration,
-                        "Project observations or access changed; read again.",
+                        "Observations or access changed; read again.",
                     ));
                 }
             }

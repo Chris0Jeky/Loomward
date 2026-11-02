@@ -10,6 +10,12 @@ import alertReport from '../../../contracts/v3/examples/commands/alerts.list.res
 import proposal from '../../../contracts/v3/examples/commands/proposals.get.result.json';
 import { formFrom, settingsFrom } from '../../src/views/alerts/model';
 import { formatBytes } from '../../src/lib/format/bytes';
+import { planFind } from '../../src/lib/search/find';
+import rootList from '../../../contracts/v3/examples/commands/roots.list.result.json';
+import type { Root } from '../../src/lib/contracts.gen';
+import type { BackupEvidence } from '../../src/lib/contracts.gen';
+import * as backupModel from '../../src/views/backups/model';
+import backupList from '../../../contracts/v3/examples/commands/backups.list.result.json';
 
 /** Run the real instance-script functions/effect without a DOM or canvas. State is supplied by
  * the test; imports and rendering are excluded, so deferred replies control the interleaving. */
@@ -38,9 +44,13 @@ function viewScript(view: string, state: Record<string, unknown>, effectContaini
   }).outputText;
   return new Function('state', `with (state) { return (() => { ${code} })(); }`)(state) as {
     show(append?: boolean): Promise<void>;
+    commit(): boolean;
+    clearSearch(): void;
+    preset(text: string): void;
     loadStarts(recovery?: unknown, refreshOnly?: boolean): Promise<boolean>;
     effect(): void;
-    reload(): void;
+    reload(): Promise<void>;
+    refresh(): Promise<void>;
     load(cursor?: string | null, restarted?: boolean): Promise<void>;
     loadSaved(id: string): Promise<void>;
     save(): Promise<void>;
@@ -56,9 +66,182 @@ function viewScript(view: string, state: Record<string, unknown>, effectContaini
 const untrack = <T>(fn: () => T) => fn();
 const deferred = <T>() => {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>(r => { resolve = r; });
-  return { promise, resolve };
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((r, fail) => { resolve = r; reject = fail; });
+  return { promise, resolve, reject };
 };
+
+function backups(call: ReturnType<typeof vi.fn>) {
+  const state = {
+    ...backupModel, untrack, tick: async () => {},
+    session: { client: { call }, epoch: 0, connectionEpoch: 0, info: { adapter: 'tauri' }, datasetClass: 'personal', handle: vi.fn((e: Error) => e.message) },
+    alive: true, generation: 0, knownConnection: -1, knownClient: null as unknown,
+    evidence: structuredClone(backupList.evidence) as BackupEvidence[], volumes: [] as unknown[],
+    loading: false, error: '', notice: '', label: 'synthetic-nas', snapshot: '1'.repeat(64),
+    source: '', target: '', wanted: `fixture/ledger.ods sha256:${'a'.repeat(64)}`, integrity: true,
+    importing: false, forgetting: '', updating: '', invalidField: '', heading: { focus: vi.fn() }, importHeading: { focus: vi.fn() },
+    get desktop(): boolean { return this.session.info.adapter === 'tauri'; },
+    get personal(): boolean { return this.session.datasetClass === 'personal'; },
+    get busy(): boolean { return this.loading || this.importing || !!this.forgetting; },
+    get parsed(): ReturnType<typeof backupModel.parseRequired> { return backupModel.parseRequired(this.wanted); },
+    get formError(): string { return !backupModel.LABEL.test(this.label) ? 'Invalid label' : !backupModel.SNAPSHOT.test(this.snapshot) ? 'Invalid snapshot' : this.parsed.errors[0] ?? ''; },
+  };
+  const code = viewScript('backups', state, 'session.epoch') as ReturnType<typeof viewScript> & {
+    importReceipt(): Promise<void>;
+    forget(e: BackupEvidence): Promise<void>;
+    beginUpdate(e: BackupEvidence): Promise<void>;
+    newImport(): Promise<void>;
+  };
+  return { state, code };
+}
+
+describe('Backups session boundaries', () => {
+  it('prefills exact stored values without a call, clears volume choices, and exits to a blank new import', async () => {
+    const call = vi.fn();
+    const { state, code } = backups(call);
+    const record = state.evidence[0]!;
+    const original = structuredClone(state.evidence);
+    state.source = 'vo_previous_source'; state.target = 'vo_previous_target'; state.integrity = false;
+    await code.beginUpdate(record);
+    expect(state.label).toBe(record.repository_label);
+    expect(state.updating).toBe(record.repository_label);
+    expect(state.snapshot).toBe(record.snapshot_id);
+    expect(state.parsed).toEqual({ required: record.required_versions, errors: [] });
+    expect([state.source, state.target]).toEqual(['', '']);
+    expect(state.integrity).toBe(true);
+    expect(state.importHeading.focus).toHaveBeenCalledOnce();
+    expect(state.evidence).toEqual(original);
+    expect(call).not.toHaveBeenCalled();
+    await code.newImport();
+    expect([state.updating, state.label, state.snapshot, state.wanted, state.source, state.target]).toEqual(['', '', '', '', '', '']);
+    expect(state.evidence).toEqual(original);
+  });
+
+  it('refuses a lossy prefill and preserves the existing form and evidence', async () => {
+    const { state, code } = backups(vi.fn());
+    const record = state.evidence[0]!;
+    const before = [state.label, state.snapshot, state.wanted];
+    await code.beginUpdate({ ...record, required_versions: [{ relative_name: ' leading.txt', version: `sha256:${'a'.repeat(64)}` }] });
+    expect(state.error).toContain('without changing');
+    expect([state.label, state.snapshot, state.wanted]).toEqual(before);
+    expect(state.updating).toBe('');
+    expect(state.session.client.call).not.toHaveBeenCalled();
+  });
+
+  it.each(['cancelled_by_user', 'refused', 'error'])('preserves existing evidence on %s and sends the fixed label with no path', async (outcome) => {
+    const call = vi.fn(async () => {
+      if (outcome === 'error') throw new Error('receipt transport failed');
+      return { result: { outcome, refusal: outcome === 'refused' ? 'too_large' : null } };
+    });
+    const { state, code } = backups(call);
+    const record = state.evidence[0]!;
+    const original = structuredClone(state.evidence);
+    await code.beginUpdate(record);
+    state.label = 'other-valid-label'; // even a changed DOM binding must not redirect the replacement
+    await code.importReceipt();
+    expect(call).toHaveBeenCalledExactlyOnceWith('backups.import', {
+      repository_label: record.repository_label, snapshot_id: record.snapshot_id, source_volume_id: null, target_volume_id: null,
+      required: record.required_versions, integrity_check: true,
+    }, { deadlineMs: 60000 });
+    expect(state.evidence).toEqual(original);
+    expect(state.importing).toBe(false);
+    expect(state.updating).toBe(record.repository_label);
+    if (outcome === 'cancelled_by_user') expect(state.notice).toContain('Nothing was stored');
+    else expect(state.error).not.toBe('');
+  });
+
+  it.each(['loading', 'importing', 'forgetting'] as const)('blocks overlapping form and mutation actions while %s', async (pending) => {
+    const { state, code } = backups(vi.fn());
+    const before = [state.label, state.snapshot, state.wanted, state.updating];
+    if (pending === 'forgetting') state.forgetting = 'be_pending'; else state[pending] = true;
+    await code.beginUpdate(state.evidence[0]!);
+    await code.newImport();
+    await code.importReceipt();
+    await code.forget(state.evidence[0]!);
+    expect(state.session.client.call).not.toHaveBeenCalled();
+    expect([state.label, state.snapshot, state.wanted, state.updating]).toEqual(before);
+  });
+
+  it.each(['http', 'synthetic'])('does not enter update or import in a %s session', async (mode) => {
+    const { state, code } = backups(vi.fn());
+    if (mode === 'http') state.session.info.adapter = 'http'; else state.session.datasetClass = 'synthetic';
+    await code.beginUpdate(state.evidence[0]!);
+    await code.importReceipt();
+    expect(state.updating).toBe('');
+    expect(state.session.client.call).not.toHaveBeenCalled();
+  });
+
+  it('keeps a draft on ordinary refresh but clears personal state when the connection changes', async () => {
+    const never = deferred<unknown>();
+    const { state, code } = backups(vi.fn(() => never.promise));
+    state.knownClient = state.session.client; state.knownConnection = 0;
+    await code.beginUpdate(state.evidence[0]!);
+    const before = [state.label, state.snapshot, state.wanted, state.updating];
+    state.session.epoch++;
+    code.effect();
+    expect([state.label, state.snapshot, state.wanted, state.updating]).toEqual(before);
+    state.session.connectionEpoch++; state.session.epoch++;
+    state.importing = true; state.forgetting = 'be_pending';
+    code.effect();
+    expect([state.label, state.snapshot, state.wanted, state.updating]).toEqual(['', '', '', '']);
+    expect(state.evidence).toEqual([]);
+    expect(state.volumes).toEqual([]);
+    expect(state.importing).toBe(false);
+    expect(state.forgetting).toBe('');
+  });
+
+  it('does not populate volumes from the previous connection', async () => {
+    const reply = deferred<unknown>();
+    const call = vi.fn(async (command: string) => command === 'volumes.list' ? reply.promise : { result: backupList });
+    const { state, code } = backups(call);
+    const loading = code.load();
+    await Promise.resolve();
+    expect(call).toHaveBeenCalledWith('volumes.list', {});
+    state.session.connectionEpoch++;
+    reply.resolve({ result: { volumes: [{ volume_id: 'vo_old' }] } });
+    await loading;
+    expect(state.volumes).toEqual([]);
+  });
+
+  it('ignores an import reply after the connection changes, even when the client object is reused', async () => {
+    const reply = deferred<unknown>();
+    const call = vi.fn(async (command: string) => command === 'backups.import' ? reply.promise : { result: command === 'backups.list' ? backupList : { volumes: [] } });
+    const { state, code } = backups(call);
+    const importing = code.importReceipt();
+    expect(call).toHaveBeenCalledTimes(1);
+    state.session.connectionEpoch++;
+    reply.resolve({ result: { outcome: 'imported', evidence: backupList.evidence[0], refusal: null } });
+    await importing;
+    expect(call).toHaveBeenCalledTimes(1);
+    expect(state.notice).toBe('');
+    expect(state.session.handle).not.toHaveBeenCalled();
+  });
+
+  it.each(['backups.list', 'backups.import', 'backups.forget'])('ignores late %s errors after unmount or reconnect', async (command) => {
+    const reply = deferred<unknown>();
+    const { state, code } = backups(vi.fn(() => reply.promise));
+    const pending = command === 'backups.list' ? code.load() : command === 'backups.import' ? code.importReceipt() : code.forget(state.evidence[0]!);
+    state.session.connectionEpoch++; state.alive = false;
+    reply.reject(new Error('old connection failed'));
+    await pending;
+    expect(state.error).toBe('');
+    expect(state.notice).toBe('');
+    expect(state.session.handle).not.toHaveBeenCalled();
+    expect(state.session.client.call).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not refetch or announce a late forget in a new connection', async () => {
+    const reply = deferred<unknown>();
+    const { state, code } = backups(vi.fn(() => reply.promise));
+    const forgetting = code.forget(state.evidence[0]!);
+    state.session.connectionEpoch++;
+    reply.resolve({ result: {} });
+    await forgetting;
+    expect(state.session.client.call).toHaveBeenCalledTimes(1);
+    expect(state.notice).toBe('');
+    expect(state.heading.focus).not.toHaveBeenCalled();
+  });
+});
 
 function review(call: ReturnType<typeof vi.fn>) {
   const state = {
@@ -179,16 +362,158 @@ describe('Saved tier scenario source', () => {
 function alerts() {
   const report = { ...alertReport, settings: { ...alertReport.settings, growth_bytes: String(10 * 1024 ** 3) }, defaults: { ...alertReport.defaults, growth_bytes: String(10 * 1024 ** 3) } };
   const call = vi.fn(async (command: string, settings?: unknown) => ({ result: command === 'alerts.configure' ? { ...report, settings } : report }));
+  const refreshResult = {
+    text: '',
+    say: vi.fn((text: string) => { refreshResult.text = text; }),
+    clear: vi.fn(() => { refreshResult.text = ''; }),
+  };
   const state = {
-    session: { client: { call }, epoch: 0, handle: (e: Error) => e.message },
+    session: { client: { call }, epoch: 0, connectionEpoch: 0, state: 'connected', handle: vi.fn((e: Error) => e.message) },
     untrack, formFrom, settingsFrom, report: null as typeof alertReport | null,
     form: null as ReturnType<typeof formFrom> | null, generation: 0,
-    loading: false, saving: false, error: '', notice: '', invalidField: '',
+    loading: false, saving: false, error: '', notice: '', invalidField: '', refreshResult,
+    request: null as AbortController | null,
   };
   return { state, call, code: viewScript('alerts', state, 'session.epoch') };
 }
 
 describe('Alert threshold edits survive refresh', () => {
+  it('offers a refresh control that reads checks without saving the draft', async () => {
+    const { state, call, code } = alerts();
+    await code.load();
+    state.form!.growthGib = '20';
+    state.form!.notifications = true;
+    const draft = { ...state.form };
+    call.mockClear();
+    const source = readFileSync(new URL('../../src/views/alerts/View.svelte', import.meta.url), 'utf8');
+    const handler = source.match(/onclick=\{([^}]+)\}>Refresh checks<\/button>/)?.[1];
+    expect(handler, 'Alerts needs an explicit keyboard button to refresh the report').toBeDefined();
+    (code.evaluate(`(${handler})`) as () => void)();
+    await vi.waitFor(() => expect(call).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(state.loading).toBe(false));
+    expect(call.mock.calls.map(args => args[0])).toEqual(['alerts.list']);
+    expect(state.form).toEqual(draft);
+    expect(state.report?.settings.notifications_enabled).toBe(false);
+    expect(state.notice).not.toContain('Thresholds saved');
+    expect(state.refreshResult.text).toContain('recorded observations');
+  });
+
+  it('keeps the full draft separate from fresh persisted settings on repeated reads', async () => {
+    const { state, call, code } = alerts();
+    await code.load();
+    state.form = { percent: '17', freeGib: '2.5', days: '14', growthGib: '20', notifications: true };
+    const draft = { ...state.form };
+    const fresh = { ...state.report!, evaluated_at: '2026-10-31T10:00:00Z', settings: { ...state.report!.settings, low_space_free_percent: 12 } };
+    call.mockResolvedValue({ result: fresh });
+    await code.refresh();
+    await code.refresh();
+    expect(state.report).toEqual(fresh);
+    expect(state.form).toEqual(draft);
+    expect(state.refreshResult.say).toHaveBeenCalledTimes(2);
+    expect(state.refreshResult.clear).toHaveBeenCalledTimes(3);
+    expect(call.mock.calls.map(args => args[0])).toEqual(['alerts.list', 'alerts.list', 'alerts.list']);
+  });
+
+  it('coalesces duplicate activation and refuses a save while a manual read is pending', async () => {
+    const { state, call, code } = alerts();
+    await code.load();
+    const held = deferred<unknown>();
+    call.mockImplementationOnce(() => held.promise as never);
+    call.mockClear();
+    const reading = code.refresh();
+    await code.refresh();
+    await code.save();
+    expect(state.loading).toBe(true);
+    expect(call.mock.calls.map(args => args[0])).toEqual(['alerts.list']);
+    held.resolve({ result: state.report });
+    await reading;
+    expect(state.loading).toBe(false);
+  });
+
+  it('does not refresh while saving and permits a read once the save finishes', async () => {
+    const { state, call, code } = alerts();
+    await code.load();
+    const held = deferred<unknown>();
+    call.mockImplementationOnce(() => held.promise as never);
+    call.mockClear();
+    const saving = code.save();
+    await code.refresh();
+    expect(call.mock.calls.map(args => args[0])).toEqual(['alerts.configure']);
+    held.resolve({ result: state.report });
+    await saving;
+    await code.refresh();
+    expect(call.mock.calls.map(args => args[0])).toEqual(['alerts.configure', 'alerts.list']);
+  });
+
+  it('clears a failed report, retains the draft and only retries on explicit activation', async () => {
+    const { state, call, code } = alerts();
+    await code.load();
+    state.form!.percent = '17';
+    call.mockClear();
+    call.mockRejectedValueOnce(new Error('Synthetic read failed'));
+    await code.refresh();
+    expect(state.report).toBeNull();
+    expect(state.form!.percent).toBe('17');
+    expect(state.error).toBe('Synthetic read failed');
+    expect(state.refreshResult.text).toBe('');
+    expect(state.loading).toBe(false);
+    expect(call).toHaveBeenCalledTimes(1);
+    await code.refresh();
+    expect(call).toHaveBeenCalledTimes(2);
+    expect(state.report).not.toBeNull();
+    expect(state.form!.percent).toBe('17');
+    expect(state.error).toBe('');
+  });
+
+  it.each(['epoch', 'connection', 'client', 'disconnect', 'unmount'] as const)('drops late refresh success/error/finally after %s', async invalidation => {
+    for (const reject of [false, true]) {
+      const { state, call, code } = alerts();
+      const cleanup = code.effect() as unknown as () => void;
+      await vi.waitFor(() => expect(state.loading).toBe(false));
+      const held = deferred<unknown>();
+      call.mockImplementationOnce(() => held.promise as never);
+      const reading = code.refresh();
+      const request = state.request!;
+      if (invalidation === 'epoch') state.session.epoch++;
+      if (invalidation === 'connection') state.session.connectionEpoch++;
+      if (invalidation === 'client') state.session.client = { call: vi.fn() };
+      if (invalidation === 'disconnect') state.session.state = 'unavailable';
+      if (invalidation === 'unmount') { cleanup(); expect(request.signal.aborted).toBe(true); }
+      const current = { ...state.report!, evaluated_at: '2026-10-31T11:00:00Z' };
+      state.report = current;
+      state.error = 'Current error';
+      state.loading = true;
+      state.refreshResult.say.mockClear();
+      if (reject) held.reject(new Error('Old failure'));
+      else held.resolve({ result: alertReport });
+      await reading;
+      expect(state.report).toBe(current);
+      expect(state.error).toBe('Current error');
+      expect(state.loading).toBe(true);
+      expect(state.session.handle).not.toHaveBeenCalled();
+      expect(state.refreshResult.say).not.toHaveBeenCalled();
+    }
+  });
+
+  it('aborts an invalidated read and lets only its replacement complete the busy state', async () => {
+    const { state, call, code } = alerts();
+    await code.load();
+    const old = deferred<unknown>(), fresh = deferred<unknown>();
+    call.mockImplementationOnce(() => old.promise as never).mockImplementationOnce(() => fresh.promise as never);
+    const older = code.refresh(), request = state.request!;
+    state.session.epoch++;
+    const newer = code.load();
+    expect(request.signal.aborted).toBe(true);
+    old.reject(new Error('Old failure'));
+    await older;
+    expect(state.loading).toBe(true);
+    expect(state.error).toBe('');
+    fresh.resolve({ result: alertReport });
+    await newer;
+    expect(state.loading).toBe(false);
+    expect(state.report).toEqual(alertReport);
+  });
+
   it('preserves edits across scan invalidation and saves the edited threshold', async () => {
     const { state, call, code } = alerts();
     await code.load();
@@ -271,16 +596,20 @@ describe('map slice installation', () => {
 function explorer(call: ReturnType<typeof vi.fn>) {
   const state = {
     route: { search: '' },
-    session: { client: { call }, epoch: 0, handle: (e: Error) => e.message },
+    session: { client: { call }, epoch: 0, connectionEpoch: 0, state: 'connected', handle: (e: Error) => e.message },
     untrack, tick: async () => {}, document: { activeElement: null }, HTMLElement: class {},
-    LoomwardError, fallbackStep, onRefetchError, resolveTrail,
+    LoomwardError, fallbackStep, onRefetchError, resolveTrail, planFind,
     PAGE: 50, gen: 0, startsRequest: 0, inspection: 0, abort: null, inspectAbort: null, pageGen: null,
     starts: [] as { id: string; name: string }[], trail: [] as { id: string; name: string }[],
     get here() { return this.trail.at(-1); },
     rows: [] as typeof searchExample.hits[number]['row'][], found: new Map(), seenIds: new Set(),
     searching: false, query: '', extension: '', minBytes: '', kind: 'any', basis: 'logical', sort: 'size_desc',
-    next: null, total: null, error: '', busy: false,
+    next: null as string | null, total: null, error: '', busy: false,
     notice: '', gone: null as { lost: string; now: string | null } | null,
+    rootChoices: [] as Root[], rootChoice: '' as string | null, submittedRoot: null as Root | null,
+    rootsRequest: 0, rootsAbort: null, rootsLoading: false, rootProblem: '', scopeBlocked: false,
+    scopedSearchOpen: false, mountedConnection: 0, reconnectScopePending: false,
+    selectionConnection: 0, selected: [] as { node_id: string; name: string }[],
   };
   return { state, code: viewScript('explorer', state, 'session.epoch') };
 }
@@ -306,6 +635,168 @@ describe('Explorer live-index pagination', () => {
   });
 });
 
+const grantedA = { ...rootList.roots[0]!, root_id: 'rt_a', grant_state: 'active', display_path: { text: 'Synthetic A', truncated: false } } as Root;
+const grantedB = { ...grantedA, root_id: 'rt_b', display_path: { text: 'Synthetic B', truncated: false } };
+
+describe('Explorer submitted root scope', () => {
+  it('freezes the chosen root for paging while a draft points at its same-named twin', async () => {
+    const hit = searchExample.hits[0]!;
+    const a = { ...hit, root_id: grantedA.root_id, row: { ...hit.row, node_id: 'nd_a', name: 'shared.pdf' } };
+    const b = { ...a, root_id: grantedB.root_id, row: { ...a.row, node_id: 'nd_b' } };
+    const call = vi.fn(async (_command: string, request: { root_id: string | null; cursor: string | null }) => ({
+      result: { ...searchExample, hits: request.root_id === grantedA.root_id ? [a] : [a, b], next_cursor: request.cursor ? null : 'next' },
+    }));
+    const { state, code } = explorer(call);
+    state.rootChoices = [grantedA, grantedB];
+    state.rootChoice = grantedA.root_id;
+    state.query = 'shared';
+    expect(code.commit()).toBe(true);
+    await code.show();
+    expect(state.rows).toEqual([a.row]);
+    state.rootChoice = grantedB.root_id;
+    await code.show(true);
+    expect(call.mock.calls.map(([, request]) => request.root_id)).toEqual(['rt_a', 'rt_a']);
+    expect(state.submittedRoot).toEqual(grantedA);
+    expect(call.mock.calls[1]![1].cursor).toBe('next');
+    state.rootChoice = '';
+    expect(code.commit()).toBe(true);
+    await code.show();
+    expect(state.rows).toEqual([a.row, b.row]);
+    expect(state.submittedRoot).toBeNull();
+  });
+
+  const reply = (command: string, available = [grantedA, grantedB]) => ({ result: command === 'roots.list'
+    ? { roots: available } : command === 'tree.slice' ? { nodes: [] } : searchExample });
+
+  it('retains selection for catalogue refreshes but clears sealed IDs on a connected restart', async () => {
+    const { state, code } = explorer(vi.fn(async command => reply(command)));
+    const selected = [{ node_id: 'nd_old_session', name: 'shared.pdf' }];
+    state.selected = selected;
+    code.effect();
+    await vi.waitFor(() => expect(state.rootsLoading).toBe(false));
+    state.session.epoch++; code.effect();
+    await vi.waitFor(() => expect(state.rootsLoading).toBe(false));
+    expect(state.selected).toEqual(selected);
+    state.session.connectionEpoch++; state.session.epoch++; code.effect();
+    expect(state.session.state).toBe('connected');
+    expect(state.selected).toEqual([]);
+    await vi.waitFor(() => expect(state.rootsLoading).toBe(false));
+  });
+
+  it('offers the complete active root list, including roots beyond the Atlas sample', async () => {
+    const all = Array.from({ length: 64 }, (_, i) => ({ ...grantedA, root_id: `rt_${i}` }));
+    all[0] = { ...all[0]!, grant_state: 'revoked' };
+    const { state, code } = explorer(vi.fn(async command => reply(command, all)));
+    await code.reload();
+    expect(state.rootChoices).toEqual(all.slice(1));
+    state.rootChoice = 'rt_63'; state.query = 'shared';
+    expect(code.commit()).toBe(true);
+    expect(state.submittedRoot?.root_id).toBe('rt_63');
+  });
+
+  it('drops a late A result after B is submitted, even when abort is ignored', async () => {
+    const pending = deferred<{ result: typeof searchExample }>();
+    const a = searchExample.hits[0]!;
+    const b = { ...a, row: { ...a.row, node_id: 'nd_b', name: 'shared.pdf' } };
+    const call = vi.fn().mockReturnValueOnce(pending.promise).mockResolvedValue({ result: { ...searchExample, hits: [b] } });
+    const { state, code } = explorer(call);
+    state.rootChoices = [grantedA, grantedB]; state.rootChoice = 'rt_a'; state.query = 'shared';
+    code.commit(); const older = code.show();
+    state.rootChoice = 'rt_b'; code.commit(); await code.show();
+    pending.resolve({ result: { ...searchExample, hits: [a] } }); await older;
+    expect(state.rows).toEqual([b.row]);
+    expect(state.submittedRoot).toEqual(grantedB);
+    expect(call.mock.calls[0]![2].signal.aborted).toBe(true);
+  });
+
+  it.each(['removed', 'revoked', 'unreachable'])('clears %s scoped results and never widens a pending page', async reason => {
+    const pending = deferred<{ result: typeof searchExample }>();
+    let changed = false;
+    const call = vi.fn(async (command: string, request: { cursor?: string | null }) => {
+      if (command === 'search.query' && request.cursor) return pending.promise;
+      if (changed && reason === 'unreachable' && command === 'roots.list') throw new Error('Synthetic root list failure');
+      return reply(command, changed ? reason === 'revoked' ? [{ ...grantedA, grant_state: 'revoked' }, grantedB] : [grantedB] : [grantedA, grantedB]);
+    });
+    const { state, code } = explorer(call);
+    state.rootChoices = [grantedA, grantedB]; state.rootChoice = 'rt_a'; state.query = 'shared';
+    code.commit(); await code.show();
+    state.next = 'next';
+    const older = code.show(true);
+    changed = true; state.session.epoch++;
+    const reload = code.reload();
+    expect(state.rows).toEqual([]);
+    await reload;
+    expect(state.scopeBlocked).toBe(true);
+    expect(state.submittedRoot).toBeNull();
+    expect(state.rootChoice).toBeNull();
+    pending.resolve({ result: searchExample }); await older;
+    expect(state.rows).toEqual([]);
+    expect(state.found.size).toBe(0);
+    expect(code.commit()).toBe(false);
+    await code.show();
+    expect(call.mock.calls.filter(([c]) => c === 'search.query')).toHaveLength(2);
+    state.rootChoice = ''; expect(code.commit()).toBe(true); await code.show();
+    expect(state.rows).toEqual(searchExample.hits.map(h => h.row));
+    expect(state.scopeBlocked).toBe(false);
+  });
+
+  it('ignores an obsolete root list and blocks sealed IDs after a reconnect', async () => {
+    const pending = deferred<{ result: { roots: Root[] } }>();
+    let delay = true;
+    const call = vi.fn(async (command: string) => command === 'roots.list' && delay ? pending.promise : reply(command, [grantedB]));
+    const { state, code } = explorer(call);
+    state.rootChoices = [grantedA]; state.rootChoice = 'rt_a'; state.query = 'shared'; code.commit();
+    const older = code.reload();
+    delay = false; state.session.connectionEpoch++; state.session.epoch++;
+    await code.reload();
+    pending.resolve({ result: { roots: [grantedA] } }); await older;
+    expect(state.rootChoices).toEqual([grantedB]);
+    expect(state.scopeBlocked).toBe(true);
+    expect(call.mock.calls.filter(([c]) => c === 'search.query')).toEqual([]);
+  });
+
+  it('requires a new choice after remount and does not replay an old global link', async () => {
+    const call = vi.fn(async (command: string) => reply(command));
+    const { state, code } = explorer(call);
+    state.rootChoices = [grantedA]; state.rootChoice = 'rt_a'; state.query = 'shared'; code.commit();
+    const cleanup = viewScript('explorer', state, 'rootsRequest++').effect() as unknown as () => void;
+    state.session.state = 'unavailable'; state.session.connectionEpoch++; cleanup();
+    expect(state.scopedSearchOpen).toBe(true);
+    // A fresh instance keeps only the boolean intent, never the old root ID or results.
+    const next = explorer(call);
+    next.state.scopedSearchOpen = next.state.reconnectScopePending = next.state.scopeBlocked = next.state.searching = true;
+    next.state.rootChoice = null; next.state.route.search = 'q=shared';
+    next.code.effect();
+    await vi.waitFor(() => expect(next.state.rootsLoading).toBe(false));
+    expect(call.mock.calls.filter(([c]) => c === 'search.query')).toEqual([]);
+    expect(next.state.rootChoice).toBeNull();
+    next.state.route.search = 'q=another'; next.code.effect();
+    await vi.waitFor(() => expect(call.mock.calls.filter(([c]) => c === 'search.query')).toHaveLength(1));
+    expect(next.state.submittedRoot).toBeNull();
+  });
+
+  it('keeps partial empty coverage, chosen-scope presets and clear-search honest', async () => {
+    const call = vi.fn(async (command: string) => command === 'search.query'
+      ? { result: { ...searchExample, hits: [], partial: true } } : reply(command));
+    const { state, code } = explorer(call);
+    state.rootChoices = [grantedA]; state.rootChoice = 'rt_a';
+    code.preset('ext:iso size:>1gb');
+    await vi.waitFor(() => expect(state.busy).toBe(false));
+    expect(call.mock.calls[0]![0]).toBe('search.query');
+    expect(state.submittedRoot).toEqual(grantedA);
+    expect(code.evaluate('scope')).toMatchObject({ partial: true });
+    expect(state.rows).toEqual([]);
+    code.clearSearch();
+    expect(state.searching).toBe(false);
+    expect(state.scopedSearchOpen).toBe(false);
+    expect(state.rootChoice).toBe('rt_a');
+    state.route.search = 'q=shared'; code.effect();
+    await vi.waitFor(() => expect(state.searching).toBe(true));
+    expect(state.submittedRoot).toBeNull();
+    expect(state.rootChoice).toBe('');
+  });
+});
+
 const rootA = { id: 'root_a', name: 'Synthetic A' }, rootB = { id: 'root_b', name: 'Synthetic B' };
 const roots = (...items: typeof rootA[]) => ({ nodes: items.map(r => ({ node_id: r.id, name: r.name, parent: 0 })) });
 const children = { generation: 'g1', items: [], next_cursor: null, total: 0, budget_hit: false };
@@ -313,7 +804,7 @@ const children = { generation: 'g1', items: [], next_cursor: null, total: 0, bud
 describe('Explorer starting points after invalidation', () => {
   it.each([false, true])('removes a revoked sibling while preserving the current trail and searching=%s', async searching => {
     let revoked = false;
-    const call = vi.fn(async (command: string) => ({ result: command === 'tree.slice'
+    const call = vi.fn(async (command: string) => ({ result: command === 'roots.list' ? rootList : command === 'tree.slice'
       ? revoked ? roots(rootA) : roots(rootA, rootB)
       : command === 'search.query' ? searchExample : children }));
     const { state, code } = explorer(call);
@@ -341,7 +832,7 @@ describe('Explorer starting points after invalidation', () => {
   it('binds the root it lands on to its granted path, so a restart that re-mints every ID still restores the trail (#198)', async () => {
     const afterRestart = { id: 'root_after_restart', name: 'Synthetic A' }, other = { id: 'root_other', name: 'Synthetic A' };
     let restarted = false;
-    const call = vi.fn(async (command: string, req: { node_id?: string }) => ({ result: command === 'tree.slice' ? roots(...(restarted ? [other, afterRestart] : [rootA]))
+    const call = vi.fn(async (command: string, req: { node_id?: string }) => ({ result: command === 'roots.list' ? rootList : command === 'tree.slice' ? roots(...(restarted ? [other, afterRestart] : [rootA]))
       : command === 'node.inspect' ? inspected(req.node_id === other.id ? 'synthetic/other' : 'synthetic/a')
       : { ...children, items: [{ node_id: restarted ? 'child_after' : 'child_a', name: 'Synthetic child', kind: 'dir' }] } }));
     const { state, code } = explorer(call);
@@ -358,7 +849,7 @@ describe('Explorer starting points after invalidation', () => {
 
   it('does not tell the reader a different root of the same name was restored (#198)', async () => {
     const twin = { id: 'root_twin', name: 'Synthetic A' };
-    const call = vi.fn(async (command: string, req: { node_id?: string }) => ({ result: command === 'tree.slice' ? roots(twin)
+    const call = vi.fn(async (command: string, req: { node_id?: string }) => ({ result: command === 'roots.list' ? rootList : command === 'tree.slice' ? roots(twin)
       : command === 'node.inspect' ? inspected('synthetic/twin') : { ...children, items: req.node_id === twin.id ? [{ node_id: 'child_t', name: 'Synthetic child', kind: 'dir' }] : [] } }));
     const { state, code } = explorer(call);
     const saved = [{ ...rootA, root: 'synthetic/a' }, { id: 'child_a', name: 'Synthetic child' }];
@@ -372,7 +863,7 @@ describe('Explorer starting points after invalidation', () => {
     let fail = false;
     const { state, code } = explorer(vi.fn(async (command: string) => {
       if (command === 'tree.slice' && fail) throw new Error('synthetic offline catalogue');
-      return { result: command === 'tree.slice' ? roots(rootA, rootB) : children };
+      return { result: command === 'roots.list' ? rootList : command === 'tree.slice' ? roots(rootA, rootB) : children };
     }));
     await code.loadStarts();
     fail = true;
@@ -407,7 +898,7 @@ describe('Explorer starting points after invalidation', () => {
   it('aborts an obsolete root refresh without letting its late reply restore a revoked root', async () => {
     const pending = deferred<{ result: ReturnType<typeof roots> }>();
     const call = vi.fn()
-      .mockImplementation(async (command: string) => ({ result: command === 'tree.slice' ? roots(rootA) : children }));
+      .mockImplementation(async (command: string) => ({ result: command === 'roots.list' ? rootList : command === 'tree.slice' ? roots(rootA) : children }));
     const { state, code } = explorer(call);
     await code.loadStarts();
     call.mockImplementationOnce(() => pending.promise);
@@ -423,7 +914,7 @@ describe('Explorer starting points after invalidation', () => {
 
 describe('Explorer linked node is applied once per value (#1082)', () => {
   it('does not re-inspect a linked node after a reconnect, but applies a different or re-followed link', async () => {
-    const call = vi.fn(async (command: string) => ({ result: command === 'tree.slice' ? roots(rootA)
+    const call = vi.fn(async (command: string) => ({ result: command === 'roots.list' ? rootList : command === 'tree.slice' ? roots(rootA)
       : command === 'node.inspect' ? { display_path: { text: 'synthetic/a', truncated: false } } : children }));
     // The root binding also reads node.inspect for the starting root (background bookkeeping): count only linked nodes.
     const inspectedNodes = () => (call.mock.calls as unknown as Array<[string, { node_id: string }]>)
@@ -454,7 +945,7 @@ describe('Explorer linked node is applied once per value (#1082)', () => {
     let first = true;
     const call = vi.fn(async (command: string, params: { node_id?: string }) => {
       if (command === 'node.inspect' && params.node_id?.startsWith('nd_') && first) { first = false; return pending.promise; }
-      return { result: command === 'tree.slice' ? roots(rootA)
+      return { result: command === 'roots.list' ? rootList : command === 'tree.slice' ? roots(rootA)
         : command === 'node.inspect' ? { display_path: { text: 'synthetic/a', truncated: false } } : children };
     });
     const inspectedNodes = () => (call.mock.calls as unknown as Array<[string, { node_id: string }]>)
@@ -475,7 +966,7 @@ describe('Explorer linked node is applied once per value (#1082)', () => {
     let first = true;
     const call = vi.fn(async (command: string, params: { node_id?: string }) => {
       if (command === 'node.inspect' && params.node_id === 'nd_a' && first) { first = false; return never; }
-      return { result: command === 'tree.slice' ? roots(rootA)
+      return { result: command === 'roots.list' ? rootList : command === 'tree.slice' ? roots(rootA)
         : command === 'node.inspect' ? { display_path: { text: 'synthetic/b', truncated: false } } : children };
     });
     const inspectedNodes = () => (call.mock.calls as unknown as Array<[string, { node_id: string }]>)

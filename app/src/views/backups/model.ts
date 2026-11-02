@@ -112,5 +112,14 @@ export function parseRequired(text: string): { required: RequiredVersion[]; erro
   return { required, errors };
 }
 
+/** The line editor must preserve stored names and versions exactly, including whitespace. */
+export function formatRequired(required: readonly RequiredVersion[]): string | null {
+  const text = required.map((f) => `${f.relative_name} ${f.version}`).join('\n');
+  const parsed = parseRequired(text);
+  return !parsed.errors.length && parsed.required.length === required.length
+    && parsed.required.every((f, i) => f.relative_name === required[i]!.relative_name && f.version === required[i]!.version)
+    ? text : null;
+}
+
 export const LABEL = /^[A-Za-z0-9._-]{1,64}$/;
 export const SNAPSHOT = /^[0-9a-f]{64}$/;

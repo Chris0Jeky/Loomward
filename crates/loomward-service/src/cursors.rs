@@ -24,6 +24,10 @@ pub enum Position {
         after: i64,
         catalog_rev: i64,
     },
+    Feedback {
+        before: i64,
+        catalog_rev: i64,
+    },
     Metadata {
         snapshot: std::sync::Arc<serde_json::Value>,
         offset: usize,

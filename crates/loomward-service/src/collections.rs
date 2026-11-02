@@ -76,7 +76,7 @@ impl Inner {
         let now = std::time::Instant::now();
         now + ahead >= deadline
     }
-    fn collection_read(&self, work: Option<&ReadWork>) -> Result<Connection, ErrorBody> {
+    pub(crate) fn collection_read(&self, work: Option<&ReadWork>) -> Result<Connection, ErrorBody> {
         let conn = db::open(&self.state_dir).map_err(sql_error)?;
         conn.execute_batch("PRAGMA query_only=ON; BEGIN")
             .map_err(sql_error)?;

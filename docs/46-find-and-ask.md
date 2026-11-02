@@ -199,6 +199,22 @@ Loomward's grant and freshness terms, and it adds contents indexing that no gate
 
 ### 5.2 Own index (the backbone)
 
+Explorer's **Search scope** selects all granted roots (the default for `?q=` links) or one active
+root from the complete `roots.list` result. Submitting freezes that scope with the filters and cursor;
+editing the selector does not relabel existing results. Cleanup searches use the chosen scope. If
+the chosen root becomes unavailable, or a disconnect discards its session identity, results clear and
+the reader must explicitly choose a scope and search again. This uses the existing `search.query.root_id`
+field; it does not implement the broader `in:`/`under:` grammar or change grant authority.
+
+Explorer's explicit row selection can also be saved to an existing human collection, including rows
+selected across loaded pages or folders. The action captures 1-500 unique selected node IDs and the
+chosen collection, reads its current state revision, and submits one atomic membership update. It
+never means all matches. A stale revision or unavailable identity refuses the set without partial
+membership or automatic retry. Selection is session-local; a late reply cannot relabel the current
+selection, and leaving after submission does not undo a completed update. Batch membership uses the
+existing current-identity/state-revision contract; the inspector and project-discovery single-node
+actions retain their separate generation checks. Membership records meaning only; files stay in place.
+
 Search v1 provides an FTS5 trigram index (substring, three or more characters) and a token index over names.
 Facts this design relies on: trigram has been in FTS5 since SQLite 3.34.0 (2020-12-01) [F10]. Substrings
 shorter than three characters match nothing, so one- and two-character queries need a prefix path on the plain

@@ -2879,6 +2879,7 @@ fn every_command_answers_a_complete_envelope_and_core_reads_serve_the_catalogue(
             && !matches!(
                 command,
                 Command::FeedbackRecord
+                    | Command::FeedbackHistory
                     | Command::LearningStatus
                     | Command::LearningQueue
                     | Command::LearningRefit

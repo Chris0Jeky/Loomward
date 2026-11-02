@@ -108,6 +108,7 @@ commands! {
     ReclaimSample = "reclaim.sample", ReclaimSampleRequest, ReclaimRelief, [Tauri, Http], 2, [];
     TaxonomyGet = "taxonomy.get", EmptyRequest, Taxonomy, [Tauri, Http], 3, [];
     FeedbackRecord = "feedback.record", FeedbackRequest, FeedbackResult, [Tauri, Http], 3, [LearningUpdated];
+    FeedbackHistory = "feedback.history", FeedbackHistoryRequest, FeedbackHistory, [Tauri, Http], 3, [];
     LearningStatus = "learning.status", EmptyRequest, LearningStatus, [Tauri, Http], 3, [];
     JobsCancel = "jobs.cancel", JobRefRequest, JobResult, [Tauri, Http], 2, [JobState];
     LearningQueue = "learning.queue", LearningQueueRequest, LearningQueue, [Tauri, Http], 3, [];
