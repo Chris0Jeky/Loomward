@@ -22,7 +22,7 @@ export class Covers {
   private generation = 0;
   private sessionStartedAt: string | null = null;
   /** The job whose report was asked for, so a finished job is fetched once. */
-  private fetched: string | null = null;
+  private fetched = $state<string | null>(null);
   private resultTicket = 0;
 
   private alignEpoch(): void {
