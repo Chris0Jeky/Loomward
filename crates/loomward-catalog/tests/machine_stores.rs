@@ -758,7 +758,10 @@ fn a_comfyui_cache_always_has_one_provider_when_its_hf_signature_is_unusable() {
         match damaged {
             "model_stale" => {
                 lab.db
-                    .execute("UPDATE dir SET listing_outcome='stale' WHERE id=?1", [model])
+                    .execute(
+                        "UPDATE dir SET listing_outcome='stale' WHERE id=?1",
+                        [model],
+                    )
                     .unwrap();
             }
             "model_shielded" => {
@@ -771,7 +774,10 @@ fn a_comfyui_cache_always_has_one_provider_when_its_hf_signature_is_unusable() {
             }
             "blobs_excluded" => {
                 lab.db
-                    .execute("UPDATE dir SET listing_state='excluded' WHERE id=?1", [blobs])
+                    .execute(
+                        "UPDATE dir SET listing_state='excluded' WHERE id=?1",
+                        [blobs],
+                    )
                     .unwrap();
             }
             "snapshots_flagged" => {
