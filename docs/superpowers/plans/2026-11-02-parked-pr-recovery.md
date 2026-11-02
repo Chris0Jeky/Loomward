@@ -35,7 +35,7 @@
 - [x] Reproduce Explorer's Atlas/search coupling and failed root-validation behavior; test the actual instance functions before changing `reload()`.
 - [x] Independently review the feature changes and combined seams; correct actionable findings before publication.
 - [x] Repair the first hosted browser failure without weakening its concurrent saved-scenario journey: separate reserve submission from tier declaration, and fence old scenario-list replies before reserve submission. Four new actual-function interleaving tests pass within the 87-test lifecycle suite.
-- [ ] Require the integration PR's exact-source Linux/Windows native, desktop and browser checks before merge. Record the definitive results in that PR.
+- [x] Require the integration PR's exact-source Linux/Windows native, desktop and browser checks before merge. Both exact-head runs passed all nine jobs; final landing is recorded below and in the PR.
 
 ## Local validation and limitations
 
@@ -43,4 +43,27 @@ The combined Python suite ran 440 tests successfully with five platform-specific
 
 Local Rust and live browser execution are unavailable. Chromium installation returned an invalid download archive. Initial Python attempts exposed sandbox socket restrictions and Git-ancestor guards on temporary directories; the successful run used synthetic loopback servers and `/var/tmp`. Those environment failures are not classified as product failures or passing tests. Hosted proof remains required, and this document does not claim physical-device, WebView2 or assistive-technology acceptance.
 
-The first published head, `b10e6117ca4804e07d68295e43fba4bc38a4cf4c`, passed Linux native, desktop, Windows app and all four Python jobs. Ubuntu app exposed the saved-scenario loading regression in `check_tiers_loading_followups`; runs 41385000577 and 41385030679 retain that failure. The repair keeps this browser assertion and the reserve uncertain-outcome protections. Its focused lifecycle suite passes 87 tests, and app check reports zero errors and warnings. The replacement head still requires the complete hosted gates.
+The first published head, `b10e6117ca4804e07d68295e43fba4bc38a4cf4c`, passed Linux native, desktop, Windows app and all four Python jobs. Ubuntu app exposed the saved-scenario loading regression in `check_tiers_loading_followups`; runs 41385000577 and 41385030679 retain that failure. The repair keeps this browser assertion and the reserve uncertain-outcome protections. Its focused lifecycle suite passes 87 tests, and app check reports zero errors and warnings. At that point the replacement head still required the complete hosted gates; its subsequent results are recorded below.
+
+
+## Hosted qualification and landing
+
+Exact integration head `d7eab8c045caa16dad8244e2526390b06a8614cc`, tree
+`d3c65c0dce034c565d38ea5f7c55a54f524d691f`, passed all nine jobs in both
+[PR run 41385886994](https://github.com/Chris0Jeky/Loomward/actions/runs/41385886994) and
+[push run 41385882882](https://github.com/Chris0Jeky/Loomward/actions/runs/41385882882).
+The hosted app suite ran 1,038 tests across 73 files and completed the mock and live HTTP/browser
+journeys. Linux native, standard-user Windows native, desktop, both app jobs and all four Python
+matrix jobs passed. Ignored and platform-specific cases remain explicit in their logs.
+
+Original reserve PR #1109 merged concurrently as `280aa69b3f29577f117db20c87532fe69f769a0b`.
+Its latest source was already preserved in the follow-up ancestry. The remaining integration therefore
+landed through [PR #1127](https://github.com/Chris0Jeky/Loomward/pull/1127), merged at 05:07:11 UTC
+on 2 November 2026 as `ad58c9036931b981c9c47a99fb54dccd50377773`. Its complete nine-job gate
+passed before merge; the actual merge tree exactly equals the reviewed follow-up source
+`fa59a3cf5ab194f1ca93298c2384d1caddb10f24`. GitHub recognizes #1125, #1113 and #1118 as merged
+through that ancestry, without a separate main merge of each original PR.
+
+Issues #1111, #1114, #1119 and #1116 are closed as completed; #1111 closed with the concurrent
+reserve merge. Broader #31/#36 and all manual acceptance/effect gates remain separate. The first
+failed runs above remain part of the evidence, and no browser assertion was weakened to clear them.
