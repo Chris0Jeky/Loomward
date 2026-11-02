@@ -59,14 +59,29 @@ def run_live_reserve(browser, exe: Path, dist: Path, check, call, evidence: Path
             group.get_by_role('checkbox', name=re.compile('^Assume no move')).check()
             page.get_by_label('Space freed counted from').select_option('entry_allocation_whatif')
             page.get_by_label('Keep these scenarios').check()
-            def assumed_reply(response):
-                if not response.url.endswith('/api/v3/call') or response.request.method != 'POST':
+            def assumed(request):
+                if not request.url.endswith('/api/v3/call') or request.method != 'POST':
                     return False
-                request = response.request.post_data_json
-                return request.get('command') == 'placement.simulate' and request['payload']['heat_policy'] == 'assumed_only'
-            with page.expect_response(assumed_reply) as response:
-                page.get_by_role('button', name='Simulate', exact=True).click()
-            envelope = response.value.json()
+                body = request.post_data_json
+                return body.get('command') == 'placement.simulate' and body['payload']['heat_policy'] == 'assumed_only'
+            # Chromium may evict a response body from the DevTools buffer before Response.json() reads it
+            # (#1111), so Playwright fetches the reply itself and hands the same bytes to the page.
+            replies = []
+            def capture(route):
+                if not assumed(route.request):
+                    route.continue_()
+                    return
+                reply = route.fetch()
+                replies.append(reply.json())
+                route.fulfill(response=reply)
+            page.route('**/api/v3/call', capture)
+            try:
+                with page.expect_response(lambda response: assumed(response.request)):
+                    page.get_by_role('button', name='Simulate', exact=True).click()
+            finally:
+                page.unroute('**/api/v3/call', capture)
+            check(len(replies) == 1, 'reserve: the app sent one assumed-only simulation')
+            envelope = replies[0]
             check(envelope['ok'], 'reserve: app simulation succeeds over native HTTP')
             expect(page.get_by_role('heading', name='Placement plan', exact=True)).to_be_visible()
             return envelope['result']
