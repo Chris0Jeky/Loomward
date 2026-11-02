@@ -14,6 +14,51 @@ const sim = (c: Client, o: Partial<PlacementSimulateRequest> = {}) =>
   });
 
 describe('mock tiers and placement', () => {
+  it('records exact reserves, refuses stale writes, replays retries and stales saved scenarios', async () => {
+    const c = client();
+    const model = () => c.call('tiers.model', {});
+    const before = await model();
+    expect(before.result.volumes.find(v => v.volume_id === 'vo_g')!.declared_reserve_bytes).toBeNull();
+    const payload = { volume_id: 'vo_g', reserve_bytes: '85899345920' };
+    const opts = { expectedStateRev: before.meta.state_rev!, requestId: 'reserve-80' };
+    const first = await c.call('volumes.declare_reserve', payload, opts);
+    const { result: old } = await sim(c, { save: true });
+    await c.call('volumes.declare_reserve', { ...payload, reserve_bytes: '64424509440' }, { expectedStateRev: (await model()).meta.state_rev! });
+    await expect(c.call('volumes.declare_reserve', payload, { expectedStateRev: before.meta.state_rev! })).rejects.toMatchObject({ code: 'stale_generation' });
+    expect(await c.call('volumes.declare_reserve', payload, opts)).toEqual(first);
+    await expect(c.call('volumes.declare_reserve', { ...payload, reserve_bytes: '0' }, opts)).rejects.toMatchObject({ detail: { reason: 'idempotency_conflict' } });
+    expect((await model()).result.volumes.find(v => v.volume_id === 'vo_g')!.reserve_bytes).toBe('64424509440');
+    expect((await c.call('proposals.get', { proposal_id: old.proposal_id! })).result.summary.status).toBe('stale');
+    expect((await sim(c, { save: true })).result.proposal_id).not.toBe(old.proposal_id);
+    for (const reserve_bytes of ['18446744073709551615', '0', null]) {
+      await c.call('volumes.declare_reserve', { ...payload, reserve_bytes }, { expectedStateRev: (await model()).meta.state_rev! });
+      const volume = (await model()).result.volumes.find(v => v.volume_id === 'vo_g')!;
+      expect(volume.declared_reserve_bytes).toBe(reserve_bytes);
+      expect(volume.reserve_bytes).toBe(reserve_bytes ?? '0');
+    }
+    await expect(c.call('volumes.declare_reserve', payload)).rejects.toMatchObject({ code: 'invalid_request' });
+    for (const reserve_bytes of ['-1', '01', '1.5', '18446744073709551616']) {
+      await expect(c.call('volumes.declare_reserve', { ...payload, reserve_bytes }, { expectedStateRev: (await model()).meta.state_rev! })).rejects.toMatchObject({ code: 'invalid_request' });
+    }
+  });
+
+  it('keeps reserve headroom out of destination room without changing eligible groups', async () => {
+    const c = client();
+    const request = { heat_policy: 'mtime_proxy_whatif', save: false } as const;
+    const before = (await sim(c, request)).result;
+    expect(before.satisfied).toBe(true);
+    for (const volume_id of ['vo_g', 'vo_e']) {
+      const { result, meta } = await c.call('tiers.model', {});
+      const volume = result.volumes.find(v => v.volume_id === volume_id)!;
+      await c.call('volumes.declare_reserve', { volume_id, reserve_bytes: volume.free_bytes }, { expectedStateRev: meta.state_rev! });
+    }
+    const after = (await sim(c, request)).result;
+    expect(after.satisfied).toBe(false);
+    expect(after.proposals).toHaveLength(0);
+    expect(after.search.eligible_groups).toBe(before.search.eligible_groups);
+    expect(after.excluded_volumes).toEqual(before.excluded_volumes);
+  });
+
   it('records declarations and retrieves saved scenarios without giving them effects', async () => {
     const c = client();
     const declared = await c.call('volumes.declare_tier', { volume_id: 'vo_f', tier: 3 });

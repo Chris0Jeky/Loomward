@@ -423,7 +423,7 @@
     const starting = loadStarts(undefined, !!(trail.length || searching));
     const [loaded] = await Promise.all([starting, loadRoots()]);
     if (mine === gen && (trail.length || searching)) {
-      if (!loaded || (searching && scopeBlocked)) busy = false;
+      if (searching ? scopeBlocked || !!rootProblem : !loaded) busy = false;
       else await show();
     }
   }

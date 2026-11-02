@@ -260,7 +260,7 @@ export interface RequestEnvelope {
   payload: Record<string, unknown>;
   deadline_ms?: number;
   expected_generation?: Generation;
-  /** Revision precondition for owner-state mutations (volumes.declare_tier, collections.update_members): the call commits only while state.db is still at this revision, else stale_generation with detail.reason state_rev_changed (semantics.md sections 3 and 5). Elsewhere invalid_request. */
+  /** Revision precondition for owner-state mutations (volumes.declare_tier, volumes.declare_reserve (required), collections.update_members, learning.set_deferred (required), roots.forget): the call commits only while state.db is still at this revision, else stale_generation with detail.reason state_rev_changed (semantics.md sections 3 and 5). Elsewhere invalid_request. */
   expected_state_rev?: Generation;
 }
 
@@ -566,6 +566,18 @@ export interface Volume {
 
 export interface VolumeList {
   volumes: Volume[];
+}
+
+/** Owner-only absolute uint64 bytes, not a percentage. null clears; zero is explicit. The service requires expected_state_rev on the envelope. */
+export interface DeclareReserveRequest {
+  volume_id: VolumeId;
+  reserve_bytes: NullableBytes;
+}
+
+export interface DeclareReserveResult {
+  volume_id: VolumeId;
+  reserve_bytes: NullableBytes;
+  preference_recorded_at: Timestamp;
 }
 
 /** Records a human preference. null clears the declaration. */
@@ -1245,8 +1257,25 @@ export interface FeedbackHistory {
   next_cursor: Cursor | null;
 }
 
+/** Owner-only; envelope expected_state_rev is required. Exact durable replay precedes the revision precondition. No label or permission is recorded. */
+export interface LearningDeferredRequest {
+  node_id: NodeId;
+  deferred: boolean;
+  client_event_id: string;
+}
+
+export interface LearningDeferredResult {
+  deferred: boolean;
+  revision: Generation;
+  idempotent_replay: boolean;
+}
+
+export type LearningQueueMode = "review" | "deferred";
+
 export interface LearningQueueRequest {
   root_id: RootId | null;
+  /** Omitted means review. */
+  mode?: LearningQueueMode;
   limit: number;
   cursor: Cursor | null;
 }
@@ -1461,6 +1490,8 @@ export interface TierVolume {
   capacity_bytes: NullableBytes;
   free_bytes: NullableBytes;
   reserve_bytes: ByteCount;
+  /** Absent on older producers. null is unset (zero assumed); a string including 0 is the owner preference. */
+  declared_reserve_bytes?: NullableBytes;
   free_fraction: NullableFraction;
   pressure: "ok" | "watch" | "pressure" | "unknown";
   source_eligible: boolean;
@@ -2778,6 +2809,7 @@ export interface CommandMap {
   "roots.revoke": { request: RootRevokeRequest; result: RootRevokeResult };
   "roots.forget": { request: RootForgetRequest; result: RootForgetResult };
   "volumes.list": { request: EmptyRequest; result: VolumeList };
+  "volumes.declare_reserve": { request: DeclareReserveRequest; result: DeclareReserveResult };
   "volumes.declare_tier": { request: DeclareTierRequest; result: DeclareTierResult };
   "scan.start": { request: ScanStartRequest; result: JobResult };
   "duplicates.inspect": { request: DuplicatesInspectRequest; result: JobResult };
@@ -2803,6 +2835,7 @@ export interface CommandMap {
   "feedback.history": { request: FeedbackHistoryRequest; result: FeedbackHistory };
   "learning.status": { request: EmptyRequest; result: LearningStatus };
   "learning.queue": { request: LearningQueueRequest; result: LearningQueue };
+  "learning.set_deferred": { request: LearningDeferredRequest; result: LearningDeferredResult };
   "learning.refit": { request: EmptyRequest; result: JobResult };
   "jobs.cancel": { request: JobRefRequest; result: JobResult };
   "collections.list": { request: EmptyRequest; result: CollectionList };
@@ -2878,6 +2911,7 @@ export const COMMANDS = {
   "roots.revoke": { adapters: ["tauri", "http"], wave: 2, events: [] },
   "roots.forget": { adapters: ["tauri", "http"], wave: 2, events: [] },
   "volumes.list": { adapters: ["tauri", "http"], wave: 2, events: [] },
+  "volumes.declare_reserve": { adapters: ["tauri", "http"], wave: 2, events: ["volumes.changed"] },
   "volumes.declare_tier": { adapters: ["tauri", "http"], wave: 2, events: [] },
   "scan.start": { adapters: ["tauri", "http"], wave: 2, events: ["job.state", "scan.progress", "tree.invalidated"] },
   "duplicates.inspect": { adapters: ["tauri", "http"], wave: 2, events: ["job.state"] },
@@ -2903,6 +2937,7 @@ export const COMMANDS = {
   "feedback.history": { adapters: ["tauri", "http"], wave: 3, events: [] },
   "learning.status": { adapters: ["tauri", "http"], wave: 3, events: [] },
   "learning.queue": { adapters: ["tauri", "http"], wave: 3, events: [] },
+  "learning.set_deferred": { adapters: ["tauri", "http"], wave: 3, events: [] },
   "learning.refit": { adapters: ["tauri", "http"], wave: 3, events: ["job.state", "learning.updated"] },
   "jobs.cancel": { adapters: ["tauri", "http"], wave: 2, events: ["job.state"] },
   "collections.list": { adapters: ["tauri", "http"], wave: 3, events: [] },

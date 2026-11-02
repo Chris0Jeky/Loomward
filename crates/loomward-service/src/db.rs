@@ -28,6 +28,15 @@ pub fn open(dir: &Path) -> Sql<Connection> {
     // Every durable boundary of the service's owner-state writes, in a crash sweep only (q-39).
     loomward_catalog::crash_arm(&conn);
     conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS st.reserve_declaration (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        volume_key TEXT NOT NULL,
+        reserve_bytes TEXT,
+        declared_at_ns INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS st.reserve_declaration_volume ON reserve_declaration(volume_key,id)",
+    )?;
+    conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS st.root_freshness (
         grant_id INTEGER PRIMARY KEY REFERENCES root_grant(id),
         catalog_instance TEXT NOT NULL,
@@ -324,6 +333,7 @@ pub struct VolumeRow {
     pub online: bool,
     pub observed_at_ns: i64,
     pub declared: Option<Option<i64>>,
+    pub reserve_bytes: Option<u64>,
 }
 
 pub fn volumes(conn: &Connection, only: Option<i64>) -> Sql<Vec<VolumeRow>> {
@@ -333,7 +343,8 @@ pub fn volumes(conn: &Connection, only: Option<i64>) -> Sql<Vec<VolumeRow>> {
                      THEN v.volume_key ELSE v.display_name END,
                 v.filesystem,v.online,v.observed_at_ns,
                 (SELECT 1 FROM st.tier_declaration t WHERE t.volume_key=v.volume_key),
-                (SELECT t.tier FROM st.tier_declaration t WHERE t.volume_key=v.volume_key ORDER BY t.declared_at_ns DESC,t.id DESC LIMIT 1)
+                (SELECT t.tier FROM st.tier_declaration t WHERE t.volume_key=v.volume_key ORDER BY t.declared_at_ns DESC,t.id DESC LIMIT 1),
+                (SELECT r.reserve_bytes FROM st.reserve_declaration r WHERE r.volume_key=v.volume_key ORDER BY r.id DESC LIMIT 1)
          FROM main.volume v WHERE ?1 IS NULL OR v.id=?1 ORDER BY v.id LIMIT 65",
     )?;
     let rows = stmt
@@ -346,6 +357,17 @@ pub fn volumes(conn: &Connection, only: Option<i64>) -> Sql<Vec<VolumeRow>> {
                 online: r.get(4)?,
                 observed_at_ns: r.get(5)?,
                 declared: r.get::<_, Option<i64>>(6)?.map(|_| r.get(7)).transpose()?,
+                reserve_bytes: r
+                    .get::<_, Option<String>>(8)?
+                    .map(|s| s.parse::<u64>())
+                    .transpose()
+                    .map_err(|e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            8,
+                            rusqlite::types::Type::Text,
+                            Box::new(e),
+                        )
+                    })?,
             })
         })?
         .collect();
@@ -375,6 +397,32 @@ pub fn declare_tier(
         [],
     )?;
     let next: i64 = tx.query_row("SELECT state_rev FROM st.revision", [], |r| r.get(0))?;
+    tx.commit()?;
+    Ok(Ok(next))
+}
+
+/// Exact bytes stay decimal text; SQLite's signed integer range is narrower than the wire's.
+pub fn declare_reserve(
+    conn: &mut Connection,
+    volume_key: &str,
+    reserve_bytes: Option<u64>,
+    expected_state_rev: u64,
+    at_ns: i64,
+) -> Sql<Result<i64, i64>> {
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let current: i64 = tx.query_row("SELECT state_rev FROM st.revision", [], |r| r.get(0))?;
+    if u64::try_from(current).ok() != Some(expected_state_rev) {
+        return Ok(Err(current));
+    }
+    tx.execute(
+        "INSERT INTO st.reserve_declaration(volume_key,reserve_bytes,declared_at_ns) VALUES(?1,?2,?3)",
+        params![volume_key, reserve_bytes.map(|n| n.to_string()), at_ns],
+    )?;
+    tx.execute(
+        "UPDATE st.revision SET state_rev=state_rev+1 WHERE id=1",
+        [],
+    )?;
+    let next = tx.query_row("SELECT state_rev FROM st.revision", [], |r| r.get(0))?;
     tx.commit()?;
     Ok(Ok(next))
 }

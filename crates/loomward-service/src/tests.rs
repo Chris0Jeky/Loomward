@@ -838,6 +838,8 @@ fn placement_request(volume: &str, save: bool) -> Value {
     json!({"source_volume_id":volume,"target_free_bytes":"262144","max_transfer_bytes":"1048576","heat_policy":"unknown_is_ineligible","relief_policy":"verified_only","candidate_basis":"largest_dirs","max_groups":50,"overrides":[],"node_budget":1000,"save":save})
 }
 
+mod reserve;
+
 /// #954: the service's `files()` ignores its generation argument because every read sits in the
 /// one transaction opened with the snapshot. A commit made after that snapshot is invisible to it.
 #[test]
@@ -2880,6 +2882,7 @@ fn every_command_answers_a_complete_envelope_and_core_reads_serve_the_catalogue(
                     | Command::FeedbackHistory
                     | Command::LearningStatus
                     | Command::LearningQueue
+                    | Command::LearningSetDeferred
                     | Command::LearningRefit
                     | Command::ThreadsMeaning
                     | Command::CollectionsList

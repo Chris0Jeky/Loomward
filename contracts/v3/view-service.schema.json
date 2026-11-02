@@ -108,7 +108,7 @@
         "payload": { "type": "object", "$comment": "Validated against the request definition named for this command in commands.json." },
         "deadline_ms": { "type": "integer", "minimum": 1, "maximum": 60000 },
         "expected_generation": { "$ref": "#/$defs/Generation" },
-        "expected_state_rev": { "$ref": "#/$defs/Generation", "$comment": "Revision precondition for owner-state mutations (volumes.declare_tier, collections.update_members): the call commits only while state.db is still at this revision, else stale_generation with detail.reason state_rev_changed (semantics.md sections 3 and 5). Elsewhere invalid_request." }
+        "expected_state_rev": { "$ref": "#/$defs/Generation", "$comment": "Revision precondition for owner-state mutations (volumes.declare_tier, volumes.declare_reserve (required), collections.update_members, learning.set_deferred (required), roots.forget): the call commits only while state.db is still at this revision, else stale_generation with detail.reason state_rev_changed (semantics.md sections 3 and 5). Elsewhere invalid_request." }
       }
     },
     "ResponseMeta": {
@@ -522,6 +522,24 @@
       "additionalProperties": false,
       "required": ["volumes"],
       "properties": { "volumes": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/Volume" } } }
+    },
+    "DeclareReserveRequest": {
+      "type": "object", "additionalProperties": false,
+      "required": ["volume_id", "reserve_bytes"],
+      "properties": {
+        "volume_id": { "$ref": "#/$defs/VolumeId" },
+        "reserve_bytes": { "$ref": "#/$defs/NullableBytes" }
+      },
+      "$comment": "Owner-only absolute uint64 bytes, not a percentage. null clears; zero is explicit. The service requires expected_state_rev on the envelope."
+    },
+    "DeclareReserveResult": {
+      "type": "object", "additionalProperties": false,
+      "required": ["volume_id", "reserve_bytes", "preference_recorded_at"],
+      "properties": {
+        "volume_id": { "$ref": "#/$defs/VolumeId" },
+        "reserve_bytes": { "$ref": "#/$defs/NullableBytes" },
+        "preference_recorded_at": { "$ref": "#/$defs/Timestamp" }
+      }
     },
     "DeclareTierRequest": {
       "type": "object",
@@ -1662,12 +1680,33 @@
         "next_cursor": {"anyOf": [{"$ref": "#/$defs/Cursor"}, {"type": "null"}]}
       }
     },
+    "LearningDeferredRequest": {
+      "type": "object", "additionalProperties": false,
+      "required": ["node_id", "deferred", "client_event_id"],
+      "properties": {
+        "node_id": {"$ref": "#/$defs/NodeId"},
+        "deferred": {"type": "boolean"},
+        "client_event_id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{8,64}$"}
+      },
+      "$comment": "Owner-only; envelope expected_state_rev is required. Exact durable replay precedes the revision precondition. No label or permission is recorded."
+    },
+    "LearningDeferredResult": {
+      "type": "object", "additionalProperties": false,
+      "required": ["deferred", "revision", "idempotent_replay"],
+      "properties": {
+        "deferred": {"type": "boolean"},
+        "revision": {"$ref": "#/$defs/Generation"},
+        "idempotent_replay": {"type": "boolean"}
+      }
+    },
+    "LearningQueueMode": {"enum": ["review", "deferred"]},
     "LearningQueueRequest": {
       "type": "object",
       "additionalProperties": false,
       "required": ["root_id", "limit", "cursor"],
       "properties": {
         "root_id": { "anyOf": [{ "$ref": "#/$defs/RootId" }, { "type": "null" }] },
+        "mode": { "$ref": "#/$defs/LearningQueueMode", "$comment": "Omitted means review." },
         "limit": { "type": "integer", "minimum": 1, "maximum": 100 },
         "cursor": { "anyOf": [{ "$ref": "#/$defs/Cursor" }, { "type": "null" }] }
       }
@@ -2050,6 +2089,7 @@
         "capacity_bytes": { "$ref": "#/$defs/NullableBytes" },
         "free_bytes": { "$ref": "#/$defs/NullableBytes" },
         "reserve_bytes": { "$ref": "#/$defs/ByteCount" },
+        "declared_reserve_bytes": { "$ref": "#/$defs/NullableBytes", "$comment": "Absent on older producers. null is unset (zero assumed); a string including 0 is the owner preference." },
         "free_fraction": { "$ref": "#/$defs/NullableFraction" },
         "pressure": { "enum": ["ok", "watch", "pressure", "unknown"] },
         "source_eligible": { "type": "boolean" }

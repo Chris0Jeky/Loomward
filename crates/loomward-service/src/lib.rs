@@ -486,6 +486,7 @@ pub(crate) fn is_mutation(c: Command) -> bool {
             | RootsRevoke
             | RootsForget
             | VolumesDeclareTier
+            | VolumesDeclareReserve
             | ScanStart
             | ScanCancel
             | JobsCancel
@@ -495,6 +496,7 @@ pub(crate) fn is_mutation(c: Command) -> bool {
             | ReclaimObserve
             | ReclaimSample
             | FeedbackRecord
+            | LearningSetDeferred
             | LearningRefit
             | CollectionsCreate
             | CollectionsUpdateMembers
@@ -530,7 +532,7 @@ pub(crate) const MAX_PENDING: u64 = 64;
 const MAX_READS: usize = 8;
 
 fn guarded_observation(request: &RequestEnvelope, command: Command) -> bool {
-    command == Command::FeedbackHistory
+    matches!(command, Command::FeedbackHistory | Command::LearningQueue)
         || request.expected_generation.is_some()
             && matches!(
                 command,
@@ -711,7 +713,7 @@ impl ViewService for Service {
         &self,
         command: Command,
     ) -> Option<loomward_protocol::ResponseDeliveryPolicy> {
-        if command == Command::FeedbackHistory {
+        if matches!(command, Command::FeedbackHistory | Command::LearningQueue) {
             return Some(self.inner.history_delivery.clone());
         }
         matches!(
@@ -719,6 +721,7 @@ impl ViewService for Service {
             Command::RootsRequestGrant
                 | Command::RootsList
                 | Command::VolumesDeclareTier
+                | Command::VolumesDeclareReserve
                 | Command::VolumesList
                 | Command::TiersModel
                 | Command::AlertsList
@@ -803,6 +806,7 @@ impl ViewService for Service {
                     | Command::FeedbackHistory
                     | Command::LearningStatus
                     | Command::LearningQueue
+                    | Command::LearningSetDeferred
                     | Command::LearningRefit
                     | Command::ThreadsMeaning
                     | Command::CollectionsList

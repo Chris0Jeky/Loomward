@@ -91,12 +91,20 @@ fn with_inactive(
 fn notes(mut plan: PlacementPlan, conn: &Connection) -> EngineResult<PlacementPlan> {
     plan.excluded_volumes = with_inactive(plan.excluded_volumes.to_vec(), conn)?;
     let mut assumptions = plan.assumptions.to_vec();
-    for note in [
-        "No reserve preferences are recorded; zero reserve is assumed.",
-        "Catalogue-only groups have unknown relief without fresh identity-matched link observations. No file contents or per-file native metadata are read by this simulation.",
-    ] {
-        let note = Text::new(note).expect("bounded assumption");
-        if !assumptions.contains(&note) { assumptions.push(note); }
+    if db::volumes(conn, None)
+        .map_err(sql)?
+        .iter()
+        .any(|v| v.reserve_bytes.is_none())
+    {
+        let note = Text::new("Volumes without a recorded reserve assume zero reserve.")
+            .expect("bounded assumption");
+        if !assumptions.contains(&note) {
+            assumptions.push(note);
+        }
+    }
+    let note = Text::new("Catalogue-only groups have unknown relief without fresh identity-matched link observations. No file contents or per-file native metadata are read by this simulation.").expect("bounded assumption");
+    if !assumptions.contains(&note) {
+        assumptions.push(note);
     }
     plan.assumptions = bounded(BoundedVec::new(assumptions))?;
     Ok(plan)
@@ -122,6 +130,7 @@ impl Inner {
             conn: &input.conn,
             revisions: input.revisions,
             declaration_rev: declaration_rev(&input.conn)?,
+            reserve_rev: reserve_rev(&input.conn)?,
         };
         let mut result = match command {
             Command::VolumesList => Ok(json!({"volumes":input.volumes(deadline, true, true)?.into_iter().map(|v|v.volume).collect::<Vec<_>>()})),
@@ -129,7 +138,9 @@ impl Inner {
                 let mut model = self.engine.placement_model(&input, deadline)?;
                 let inactive = inactive_volumes(&input.conn)?;
                 let mut volumes = model.volumes.to_vec();
+                let preferences = db::volumes(&input.conn, None).map_err(sql)?;
                 for v in &mut volumes {
+                    v.declared_reserve_bytes = Some(preferences.iter().find(|p| v.volume_id.as_str() == format!("vo_{}", p.id)).and_then(|p| p.reserve_bytes).map(Bytes));
                     if inactive.iter().any(|row| v.volume_id.as_str() == format!("vo_{row}")) {
                         v.source_eligible = false;
                         v.tier.note = Text::new("No active grant; excluded from placement simulation. Device speed is unmeasured.").expect("bounded note");
@@ -137,7 +148,7 @@ impl Inner {
                 }
                 model.volumes = bounded(BoundedVec::new(volumes))?;
                 model.policy.reserve_note = Text::new(
-                    "No reserve preferences are recorded; these simulations assume zero reserve.",
+                    "Recorded destination reserves are kept free. Unset reserves explicitly assume zero; capacity and eligibility still come from observations.",
                 )
                 .expect("bounded note");
                 serde_json::to_value(model)
@@ -697,7 +708,7 @@ impl<'a> Input<'a> {
             })?;
             volumes.push(VolumeObservation {
                 volume,
-                reserve_bytes: Bytes(0),
+                reserve_bytes: Bytes(v.reserve_bytes.unwrap_or(0)),
                 cluster_bytes: space
                     .get("cluster_bytes")
                     .and_then(Value::as_u64)
@@ -1072,6 +1083,7 @@ struct Store<'a> {
     conn: &'a Connection,
     revisions: (i64, i64),
     declaration_rev: i64,
+    reserve_rev: i64,
 }
 impl Store<'_> {
     fn detail(&self, conn: &Connection, row: i64) -> EngineResult<ProposalDetail> {
@@ -1114,7 +1126,8 @@ impl Store<'_> {
             stale |= generation != root.generation.map(|g| g.get() as i64) || state != "complete";
         }
         stale |= inputs["catalog_rev"].as_i64() != Some(db::revisions(conn).map_err(sql)?.0)
-            || inputs["declaration_rev"].as_i64() != Some(declaration_rev(conn)?);
+            || inputs["declaration_rev"].as_i64() != Some(declaration_rev(conn)?)
+            || inputs["reserve_rev"].as_i64().unwrap_or(0) != reserve_rev(conn)?;
         let id = ProposalId::new(format!("pp_{row}")).expect("proposal row");
         plan.proposal_id = Some(id.clone());
         let source: VolumeId =
@@ -1151,6 +1164,14 @@ fn declaration_rev(conn: &Connection) -> EngineResult<i64> {
     )
     .map_err(sql)
 }
+fn reserve_rev(conn: &Connection) -> EngineResult<i64> {
+    conn.query_row(
+        "SELECT coalesce(max(id),0) FROM st.reserve_declaration",
+        [],
+        |r| r.get(0),
+    )
+    .map_err(sql)
+}
 impl ProposalStore for Store<'_> {
     fn save(
         &self,
@@ -1174,6 +1195,7 @@ impl ProposalStore for Store<'_> {
             .map_err(sql)?;
         if db::revisions(&tx).map_err(sql)?.0 != self.revisions.0
             || declaration_rev(&tx)? != self.declaration_rev
+            || reserve_rev(&tx)? != self.reserve_rev
         {
             return Err(EngineError::StaleGeneration {
                 message: "placement inputs changed before saving".into(),
@@ -1184,10 +1206,11 @@ impl ProposalStore for Store<'_> {
             "sha256:{:x}",
             Sha256::digest(
                 format!(
-                    "{}:{}:{}",
+                    "{}:{}:{}:{}",
                     self.inner.instance,
                     digest.as_str(),
-                    serde_json::to_string(&plan.excluded_volumes).expect("exclusions serialise")
+                    serde_json::to_string(&plan.excluded_volumes).expect("exclusions serialise"),
+                    self.reserve_rev
                 )
                 .as_bytes()
             )
@@ -1219,7 +1242,7 @@ impl ProposalStore for Store<'_> {
                 });
             }
         }
-        let inputs = json!({"source_volume_id":source,"catalogue_instance":self.inner.instance,"catalog_rev":self.revisions.0,"declaration_rev":self.declaration_rev});
+        let inputs = json!({"source_volume_id":source,"catalogue_instance":self.inner.instance,"catalog_rev":self.revisions.0,"declaration_rev":self.declaration_rev,"reserve_rev":self.reserve_rev});
         tx.execute("INSERT INTO st.proposal(kind,status,inputs_digest,inputs_json,plan_json,created_at_ns) VALUES('placement_simulation','simulation_only',?1,?2,?3,?4)",params![digest,inputs.to_string(),serde_json::to_string(plan).expect("plan serialises"),now_ns()]).map_err(sql)?;
         let row = tx.last_insert_rowid();
         tx.execute(

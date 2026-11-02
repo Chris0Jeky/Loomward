@@ -59,6 +59,12 @@ Compare name/extension heuristics, this student, embedding-based alternatives an
 Promote a model only after a versioned evaluation report, no severe regressions on protected/unknown cases, and a bounded shadow period. Preserve the prior model and dataset manifest for rollback. Initial promotion is manual. Keep a reason for each threshold; do not invent a confidence floor that merely makes a demo look autonomous.
 
 ## Active learning and question budgets
+The native Learning review provides explicit **Not now** and **Bring back** choices. Deferred
+items persist across restarts in a separate bounded queue until restored or their grant is revoked
+or forgotten; unresolved references stay hidden. This is a local preference, never a label, training
+example or permission. Refresh, closing the view and elapsed time do not change it. There is no
+automatic expiry. Quiet schedules, interruption budgets and batch alternatives below remain planned.
+
 Rank questions by uncertainty, expected reduction in repeated work, number of affected items and potential harm of a mistaken suggestion. Cap interruptions, allow a quiet schedule and batch similar questions. User nonresponse is not a negative label. Provide “show two valid structures,” “keep this project together,” and “ask me once per batch” alternatives. A future preference model can learn how the user chooses among already-safe plans, but should never explore a dangerous plan to improve its reward.
 
 ## Privacy, deletion and model lifecycle

@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import ts from 'typescript';
 import { describe, expect, it, vi } from 'vitest';
 import { LoomwardError } from '../../src/lib/transport/client';
+import { ReviewQueue } from '../../src/views/review/queue.svelte';
 import { fallbackStep, onRefetchError, resolveTrail } from '../../src/views/explorer/refetch';
 import searchExample from '../../../contracts/v3/examples/commands/search.query.result.json';
 import learningStatus from '../../../contracts/v3/examples/commands/learning.status.result.json';
@@ -11,6 +12,7 @@ import proposal from '../../../contracts/v3/examples/commands/proposals.get.resu
 import { formFrom, settingsFrom } from '../../src/views/alerts/model';
 import { formatBytes } from '../../src/lib/format/bytes';
 import { planFind } from '../../src/lib/search/find';
+import { reserveBytes, reserveDraft } from '../../src/views/tiers/reserve';
 import rootList from '../../../contracts/v3/examples/commands/roots.list.result.json';
 import type { Root } from '../../src/lib/contracts.gen';
 import type { BackupEvidence } from '../../src/lib/contracts.gen';
@@ -243,12 +245,12 @@ describe('Backups session boundaries', () => {
   });
 });
 
-function review(call: ReturnType<typeof vi.fn>) {
+function review(call: (command: string, payload: unknown) => Promise<{ result: unknown }>) {
   const state = {
-    session: { client: { call }, epoch: 0, handle: (e: Error) => e.message },
+    session: { client: { call: async (command: string, payload: unknown) => ({ ...await call(command, payload), meta: { state_rev: '1' } }) }, epoch: 0, handle: (e: Error) => e.message },
     untrack, LoomwardError, alive: true, generation: 0,
     status: learningStatus as typeof learningStatus | null,
-    queue: learningQueue as typeof learningQueue | null,
+    review: new ReviewQueue(), handle: (e: Error) => e.message,
     error: '', pending: null, selected: 'nd_old', working: false, active: false, gated: false, job: null,
   };
   return { state, code: viewScript('review', state, 'session.epoch') };
@@ -267,11 +269,11 @@ describe('Learning review refresh after concurrent feedback', () => {
     const { state, code } = review(call);
     await code.load('old_cursor');
     expect(state.status).toEqual(fresh);
-    expect(state.queue).toEqual(learningQueue);
+    expect(state.review.page).toEqual(learningQueue);
     expect(state.error).toBe('');
     expect(state.selected).toBe('');
-    expect(call.mock.calls.map(args => args[0])).toEqual(['learning.status', 'learning.queue', 'learning.status', 'learning.queue']);
-    expect((call.mock.calls.at(-1) as unknown as [string, { cursor: string | null }])[1].cursor).toBeNull();
+    expect(call.mock.calls.map(args => args[0])).toEqual(['learning.status', 'learning.queue', 'learning.queue', 'learning.status']);
+    expect((call.mock.calls.at(-2) as unknown as [string, { cursor: string | null }])[1].cursor).toBeNull();
   });
 
   it.each(['stale_generation', 'internal_error'] as const)('keeps %s failures honest and bounds retries', async code => {
@@ -283,8 +285,8 @@ describe('Learning review refresh after concurrent feedback', () => {
     const { state, code: view } = review(call);
     await view.load();
     expect(state.status).toEqual(learningStatus);
-    expect(state.queue).toBeNull();
-    expect(state.error).toBe('Learning unavailable.');
+    expect(state.review.page).toBeNull();
+    expect(state.review.problem).toBe('Learning unavailable.');
     expect(call).toHaveBeenCalledTimes(code === 'stale_generation' ? 4 : 2);
   });
 
@@ -296,6 +298,7 @@ describe('Learning review refresh after concurrent feedback', () => {
     const loading = code.load();
     if (mode === 'unmounted') state.alive = false;
     else state.generation++;
+    state.review.clear();
     reject(staleReview());
     await loading;
     expect(call).toHaveBeenCalledTimes(2);
@@ -315,8 +318,8 @@ describe('Learning resources fail independently', () => {
     const { state, code } = review(call);
     await code.load();
     expect(state.status).toEqual(fresh);
-    expect(state.queue).toBeNull();
-    expect(state.error).toContain('Queue exceeds');
+    expect(state.review.page).toBeNull();
+    expect(state.review.problem).toContain('Queue exceeds');
     expect(call).toHaveBeenCalledTimes(2);
     await code.refit();
     expect(call).toHaveBeenCalledWith('learning.refit', {});
@@ -335,6 +338,33 @@ describe('Learning resources fail independently', () => {
 });
 
 describe('Saved tier scenario source', () => {
+  it.each(['committed', 'deadline_exceeded', 'stale_generation'] as const)('hides old plans after a %s reserve outcome when the model refresh fails', async outcome => {
+    const call = vi.fn(async (command: string) => {
+      if (command === 'volumes.declare_reserve') {
+        if (outcome !== 'committed') throw new LoomwardError({ code: outcome, message: outcome, retryable: false, detail: null });
+        return { result: { reserve_bytes: '64424509440' } };
+      }
+      throw new Error('Current preferences unavailable');
+    });
+    const state = {
+      session: { client: { call }, handle: (e: Error) => e.message }, untrack, reserveBytes, reserveDraft,
+      modelStateRev: '7', reserves: { vo_target: { value: '60', unit: 'GiB' } },
+      model: {}, modelTicket: 0, savedTicket: 0, loading: false, declaring: false, simulating: false,
+      outcomes: { old: true }, savedDetail: proposal, saved: [proposal.summary],
+      error: '', say: { say: vi.fn() },
+    };
+    const code = viewScript('tiers', state, 'session.epoch');
+    await code.evaluate("declareReserve('vo_target')");
+    expect(state.savedDetail).toBeNull();
+    expect(state.outcomes).toBeNull();
+    expect(state.saved).toEqual([]);
+    expect(state.modelStateRev).toBeNull();
+    expect(state.error).toBe(outcome === 'committed' ? 'Current preferences unavailable' : outcome);
+    expect(state.say.say).not.toHaveBeenCalledWith(expect.stringContaining('have been refreshed'));
+    if (outcome === 'committed') expect(state.say.say).toHaveBeenCalledWith(expect.stringContaining('recorded'));
+    else expect(state.say.say).not.toHaveBeenCalled();
+  });
+
   it('labels a historical plan with its ineligible saved source while keeping the eligible selector', async () => {
     const historical = { ...proposal, summary: { ...proposal.summary, source_volume_id: 'vol_a', status: 'stale' } };
     const volumes = [
@@ -668,6 +698,45 @@ describe('Explorer submitted root scope', () => {
   const reply = (command: string, available = [grantedA, grantedB]) => ({ result: command === 'roots.list'
     ? { roots: available } : command === 'tree.slice' ? { nodes: [] } : searchExample });
 
+  it.each([false, true])('refreshes a submitted search after root validation when Atlas fails (scoped=%s)', async scoped => {
+    const pending = deferred<{ result: { roots: Root[] } }>();
+    const call = vi.fn(async (command: string) => {
+      if (command === 'tree.slice') throw new Error('Synthetic Atlas failure');
+      if (command === 'roots.list') return pending.promise;
+      return { result: searchExample };
+    });
+    const { state, code } = explorer(call);
+    state.rootChoices = [grantedA]; state.rootChoice = scoped ? 'rt_a' : ''; state.query = 'report';
+    expect(code.commit()).toBe(true);
+    await code.show();
+    const refresh = code.reload();
+    expect(state.rows).toEqual([]);
+    expect(call.mock.calls.filter(([command]) => command === 'search.query')).toHaveLength(1);
+    pending.resolve({ result: { roots: [grantedA] } });
+    await refresh;
+    expect(state.starts).toEqual([]);
+    expect(state.rows).toEqual(searchExample.hits.map(hit => hit.row));
+    expect(state.error).toBe('');
+    expect(state.busy).toBe(false);
+    const searches = call.mock.calls.filter(([command]) => command === 'search.query');
+    expect(searches).toHaveLength(2);
+    expect((searches[1] as unknown as [string, { root_id: string | null }])[1].root_id).toBe(scoped ? 'rt_a' : null);
+  });
+
+  it('does not refresh an all-roots search when the root validation read fails', async () => {
+    const call = vi.fn(async (command: string) => {
+      if (command === 'roots.list') throw new Error('Synthetic root list failure');
+      return reply(command);
+    });
+    const { state, code } = explorer(call);
+    state.query = 'report'; expect(code.commit()).toBe(true);
+    await code.reload();
+    expect(state.rows).toEqual([]);
+    expect(state.rootProblem).toBe('Synthetic root list failure');
+    expect(state.busy).toBe(false);
+    expect(call.mock.calls.filter(([command]) => command === 'search.query')).toEqual([]);
+  });
+
   it('retains selection for catalogue refreshes but clears sealed IDs on a connected restart', async () => {
     const { state, code } = explorer(vi.fn(async command => reply(command)));
     const selected = [{ node_id: 'nd_old_session', name: 'shared.pdf' }];
@@ -873,6 +942,20 @@ describe('Explorer starting points after invalidation', () => {
     fail = false;
     code.reload(); // the "Try again" button
     await vi.waitFor(() => expect(state.starts).toEqual([rootA, rootB]));
+  });
+
+  it('preserves a folder navigation error when the Atlas refresh fails', async () => {
+    const call = vi.fn(async (command: string) => {
+      if (command === 'tree.slice') throw new Error('Synthetic Atlas failure');
+      return { result: command === 'roots.list' ? rootList : children };
+    });
+    const { state, code } = explorer(call);
+    state.trail = [rootA];
+    await code.reload();
+    expect(state.error).toBe('Synthetic Atlas failure');
+    expect(state.busy).toBe(false);
+    expect(state.trail).toEqual([rootA]);
+    expect(call.mock.calls.filter(([command]) => command === 'tree.children' || command === 'search.query')).toEqual([]);
   });
 
   it('does not let a delayed starting-point response rewind a newer search', async () => {
