@@ -305,7 +305,7 @@ mod tests {
     }
 
     /// A completed run listing `files` in the root directory.
-    fn catalog_with(files: Vec<Observation>) -> (tempfile::TempDir, Catalog, i64) {
+    fn catalog_with(files: Vec<Observation>) -> (tempfile::TempDir, Catalog, i64, i64) {
         let temp = tempfile::tempdir().unwrap();
         let c = Catalog::open(temp.path(), "synthetic").unwrap();
         let WriteReply::Root {
@@ -359,7 +359,7 @@ mod tests {
                 finished_at_ns: 1,
             })
             .unwrap();
-        (temp, c, root_id)
+        (temp, c, root_id, grant_id)
     }
 
     fn pairs(n: u64) -> Vec<Observation> {
@@ -370,7 +370,7 @@ mod tests {
 
     #[test]
     fn a_count_failure_that_is_not_a_budget_stop_surfaces_as_an_error() {
-        let (temp, c, root) = catalog_with(pairs(40));
+        let (temp, c, root, _) = catalog_with(pairs(40));
         // Two same-size files whose logical sum overflows i64: only the count sums sizes, so
         // selection still succeeds and the count's SQL error must reach the caller.
         rusqlite::Connection::open(temp.path().join("catalog.db"))
@@ -402,7 +402,7 @@ mod tests {
 
     #[test]
     fn a_count_interrupted_inside_the_full_path_leaves_entries_intact_and_the_read_committed() {
-        let (_temp, c, root) = catalog_with(pairs(40));
+        let (_temp, c, root, _) = catalog_with(pairs(40));
         let mut reader = c.reader().unwrap();
         // The revision cache would serve the second call; this test needs the count to run.
         reader.space_cache = None;
@@ -436,7 +436,7 @@ mod tests {
 
     #[test]
     fn a_cached_count_is_served_until_a_write_changes_the_revision() {
-        let (temp, c, root) = catalog_with(pairs(40));
+        let (temp, c, root, grant_id) = catalog_with(pairs(40));
         let mut reader = c.reader().unwrap();
         let counted = |r: &mut Reader| r.duplicate_candidates(root, 1, 200).unwrap().space;
         assert_eq!(counted(&mut reader).map(|s| s.files), Some(40));
@@ -453,17 +453,17 @@ mod tests {
         other.space_cache = None;
         assert_eq!(counted(&mut other).map(|s| s.files), Some(0));
         // A real write (a second run listing new files) bumps the root's revision and generation.
-        let (dir_id, grant): (i64, i64) = raw
+        let dir_id: i64 = raw
             .query_row(
-                "SELECT d.id,d.root_id FROM dir d WHERE d.root_id=?1 AND d.parent_id IS NULL",
+                "SELECT d.id FROM dir d WHERE d.root_id=?1 AND d.parent_id IS NULL",
                 [root],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| r.get(0),
             )
             .unwrap();
         let w = c.writer();
         let WriteReply::Run(run) = w
             .call(WriteCommand::BeginRun {
-                grant_id: grant,
+                grant_id,
                 mode: "full".into(),
                 strategy: "fixture".into(),
                 started_at_ns: 2,
@@ -500,6 +500,125 @@ mod tests {
         assert_eq!(after.map(|s| s.files), Some(10));
         // Stored under the new revision, so a repeat is a hit and agrees.
         assert_eq!(counted(&mut c.reader().unwrap()), after);
+    }
+
+    fn cached_space(reader: &Reader, root: i64, floor: i64, budget: u64) -> Option<CandidateSpace> {
+        let flags =
+            EXCLUDED_FLAGS | 1 | (1 << 1) | (1 << 6) | (1 << 9) | crate::IDENTITY_UNVERIFIED;
+        space_at_revision(
+            reader.space_cache.as_ref(),
+            &reader.conn,
+            root,
+            floor,
+            flags,
+            None,
+            budget,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_new_catalogue_instance_cannot_reuse_an_equal_generation_and_revision() {
+        let (temp, c, root, _) = catalog_with(pairs(40));
+        let reader = c.reader().unwrap();
+        assert_eq!(cached_space(&reader, root, 1, SPACE_WORK_BUDGET).unwrap().files, 40);
+        let raw = rusqlite::Connection::open(temp.path().join("catalog.db")).unwrap();
+        // Model replacement under a live Catalog without changing either existing stamp field.
+        raw.execute("UPDATE file SET logical=100000+id", []).unwrap();
+        raw.execute("UPDATE meta SET value='replacement-instance' WHERE key='instance_id'", [])
+            .unwrap();
+        let other = c.reader().unwrap();
+        assert_eq!(cached_space(&other, root, 1, SPACE_WORK_BUDGET).unwrap().files, 0);
+    }
+
+    #[test]
+    fn live_and_invalid_aggregate_guards_bypass_without_replacing_the_cached_count() {
+        for live in [false, true] {
+            let (temp, c, root, _) = catalog_with(pairs(40));
+            let reader = c.reader().unwrap();
+            assert_eq!(cached_space(&reader, root, 1, SPACE_WORK_BUDGET).unwrap().files, 40);
+            let raw = rusqlite::Connection::open(temp.path().join("catalog.db")).unwrap();
+            raw.execute("UPDATE file SET logical=100000+id", []).unwrap();
+            // Neither operation changes generation or subtree_rev. Exercise each guard alone.
+            let (block, unblock) = if live {
+                ("UPDATE scan_run SET state='running'", "UPDATE scan_run SET state='completed'")
+            } else {
+                ("UPDATE dir SET dirty_rev=agg_valid_rev+1", "UPDATE dir SET dirty_rev=agg_valid_rev")
+            };
+            raw.execute(block, []).unwrap();
+            assert_eq!(cached_space(&reader, root, 1, SPACE_WORK_BUDGET).unwrap().files, 0);
+            raw.execute(unblock, []).unwrap();
+            // The old entry survives: the guarded answer was neither served nor stored.
+            assert_eq!(cached_space(&reader, root, 1, SPACE_WORK_BUDGET).unwrap().files, 40);
+        }
+    }
+
+    #[test]
+    fn interrupted_counts_are_not_cached_and_floors_have_separate_entries() {
+        let (_temp, c, root, _) = catalog_with(pairs(40));
+        let reader = c.reader().unwrap();
+        assert_eq!(cached_space(&reader, root, 1, 1), None);
+        assert!(reader.space_cache.as_ref().unwrap().lock().unwrap().is_empty());
+        assert_eq!(cached_space(&reader, root, 1, SPACE_WORK_BUDGET).unwrap().files, 40);
+        // Sizes 20..29 each have two files; the floor is inclusive.
+        assert_eq!(cached_space(&reader, root, 20, SPACE_WORK_BUDGET), Some(CandidateSpace { files: 20, bytes: 490 }));
+        assert_eq!(cached_space(&reader, root, 30, SPACE_WORK_BUDGET), Some(CandidateSpace { files: 0, bytes: 0 }));
+        assert_eq!(cached_space(&reader, root, 1, 1).unwrap().files, 40);
+    }
+
+    #[test]
+    fn different_roots_cannot_share_a_cached_count() {
+        let (temp, c, root, _) = catalog_with(pairs(40));
+        let WriteReply::Root { dir_id, root_id: second, .. } = c.writer()
+            .call(WriteCommand::RegisterRoot(RootObservation {
+                volume_guid: None,
+                volume_key: "second".into(),
+                display_name: "Second".into(),
+                display_path: "Synthetic second root".into(),
+                root_file_id: Some(vec![1; 16]),
+                filesystem: Some("NTFS".into()),
+                origin: "fixture".into(),
+                granted_via: "fixture".into(),
+                observed_at_ns: 0,
+            })).unwrap() else { panic!() };
+        let raw = rusqlite::Connection::open(temp.path().join("catalog.db")).unwrap();
+        raw.execute("INSERT INTO file(dir_id,name,logical,allocated,attrs,born_run,seen_run) SELECT ?1,name,logical,allocated,attrs,born_run,seen_run FROM file ORDER BY id LIMIT 6", [dir_id]).unwrap();
+        // Equal stamps make the root key, rather than the revision, distinguish these answers.
+        raw.execute("UPDATE root SET generation=1", []).unwrap();
+        raw.execute("UPDATE dir SET subtree_rev=1,dirty_rev=1,agg_valid_rev=1", []).unwrap();
+        let reader = c.reader().unwrap();
+        assert_eq!(cached_space(&reader, root, 1, SPACE_WORK_BUDGET).unwrap().files, 40);
+        assert_eq!(cached_space(&reader, second, 1, SPACE_WORK_BUDGET), Some(CandidateSpace { files: 6, bytes: 66 }));
+        assert_eq!(cached_space(&reader, root, 1, 1).unwrap().files, 40);
+    }
+
+    #[test]
+    fn hardlink_suspected_updates_do_not_change_candidate_eligibility() {
+        let (temp, c, root, _) = catalog_with(pairs(40));
+        let mut reader = c.reader().unwrap();
+        let before = reader.duplicate_candidates(root, 1, 200).unwrap();
+        let raw = rusqlite::Connection::open(temp.path().join("catalog.db")).unwrap();
+        // rebuild_multilink changes this bit without a dirty mark. It must remain outside
+        // candidate selection's excluded mask, or the cache needs an additional invalidation.
+        raw.execute("UPDATE file SET flags=flags | ?1", [HARDLINK_SUSPECTED]).unwrap();
+        let cached = reader.duplicate_candidates(root, 1, 200).unwrap();
+        reader.space_cache = None;
+        let fresh = reader.duplicate_candidates(root, 1, 200).unwrap();
+        assert_eq!(before.space, Some(CandidateSpace { files: 40, bytes: 780 }));
+        assert_eq!(cached.space, before.space);
+        assert_eq!(fresh.space, before.space);
+        assert_eq!(cached.entries.len(), 40);
+        assert_eq!(fresh.entries.len(), 40);
+    }
+
+    #[test]
+    fn overflow_between_size_groups_is_an_error_too() {
+        let (temp, c, root, _) = catalog_with(pairs(4));
+        let raw = rusqlite::Connection::open(temp.path().join("catalog.db")).unwrap();
+        // Each pair fits in i64; their combined total does not. Never use REAL multiplication.
+        raw.execute("UPDATE file SET logical=CASE WHEN id<=2 THEN 3000000000000000000 ELSE 3000000000000000001 END", []).unwrap();
+        let mut reader = c.reader().unwrap();
+        assert!(matches!(reader.duplicate_candidates(root, 1, 200), Err(Error::Sql(_))));
     }
 
     #[test]
