@@ -931,6 +931,7 @@ def live_alerts(page: Page, token: str) -> None:
     result = page.get_by_role('status', name='Alert refresh result')
     calls = []
     held = []
+    refreshed = []
 
     def observe(request):
         if request.method == 'POST' and request.url.endswith('/api/v3/call'):
@@ -950,6 +951,20 @@ def live_alerts(page: Page, token: str) -> None:
         else:
             route.continue_()
 
+    def capture_refresh(route):
+        if route.request.post_data_json['command'] != 'alerts.list':
+            route.continue_()
+            return
+        # Capture the real service body through the API client before fulfilling
+        # the browser request. A later Chromium Network.getResponseBody lookup
+        # can lose the body even after the UI has consumed the successful reply.
+        upstream = route.fetch()
+        try:
+            refreshed.append(upstream.json())
+            route.fulfill(response=upstream)
+        finally:
+            upstream.dispose()
+
     page.on('request', observe)
     try:
         page.route('**/api/v3/call', hold_refresh)
@@ -967,14 +982,17 @@ def live_alerts(page: Page, token: str) -> None:
         expect(result).to_contain_text('Checks refreshed from recorded observations.')
         expect(save_button).to_be_focused()  # Completion must not take focus back from the user's newer choice.
         page.unroute('**/api/v3/call', hold_refresh)
+        page.route('**/api/v3/call', capture_refresh)
         for width in (1360, 390):
             page.set_viewport_size({'width': width, 'height': 900 if width == 1360 else 844})
             calls.clear()
+            refreshed.clear()
             refresh.focus()
-            with page.expect_response(lambda response: response.url.endswith('/api/v3/call') and response.request.post_data_json['command'] == 'alerts.list') as reply:
-                refresh.press('Enter')
+            refresh.press('Enter')
+            wait_until(page, lambda: bool(refreshed))
             expect(result).to_contain_text('Checks refreshed from recorded observations.')
-            response = reply.value.json()
+            check(len(refreshed) == 1, 'alerts refresh: exactly one real service response was captured')
+            response = refreshed[0]
             check(response['ok'] and response['result']['settings'] == before['result']['settings']
                   and response['meta']['state_rev'] == before['meta']['state_rev'], 'alerts refresh: real read leaves saved settings and state revision unchanged')
             check([command for command in calls if command.startswith('alerts.')] == ['alerts.list'], 'alerts refresh: one list request and no configure request')
@@ -987,6 +1005,7 @@ def live_alerts(page: Page, token: str) -> None:
             check(page.evaluate('document.documentElement.scrollWidth <= innerWidth'), f'alerts refresh: controls fit {width}px')
             (ROOT / '.loomward').mkdir(exist_ok=True)
             page.screenshot(path=str(ROOT / '.loomward' / f'search-root-alerts-refresh-{width}.png'), full_page=True)
+        page.unroute('**/api/v3/call', capture_refresh)
         calls.clear()
         page.route('**/api/v3/call', fail_refresh)
         refresh.press('Enter')
@@ -1008,6 +1027,7 @@ def live_alerts(page: Page, token: str) -> None:
         for route in held:
             route.abort()
         page.unroute('**/api/v3/call', hold_refresh)
+        page.unroute('**/api/v3/call', capture_refresh)
         page.unroute('**/api/v3/call', fail_refresh)
         page.remove_listener('request', observe)
         page.set_viewport_size({'width': 1440, 'height': 900})
