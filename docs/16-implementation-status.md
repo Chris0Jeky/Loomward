@@ -518,3 +518,174 @@ The owner attached a WD Elements USB disk (`H:`) for backup and archive. Design:
 - #894 (E7): `loomward-mcp` ships beside the desktop executable; the desktop shares the state lock helper and retries for 15 s with an honest busy message.
 
 Measured on Windows 11 build 26300, non-elevated, rustc 1.97.1: each PR's named crate suites green; native shell 76 tests plus `--self-test`; app check, 685 unit tests and the Playwright suite. Known red on this host, unchanged code: eight `copy_tests::lab_copy` tests (also on main) and three `duplicate_reader::native::tree` tests when TMP has explicit ACLs. Not verified: a real MCP host end to end, a real scan of `H:`, physical unplug or replug, the installer. C8 remains closed: personal copying still needs C6, G5 (Hyper-V power-cut runs, method chosen 2026-10-25), G9 and the owner's go-ahead. Follow-ups: #865, #886, #887, #888, #895, #898, #903.
+
+
+## Maintenance wave — 2 November 2026 — merged implementation and unresolved CI incident
+
+**Implementation merged after full primary qualification; a later duplicate Windows failure remains
+unresolved in #1129.** Independent post-merge main passed all nine jobs, which does not explain the
+failed duplicate. The implementation main before this
+documentation commit is `f2546383f74feb1028cbc5d66ff6212250f6e893`, tree
+`14e5ec7d86ba30cdefb2a5917b817ccf41334969`. `handoff/CHECKPOINT.json` records this implementation
+SHA as `base_commit`; this documentation does not require its own future commit SHA.
+Original #1109 merged externally, #1127 integrated #1125/#1113/#1118, and #1128 completed the
+deterministic native regression repair. Remaining broader work is explicitly retained below.
+
+The wave began at main `6ac587c1564decf342ca036a0b12bd5270e2ab65`, with 164 open GitHub issues
+and parked PRs #1109, #1113 and #1118. That GitHub inventory is separate from the historical local
+backlog count of 130; neither it nor this wave's app results replaces earlier native measurements.
+
+| Candidate | Exact source | Behavior and landing scope |
+|---|---|---|
+| #1125 | `d7eab8c045caa16dad8244e2526390b06a8614cc` | Destination-reserve preferences; explicit Learning deferral; atomic selected collection-member removal; Explorer search refresh independent of an Atlas failure when root validation succeeds (#1116). |
+| #1127 | `ad725931b2db276416302b5376b1fd56f98d45c1`, tree `fa59a3cf5ab194f1ca93298c2384d1caddb10f24` | Find applied/draft explanations and query boundaries (#1073); Applications sort/order/paging browser proof (#1081, preserving the mock fixes in #1090); cross-client preference refresh without discarding drafts (#1110); retained coverage-result retry only from #1108. |
+| #1128 | `b21b2d9986efd338249f3f7d22cd32626ef9d32b`, tree `14e5ec7d86ba30cdefb2a5917b817ccf41334969` | Deterministic reclaim deadline test (#1126): reach the second-chunk gate, inject an expired deadline at the real observation boundary and retain partial/no-relief assertions. Production budgets remain unchanged. |
+
+Original #1109 merged externally at **04:44:38 UTC on 2 November 2026**. Its merge SHA and the then-current
+main were `280aa69b3f29577f117db20c87532fe69f769a0b`, tree
+`bb8d92234dd7da630666da3dbe989447adc1bc9a`, with parents `6ac587c1564decf342ca036a0b12bd5270e2ab65`
+and `9a8004506fe657895124f29d503c1fcbb7df7f16`. This session did not perform that merge. Issue #1111 was separately confirmed closed as completed at 04:44:49 UTC.
+
+Both original #1125 runs, [PR 41385886994](https://github.com/Chris0Jeky/Loomward/actions/runs/41385886994)
+and [push 41385882882](https://github.com/Chris0Jeky/Loomward/actions/runs/41385882882), passed **9/9**.
+Its standalone merge conflicted with concurrent reserve changes, so its work landed through #1127.
+After retargeting #1127 to `main` without changing head `ad725931b2db276416302b5376b1fd56f98d45c1`,
+[push run 41389070502](https://github.com/Chris0Jeky/Loomward/actions/runs/41389070502) completed **9/9**.
+[Windows job 125096361698](https://github.com/Chris0Jeky/Loomward/actions/runs/41389070502/job/125096361698)
+reported **684 service tests passed, two ignored**, actual standard-user gate exit 0, successful cleanup
+and Clippy. The separate [PR run 41389075842](https://github.com/Chris0Jeky/Loomward/actions/runs/41389075842)
+was 8/9 with no failure at the historical merge check, then completed 9/9 after merge, including
+Windows job `125096344101`. The pre-merge qualification record remains the complete push run.
+
+#1127 merged at **05:07:11 UTC**, actual integration merge
+`ad58c9036931b981c9c47a99fb54dccd50377773`, tree `fa59a3cf5ab194f1ca93298c2384d1caddb10f24`,
+with parents `280aa69b3f29577f117db20c87532fe69f769a0b` and
+`ad725931b2db276416302b5376b1fd56f98d45c1`. This tree matches the qualified candidate.
+The earlier prospective merge `417f7bf58d862bc966c6e5b5e1d2cfe1a0ab8fd4` was only a preview.
+GitHub recognized #1125 as merged at **05:07:13 UTC**, reporting merge SHA `d7eab8c045caa16dad8244e2526390b06a8614cc`;
+it recognized #1113 and #1118 at the same time, reporting `b10e6117ca4804e07d68295e43fba4bc38a4cf4c`.
+These are ancestry-based records of the #1127/ad58 integration, not separate standalone merges.
+
+#1128 was retargeted to `main` with head `b21b2d9986efd338249f3f7d22cd32626ef9d32b` unchanged.
+[PR run 41389080388](https://github.com/Chris0Jeky/Loomward/actions/runs/41389080388) passed **9/9** before
+merge. In [Windows job 125096355148](https://github.com/Chris0Jeky/Loomward/actions/runs/41389080388/job/125096355148),
+`reclaim_observe_budget_inside_a_candidate_is_partial` actually executed with the registered fixture,
+without an elevated skip. The standard-user child exited **0**; the service suite reported
+**684 passed, zero failed, two ignored**. Duplicate
+[push run 41389074739](https://github.com/Chris0Jeky/Loomward/actions/runs/41389074739) was **8/9 without
+failures at merge check**. Its Windows job `125096338660` subsequently failed at **05:43:15 UTC**;
+the cause remains unresolved in #1129. That historical 8/9 snapshot is not its final outcome.
+#1128 merged at **05:39:01 UTC** as `f2546383f74feb1028cbc5d66ff6212250f6e893`, tree
+`14e5ec7d86ba30cdefb2a5917b817ccf41334969`, with actual parents
+`ad58c9036931b981c9c47a99fb54dccd50377773` and `b21b2d9986efd338249f3f7d22cd32626ef9d32b`.
+All three qualified source head/tree pins are unchanged.
+
+**Late failure retained.** The duplicate
+[Windows job 125096338660](https://github.com/Chris0Jeky/Loomward/actions/runs/41389074739/job/125096338660)
+failed after the successful primary gate and merge. The original log remained unavailable with
+**HTTP 404 / BlobNotFound**, including the final read at **11:49:17 UTC**. Job metadata retained an
+in-progress standard-user step and pending later steps without a causal failure. No failed assertion,
+actual child exit, timeout or cleanup result was recovered. Its cause is unclassified; the record does
+not establish an infrastructure issue, timeout, flaky test or failure of the repaired test.
+[Incident #1129](https://github.com/Chris0Jeky/Loomward/issues/1129) remains open.
+
+The exact post-merge main `f2546383f74feb1028cbc5d66ff6212250f6e893` independently passed **9/9 jobs**
+in [run 41395259053](https://github.com/Chris0Jeky/Loomward/actions/runs/41395259053), **attempt 1**,
+completed by **06:19:02 UTC**, including Windows native job `125115444887`. This success does not
+explain or resolve the failed duplicate. #1126's demonstrated repair remains closed; reopen it only
+if recovered evidence or targeted reproduction implicates its test or hook.
+
+The earlier #1127 head `5333cf3cf02e2a2d1761878d2be6fb041b3a191c` / tree
+`2d6cfcb23e34f4a37fe3723bf4ad3bebd9f1b8f3`, #1128 head
+`4dcc727cc12f7932abde558b86e232a2059d4854` / tree
+`83e1b830001dd3c932ef19d540d46cb0e3bb2154`, and the earlier 1,060-test / 74-file
+local result are preserved in the JSON as historical prior evidence.
+
+The collection proof correction compares all durable grant rows across Service reopen while retaining
+the complete same-session wire assertion. The label-view witness identifies the actual combobox;
+read-only and switch-back assertions remain. Coverage retry reads the same completed job, coalesces
+pending requests, preserves the retry through resync, treats expired results as unavailable and restores
+keyboard focus without starting another content read. These are scoped source changes, not new effect
+authority or claims of physical-device acceptance.
+
+**Evidence.** The latest combined app source passed 1,061 tests in 75 files, Svelte/type/viz
+check with zero errors and warnings, and the production build (existing large-bundle advisory retained).
+An earlier integration Python run completed 440 tests with five platform-specific skips on Linux/Python
+3.12. This was not a fresh full native/browser qualification of the final stack. Rust and Windows were
+unavailable locally; the Chromium installer returned an invalid archive. Earlier native counts and
+Windows measurements above remain historical and unchanged.
+
+The initial failed [hosted run 41385000577](https://github.com/Chris0Jeky/Loomward/actions/runs/41385000577)
+is retained. Its browser failure exposed a shared declaration flag blocking a saved-scenario read.
+The repair separates reserve-in-flight state from tier declaration and also fences an older scenario-list
+reply across a reserve write and failed recovery. The original browser assertion was retained.
+The coordinator has confirmed native HTTP/browser job `125086524284` succeeded at exact #1125 head
+`d7eab8c045caa16dad8244e2526390b06a8614cc` in
+[push run 41385882882](https://github.com/Chris0Jeky/Loomward/actions/runs/41385882882/job/125086524284).
+The separate [#1125 PR run 41385886994](https://github.com/Chris0Jeky/Loomward/actions/runs/41385886994)
+now passed all nine jobs at that same exact head. Its
+[Windows job 125086531859](https://github.com/Chris0Jeky/Loomward/actions/runs/41385886994/job/125086531859)
+passed the full standard-user gate, including **684 service tests passed and two ignored**. This
+qualifies the original #1125 PR candidate. The #1127 app follow-ups and #1128 native test repair
+were separately qualified as recorded above; no standalone #1125 merge is claimed. Push run `41385882882` also passed all nine jobs.
+The later coverage witness failed at #1127 head
+`5333cf3cf02e2a2d1761878d2be6fb041b3a191c` in
+[run 41387093488, app job 125090246259](https://github.com/Chris0Jeky/Loomward/actions/runs/41387093488/job/125090246259):
+the error message appeared but **Retry result** did not. The private `fetched` field was plain state;
+`canRetryResult` initially short-circuited before reading reactive `problem` or `resultPending`, so
+clearing `fetched` after the failed read did not invalidate the rendered control. The repair makes
+`fetched` a `$state` field. A regression compiles the actual class with the Svelte client compiler and
+observes it through a real Svelte effect without DOM emulation. With plain `fetched`, the direct getter
+becomes true but the effect remains false and the test fails; with `$state`, the effect changes from
+false to true and all 19 focused coverage tests pass. The browser assertions remain unchanged.
+
+The coordinator confirmed the latest #1128
+[push app job 125096338479 in run 41389074739](https://github.com/Chris0Jeky/Loomward/actions/runs/41389074739/job/125096338479)
+succeeded at exact head `b21b2d9986efd338249f3f7d22cd32626ef9d32b`, including the full mock and
+live browser suite. Its coverage witness retries the same completed job without another
+`coverage.start` and offers no retry for an expired result. This individual app result was supplemented
+by the complete #1128 PR gate and actual merge recorded above. The duplicate push run containing
+this successful app job later failed in Windows job `125096338660`; #1129 retains that unresolved result.
+The coordinator also confirmed #1127's own
+[PR app job 125096344380 in run 41389075842](https://github.com/Chris0Jeky/Loomward/actions/runs/41389075842/job/125096344380)
+passed both mock and full live browser suites at exact head
+`ad725931b2db276416302b5376b1fd56f98d45c1`. This is an individual app-job success;
+its full gate and actual landing are recorded above from the distinct push run.
+The duplicate #1127 PR run subsequently completed 9/9 after merge.
+
+**Recorded closeout.** Issue #1111 closed as completed externally at **04:44:49 UTC**. Following the
+qualified #1127 merge, #1073 closed at **05:07:13**, #1114 and #1081 at **05:07:15**, #1110 at
+**05:07:16**, #1119 at **05:07:17**, and #1116 at **05:07:18 UTC**, all on 2 November 2026.
+#1126 closed as completed at **05:39:03 UTC** following the qualified #1128 merge.
+Broad issues #31 and #36 remain open. #1108's app retry checkbox is now checked with qualified merge
+evidence, while all other items remain open, including cancellation plumbing, registry/native test gaps,
+worker reservation and progress. The
+[source-grounded remaining-work note](https://github.com/Chris0Jeky/Loomward/issues/1108#issuecomment-6569289567)
+remains the boundary of that partial closeout.
+
+**Next-work reconciliation.** Live issue snapshots confirm #738 and #766 are already closed as
+completed. Their stale entries are removed from the current JSON next-work list; the complete prior
+list is archived under `maintenance_2026_11_02.prior_checkpoint_metadata_and_next_work`.
+Current work retains #120 (W0-B measurements), #787 (watch/worker pressure), #414 (large-scale and
+continuous durability/effect qualification), and #24/#101 (manual Windows accessibility/field
+acceptance). It adds remaining #1108 work, #1121 Explorer-context restoration, and #1124 direct
+collection-member search, plus unresolved CI incident #1129. Neither parked source is integrated or
+qualified by this wave. For #1129, recover the original first-attempt log, Actions annotation or runner
+diagnostic; identify the last executed stage and actual failure, including whether the deadline test
+ran; then choose a targeted repair or justified rerun from that evidence. Record the exact source and
+resulting proof while retaining the original failed result and both primary/duplicate outcomes. Keep
+the incident open if the original diagnostics remain unavailable.
+
+For #1121, the recorded commit `1a9bc36810d65bb10ee912ce5ad37491819a98ce` is absent from the
+connected GitHub repository (422, no commit found), and branch `codex/explorer-context-20261031`
+is absent (404, branch not found). No private source packet or named-branch bundle is present in the
+uploaded workspace material. Its [recovery prerequisite](https://github.com/Chris0Jeky/Loomward/issues/1121#issuecomment-6569274159)
+is to supply the retained private source archive/bundle or publish that source before exact-source
+repair and qualification. Its diff size and complete affected-file list remain unverified.
+For #1124, the remote tests-only branch at `e69e695` was verified, and the issue body was corrected
+from local-only. Implementation is still absent and no PR exists; source recovery is not the same
+blocker as #1121. Its implementation and acceptance gates remain future work.
+
+C8 remains closed. Personal copying, provider/model activation, process controls, original-file effects,
+physical-device/WebView2/assistive-technology acceptance and owner-only decisions retain their existing
+gates. Historical results, hard gates and negative evidence remain preserved by this checkpoint.
