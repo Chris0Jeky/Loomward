@@ -778,6 +778,14 @@ fn observe_one(
                 .hooks
                 .reclaim_names_opened
                 .fetch_add(chunk.len(), std::sync::atomic::Ordering::AcqRel);
+            #[cfg(test)]
+            let deadline = inner
+                .hooks
+                .reclaim_linkcount_deadline
+                .lock()
+                .unwrap()
+                .take()
+                .unwrap_or(deadline);
             let report = linkcount::observe(chunk, deadline);
             outcomes.extend(report.outcomes);
             // A budget stop inside the candidate leaves it unfinished: no row, a partial job.
