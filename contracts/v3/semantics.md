@@ -1322,8 +1322,10 @@ app side of `loomward-native covers`). It starts a `coverage` job (`JobResult`, 
 `jobs.get`, `jobs.cancel`; `job.root_id` is A's) and is owner-only on Tauri and HTTP: client principals are
 refused, and neither command is in any client allowlist. It is a mutation of the job registry, so
 `request_id` is idempotent for ten minutes like `duplicates.inspect`. One coverage read runs at a time:
-a start while a job is live is `busy` with `detail.job_id`, and a start while a cancelled job's read is
-still finishing in the background is `busy` with reason `read_still_finishing` (retryable, no `job_id`).
+a start while a job is live, including cancellation draining, is `busy` with `detail.job_id`.
+The short admission race before a job is published returns retryable `busy` with reason
+`coverage_starting` and no `job_id`. Each job reserves one shared scan-enumeration worker until
+its runner returns, including cancellation, refusal and panic cleanup.
 
 Both roots must be distinct, active, granted roots of the session's own dataset class, admitted exactly as
 a duplicates inspection admits one (q-10: registered lab roots in a synthetic session, owner-granted
@@ -1337,10 +1339,14 @@ stream is read. `budget_bytes` (default 1 GiB) and `budget_secs` (default 60, at
 all passes; at most 200,000 entries per folder are listed. The job reports no phase progress: it is
 `queued`, `running`, then terminal.
 
-`jobs.cancel` ends the job `cancelled` at once and it keeps no result. The read already in progress cannot
-be interrupted (the engine call takes no per-job cancel flag), so it keeps reading until it finishes or
-spends its time budget and its output is discarded; the slot stays busy until it ends. A refused read (an unsupported volume, a revoked grant, an identity change) fails the
-job with the reason only, never a path.
+`jobs.cancel` acknowledges as `cancel_requested` and signals the actual reader. Every pass observes
+the job flag and both root revocation flags. Pending content I/O is cancelled and drained; synchronous
+metadata calls and cancellation draining still depend on the filesystem driver returning. The job
+stays live and holds its worker and coverage slot until the read returns, then becomes `cancelled`.
+It exposes no result, and no detached reader remains behind a terminal cancelled job. A refused read
+(an unsupported volume, a revoked grant, an identity change) fails the job with the reason only,
+never a path. The completed-job check also prevents a result stored just before cancellation from
+being retrieved.
 
 `coverage.result { job_id }` answers the finished job's `CoverageReport`, kept for ten minutes (newest
 eight). A job that is not `completed` (running, cancelled, failed) or has expired answers `not_found`. Revoking, forgetting or

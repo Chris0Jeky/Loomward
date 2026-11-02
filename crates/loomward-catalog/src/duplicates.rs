@@ -57,23 +57,22 @@ fn candidate_space(
     let _guard = WorkGuard::new(conn, budget, deadline)?;
     // Sum once per size group, then sum those groups. Integer SUM retains overflow errors;
     // logical * count(*) would silently promote an overflowing product to REAL in SQLite.
-    match conn
-        .query_row(
-            &format!(
-                "{}
+    match conn.query_row(
+        &format!(
+            "{}
                 SELECT coalesce(sum(files),0), coalesce(sum(bytes),0) FROM sizes",
-                ELIGIBLE_SIZES
-                    .replace("{cols}", "f.logical")
-                    .replace("{size_cols}", "count(*) AS files, sum(logical) AS bytes")
-            ),
-            params![root, floor, flags],
-            |r| {
-                Ok(CandidateSpace {
-                    files: r.get::<_, i64>(0)? as u64,
-                    bytes: r.get::<_, i64>(1)? as u64,
-                })
-            },
-        ) {
+            ELIGIBLE_SIZES
+                .replace("{cols}", "f.logical")
+                .replace("{size_cols}", "count(*) AS files, sum(logical) AS bytes")
+        ),
+        params![root, floor, flags],
+        |r| {
+            Ok(CandidateSpace {
+                files: r.get::<_, i64>(0)? as u64,
+                bytes: r.get::<_, i64>(1)? as u64,
+            })
+        },
+    ) {
         Ok(space) => Ok(Some(space)),
         Err(e) => {
             let e = Error::from(e);

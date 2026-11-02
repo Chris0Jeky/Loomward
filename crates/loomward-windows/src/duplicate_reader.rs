@@ -189,6 +189,33 @@ pub fn read_tree_wanting(
     want: &dyn Fn(&Path, u64) -> bool,
     want_streams: &dyn Fn(&Path, u64) -> bool,
 ) -> Result<(loomward_operations::tree::Tree, u64), Reason> {
+    read_tree_wanting_with_cancels(
+        root,
+        expected,
+        budget,
+        max_entries,
+        cancel,
+        &[],
+        want,
+        want_streams,
+    )
+}
+
+/// The same reader with additional independent cancellation sources. Every flag is checked at
+/// native read boundaries and while waiting for pending content I/O; no relay thread is needed.
+#[cfg(any(feature = "content-read", test))]
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub fn read_tree_wanting_with_cancels(
+    root: &Path,
+    expected: &OpenedIdentity,
+    budget: Budget,
+    max_entries: usize,
+    cancel: Arc<AtomicBool>,
+    other_cancels: &[Arc<AtomicBool>],
+    want: &dyn Fn(&Path, u64) -> bool,
+    want_streams: &dyn Fn(&Path, u64) -> bool,
+) -> Result<(loomward_operations::tree::Tree, u64), Reason> {
     #[cfg(windows)]
     {
         native::tree::read_tree_wanting(
@@ -197,6 +224,7 @@ pub fn read_tree_wanting(
             budget,
             max_entries,
             cancel,
+            other_cancels,
             want,
             want_streams,
         )
@@ -209,6 +237,7 @@ pub fn read_tree_wanting(
             budget,
             max_entries,
             cancel,
+            other_cancels,
             want,
             want_streams,
         );
@@ -255,6 +284,7 @@ struct Meter {
     read: u64,
     deadline: Instant,
     cancel: Option<Arc<AtomicBool>>,
+    other_cancels: Vec<Arc<AtomicBool>>,
     #[cfg(test)]
     clock: Option<std::rc::Rc<std::cell::Cell<Instant>>>,
 }
@@ -265,6 +295,7 @@ impl Meter {
             remaining: budget.bytes,
             read: 0,
             cancel: None,
+            other_cancels: Vec::new(),
             #[cfg(test)]
             clock: None,
             deadline: Instant::now()
@@ -277,6 +308,7 @@ impl Meter {
             .cancel
             .as_ref()
             .is_some_and(|c| c.load(Ordering::Acquire))
+            || self.other_cancels.iter().any(|c| c.load(Ordering::Acquire))
         {
             Err(Reason::Cancelled)
         } else if self.now() >= self.deadline {

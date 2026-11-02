@@ -253,7 +253,21 @@ see [HANDOFF.md](HANDOFF.md) for the comparison and measured writer timings.
 P6/P14 are at 1M rather than 10M. Cold-cache, HTTP, peak process memory, physical
 power-loss durability and native engine/service integration remain unverified.
 
-## Machine store advice (rules v2)
+## Duplicate candidate counting
+
+`Reader::duplicate_candidates(root, floor, cap)` counts catalogue file rows at
+repeated positive logical sizes. The count groups eligible rows once and sums
+integer group totals; integer overflow remains an error. These are candidate
+rows and logical bytes, not distinct content or reclaimable allocation.
+
+Completed counts share a bounded cache keyed by root and size floor, stamped
+with catalogue instance, root generation and subtree revision. Live scans and
+invalid aggregates bypass both serving and storing a cached count. A work-budget
+or deadline interruption leaves the count unknown and is never cached. Hardlink
+suspicion bookkeeping does not change this size-based eligibility. Synthetic
+SQL work and parity evidence are in [the count/cache receipt](../../evidence/v3/duplicate-space-1104-1105.md).
+
+## Machine store advice (rules v5)
 
 `Reader::machine_stores(root, cap)` recognises machine-level build outputs, package caches,
 model stores, virtual disks, worktree-shaped directories, the Recycle Bin and Windows-managed
@@ -284,5 +298,18 @@ siblings, memory dumps, error reports, `Temp`, `CrashDumps`, shader caches, driv
 Delivery Optimization) and the `Package Cache` and `Windows\Installer` stores as `system_managed`
 (see docs/52 section 3). Root-relative paths are matched by the root query; `AppData` paths by their
 parent chain in the walk.
+Rules v5 skip a ComfyUI model folder only when it is currently known empty.
+`machine_stores_with_root_staleness(root, cap, root_stale)` lets the service pass
+watcher evidence before this filtering; stale or mid-scan roots retain the folder
+with unknown sizes. The original `machine_stores` entry point remains available
+for callers without external staleness evidence. A single inlined Hugging Face
+signature predicate serves generic caches and ComfyUI caches. A stale cache or
+`models--`/`datasets--` listing, or excluded/shielded required structure, falls back
+to ComfyUI advice rather than disappearing from both providers. Existing provider
+precedence for mixed signatures is retained. Custom-cache advice names `hf cache ls --cache-dir <dir>` and
+requires `<dir>` to be this detected folder. ComfyUI caches retain the warning
+about unique checkpoints/LoRAs and the `extra_model_paths.yaml` relocation setting.
+Layout context outside a granted `models` or `steamapps/common` root is never
+inferred from its display path.
 Synthetic recognition, decoy, shielding, coverage and row-checksum tests are in
 `tests/machine_stores.rs`.

@@ -1113,17 +1113,41 @@ fn collection_search_literal_predicates_and_direct_directory_only() {
         assert_eq!(page["hits"].as_array().unwrap().len(), 1);
         assert_eq!(page["hits"][0]["row"]["node_id"], ids[2]);
     }
-    assert!(ok("collections.search", query(json!({"kind":"dir"}))).0["hits"].as_array().unwrap().is_empty());
-    assert!(ok("collections.search", query(json!({"extension":"pdf"}))).0["hits"].as_array().unwrap().is_empty());
-    assert_eq!(err(query(json!({"min_bytes":"1002","max_bytes":"1"}))).code, ErrorCode::InvalidRequest);
+    assert!(
+        ok("collections.search", query(json!({"kind":"dir"}))).0["hits"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        ok("collections.search", query(json!({"extension":"pdf"}))).0["hits"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        err(query(json!({"min_bytes":"1002","max_bytes":"1"}))).code,
+        ErrorCode::InvalidRequest
+    );
     assert_eq!(err(query(json!({"modified_after":"2026-01-02T00:00:00Z","modified_before":"2026-01-01T00:00:00Z"}))).code, ErrorCode::InvalidRequest);
-    assert_eq!(err(query(json!({"root_id":null}))).code, ErrorCode::InvalidRequest);
+    assert_eq!(
+        err(query(json!({"root_id":null}))).code,
+        ErrorCode::InvalidRequest
+    );
     let folder = create(&svc, "Folder only");
     svc.inner.db().execute_batch("UPDATE main.dir SET file_id=CAST('folder-native-id' AS BLOB),created_ft=123 WHERE parent_id IS NOT NULL; UPDATE main.file SET dir_id=(SELECT id FROM main.dir WHERE parent_id IS NOT NULL LIMIT 1) WHERE id=1; UPDATE main.revision SET catalog_rev=catalog_rev+1;").unwrap();
     let folder_node = {
         let conn = svc.inner.db();
-        let (row, born) = conn.query_row("SELECT id,born_run FROM main.dir WHERE parent_id IS NOT NULL", [], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?))).unwrap();
-        svc.inner.ids.seal(NodeKey::Dir(row), born, &svc.inner.instance)
+        let (row, born) = conn
+            .query_row(
+                "SELECT id,born_run FROM main.dir WHERE parent_id IS NOT NULL",
+                [],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+            )
+            .unwrap();
+        svc.inner
+            .ids
+            .seal(NodeKey::Dir(row), born, &svc.inner.instance)
     };
     let rev = svc.inner.revisions().unwrap().1;
     ok(
@@ -1136,7 +1160,14 @@ fn collection_search_literal_predicates_and_direct_directory_only() {
     );
     assert_eq!(page["hits"].as_array().unwrap().len(), 1);
     assert_eq!(page["hits"][0]["row"]["node_id"], folder_node);
-    assert!(ok("collections.search", search_members(&svc, &folder, "report", 100, Value::Null)).0["hits"].as_array().unwrap().is_empty());
+    assert!(ok(
+        "collections.search",
+        search_members(&svc, &folder, "report", 100, Value::Null)
+    )
+    .0["hits"]
+        .as_array()
+        .unwrap()
+        .is_empty());
 }
 
 #[test]
@@ -1155,18 +1186,58 @@ fn collection_search_unavailable_restart_catalogue_and_client_fences() {
         .db()
         .execute("UPDATE main.revision SET catalog_rev=catalog_rev+1", [])
         .unwrap();
-    assert_eq!(reason(&err(search_members(&svc, &id, "", 1, first["next_cursor"].clone()))), Some("catalog_rev_changed"));
+    assert_eq!(
+        reason(&err(search_members(
+            &svc,
+            &id,
+            "",
+            1,
+            first["next_cursor"].clone()
+        ))),
+        Some("catalog_rev_changed")
+    );
     let (first, _) = ok(
         "collections.search",
         search_members(&svc, &id, "", 1, Value::Null),
     );
     drop(svc);
     let svc = open(dir.path(), DatasetClass::Synthetic);
-    assert_eq!(err(search_members(&svc, &id, "", 1, first["next_cursor"].clone())).code, ErrorCode::StaleGeneration);
-    assert_eq!(ok("collections.search", search_members(&svc, &id, "", 100, Value::Null)).0["hits"].as_array().unwrap().len(), 3);
-    let req = request("collections.search", json!({"collection_id":id,"text":"","extension":null,"min_bytes":null,"max_bytes":null,"modified_after":null,"modified_before":null,"kind":"any","limit":1,"cursor":null}));
-    assert_eq!(err(svc.call(req, &CallContext::client("mcp:collection-test"))).code, ErrorCode::PermissionDenied);
-    svc.inner.db().execute_batch("DELETE FROM main.file WHERE id=1; UPDATE main.revision SET catalog_rev=catalog_rev+1;").unwrap();
+    assert_eq!(
+        err(search_members(
+            &svc,
+            &id,
+            "",
+            1,
+            first["next_cursor"].clone()
+        ))
+        .code,
+        ErrorCode::StaleGeneration
+    );
+    assert_eq!(
+        ok(
+            "collections.search",
+            search_members(&svc, &id, "", 100, Value::Null)
+        )
+        .0["hits"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+    let req = request(
+        "collections.search",
+        json!({"collection_id":id,"text":"","extension":null,"min_bytes":null,"max_bytes":null,"modified_after":null,"modified_before":null,"kind":"any","limit":1,"cursor":null}),
+    );
+    assert_eq!(
+        err(svc.call(req, &CallContext::client("mcp:collection-test"))).code,
+        ErrorCode::PermissionDenied
+    );
+    svc.inner
+        .db()
+        .execute_batch(
+            "DELETE FROM main.file WHERE id=1; UPDATE main.revision SET catalog_rev=catalog_rev+1;",
+        )
+        .unwrap();
     let (page, _) = ok(
         "collections.search",
         search_members(&svc, &id, "", 100, Value::Null),
@@ -1185,7 +1256,11 @@ fn collection_search_unavailable_restart_catalogue_and_client_fences() {
     assert!(!page.to_string().contains("report"));
     ok(
         "roots.forget",
-        call(&svc, "roots.forget", json!({"root_id":svc.inner.root_id(1)})),
+        call(
+            &svc,
+            "roots.forget",
+            json!({"root_id":svc.inner.root_id(1)}),
+        ),
     );
     let (forgotten, _) = ok(
         "collections.search",
@@ -1229,9 +1304,9 @@ fn collection_search_rejects_publication_during_hydration_and_deadline_stops_wor
         let (_dir, svc, ids) = setup(DatasetClass::Synthetic);
         let id = create(&svc, "Concurrent search");
         ok(
-        "collections.update_members",
-        update(&svc, &id, &ids, &[], 2),
-    );
+            "collections.update_members",
+            update(&svc, &id, &ids, &[], 2),
+        );
         let svc = Arc::new(svc);
         let phase = if expire { "hydrate" } else { "hydrated" };
         svc.inner
@@ -1252,9 +1327,9 @@ fn collection_search_rejects_publication_during_hydration_and_deadline_stops_wor
             *svc.inner.hooks.skew.lock().unwrap() = Duration::from_secs(61);
         } else {
             svc.inner
-        .db()
-        .execute("UPDATE main.revision SET catalog_rev=catalog_rev+1", [])
-        .unwrap();
+                .db()
+                .execute("UPDATE main.revision SET catalog_rev=catalog_rev+1", [])
+                .unwrap();
         }
         svc.inner.hooks.open(Command::CollectionsSearch, phase);
         let error = err(read.join().unwrap());
@@ -1266,9 +1341,11 @@ fn collection_search_rejects_publication_during_hydration_and_deadline_stops_wor
                 ErrorCode::StaleGeneration
             }
         );
-        svc.inner.hooks.until("collection search slot released", |_| {
-            *svc.inner.reads.lock().unwrap() == 0
-        });
+        svc.inner
+            .hooks
+            .until("collection search slot released", |_| {
+                *svc.inner.reads.lock().unwrap() == 0
+            });
     }
 }
 
@@ -1282,7 +1359,10 @@ fn collection_search_nonmatching_stale_members_keep_partial_coverage() {
     );
     // Synthetic metadata has complete rows but no live watcher. Pin both facts so the
     // regression cannot pass merely because row coverage or unavailable counts set partial.
-    assert_eq!(svc.inner.hit_freshness(1).state, SearchFreshnessState::Stale);
+    assert_eq!(
+        svc.inner.hit_freshness(1).state,
+        SearchFreshnessState::Stale
+    );
     let (baseline, _) = ok(
         "collections.search",
         search_members(&svc, &id, "", 100, Value::Null),
@@ -1301,7 +1381,10 @@ fn collection_search_nonmatching_stale_members_keep_partial_coverage() {
             .as_object_mut()
             .unwrap()
             .extend(predicate.as_object().unwrap().clone());
-        let (page, _) = ok("collections.search", call(&svc, "collections.search", payload));
+        let (page, _) = ok(
+            "collections.search",
+            call(&svc, "collections.search", payload),
+        );
         assert!(page["hits"].as_array().unwrap().is_empty(), "{predicate}");
         assert_eq!(page["examined_members"], 1);
         assert_eq!(page["unavailable_members"], 0);
@@ -1360,7 +1443,10 @@ fn collection_search_retained_descendant_metadata_is_hidden_below_unavailable_an
             "collections.search",
             search_members(&svc, &id, "report", 100, Value::Null),
         );
-        assert!(page["hits"].as_array().unwrap().is_empty(), "{outcome}/{flags}/{attrs}");
+        assert!(
+            page["hits"].as_array().unwrap().is_empty(),
+            "{outcome}/{flags}/{attrs}"
+        );
         assert_eq!(page["total_members"], 1);
         assert_eq!(page["examined_members"], 1);
         assert_eq!(page["unavailable_members"], 1);
@@ -1382,17 +1468,23 @@ fn collection_search_does_not_repair_dirty_members_or_unrelated_roots() {
     let directory = {
         let conn = svc.inner.db();
         let (row, born) = conn
-            .query_row("SELECT id,born_run FROM main.dir WHERE parent_id IS NOT NULL", [], |r| {
-                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
-            })
+            .query_row(
+                "SELECT id,born_run FROM main.dir WHERE parent_id IS NOT NULL",
+                [],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+            )
             .unwrap();
-        svc.inner.ids.seal(NodeKey::Dir(row), born, &svc.inner.instance)
+        svc.inner
+            .ids
+            .seal(NodeKey::Dir(row), born, &svc.inner.instance)
     };
     ok(
         "collections.update_members",
         update(&svc, &id, &[ids[0].clone(), directory.clone()], &[], 2),
     );
-    let WriteReply::Root { grant_id, dir_id, .. } = svc
+    let WriteReply::Root {
+        grant_id, dir_id, ..
+    } = svc
         .inner
         .catalog
         .writer()
@@ -1419,11 +1511,19 @@ fn collection_search_does_not_repair_dirty_members_or_unrelated_roots() {
     let aggregates = || {
         let conn = svc.inner.db();
         let mut statement = conn
-            .prepare("SELECT id,dirty_rev,agg_valid_rev,sub_logical,sub_files FROM main.dir ORDER BY id")
+            .prepare(
+                "SELECT id,dirty_rev,agg_valid_rev,sub_logical,sub_files FROM main.dir ORDER BY id",
+            )
             .unwrap();
         statement
             .query_map([], |r| {
-                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?, r.get::<_, i64>(4)?))
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, i64>(4)?,
+                ))
             })
             .unwrap()
             .collect::<rusqlite::Result<Vec<_>>>()
@@ -1436,11 +1536,18 @@ fn collection_search_does_not_repair_dirty_members_or_unrelated_roots() {
         search_members(&svc, &id, "", 100, Value::Null),
     );
     assert_eq!(page["hits"].as_array().unwrap().len(), 2);
-    let folder = page["hits"].as_array().unwrap().iter()
+    let folder = page["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
         .find(|hit| hit["row"]["node_id"] == directory)
         .unwrap();
     assert_eq!(folder["row"]["coverage"], "stale");
     assert_eq!(page["partial"], true);
     assert_eq!(aggregates(), before, "search must not repair any aggregate");
-    assert_eq!(svc.inner.revisions().unwrap(), revisions, "search must not publish repairs");
+    assert_eq!(
+        svc.inner.revisions().unwrap(),
+        revisions,
+        "search must not publish repairs"
+    );
 }

@@ -1354,3 +1354,22 @@ mod native {
         );
     }
 }
+
+#[test]
+fn tree_meter_observes_each_cancellation_source_without_masking_the_others() {
+    for cancelled in 0..3 {
+        let flags: Vec<_> = (0..3).map(|_| Arc::new(AtomicBool::new(false))).collect();
+        let mut meter = Meter::new(Budget::test());
+        meter.cancel = Some(flags[0].clone());
+        meter.other_cancels = flags[1..].to_vec();
+        assert_eq!(meter.check(), Ok(()));
+        flags[cancelled].store(true, Ordering::Release);
+        assert_eq!(
+            meter.check(),
+            Err(Reason::Cancelled),
+            "flag {cancelled} was ignored"
+        );
+        assert_eq!(meter.reserve(1), Err(Reason::Cancelled));
+        assert_eq!(meter.read, 0);
+    }
+}

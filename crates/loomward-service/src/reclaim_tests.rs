@@ -312,6 +312,48 @@ fn reclaim_watcher_staleness_hides_all_candidate_sizes() {
     }
 }
 
+#[cfg(windows)]
+#[test]
+fn reclaim_watcher_keeps_previously_empty_comfyui_folders_as_unknown() {
+    let Some(lab) = lab() else { return };
+    for relative in [
+        "ComfyUI/comfy",
+        "ComfyUI/custom_nodes",
+        "ComfyUI/models/loras",
+    ] {
+        std::fs::create_dir_all(lab.path.join(relative)).unwrap();
+    }
+    settle(&lab.svc, &start(&lab.svc, &lab.root, "full"));
+    f3_wait_live(&lab.svc);
+    lab.svc.inner.freshness.pause_pump();
+    let before = reclaim(&lab.svc);
+    assert!(!before["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|g| g["candidates"].as_array().unwrap())
+        .any(|c| c["name"] == "loras"));
+    let row = lab.svc.inner.root_row(&lab.root).unwrap();
+    lab.svc
+        .inner
+        .freshness
+        .record(row, vec![loomward_windows::watch::Change::RootDirty]);
+    assert!(lab.svc.inner.freshness.stale(row));
+    let stale = reclaim(&lab.svc);
+    let candidate = stale["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|g| g["candidates"].as_array().unwrap())
+        .find(|c| c["name"] == "loras")
+        .expect("stale emptiness must stay unknown, not disappear");
+    assert_eq!(candidate["coverage"], "stale");
+    assert!(stale["partial"].as_bool().unwrap());
+    for field in ["logical_bytes", "allocated_bytes", "reclaimable_bytes"] {
+        assert!(candidate[field].is_null(), "{field}: {candidate}");
+    }
+}
+
 #[test]
 fn reclaim_rejects_unknown_volumes_bad_limits_and_clients_even_with_a_grant() {
     let tmp = temp_root();

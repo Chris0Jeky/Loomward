@@ -12,6 +12,24 @@ files AS NOT MATERIALIZED (
     AND coalesce(d.listing_outcome,'complete') NOT IN ('stale','excluded','denied','unscanned')
     AND (d.listing_state='complete' OR f.seen_run=d.seen_run)
 ),
+-- One indexed predicate serves generic caches and caches inside ComfyUI model folders.
+huggingface_cache AS NOT MATERIALIZED (
+  SELECT h.id FROM safe h
+  WHERE h.listing_state IN ('complete','incomplete')
+    AND coalesce(h.listing_outcome,'complete') NOT IN ('stale','excluded','denied','unscanned')
+    AND EXISTS(SELECT 1 FROM safe c WHERE c.parent_id=h.id
+      AND (c.name GLOB 'models--*' OR c.name GLOB 'datasets--*')
+      AND c.listing_state IN ('complete','incomplete')
+      AND coalesce(c.listing_outcome,'complete') NOT IN ('stale','excluded','denied','unscanned')
+      AND EXISTS(SELECT 1 FROM safe g WHERE g.parent_id=c.id AND g.name='blobs')
+      AND EXISTS(SELECT 1 FROM safe g WHERE g.parent_id=c.id AND g.name='snapshots'))
+),
+comfyui_child AS NOT MATERIALIZED (
+  SELECT d.id FROM safe d JOIN dir p ON p.id=d.parent_id
+  WHERE p.name='models'
+    AND EXISTS(SELECT 1 FROM safe c WHERE c.parent_id=p.parent_id AND c.name='comfy')
+    AND EXISTS(SELECT 1 FROM safe c WHERE c.parent_id=p.parent_id AND c.name='custom_nodes')
+),
 rules AS NOT MATERIALIZED (
   SELECT d.id,
     CASE
@@ -31,21 +49,10 @@ rules AS NOT MATERIALIZED (
           AND f.name IN ('build.gradle','build.gradle.kts')) THEN 'pruned'
       WHEN d.name='packages' AND p.name='.nuget' THEN 'nuget'
       WHEN d.name='models' AND p.name='.lmstudio' THEN 'lmstudio'
-      -- ComfyUI: each child of a models directory whose parent holds comfy and custom_nodes, except
-      -- a Hugging Face cache (the huggingface arm below owns it) and a folder known empty after a
-      -- complete listing (a stock folder with nothing to reclaim; mid-scan nothing is known empty).
-      WHEN p.name='models'
-        AND EXISTS(SELECT 1 FROM safe c WHERE c.parent_id=p.parent_id AND c.name='comfy')
-        AND EXISTS(SELECT 1 FROM safe c WHERE c.parent_id=p.parent_id AND c.name='custom_nodes')
-        AND NOT (d.listing_state IN ('complete','incomplete')
-          AND coalesce(d.listing_outcome,'complete') NOT IN ('stale','excluded','denied','unscanned')
-          -- Same predicate as the huggingface arm below.
-          AND EXISTS(SELECT 1 FROM safe c WHERE c.parent_id=d.id
-            AND (c.name GLOB 'models--*' OR c.name GLOB 'datasets--*')
-            AND c.listing_state IN ('complete','incomplete')
-            AND coalesce(c.listing_outcome,'complete') NOT IN ('stale','excluded','denied','unscanned')
-            AND EXISTS(SELECT 1 FROM safe g WHERE g.parent_id=c.id AND g.name='blobs')
-            AND EXISTS(SELECT 1 FROM safe g WHERE g.parent_id=c.id AND g.name='snapshots')))
+      -- ComfyUI: keep cache advice tied to this model folder. Only current, completely observed
+      -- empty folders are omitted; a stale root or running scan cannot establish emptiness.
+      WHEN EXISTS(SELECT 1 FROM comfyui_child c WHERE c.id=d.id)
+        AND NOT EXISTS(SELECT 1 FROM huggingface_cache h WHERE h.id=d.id)
         AND NOT (NOT ?4 AND d.listing_state='complete' AND coalesce(d.listing_outcome,'complete')='complete'
           AND d.sub_complete=1 AND d.agg_valid_rev>=d.dirty_rev
           AND d.sub_files=0 AND d.sub_dirs=0 AND d.sub_logical=0
@@ -130,12 +137,9 @@ rules AS NOT MATERIALIZED (
           AND EXISTS(SELECT 1 FROM safe c WHERE c.parent_id=d.id AND c.name IN ('debug','release')) THEN 'cargo-target'
         WHEN EXISTS(SELECT 1 FROM files f WHERE f.dir_id=d.id AND f.name='CACHEDIR.TAG')
           AND EXISTS(SELECT 1 FROM safe c WHERE c.parent_id=d.id AND c.name GLOB 'archive-v*') THEN 'uv'
-        WHEN EXISTS(SELECT 1 FROM safe c WHERE c.parent_id=d.id
-          AND (c.name GLOB 'models--*' OR c.name GLOB 'datasets--*')
-          AND c.listing_state IN ('complete','incomplete')
-          AND coalesce(c.listing_outcome,'complete') NOT IN ('stale','excluded','denied','unscanned')
-          AND EXISTS(SELECT 1 FROM safe g WHERE g.parent_id=c.id AND g.name='blobs')
-          AND EXISTS(SELECT 1 FROM safe g WHERE g.parent_id=c.id AND g.name='snapshots')) THEN 'huggingface'
+        WHEN EXISTS(SELECT 1 FROM huggingface_cache h WHERE h.id=d.id) THEN CASE
+          WHEN EXISTS(SELECT 1 FROM comfyui_child c WHERE c.id=d.id) THEN 'huggingface-comfyui'
+          ELSE 'huggingface' END
         WHEN EXISTS(SELECT 1 FROM files f WHERE f.dir_id=d.id AND f.name='.git') THEN 'worktree'
       END
     END rule

@@ -72,6 +72,7 @@ pub(super) fn run(args: Args) -> Result<(serde_json::Value, u8), String> {
                 time: Duration::from_secs(args.budget_secs),
             },
             args.max_entries,
+            None,
         )
         .map_err(|e| e.to_string())?;
     let report = containment(&a_tree, &b_tree);

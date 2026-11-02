@@ -206,7 +206,11 @@ impl Inner {
                 }
                 Err(e) => return Err(catalog_error(e)),
             };
-            let mut machine = match reader.machine_stores(root.root, DETECTOR_CAP) {
+            let mut machine = match reader.machine_stores_with_root_staleness(
+                root.root,
+                DETECTOR_CAP,
+                stale,
+            ) {
                 Ok(found) => found,
                 Err(loomward_catalog::Error::ResourceBudget) => MachineStores {
                     rules_version: reclaim::RULES_VERSION,

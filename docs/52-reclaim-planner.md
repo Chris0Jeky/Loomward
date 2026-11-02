@@ -40,7 +40,7 @@ statement of which tool owns the data and what its owner-run command is. Recogni
 | Shared Cargo target dirs | a folder holding `debug/` or `release/` plus `.rustc_info.json` / `CACHEDIR.TAG`, outside any project | `cargo clean --target-dir <dir>` | the same variable pointing at a faster declared tier (docs/07) |
 | Dependency installs | `node_modules` beside `package.json` (v1) | reinstall from the lockfile | none |
 | Package caches | npm `_cacache`; pnpm `store/v*`; NuGet `packages` under `.nuget`; pip `http-v2`/`wheels` under a `pip` cache; uv cache (`CACHEDIR.TAG` + `archive-v*`); Gradle `caches/` under a Gradle home; Cargo `registry/cache` and `git/db` under a Cargo home | `npm cache verify`; `pnpm store prune`; `dotnet nuget locals all --list` then `--clear`; `pip cache info` / `pip cache purge`; `uv cache prune`; Gradle's own retention; `cargo cache` tools are third-party, so for Cargo the step is "delete `registry/cache` by hand" marked **owner judgement** | `npm_config_cache`, `PNPM_STORE_DIR`, `NUGET_PACKAGES`, `PIP_CACHE_DIR`, `UV_CACHE_DIR`, `GRADLE_USER_HOME`, `CARGO_HOME` |
-| Model stores | Hugging Face `hub/models--*` with `blobs/` and `snapshots/`; LM Studio `models/<publisher>/<model>/*.gguf`; Ollama `models/blobs/sha256-*` | the host's own model manager (LM Studio "My Models", `ollama rm`, `huggingface-cli delete-cache`) | `HF_HOME` / `HF_HUB_CACHE`; LM Studio models directory setting; `OLLAMA_MODELS` |
+| Model stores | Hugging Face `hub/models--*` with `blobs/` and `snapshots/`; LM Studio `models/<publisher>/<model>/*.gguf`; Ollama `models/blobs/sha256-*` | inspect the detected Hugging Face folder with `hf cache ls --cache-dir <dir>` before owner-managed cleanup; the host's model manager for LM Studio and Ollama | `HF_HOME` / `HF_HUB_CACHE` for generic caches; `extra_model_paths.yaml` for ComfyUI caches; LM Studio models directory setting; `OLLAMA_MODELS` |
 | Creative-AI model folders and game libraries (rules v3) | ComfyUI: each child of a `models` directory whose parent holds `comfy` and `custom_nodes` (`checkpoints`, `loras`, ...); A1111 / Forge: `models` holding `Stable-diffusion`, beside `webui.py`; Steam: each directory directly under `steamapps/common` where `steamapps` holds an `appmanifest_*.acf` file (names only, manifests are never read) | review in the tool by hand: custom checkpoints and trained LoRAs may be unique, so a store is never called disposable; Steam: Properties, Installed Files, Move install folder (whether a game is re-downloadable, or mods and saves survive an uninstall, is not established by names) | `extra_model_paths.yaml`; `--ckpt-dir` / `--lora-dir`; another Steam library folder (Steam Settings, Storage). All three plan under Relocate |
 | Virtual disks | `ext4.vhdx` under a WSL distro folder; `docker_data.vhdx` / `Docker.vhdx` | `docker system df -v` then targeted `docker ... prune`; WSL compaction by its documented offline procedure | Docker Desktop disk-image location; `wsl --manage <distro> --move` |
 | Agent worktrees | a directory with a `.git` **file**: a linked worktree, a submodule or a separate-git-dir checkout; names alone cannot tell which, so the owner step checks with `git worktree list` and `git submodule status` | check branch, HEAD and dirty state in the owning repository before removing anything | none |
@@ -50,10 +50,19 @@ statement of which tool owns the data and what its owner-run command is. Recogni
 | System-managed space | `hiberfil.sys`, `pagefile.sys`, `swapfile.sys`, `WinSxS`, `SoftwareDistribution` | informational only: Disk Cleanup / `DISM /Online /Cleanup-Image /AnalyzeComponentStore`; never summed as reclaimable | none |
 
 **Creative-AI and Steam edges (rules v3, v5).** A ComfyUI `models` child holding Hugging Face `models--*` or `datasets--*`
-caches with `blobs` and `snapshots` (typically `models/diffusers`) reports provider `huggingface`, so the owner step is
-`huggingface-cli delete-cache` rather than a hand review; it still plans under Relocate. A ComfyUI child folder known
+caches with `blobs` and `snapshots` (typically `models/diffusers`) reports provider `huggingface` and stays under
+Relocate. Its owner step explicitly inspects this detected folder with `hf cache ls --cache-dir <dir>`;
+`<dir>` must be its actual path, not an assumed default cache. It keeps the warning that custom checkpoints
+and trained LoRAs may be unique and the ComfyUI `extra_model_paths.yaml` relocation setting. The
+[Hugging Face cache guide](https://huggingface.co/docs/huggingface_hub/en/guides/manage-cache) documents
+custom-cache selection; ComfyUI's [model-path example](https://github.com/Comfy-Org/ComfyUI/blob/master/extra_model_paths.yaml.example)
+lists the configurable model locations (checked 2026-11-02). No command is executed by Loomward.
+A ComfyUI child folder known
 empty is not listed: its listing and aggregate are complete and valid, it has no catalogue rows beneath it, and the root is
-not mid-scan (otherwise it stays, with unknown sizes), so stock folders do not crowd the candidate cap. The signature
+neither stale nor mid-scan (otherwise it stays, with unknown sizes), so stock folders do not crowd the candidate cap.
+The shared Hugging Face predicate has exactly one provider outcome when its cache or repository listing
+becomes stale, or required structure is excluded or shielded: unusable cache structure falls back to
+the enclosing ComfyUI model-folder advice. Existing precedence for mixed provider signatures is retained. The signature
 rows (`comfy`, `custom_nodes`, `Stable-diffusion`, `webui.py`, `appmanifest_*.acf`) must be unshielded and, where a file,
 observed in the same run as an incomplete listing. A granted root that is itself a `models` folder or `steamapps/common`
 yields no candidates and no "not assessed" signal, because the parent that proves the layout is outside the grant (the

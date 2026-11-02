@@ -590,9 +590,19 @@ mod tests {
 
     #[test]
     fn pending_content_read_is_cancelled_and_drained() {
+        pending_read_cancelled_by(0);
+    }
+
+    #[test]
+    fn pending_content_read_observes_both_additional_cancellation_flags() {
+        pending_read_cancelled_by(1);
+        pending_read_cancelled_by(2);
+    }
+
+    fn pending_read_cancelled_by(cancelled: usize) {
         use std::io::Write;
         let name = format!(
-            r"\\.\pipe\loomward-duplicate-cancel-fixture-{}",
+            r"\\.\pipe\loomward-duplicate-cancel-fixture-{}-{cancelled}",
             std::process::id()
         );
         let wide: Vec<_> = name.encode_utf16().chain(Some(0)).collect();
@@ -611,7 +621,7 @@ mod tests {
         assert_ne!(handle, INVALID_HANDLE_VALUE);
         let file = unsafe { File::from_raw_handle(handle) };
         let mut writer = File::options().write(true).open(name).unwrap();
-        let cancel = Arc::new(AtomicBool::new(false));
+        let flags: Vec<_> = (0..3).map(|_| Arc::new(AtomicBool::new(false))).collect();
         let mut pending = false;
         let mut reader = Reader {
             pins: vec![],
@@ -619,7 +629,7 @@ mod tests {
             hook: |event, _| {
                 if event == Event::PendingRead {
                     pending = true;
-                    cancel.store(true, Ordering::Release);
+                    flags[cancelled].store(true, Ordering::Release);
                 }
             },
         };
@@ -627,7 +637,8 @@ mod tests {
             bytes: 100,
             time: Duration::from_millis(100),
         });
-        meter.cancel = Some(cancel.clone());
+        meter.cancel = Some(flags[0].clone());
+        meter.other_cancels = flags[1..].to_vec();
         assert_eq!(
             reader.read(0, &file, 0, &mut [0; 4], &mut meter),
             Err(Reason::Cancelled)

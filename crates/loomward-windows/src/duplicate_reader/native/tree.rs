@@ -59,6 +59,7 @@ pub(crate) fn read_tree(
         budget,
         max_entries,
         cancel,
+        &[],
         &|_, _| true,
         &|_, _| true,
     )
@@ -76,6 +77,7 @@ pub(crate) fn read_tree_wanting(
     budget: Budget,
     max_entries: usize,
     cancel: Arc<AtomicBool>,
+    other_cancels: &[Arc<AtomicBool>],
     want: &dyn Fn(&Path, u64) -> bool,
     want_streams: &dyn Fn(&Path, u64) -> bool,
 ) -> Result<(Tree, u64), Reason> {
@@ -86,6 +88,7 @@ pub(crate) fn read_tree_wanting(
         budget,
         max_entries,
         cancel,
+        other_cancels,
         crate::noncached::sector_for_file,
         want,
         want_streams,
@@ -102,12 +105,14 @@ fn read_tree_from(
     budget: Budget,
     max_entries: usize,
     cancel: Arc<AtomicBool>,
+    other_cancels: &[Arc<AtomicBool>],
     geometry: fn(&File) -> io::Result<usize>,
     want: &dyn Fn(&Path, u64) -> bool,
     want_streams: &dyn Fn(&Path, u64) -> bool,
 ) -> Result<(Tree, u64), Reason> {
     let mut meter = Meter::new(budget);
     meter.cancel = Some(cancel);
+    meter.other_cancels = other_cancels.to_vec();
     let mut tree = Tree::default();
     if let Err(reason) = meter.check() {
         tree.nodes.insert(PathBuf::new(), Err(reason.as_str()));
@@ -1739,6 +1744,7 @@ mod tests {
             budget(),
             100,
             Default::default(),
+            &[],
             |_| Err(io::Error::from_raw_os_error(1)),
             &|_, _| true,
             &|_, _| true,
@@ -1888,6 +1894,7 @@ mod tests {
                 budget(),
                 100,
                 Default::default(),
+                &[],
                 crate::noncached::sector_for_file,
                 &|_, _| true,
                 &|_, _| true,
@@ -1930,6 +1937,7 @@ mod tests {
             budget(),
             100,
             Default::default(),
+            &[],
             crate::noncached::sector_for_file,
             &|_, _| true,
             &|_, _| true,
@@ -1964,6 +1972,7 @@ mod tests {
                 budget(),
                 max,
                 Default::default(),
+                &[],
                 crate::noncached::sector_for_file,
                 &|_, _| true,
                 &|_, _| true,
@@ -2001,6 +2010,7 @@ mod tests {
                 budget(),
                 max,
                 Default::default(),
+                &[],
                 crate::noncached::sector_for_file,
                 &|_, _| true,
                 &|_, _| true,
@@ -2040,6 +2050,7 @@ mod tests {
                     budget(),
                     100,
                     Default::default(),
+                    &[],
                     want,
                     &|_, _| true,
                 ),
@@ -2108,6 +2119,7 @@ mod tests {
                 budget(),
                 100,
                 Default::default(),
+                &[],
                 &|_, _| true,
                 want_streams,
             )
@@ -2135,5 +2147,40 @@ mod tests {
             file(&some, "two").metadata[&Class::NamedStreams],
             file(&default, "two").metadata[&Class::NamedStreams]
         );
+    }
+
+    #[test]
+    fn tree_reader_forwards_every_flag_to_the_content_meter() {
+        if crate::enumerate::skip_elevated_test() {
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("file"), b"synthetic content").unwrap();
+        let (_, expected) = NativeSource::default().open_root(temp.path()).unwrap();
+        for cancelled in 0..3 {
+            let flags: Vec<_> = (0..3).map(|_| Arc::new(AtomicBool::new(false))).collect();
+            let requested = std::cell::Cell::new(false);
+            let (tree, bytes) = crate::duplicate_reader::read_tree_wanting_with_cancels(
+                temp.path(),
+                &expected,
+                budget(),
+                100,
+                flags[0].clone(),
+                &flags[1..],
+                &|_, _| {
+                    requested.set(true);
+                    flags[cancelled].store(true, Ordering::Release);
+                    true
+                },
+                &|_, _| false,
+            )
+            .unwrap();
+            assert!(requested.get(), "the content boundary was not reached");
+            assert_eq!(bytes, 0, "flag {cancelled} did not reach the content meter");
+            assert_eq!(
+                tree.nodes[Path::new("file")].as_ref().unwrap_err(),
+                &"cancelled"
+            );
+        }
     }
 }

@@ -34,8 +34,12 @@ pub(crate) enum TreePoint {
     BeforeGuard,
     /// `observe_coverage`: B was listed without content; A has not been read.
     AfterCoverageListing,
+    /// A was hashed; B has not been hashed yet.
+    AfterCoverageSourceHashing,
     /// `observe_coverage`: A and B were hashed; A has not been listed again.
     AfterCoverageHashing,
+    /// A was listed again; the final admission gate has not started.
+    AfterCoverageRecheck,
 }
 
 type Hook = Box<dyn FnMut(TreePoint)>;
@@ -324,7 +328,7 @@ fn coverage_reads_only_matching_b_sizes_and_covers_a_renamed_copy() {
     };
     let (a_tree, b_tree, bytes) = pair
         .engine
-        .observe_coverage(&pair.left, &pair.right, budget(1024 * 1024), 100)
+        .observe_coverage(&pair.left, &pair.right, budget(1024 * 1024), 100, None)
         .unwrap();
     let content = |tree: &loomward_operations::tree::Tree, path: &Path| {
         tree.nodes[path].as_ref().unwrap().content
@@ -365,7 +369,7 @@ fn coverage_reads_only_matching_b_sizes_and_covers_a_renamed_copy() {
     );
     let (a_tree, b_tree, bytes) = pair
         .engine
-        .observe_coverage(&pair.left, &pair.right, budget(0), 100)
+        .observe_coverage(&pair.left, &pair.right, budget(0), 100, None)
         .unwrap();
     assert_eq!(bytes, 0);
     let report = containment(&a_tree, &b_tree);
@@ -392,7 +396,7 @@ fn coverage_of(
 ) -> std::collections::BTreeMap<std::path::PathBuf, loomward_operations::containment::Coverage> {
     let (a, b, _) = pair
         .engine
-        .observe_coverage(&pair.left, &pair.right, cover_budget(budget), 100)
+        .observe_coverage(&pair.left, &pair.right, cover_budget(budget), 100, None)
         .unwrap();
     loomward_operations::containment::containment(&a, &b)
         .items
@@ -415,7 +419,7 @@ fn coverage_stops_on_the_destination_hashing_read_alone() {
     // A and B cost the same to hash, so the full run reads twice the cost of one.
     let (_, _, full) = pair
         .engine
-        .observe_coverage(&pair.left, &pair.right, cover_budget(1 << 20), 100)
+        .observe_coverage(&pair.left, &pair.right, cover_budget(1 << 20), 100, None)
         .unwrap();
     assert!(full >= 200, "{full}");
     assert_eq!(
@@ -426,7 +430,7 @@ fn coverage_stops_on_the_destination_hashing_read_alone() {
     );
     let (a, b, bytes) = pair
         .engine
-        .observe_coverage(&pair.left, &pair.right, cover_budget(full - 1), 100)
+        .observe_coverage(&pair.left, &pair.right, cover_budget(full - 1), 100, None)
         .unwrap();
     assert!(bytes < full, "{bytes} of {full}");
     assert!(a.nodes[fixture].as_ref().unwrap().content.is_ok());
@@ -461,7 +465,7 @@ fn coverage_spends_no_budget_on_named_streams_but_verify_tree_still_compares_the
     std::fs::write(pair.right.path().join("fixture:note"), vec![2u8; big]).unwrap();
     let (a, b, full) = pair
         .engine
-        .observe_coverage(&pair.left, &pair.right, cover_budget(1 << 20), 100)
+        .observe_coverage(&pair.left, &pair.right, cover_budget(1 << 20), 100, None)
         .unwrap();
     assert!((200..big as u64).contains(&full), "{full}");
     for tree in [&a, &b] {
@@ -592,7 +596,7 @@ fn coverage_is_refused_by_the_final_gate() {
     }
     let run = |pair: &Pair| {
         pair.engine
-            .observe_coverage(&pair.left, &pair.right, cover_budget(1 << 20), 100)
+            .observe_coverage(&pair.left, &pair.right, cover_budget(1 << 20), 100, None)
     };
     for (row, at) in [
         (1, TreePoint::AfterCoverageListing),
@@ -708,4 +712,78 @@ fn selected_run_never_hashes_unselected_source_files() {
             assert_eq!(known, 0, "{selection:?}: {selected:?}");
         }
     }
+}
+
+/// Cancel at every boundary, independently through the job, A grant, and B grant.
+/// Later phase hooks must not run: a refused final report alone would not prove
+/// that the reader stopped doing work.
+#[cfg(windows)]
+#[test]
+fn coverage_cancellation_stops_before_the_next_phase_for_each_flag() {
+    if skip_elevated() {
+        return;
+    }
+    let phases = [
+        TreePoint::AfterCoverageListing,
+        TreePoint::AfterCoverageSourceHashing,
+        TreePoint::AfterCoverageHashing,
+        TreePoint::AfterCoverageRecheck,
+        TreePoint::BeforeGuard,
+    ];
+    for (index, at) in phases.into_iter().enumerate() {
+        for cancelled in 0..3 {
+            let pair = pair_of(b"same", b"same");
+            let job_cancel = Arc::new(AtomicBool::new(false));
+            let flag = match cancelled {
+                0 => job_cancel.clone(),
+                1 => pair.engine.duplicate_read_admission(&pair.left).unwrap(),
+                _ => pair.engine.duplicate_read_admission(&pair.right).unwrap(),
+            };
+            let seen = Rc::new(RefCell::new(Vec::new()));
+            let observed = seen.clone();
+            let _guard = install(move |point| {
+                observed.borrow_mut().push(point);
+                if point == at {
+                    flag.store(true, Ordering::Release);
+                }
+            });
+            assert_eq!(
+                refusal(pair.engine.observe_coverage(
+                    &pair.left,
+                    &pair.right,
+                    cover_budget(1 << 20),
+                    100,
+                    Some(job_cancel),
+                )),
+                "cancelled",
+                "flag {cancelled} at {at:?}"
+            );
+            assert_eq!(
+                *seen.borrow(),
+                phases[..=index],
+                "read continued after {at:?}"
+            );
+        }
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn an_already_cancelled_coverage_job_never_starts_a_read() {
+    if skip_elevated() {
+        return;
+    }
+    let pair = pair_of(b"same", b"same");
+    let (seen, _guard) = record_points();
+    assert_eq!(
+        refusal(pair.engine.observe_coverage(
+            &pair.left,
+            &pair.right,
+            cover_budget(1 << 20),
+            100,
+            Some(Arc::new(AtomicBool::new(true))),
+        )),
+        "cancelled"
+    );
+    assert!(seen.borrow().is_empty());
 }

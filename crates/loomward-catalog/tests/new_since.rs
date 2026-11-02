@@ -556,7 +556,10 @@ fn a_large_synthetic_tree_is_complete_within_the_existing_budget() {
     lab.db.execute_batch("COMMIT").unwrap();
     let started = std::time::Instant::now();
     let result = lab.since(Some(first), 5).unwrap();
-    eprintln!("new_since: 50000 files / 5000 folders: {:?}", started.elapsed());
+    eprintln!(
+        "new_since: 50000 files / 5000 folders: {:?}",
+        started.elapsed()
+    );
     let totals = result.totals.unwrap();
     assert_eq!((totals.new_files, totals.new_dirs), (50_000, 5000));
     assert_eq!(totals.logical_bytes, 50_000);

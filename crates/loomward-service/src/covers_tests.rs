@@ -209,6 +209,12 @@ mod native {
     /// Two scanned synthetic lab folders, filled by `fill` before the service opens them.
     fn pair(fill: impl FnOnce(&Path, &Path)) -> Option<Pair> {
         if !native_identity_available() {
+            // The shared helper asserts native PermissionDenied and emits the CI-enforced
+            // elevated marker. Name this particular unexecuted fixture as well.
+            eprintln!(
+                "SKIPPED (elevated): {}: native identity unavailable",
+                std::thread::current().name().unwrap_or("coverage native test")
+            );
             return None;
         }
         let tmp = crate::tests::temp_root();
@@ -466,6 +472,61 @@ mod native {
         assert!(r["unknown"][0]["reason"].is_string());
     }
 
+    /// A held real coverage read must consume the same pool as scans and duplicates.
+    /// Uses only the existing service API and read gate, so the old implementation
+    /// compiles and fails behaviorally (zero workers instead of one).
+    #[test]
+    fn coverage_worker_is_accounted_until_the_held_read_returns() {
+        let Some(p) = pair(|a, b| {
+            put(a, "one.txt", b"same");
+            put(b, "two.txt", b"same");
+        }) else {
+            return;
+        };
+        let hooks = &p.svc.inner.hooks;
+        let held = (Command::CoverageStart, "orphan_read");
+        hooks.closed.lock().unwrap().push(held);
+        let started = start(&p, json!({}));
+        hooks.until("coverage read holding its worker", |h| {
+            h.arrived.lock().unwrap().contains(&held)
+        });
+        let workers = || {
+            p.svc
+                .inner
+                .engine
+                .budgets_get()
+                .unwrap()
+                .pools
+                .iter()
+                .find(|pool| pool.pool == PoolName::ScanEnumerate)
+                .unwrap()
+                .current_workers
+                .get()
+        };
+        let during_read = workers();
+        ok(
+            "jobs.cancel",
+            call(&p.svc, "jobs.cancel", json!({"job_id":started.job_id})),
+        );
+        let during_cancel = workers();
+        // Always release before asserting, including on the expected old-code failure.
+        hooks.open(held.0, held.1);
+        assert_eq!(finished(&p.svc, &started.job_id).state, JobState::Cancelled);
+        assert_eq!(
+            during_read, 1,
+            "coverage read bypassed the shared worker pool"
+        );
+        assert_eq!(
+            during_cancel, 1,
+            "cancellation released a still-running reader"
+        );
+        let until = Instant::now() + Duration::from_secs(5);
+        while workers() != 0 {
+            assert!(Instant::now() < until, "coverage worker reservation leaked");
+            std::thread::yield_now();
+        }
+    }
+
     #[test]
     fn cancelling_ends_the_job_cancelled_and_keeps_no_result() {
         let Some(p) = pair(|a, b| {
@@ -514,7 +575,7 @@ mod native {
         ));
         assert_eq!(none.code, ErrorCode::NotFound);
         // The slot is free again and a fresh run completes.
-        // The cancelled read frees the slot when it ends, a moment after the job did.
+        // Terminal publication now follows the actual read and guard release.
         let until = Instant::now() + Duration::from_secs(20);
         let again = loop {
             let r = call(
@@ -527,15 +588,15 @@ mod native {
                     serde_json::from_value(json!(ok("coverage.start", r).0)).unwrap();
                 break finished(&p.svc, &r.job.job_id);
             }
+            assert_eq!(err(r).code, ErrorCode::Busy);
             assert!(Instant::now() < until, "the slot never freed");
             std::thread::sleep(Duration::from_millis(10));
         };
         assert_eq!(again.state, JobState::Completed, "{:?}", again.error);
     }
 
-    /// The orphan path: a cancel lands while the engine read is still running. The job is terminal
-    /// at once, but the read goes on, so a new check is refused until it ends, and the orphan keeps
-    /// no report.
+    /// Cancellation acknowledges promptly, but the job and admission stay live until the
+    /// worker's held read returns. A cancelled worker never stores a report.
     #[test]
     fn a_cancelled_read_still_running_keeps_the_slot_busy_and_stores_nothing() {
         let Some(p) = pair(|a, b| {
@@ -548,25 +609,24 @@ mod native {
         let held = (Command::CoverageStart, "orphan_read");
         hooks.closed.lock().unwrap().push(held);
         let started = start(&p, json!({}));
-        hooks.until("the read thread holding", |h| {
+        hooks.until("the job worker holding its read", |h| {
             h.arrived.lock().unwrap().contains(&held)
         });
         ok(
             "jobs.cancel",
             call(&p.svc, "jobs.cancel", json!({"job_id":started.job_id})),
         );
-        // The job is terminal through the timeout branch while the read has not even begun.
-        let job = finished(&p.svc, &started.job_id);
-        assert_eq!(job.state, JobState::Cancelled);
+        let job = p.svc.inner.engine.job_status(&started.job_id).unwrap();
+        assert_eq!(job.state, JobState::CancelRequested);
         let busy = err(call(
             &p.svc,
             "coverage.start",
             json!({"a_root_id":p.a,"b_root_id":p.b}),
         ));
         assert_eq!(busy.code, ErrorCode::Busy, "{busy:?}");
-        assert_eq!(reason(&busy), Some("read_still_finishing"));
-        assert!(busy.retryable);
+        assert_eq!(busy.detail.as_ref().unwrap()["job_id"], json!(started.job_id));
         hooks.open(held.0, held.1);
+        assert_eq!(finished(&p.svc, &started.job_id).state, JobState::Cancelled);
         let until = Instant::now() + Duration::from_secs(20);
         let second = loop {
             let r = call(
@@ -578,7 +638,7 @@ mod native {
                 ResponseEnvelope::Ok(_) => break r,
                 ResponseEnvelope::Err(ref e) => {
                     assert_eq!(e.error.code, ErrorCode::Busy);
-                    assert!(Instant::now() < until, "the orphan read never ended");
+                    assert!(Instant::now() < until, "the held read never ended");
                     std::thread::sleep(Duration::from_millis(10));
                 }
             }
@@ -589,7 +649,7 @@ mod native {
             finished(&p.svc, &second.job.job_id).state,
             JobState::Completed
         );
-        // The orphan stored nothing; only the second run has a report.
+        // The cancelled worker stored nothing; only the second run has a report.
         assert_eq!(
             err(call(
                 &p.svc,
@@ -601,6 +661,39 @@ mod native {
         );
         assert!(p.svc.inner.covers.get(&started.job_id).is_none());
         assert!(p.svc.inner.covers.get(&second.job.job_id).is_some());
+    }
+
+    #[test]
+    fn cancellation_at_report_storage_keeps_no_retained_result() {
+        let Some(p) = pair(|a, b| {
+            put(a, "one.txt", b"same");
+            put(b, "two.txt", b"same");
+        }) else {
+            return;
+        };
+        let hooks = &p.svc.inner.hooks;
+        let held = (Command::CoverageStart, "before_store");
+        hooks.closed.lock().unwrap().push(held);
+        let started = start(&p, json!({}));
+        hooks.until("completed coverage before storage", |h| {
+            h.arrived.lock().unwrap().contains(&held)
+        });
+        ok(
+            "jobs.cancel",
+            call(&p.svc, "jobs.cancel", json!({"job_id":started.job_id})),
+        );
+        hooks.open(held.0, held.1);
+        assert_eq!(finished(&p.svc, &started.job_id).state, JobState::Cancelled);
+        assert!(p.svc.inner.covers.get(&started.job_id).is_none());
+        assert_eq!(
+            err(call(
+                &p.svc,
+                "coverage.result",
+                json!({"job_id":started.job_id})
+            ))
+            .code,
+            ErrorCode::NotFound
+        );
     }
 
     #[test]

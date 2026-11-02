@@ -501,7 +501,10 @@ impl Inner {
             .zip(r.max_bytes)
             .is_some_and(|(a, b)| a.get() > b.get())
         {
-            return Err(fail(ErrorCode::InvalidRequest, "minimum size exceeds maximum"));
+            return Err(fail(
+                ErrorCode::InvalidRequest,
+                "minimum size exceeds maximum",
+            ));
         }
         let to_ft = |t: &Timestamp| {
             loomward_catalog::filetime(t.as_ref())
@@ -513,12 +516,17 @@ impl Inner {
             .zip(modified_before)
             .is_some_and(|(a, b)| a > b)
         {
-            return Err(fail(ErrorCode::InvalidRequest, "modified range is reversed"));
+            return Err(fail(
+                ErrorCode::InvalidRequest,
+                "modified range is reversed",
+            ));
         }
         let conn = self.collection_read(work)?;
         let revs = db::revisions(&conn).map_err(sql_error)?;
         let kind: Option<String> = conn
-            .query_row("SELECT kind FROM st.collection WHERE id=?1", [id], |r| r.get(0))
+            .query_row("SELECT kind FROM st.collection WHERE id=?1", [id], |r| {
+                r.get(0)
+            })
             .optional()
             .map_err(sql_error)?;
         match kind.as_deref() {
@@ -544,42 +552,44 @@ impl Inner {
         let bind = Value::Object(fields).to_string();
         let after = match &r.cursor {
             None => 0,
-            Some(cursor) => match self
-                .cursors
-                .resume(cursor, Command::CollectionsSearch, &bind, Some(revs.1))
-            {
-                Ok(Position::Members { after, catalog_rev }) if catalog_rev == revs.0 => after,
-                Ok(Position::Members { .. }) => {
-                    return Err(with_reason(
-                        fail(
-                            ErrorCode::StaleGeneration,
-                            "catalogue changed; restart searching",
-                        ),
-                        "catalog_rev_changed",
-                    ))
+            Some(cursor) => {
+                match self
+                    .cursors
+                    .resume(cursor, Command::CollectionsSearch, &bind, Some(revs.1))
+                {
+                    Ok(Position::Members { after, catalog_rev }) if catalog_rev == revs.0 => after,
+                    Ok(Position::Members { .. }) => {
+                        return Err(with_reason(
+                            fail(
+                                ErrorCode::StaleGeneration,
+                                "catalogue changed; restart searching",
+                            ),
+                            "catalog_rev_changed",
+                        ))
+                    }
+                    Err(Resume::StateChanged) => {
+                        return Err(with_reason(
+                            fail(
+                                ErrorCode::StaleGeneration,
+                                "collection or grants changed; restart searching",
+                            ),
+                            "state_rev_changed",
+                        ))
+                    }
+                    Err(Resume::Expired) => {
+                        return Err(with_reason(
+                            fail(ErrorCode::StaleGeneration, "cursor expired"),
+                            "cursor_expired",
+                        ))
+                    }
+                    _ => {
+                        return Err(fail(
+                            ErrorCode::InvalidRequest,
+                            "cursor belongs to another request",
+                        ))
+                    }
                 }
-                Err(Resume::StateChanged) => {
-                    return Err(with_reason(
-                        fail(
-                            ErrorCode::StaleGeneration,
-                            "collection or grants changed; restart searching",
-                        ),
-                        "state_rev_changed",
-                    ))
-                }
-                Err(Resume::Expired) => {
-                    return Err(with_reason(
-                        fail(ErrorCode::StaleGeneration, "cursor expired"),
-                        "cursor_expired",
-                    ))
-                }
-                _ => {
-                    return Err(fail(
-                        ErrorCode::InvalidRequest,
-                        "cursor belongs to another request",
-                    ))
-                }
-            },
+            }
         };
         // Restrict the resolution CTE itself to this bounded member window. No descendant traversal
         // or global name search is involved; REFERENCES only checks each member's ancestors.
@@ -603,7 +613,7 @@ impl Inner {
         let rows = conn
             .prepare(&sql)
             .map_err(sql_error)?
-            .query_map(params![id, after, MAX_EXAMINED + 1], |r| {
+            .query_map(params![id, after, (MAX_EXAMINED + 1) as i64], |r| {
                 Ok((
                     r.get::<_, i64>(0)?,
                     r.get::<_, Option<String>>(1)?,
@@ -634,11 +644,15 @@ impl Inner {
                 break;
             }
             if work.is_some_and(|w| self.past(w.deadline)) {
-                return Err(fail(ErrorCode::DeadlineExceeded, "the read deadline expired"));
+                return Err(fail(
+                    ErrorCode::DeadlineExceeded,
+                    "the read deadline expired",
+                ));
             }
             examined += 1;
             last = *reference;
-            let (Some(kind), Some(row), Some(born), Some("active")) = (kind, row, born, grant.as_deref())
+            let (Some(kind), Some(row), Some(born), Some("active")) =
+                (kind, row, born, grant.as_deref())
             else {
                 unavailable += 1;
                 continue;

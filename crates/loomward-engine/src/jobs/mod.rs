@@ -604,6 +604,28 @@ impl Engine {
     pub fn job_submit_runner(&self, spec: JobSpec, runner: JobRunner) -> EngineResult<Job> {
         self.jobs.submit(spec, runner, self.events.clone(), None)
     }
+    /// Submit the service-owned coverage reader with one shared scan-worker reservation.
+    /// A live coverage conflict wins over exhausted budgets. The reservation belongs to the
+    /// actual runner, including cancellation draining, and is released before terminal publication.
+    pub fn coverage_submit_runner(&self, root_id: RootId, runner: JobRunner) -> EngineResult<Job> {
+        let spec = JobSpec::new(JobKind::Coverage, Some(root_id));
+        self.jobs.check_conflict(&spec)?;
+        let workers = Mutex::new(Some(self.budgets.reserve_scan_workers(Some(1))?));
+        let runner: JobRunner = Arc::new(move |ctx, spec| {
+            // Take ownership for this single invocation so unwinding also frees the permit.
+            // If submission fails before invocation, dropping the closure frees it instead.
+            let _workers = workers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+                .ok_or_else(|| EngineError::Internal {
+                    message: "coverage runner already consumed".into(),
+                    detail: None,
+                })?;
+            runner(ctx, spec)
+        });
+        self.jobs.submit(spec, runner, self.events.clone(), None)
+    }
     /// Acknowledge cancellation; an in-progress durable commit takes precedence.
     pub fn job_cancel(&self, id: &JobId) -> EngineResult<Job> {
         self.jobs.cancel(id, &self.events)

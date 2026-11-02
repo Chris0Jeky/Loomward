@@ -7,7 +7,7 @@
 use crate::{db, fail, sql_error, ts_ns, with_reason, Inner, Out};
 use loomward_catalog::NodeKey;
 use loomward_engine::{
-    jobs::{JobContext, JobRunner, JobSpec},
+    jobs::{JobContext, JobRunner},
     scan::{CatalogRootIdentity, GrantedRoot, TreeBudget},
     EngineError, EngineResult,
 };
@@ -23,7 +23,7 @@ use std::{
     path::{Component, Path},
     sync::{
         atomic::{AtomicBool, Ordering as AtomicOrdering},
-        mpsc, Arc, Mutex, Weak,
+        Arc, Mutex, Weak,
     },
     time::{Duration, Instant},
 };
@@ -54,8 +54,8 @@ struct Stored {
 #[derive(Default)]
 pub(crate) struct Results {
     kept: Mutex<Vec<Stored>>,
-    /// Held from `coverage.start` until the engine read actually ends, which for a cancelled job is
-    /// after the job itself is terminal: the registry's one-at-a-time rule sees live jobs only.
+    /// Held from admission through the actual worker return, including cancellation draining.
+    /// Also excludes overlapping starts before either has reached the job registry.
     reading: Arc<AtomicBool>,
 }
 
@@ -102,7 +102,7 @@ struct Plan {
     a_dir: Option<i64>,
     budget_bytes: u64,
     budget_secs: u64,
-    /// Moved into the read thread by `run`, so it is freed when the read ends, not when the job does.
+    /// Moved onto the job worker's stack by `run`, through the actual read and report storage.
     reading: Mutex<Option<Reading>>,
 }
 
@@ -181,9 +181,10 @@ impl Inner {
             reading: Mutex::new(Some(reading)),
         };
         let weak = self.weak.clone();
-        let spec = JobSpec::new(JobKind::Coverage, Some(request.a_root_id));
         let runner: JobRunner = Arc::new(move |ctx, _| run(&weak, &plan, &ctx));
-        let job = self.engine.job_submit_runner(spec, runner)?;
+        let job = self
+            .engine
+            .coverage_submit_runner(request.a_root_id, runner)?;
         Ok(Out {
             result: json!({ "job": job }),
             catalog_rev: None,
@@ -191,8 +192,8 @@ impl Inner {
         })
     }
 
-    /// Why a start is refused while a read is held: the live job (with its id), or, once the job
-    /// is terminal (a cancel), the read still finishing in the background.
+    /// Why a start is refused: its live job (including cancellation draining), or a concurrent
+    /// start that has taken the admission slot but has not yet published a job.
     fn coverage_busy(&self) -> ErrorBody {
         let live = self
             .engine
@@ -218,9 +219,9 @@ impl Inner {
                 let mut busy = with_reason(
                     fail(
                         ErrorCode::Busy,
-                        "the previous coverage read is still finishing in the background; try again shortly",
+                        "another coverage check is being admitted; try again shortly",
                     ),
-                    "read_still_finishing",
+                    "coverage_starting",
                 );
                 busy.retryable = true;
                 busy
@@ -259,6 +260,8 @@ impl Inner {
         ctx: &JobContext,
     ) -> EngineResult<()> {
         let mut kept = self.covers.lock();
+        #[cfg(test)]
+        self.hooks.gate(Command::CoverageStart, "before_store");
         // A cancel that landed since the read leaves no retrievable report for a cancelled job.
         if ctx.is_cancelled() {
             return Ok(());
@@ -364,50 +367,38 @@ fn gone() -> EngineError {
     internal("service stopped")
 }
 
-/// The job body. It waits for the read on a helper thread so that `jobs.cancel` is answered at
-/// once: `Engine::observe_coverage` takes no per-job cancel flag, so a cancelled read keeps
-/// listing and hashing both folders until it finishes or spends its budget (at most `budget_secs`),
-/// with its result discarded. The `Reading` guard travels with that thread, so `coverage.start`
-/// stays busy until the read really ends.
-// ponytail: detached read after a cancel; give observe_coverage a job cancel flag (#1037's owner)
-// to stop it early.
+/// The read runs in the job worker itself. Cancellation is acknowledged without joining it,
+/// while the job stays CancelRequested and owns its reading guard and worker reservation until
+/// native I/O returns. No detached reader can outlive a terminal coverage job.
 fn run(weak: &Weak<Inner>, plan: &Plan, ctx: &JobContext) -> EngineResult<CoverageState> {
+    let _reading = plan
+        .reading
+        .lock()
+        .map_err(|_| internal("read slot unavailable"))?
+        .take()
+        .ok_or_else(|| internal("read slot already consumed"))?;
     let engine = weak.upgrade().ok_or_else(gone)?.engine.clone();
-    let (tx, rx) = mpsc::channel();
-    let (a, b) = (plan.a.clone(), plan.b.clone());
-    let reading = plan.reading.lock().ok().and_then(|mut slot| slot.take());
     #[cfg(test)]
-    let hooks = weak.clone();
-    let budget = TreeBudget {
-        bytes: plan.budget_bytes,
-        time: Duration::from_secs(plan.budget_secs),
-    };
-    std::thread::Builder::new()
-        .name("loomward-coverage-read".into())
-        .spawn(move || {
-            let _reading = reading;
-            #[cfg(test)]
-            if let Some(inner) = hooks.upgrade() {
-                inner.hooks.gate(Command::CoverageStart, "orphan_read");
-            }
-            let _ = tx.send(engine.observe_coverage(&a, &b, budget, MAX_ENTRIES));
-        })
-        .map_err(|_| internal("read thread unavailable"))?;
-    #[cfg(test)]
-    weak.upgrade()
-        .ok_or_else(gone)?
-        .hooks
-        .gate(Command::CoverageStart, "reading");
-    let (a_tree, b_tree, bytes_read) = loop {
-        match rx.recv_timeout(Duration::from_millis(25)) {
-            Ok(done) => break done.map_err(refusal)?,
-            Err(mpsc::RecvTimeoutError::Timeout) if ctx.is_cancelled() => {
-                return Ok(CoverageState::Cancelled)
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => return Err(internal("read thread lost")),
-        }
-    };
+    {
+        let inner = weak.upgrade().ok_or_else(gone)?;
+        inner.hooks.gate(Command::CoverageStart, "orphan_read");
+        inner.hooks.gate(Command::CoverageStart, "reading");
+    }
+    if ctx.is_cancelled() {
+        return Ok(CoverageState::Cancelled);
+    }
+    let (a_tree, b_tree, bytes_read) = engine
+        .observe_coverage(
+            &plan.a,
+            &plan.b,
+            TreeBudget {
+                bytes: plan.budget_bytes,
+                time: Duration::from_secs(plan.budget_secs),
+            },
+            MAX_ENTRIES,
+            Some(ctx.cancel.clone()),
+        )
+        .map_err(refusal)?;
     if ctx.is_cancelled() {
         return Ok(CoverageState::Cancelled);
     }
