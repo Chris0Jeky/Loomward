@@ -487,3 +487,58 @@ fn a_budget_hit_or_an_expired_deadline_is_an_error_never_a_short_count() {
         Err(Error::Cancelled)
     ));
 }
+
+#[test]
+fn failed_and_cancelled_explicit_baselines_are_unknown_even_with_new_rows() {
+    for state in ["failed", "cancelled"] {
+        let lab = Lab::new();
+        let failed = lab.run("full", state, None);
+        let next = lab.run("full", "completed", Some(true));
+        lab.file(lab.dir, "later", next, 99, Some(99));
+        let r = lab.since(Some(failed), 5).unwrap();
+        assert!(r.baseline.is_none() && r.totals.is_none());
+        assert!(r.largest_files.is_empty() && r.largest_folders.is_empty());
+        assert_eq!(r.partial_reasons, ["baseline_not_completed"]);
+        assert_eq!(r.latest.unwrap().run, next);
+    }
+}
+
+#[test]
+fn excluded_flags_prune_ancestry_and_the_root_is_not_a_new_folder() {
+    let lab = Lab::new();
+    let first = lab.run("full", "completed", Some(true));
+    let second = lab.run("full", "completed", Some(true));
+    lab.db
+        .execute(
+            "UPDATE dir SET born_run=?1 WHERE id=?2",
+            params![second, lab.dir],
+        )
+        .unwrap();
+    for flag in [1 << 3, 1 << 5] {
+        let hidden = lab.directory_in(
+            lab.root,
+            lab.dir,
+            &format!("hidden{flag}"),
+            second,
+            999,
+            "complete",
+            flag,
+        );
+        let child = lab.directory(hidden, "child", second, 999);
+        lab.file(child, "hidden.bin", second, 999, Some(999));
+    }
+    let visible = lab.directory(lab.dir, "visible", second, 7);
+    lab.file(visible, "visible.bin", second, 7, Some(7));
+    let r = lab.since(Some(first), 5).unwrap();
+    let t = r.totals.unwrap();
+    assert_eq!((t.new_dirs, t.new_files, t.logical_bytes), (1, 1, 7));
+    assert_eq!(r.largest_folders.len(), 1);
+    assert_eq!(r.largest_folders[0].node, NodeKey::Dir(visible));
+    lab.db
+        .execute(
+            "UPDATE dir SET listing_state='absent_pending' WHERE id=?1",
+            [lab.dir],
+        )
+        .unwrap();
+    assert_eq!(lab.totals(Some(first)).new_files, 0);
+}

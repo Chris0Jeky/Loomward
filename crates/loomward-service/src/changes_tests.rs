@@ -389,3 +389,31 @@ fn bad_requests_unknown_roots_and_clients_are_refused() {
         ErrorCode::NotFound,
     );
 }
+
+#[test]
+fn an_explicit_unfinished_baseline_never_publishes_a_zero_or_partial_count() {
+    for state in ["failed", "cancelled"] {
+        let tmp = temp_root();
+        let svc = open(tmp.path(), DatasetClass::Synthetic);
+        let root = scanned(&svc, 1, &first_tree());
+        svc.inner
+            .db()
+            .execute("UPDATE main.scan_run SET state=?1 WHERE id=1", [state])
+            .unwrap();
+        let r = since(&svc, &root, json!("1"), 5);
+        assert_eq!(r["outcome"], "no_baseline");
+        for field in [
+            "baseline",
+            "new_files",
+            "new_dirs",
+            "logical_bytes",
+            "allocated_bytes",
+            "allocation_unknown_files",
+        ] {
+            assert!(r[field].is_null(), "{state}: {field}");
+        }
+        assert_eq!(r["largest_files"], json!([]));
+        assert_eq!(r["largest_folders"], json!([]));
+        assert_eq!(r["partial_reasons"], json!(["baseline_not_completed"]));
+    }
+}
