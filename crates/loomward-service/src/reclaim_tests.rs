@@ -1759,16 +1759,19 @@ fn reclaim_observe_revocation_stops_opening_names() {
 fn reclaim_observe_budget_inside_a_candidate_is_partial() {
     let Some(lab) = many_lab() else { return };
     let hooks = lab.svc.inner.hooks.clone();
-    *hooks.reclaim_budget.lock().unwrap() = Some(Duration::from_secs(5));
     let gate = (Command::ReclaimObserve, "chunk");
     hooks.closed.lock().unwrap().push(gate);
     let id = observe_job(&lab.svc);
     hooks.until("second chunk", |h| {
         h.arrived.lock().unwrap().contains(&gate)
     });
-    std::thread::sleep(Duration::from_secs(6));
+    assert_eq!(names_opened(&lab.svc), 1000);
+    // Expire inside this candidate only after its first chunk has completed. A short wall-clock
+    // budget can expire before this gate under workspace load, so the gate is never reached.
+    *hooks.reclaim_linkcount_deadline.lock().unwrap() = Some(Instant::now());
     hooks.open(gate.0, gate.1);
     let job = settle(&lab.svc, &id);
+    assert!(hooks.reclaim_linkcount_deadline.lock().unwrap().is_none());
     assert_eq!(job["state"], "completed", "{job:?}");
     assert_eq!(job["coverage"], "partial");
     assert_eq!(relief_rows(&lab.svc), 0);
