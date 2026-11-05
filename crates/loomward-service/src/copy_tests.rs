@@ -1348,6 +1348,120 @@ mod lab_copy {
     }
 
     #[test]
+    fn grant_regrant_source_cannot_reuse_old_copy_consent() {
+        regrant_rejects_old_copy_consent(true, false);
+    }
+
+    #[test]
+    fn grant_regrant_destination_cannot_reuse_old_copy_consent() {
+        regrant_rejects_old_copy_consent(false, false);
+    }
+
+    #[test]
+    fn grant_regrant_approval_after_source_revocation_cannot_start() {
+        regrant_rejects_old_copy_consent(true, true);
+    }
+
+    #[test]
+    fn grant_regrant_approval_after_destination_revocation_cannot_start() {
+        regrant_rejects_old_copy_consent(false, true);
+    }
+
+    /// #851: re-grant through the real lifecycle, never by reactivating the revoked SQL row.
+    fn regrant_rejects_old_copy_consent(revoke_source: bool, approve_after_revoke: bool) {
+        let Some((tmp, svc, first, second)) = two_roots() else {
+            return; // two_roots() already printed the elevated-token skip.
+        };
+        let source = tmp.path().join("lab-scan");
+        let destination = tmp.path().join("lab-other");
+        let before_source = contents(&source);
+        let before_destination = contents(&destination);
+        let a = child_named(&lab_slice(&svc, &first), "a").unwrap();
+        let c = child_named(&lab_slice(&svc, &second), "c").unwrap();
+        let p = preview(&svc, &a, &c);
+        assert_eq!(p["state"], "draft", "{p:?}");
+        let consent = json!({"operation_id": p["operation_id"], "digest": digest(&p)});
+        if !approve_after_revoke {
+            ok("copy.approve", call(&svc, "copy.approve", consent.clone()));
+        }
+        let (old_wire, path) = if revoke_source {
+            (&first, &source)
+        } else {
+            (&second, &destination)
+        };
+        let old_root = svc.inner.root_row(old_wire).unwrap();
+        let grant_row = |root: i64| -> (i64, String) {
+            svc.inner
+                .db()
+                .query_row(
+                    "SELECT g.id,g.state FROM main.root r JOIN st.root_grant g ON g.id=r.grant_id WHERE r.id=?1",
+                    [root],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap()
+        };
+        let (old_grant, old_state) = grant_row(old_root);
+        assert_eq!(old_state, "active");
+        svc.inner.revoke(old_grant).unwrap();
+        if approve_after_revoke {
+            // A cached preview can still be approved; this acknowledgment cannot revive its grant.
+            let (approval, _) = ok("copy.approve", call(&svc, "copy.approve", consent.clone()));
+            assert_eq!(approval["operation_id"], p["operation_id"]);
+            assert_eq!(approval["digest"], p["digest"]);
+        }
+        let (new_root, fresh) = svc
+            .inner
+            .grant(&path.canonicalize().unwrap(), "cli_flag", false)
+            .unwrap();
+        assert!(fresh, "a revoked grant must not be refreshed");
+        let (new_grant, new_state) = grant_row(new_root);
+        assert!(new_root > old_root);
+        assert!(new_grant > old_grant);
+        assert_eq!(new_state, "active");
+        assert_eq!(grant_row(old_root), (old_grant, "revoked".to_owned()));
+
+        // Prove the new grant is usable and has new node IDs, not merely another inactive row.
+        let new_wire = svc.inner.root_id(new_root);
+        let job = start(&svc, &new_wire, "full");
+        assert_eq!(settle(&svc, &job)["state"], "completed");
+        f3_wait_live(&svc);
+        let (current_first, current_second) = if revoke_source {
+            (&new_wire, &second)
+        } else {
+            (&first, &new_wire)
+        };
+        let fresh_a = child_named(&lab_slice(&svc, current_first), "a").unwrap();
+        let fresh_c = child_named(&lab_slice(&svc, current_second), "c").unwrap();
+        let fresh_preview = preview(&svc, &fresh_a, &fresh_c);
+        assert_eq!(fresh_preview["state"], "draft", "{fresh_preview:?}");
+        if revoke_source {
+            assert_ne!(fresh_a, a);
+            // The destination and source objects did not change: a digest mismatch cannot save us.
+            assert_eq!(digest(&fresh_preview), digest(&p));
+        } else {
+            assert_ne!(fresh_c, c);
+            assert_ne!(digest(&fresh_preview), digest(&p));
+        }
+
+        let e = err(call(&svc, "copy.start", consent));
+        assert_eq!(e.code, ErrorCode::NotFound, "{e:?}");
+        assert!(svc
+            .inner
+            .copies
+            .store
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .operations()
+            .unwrap()
+            .is_empty());
+        assert!(svc.inner.copies.running.lock().unwrap().is_empty());
+        assert_eq!(contents(&source), before_source);
+        assert_eq!(contents(&destination), before_destination);
+    }
+
+    #[test]
     fn destination_root_guid_comes_from_the_destination_grant() {
         let Some((tmp, svc, first, second)) = two_roots() else {
             return; // two_roots() already printed the elevated-token skip.

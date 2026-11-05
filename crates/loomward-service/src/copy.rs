@@ -1456,6 +1456,8 @@ impl Inner {
                 "preview_expired",
             ));
         }
+        // The service uses monotonic root-grant IDs instead of a global approval epoch (#851).
+        // Start re-resolves the stored node IDs; revoke/regrant never reactivates their old grant.
         let approval =
             loomward_operations::approve(&p.preview, shown, 0, now_ms).map_err(|code| {
                 with_reason(
@@ -1557,6 +1559,8 @@ impl Inner {
                     ));
                 }
             }
+            // Epoch 0 is paired with approve above. Exact grant liveness stays under `mutation`
+            // through worker registration; the native run's revocation fence has its own epoch.
             let admitted = approval
                 .admit(&fresh, 0, now_ns() / 1_000_000)
                 .map_err(|code| {
