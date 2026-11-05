@@ -960,24 +960,59 @@ mod tests {
         (temp, c, root_id)
     }
 
-    /// #1035 item 1, measurement (release build, `--ignored --nocapture`): what the second catalogue
-    /// pass costs on a 130k-file synthetic root. Four timings per shape, interleaved over ten runs
-    /// after one warm-up: the full call with the cache off, the call with the count cut off at its
-    /// first progress tick (selection only), the count alone, and the full call served from the cache.
+    /// #1104/#1035 measurement: compare the frozen pre-grouping count with the current count on
+    /// one populated synthetic catalogue per shape. One paired warm-up precedes ten paired runs;
+    /// the first query alternates, so each query leads five measured pairs. Both bypass the result
+    /// cache and retain the production work budget. The existing full/selection/cached timings
+    /// remain separate. First uncached observations are sequential on the same database, which
+    /// setup or the preceding query may have warmed: never a cold-disk or end-to-end benchmark.
     ///
-    /// Result (Windows 11, release, 2026-10-30, 10 runs after a warm-up, medians; two sessions agree
-    /// within about 10%): all files sharing one size, full call 134-141 ms against 82-94 ms for
-    /// selection alone, so the count adds 47-52 ms (50-64%). With 20,000 distinct sizes the full call
-    /// is 734-743 ms against 153-162 ms, so the count adds 572-590 ms (353-385%). The second shape is
-    /// over the 100 ms line, hence the per-revision cache; a cached call is back at selection cost
-    /// (84 and 163 ms). The first call after a write still pays the count.
+    /// Historical PRE-GROUPING evidence (Windows 11, release, 2026-10-30, ten runs after a warm-up,
+    /// reported medians; two sessions agreed within about 10%): one-size full calls were 134-141 ms
+    /// against 82-94 ms for selection alone, adding 47-52 ms (50-64%). With 20,000 sizes, full calls
+    /// were 734-743 ms against 153-162 ms, adding 572-590 ms (353-385%). Cached full calls were
+    /// 84 and 163 ms. Those observations motivated the revision cache; the first call after a write
+    /// still paid the count. They are not measurements of the current grouped query or this runner.
     #[test]
-    #[ignore = "#1035 synthetic 130k-file timing; run with --release --ignored --nocapture"]
+    #[ignore = "#1104 synthetic 130k-file timing; run with --release --ignored --nocapture"]
     fn measure_the_candidate_space_count_at_130k() {
         use std::time::{Duration, Instant};
+        // Exact reference count from main ff9add48774c3adac07e58f021926180116898ec.
+        // Keep its projection and membership lookup: both affect SQLite's query plan.
+        const REFERENCE_SQL: &str = "WITH RECURSIVE shielded(id) AS (
+    SELECT id FROM dir WHERE root_id=?1 AND (listing_state='excluded' OR flags & ?3 != 0)
+    UNION SELECT d.id FROM dir d JOIN shielded s ON d.parent_id=s.id),
+    eligible AS (SELECT f.logical, f.flags, d.root_id FROM file f JOIN dir d ON d.id=f.dir_id
+    JOIN visible_dir v ON v.id=d.id WHERE d.root_id=?1 AND d.id NOT IN (SELECT id FROM shielded)
+    AND f.flags & ?3 = 0 AND f.logical>=?2 AND f.logical>0),
+    sizes AS (SELECT logical FROM eligible GROUP BY logical HAVING count(*)>=2)
+    SELECT count(*), coalesce(sum(logical),0) FROM eligible WHERE logical IN (SELECT logical FROM sizes)";
+        fn timed_count(
+            conn: &rusqlite::Connection,
+            root: i64,
+            flags: u32,
+            reference: bool,
+        ) -> (CandidateSpace, Duration) {
+            let start = Instant::now();
+            let space = if reference {
+                let _guard = WorkGuard::new(conn, SPACE_WORK_BUDGET, None).unwrap();
+                conn.query_row(REFERENCE_SQL, params![root, 1, flags], |r| {
+                    Ok(CandidateSpace {
+                        files: r.get::<_, i64>(0)? as u64,
+                        bytes: r.get::<_, i64>(1)? as u64,
+                    })
+                })
+                .expect("reference query must finish within the unchanged work budget")
+            } else {
+                candidate_space(conn, root, 1, flags, None, SPACE_WORK_BUDGET)
+                    .unwrap()
+                    .expect("grouped query must finish within the unchanged work budget")
+            };
+            (space, start.elapsed())
+        }
         fn stats(label: &str, mut t: Vec<Duration>) -> Duration {
             t.sort();
-            let median = t[t.len() / 2];
+            let median = (t[(t.len() - 1) / 2] + t[t.len() / 2]) / 2;
             println!(
                 "  {label:<16} median {:>8.1} ms  min {:>8.1}  max {:>8.1}",
                 median.as_secs_f64() * 1e3,
@@ -995,23 +1030,60 @@ mod tests {
                 10 + (k % 20_000) as u64
             }),
         ];
-        for (name, size) in shapes {
+        println!(
+            "candidate-space comparison: SQLite {}, OS {}, arch {}, debug_assertions={}, work_budget={SPACE_WORK_BUDGET}",
+            rusqlite::version(),
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+            cfg!(debug_assertions)
+        );
+        println!(
+            "Reference: ff9add48774c3adac07e58f021926180116898ec; current: production grouped query."
+        );
+        println!(
+            "First observations share one freshly populated database; OS/SQLite caches are not flushed."
+        );
+        println!(
+            "Warm counts bypass the result cache; 10 paired runs after one paired warm-up, alternating query order."
+        );
+        println!(
+            "Timings depend on runner hardware/load; no timing threshold or cold-disk/end-to-end claim."
+        );
+        for (shape, (name, size)) in shapes.into_iter().enumerate() {
             let (_t, c, root) = big_catalog(130_000, size);
             let mut reader = c.reader().unwrap();
-            // First count after the write has no result-cache entry. The populated database
-            // may already be in the OS page cache: this is not a cold-disk measurement.
-            let first_start = Instant::now();
-            let first =
-                candidate_space(&reader.conn, root, 1, flags, None, SPACE_WORK_BUDGET).unwrap();
-            println!(
-                "130,000 files, {name}, first uncached count {:.1} ms, space {first:?}",
-                first_start.elapsed().as_secs_f64() * 1e3
-            );
-            assert!(first.is_some());
+            let expected = CandidateSpace {
+                files: 130_000,
+                bytes: (0..130_000).map(size).sum(),
+            };
+            // Alternate the first-observation order between shapes, and print it explicitly.
+            for reference in [shape == 0, shape != 0] {
+                let (first, elapsed) = timed_count(&reader.conn, root, flags, reference);
+                assert_eq!(
+                    first, expected,
+                    "first count, {name}, reference={reference}"
+                );
+                println!(
+                    "130,000 files, {name}, first uncached {} count {:.1} ms, space {first:?}",
+                    if reference { "reference" } else { "grouped" },
+                    elapsed.as_secs_f64() * 1e3
+                );
+            }
             let (mut full, mut selection, mut count, mut cached) = (vec![], vec![], vec![], vec![]);
+            let mut reference_count = vec![];
             let mut space = None;
             let shared = reader.space_cache.take();
             for run in 0..11 {
+                let (mut old, mut grouped) = (Duration::ZERO, Duration::ZERO);
+                for reference in [run % 2 == 0, run % 2 != 0] {
+                    let (result, elapsed) = timed_count(&reader.conn, root, flags, reference);
+                    assert_eq!(result, expected, "{name}, run={run}, reference={reference}");
+                    if reference {
+                        old = elapsed;
+                    } else {
+                        grouped = elapsed;
+                    }
+                }
                 reader.space_cache = None;
                 let t = Instant::now();
                 let with = reader.duplicate_candidates(root, 1, 200).unwrap();
@@ -1019,30 +1091,33 @@ mod tests {
                 let t = Instant::now();
                 let without = reader.duplicate_candidates_with(root, 1, 200, 1).unwrap();
                 let b = t.elapsed();
-                let t = Instant::now();
-                let alone =
-                    candidate_space(&reader.conn, root, 1, flags, None, SPACE_WORK_BUDGET).unwrap();
-                let s = t.elapsed();
                 reader.space_cache = shared.clone();
                 let t = Instant::now();
                 let hit = reader.duplicate_candidates(root, 1, 200).unwrap();
                 let h = t.elapsed();
                 assert!(hit.space.is_some() && hit.space == with.space);
-                assert!(with.space.is_some() && without.space.is_none() && alone == with.space);
+                assert_eq!(with.space, Some(expected));
+                assert!(without.space.is_none());
                 assert_eq!(with.entries.len(), without.entries.len());
                 space = with.space;
                 if run > 0 {
                     full.push(a);
                     selection.push(b);
-                    count.push(s);
+                    reference_count.push(old);
+                    count.push(grouped);
                     cached.push(h);
                 }
             }
             println!("130,000 files, {name}, space {space:?}");
             let f = stats("full call", full);
             let sel = stats("selection only", selection);
-            let cnt = stats("count alone", count);
+            let old = stats("reference count", reference_count);
+            let cnt = stats("grouped count", count);
             stats("cached full call", cached);
+            println!(
+                "  grouped/reference median ratio {:.3}; exact parity checked on every count",
+                cnt.as_secs_f64() / old.as_secs_f64()
+            );
             println!(
                 "  count adds {:.1} ms = {:.0}% over selection only (count alone {:.1} ms)",
                 (f.as_secs_f64() - sel.as_secs_f64()) * 1e3,
