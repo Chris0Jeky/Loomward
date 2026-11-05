@@ -773,8 +773,14 @@ mod tests {
         // Earlier unknown observations keep their own cause when the final recheck times out.
         let mut partial = dir().unwrap();
         partial.children = Err("entry_budget");
-        let mut a = tree(&[("unread", Err("sharing_violation")), ("partial", Ok(partial))]);
-        let again = tree(&[("unread", Err("time_budget")), ("partial", Err("time_budget"))]);
+        let mut a = tree(&[
+            ("unread", Err("sharing_violation")),
+            ("partial", Ok(partial)),
+        ]);
+        let again = tree(&[
+            ("unread", Err("time_budget")),
+            ("partial", Err("time_budget")),
+        ]);
         recheck_source(&mut a, &again);
         assert_eq!(
             a.nodes[Path::new("unread")].as_ref().unwrap_err(),
