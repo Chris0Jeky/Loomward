@@ -1253,7 +1253,7 @@ fn collection_search_unavailable_restart_catalogue_and_client_fences() {
     );
     assert_eq!(page["unavailable_members"], 3);
     assert!(page["hits"].as_array().unwrap().is_empty());
-    assert!(!page.to_string().contains("report"));
+    assert!(!serde_json::to_string(&page).unwrap().contains("report"));
     ok(
         "roots.forget",
         call(
@@ -1452,8 +1452,9 @@ fn collection_search_retained_descendant_metadata_is_hidden_below_unavailable_an
         assert_eq!(page["unavailable_members"], 1);
         assert_eq!(page["partial"], true);
         assert!(page["next_cursor"].is_null());
-        assert!(!page.to_string().contains("report"));
-        assert!(!page.to_string().contains("Synthetic"));
+        let wire = serde_json::to_string(&page).unwrap();
+        assert!(!wire.contains("report"));
+        assert!(!wire.contains("Synthetic"));
     }
 }
 
