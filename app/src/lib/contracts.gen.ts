@@ -673,6 +673,13 @@ export interface ScanProgress {
   limit_reason?: "depth_limit" | "directory_limit";
 }
 
+export type CoveragePhase = "listing_destination" | "hashing_source" | "hashing_destination" | "rechecking_source";
+
+/** Latest observed Coverage read pass, retained as the last phase after cancellation or completion. Work remaining and completion percentage are unknown. */
+export interface CoverageProgress {
+  phase: CoveragePhase;
+}
+
 export interface Job {
   job_id: JobId;
   seq: Count;
@@ -688,6 +695,8 @@ export interface Job {
   error: ErrorBody | null;
   duplicates?: DuplicateReport;
   reclaim?: ReclaimObserveProgress;
+  /** Present only on Coverage jobs once a read pass starts; older services omit it. */
+  coverage_progress?: CoverageProgress;
 }
 
 export interface JobRefRequest {
