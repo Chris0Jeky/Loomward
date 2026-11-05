@@ -62,6 +62,8 @@ pub enum Refusal {
     GrantRevoked,
     /// The destination parent no longer opens as its pinned identity under its grant's root (at start).
     DestinationChanged,
+    /// Staged destination permissions are protected or contain explicit entries before publication.
+    DestinationAclNotInherited,
 }
 
 impl Refusal {

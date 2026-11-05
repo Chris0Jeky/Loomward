@@ -160,6 +160,13 @@ pub struct Job {
         skip_serializing_if = "Option::is_none"
     )]
     pub reclaim: Option<ReclaimObserveProgress>,
+    /// Present only on Coverage jobs once the first read pass starts. No workload total is known.
+    #[serde(
+        default,
+        deserialize_with = "crate::types::optional_present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub coverage_progress: Option<CoverageProgress>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

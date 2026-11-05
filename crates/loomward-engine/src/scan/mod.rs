@@ -9,7 +9,7 @@ mod tree_gate_tests;
 #[cfg(any(windows, test))]
 pub mod watch;
 use crate::{Component, Engine, EngineError, EngineResult};
-use loomward_protocol::{DatasetClass, Job, JobId, JobKind, RootId, ScanBudget};
+use loomward_protocol::{CoveragePhase, DatasetClass, Job, JobId, JobKind, RootId, ScanBudget};
 pub use pipeline::{run_scan, ScanOptions, ScanReport};
 pub use sink::{
     Entry, ListingTicket, MemorySink, RunScope, ScanMessage, ScanSink, Sums, TargetDirectory,
@@ -335,6 +335,24 @@ impl Engine {
         loomward_operations::tree::Tree,
         u64,
     )> {
+        self.observe_coverage_with_progress(a, b, budget, max_entries, job_cancel, &|_| Ok(()))
+    }
+
+    /// The same owned reader with a callback before each actual read pass. The callback never
+    /// changes worker ownership, and cancellation is rechecked before native I/O begins.
+    pub fn observe_coverage_with_progress(
+        &self,
+        a: &GrantedRoot,
+        b: &GrantedRoot,
+        budget: loomward_windows::duplicate_reader::Budget,
+        max_entries: usize,
+        job_cancel: Option<Arc<AtomicBool>>,
+        progress: &dyn Fn(CoveragePhase) -> EngineResult<()>,
+    ) -> EngineResult<(
+        loomward_operations::tree::Tree,
+        loomward_operations::tree::Tree,
+        u64,
+    )> {
         use loomward_operations::tree::{Kind, Tree};
         use loomward_windows::duplicate_reader::{read_tree_wanting_with_cancels, Budget};
         use std::{collections::BTreeSet, path::Path, time::Instant};
@@ -359,7 +377,9 @@ impl Engine {
         let started = Instant::now();
         let mut remaining_bytes = budget.bytes;
         type Want<'a> = &'a dyn Fn(&Path, u64) -> bool;
-        let mut read = |side: &str, root: &GrantedRoot, want: Want, want_streams: Want| {
+        let mut read = |phase, side: &str, root: &GrantedRoot, want: Want, want_streams: Want| {
+            check_cancel()?;
+            progress(phase)?;
             check_cancel()?;
             let (tree, bytes) = read_tree_wanting_with_cancels(
                 root.path(),
@@ -391,15 +411,28 @@ impl Engine {
         };
         // `covers` compares the default data stream only, so it never reads a named stream.
         let no_streams = |_: &Path, _| false;
-        let listed = read("destination", b, &|_, _| false, &no_streams)?;
+        let listed = read(
+            CoveragePhase::ListingDestination,
+            "destination",
+            b,
+            &|_, _| false,
+            &no_streams,
+        )?;
         #[cfg(test)]
         tree_gate_tests::point(tree_gate_tests::TreePoint::AfterCoverageListing);
         let b_sizes = sizes(&listed, false);
-        let mut a_tree = read("source", a, &|_, size| b_sizes.contains(&size), &no_streams)?;
+        let mut a_tree = read(
+            CoveragePhase::HashingSource,
+            "source",
+            a,
+            &|_, size| b_sizes.contains(&size),
+            &no_streams,
+        )?;
         #[cfg(test)]
         tree_gate_tests::point(tree_gate_tests::TreePoint::AfterCoverageSourceHashing);
         let a_sizes = sizes(&a_tree, true);
         let b_tree = read(
+            CoveragePhase::HashingDestination,
             "destination",
             b,
             &|_, size| a_sizes.contains(&size),
@@ -409,7 +442,13 @@ impl Engine {
         tree_gate_tests::point(tree_gate_tests::TreePoint::AfterCoverageHashing);
         // A was last read before B's hashing: list it again (no content, no read budget) so a file
         // that changed since loses its verdict (#1037).
-        let a_again = read("source", a, &|_, _| false, &no_streams)?;
+        let a_again = read(
+            CoveragePhase::RecheckingSource,
+            "source",
+            a,
+            &|_, _| false,
+            &no_streams,
+        )?;
         #[cfg(test)]
         tree_gate_tests::point(tree_gate_tests::TreePoint::AfterCoverageRecheck);
         check_cancel()?;

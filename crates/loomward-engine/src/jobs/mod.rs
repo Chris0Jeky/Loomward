@@ -4,7 +4,8 @@ use crate::{
     Component, Engine, EngineError, EngineResult,
 };
 use loomward_protocol::{
-    Count, CoverageState, EventName, Job, JobId, JobKind, JobList, JobListRequest, JobState, RootId,
+    Count, CoverageProgress, CoverageState, EventName, Job, JobId, JobKind, JobList,
+    JobListRequest, JobState, RootId,
 };
 use std::{
     collections::HashMap,
@@ -98,6 +99,24 @@ impl JobContext {
                 }
                 revise(&mut r.job)?;
                 r.job.reclaim = Some(progress);
+                emit(&self.events, &r.job);
+            }
+        }
+        Ok(())
+    }
+    /// Publish a Coverage phase transition; cancellation freezes the last observed phase.
+    pub fn set_coverage_progress(&self, progress: CoverageProgress) -> EngineResult<()> {
+        if let Some(registry) = self.registry.upgrade() {
+            if let Some(r) = registry.records.lock().unwrap().get_mut(&self.job_id) {
+                if r.job.kind != JobKind::Coverage
+                    || r.terminal.is_some()
+                    || r.cancel.load(Ordering::Acquire)
+                    || r.job.coverage_progress == Some(progress)
+                {
+                    return Ok(());
+                }
+                revise(&mut r.job)?;
+                r.job.coverage_progress = Some(progress);
                 emit(&self.events, &r.job);
             }
         }
@@ -320,6 +339,7 @@ impl Registry {
             error: None,
             duplicates: None,
             reclaim: None,
+            coverage_progress: None,
         };
         let cancel = Arc::new(AtomicBool::new(false));
         {

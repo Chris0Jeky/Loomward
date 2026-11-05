@@ -113,6 +113,26 @@ describe('copy UI lifecycle (scripted transport only; no file effects)', () => {
     }
   });
 
+  it('explains a destination ACL refusal without offering resume or claiming no writes', async () => {
+    const f = selected(), { client, call } = scripted();
+    await f.review(client); await f.approve(client);
+    call.mockResolvedValueOnce({ result: {
+      ...status('needs_attention'),
+      refusal: { code: 'destination_acl_not_inherited', node_id: null },
+    } } as never);
+    await f.start(client);
+    expect(f.status?.state).toBe('needs_attention');
+    expect(f.canApprove).toBe(false);
+    expect(f.canStart).toBe(false);
+    expect(f.canCancel).toBe(false);
+    expect(f.canAbandon).toBe(true);
+    const explanation = refusalReason(f.status!.refusal!.code);
+    expect(explanation).toMatch(/inherited/i);
+    expect(explanation).toMatch(/staging.*kept/i);
+    expect(explanation).toMatch(/new preview/i);
+    expect(explanation).not.toMatch(/nothing was written/i);
+  });
+
   it('stops offering cancellation during publish and never calls cancel then', async () => {
     const f = selected(), { client, call } = scripted();
     await f.review(client); await f.approve(client);
@@ -120,6 +140,24 @@ describe('copy UI lifecycle (scripted transport only; no file effects)', () => {
     await f.start(client); await f.cancel(client);
     expect(f.canCancel).toBe(false); expect(call).toHaveBeenCalledTimes(3);
     expect(f.select([])).toBe(false);
+  });
+
+  it('keeps a destination ACL refusal historical after abandonment removes staging', async () => {
+    const f = selected(), { client, call } = scripted();
+    await f.review(client); await f.approve(client);
+    const refusal = { code: 'destination_acl_not_inherited', node_id: null };
+    call.mockResolvedValueOnce({ result: { ...status('needs_attention'), refusal } } as never);
+    await f.start(client);
+    call.mockResolvedValueOnce({ result: { ...status('cancelled'), refusal, staging_folder: null } } as never);
+    await f.abandon(client);
+    expect(call).toHaveBeenLastCalledWith('copy.abandon', { operation_id: 'cp_demo' });
+    expect(f.status?.state).toBe('cancelled');
+    expect(f.status?.staging_folder).toBeNull();
+    expect(f.canAbandon).toBe(false);
+    const explanation = refusalReason(f.status!.refusal!.code);
+    expect(explanation).toMatch(/was kept when/i);
+    expect(explanation).toMatch(/new preview/i);
+    expect(explanation).not.toMatch(/staging is kept|abandon this operation/i);
   });
 
   it('cancels or abandons only the current operation, retaining the returned outcome', async () => {

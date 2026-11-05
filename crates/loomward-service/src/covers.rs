@@ -388,7 +388,7 @@ fn run(weak: &Weak<Inner>, plan: &Plan, ctx: &JobContext) -> EngineResult<Covera
         return Ok(CoverageState::Cancelled);
     }
     let (a_tree, b_tree, bytes_read) = engine
-        .observe_coverage(
+        .observe_coverage_with_progress(
             &plan.a,
             &plan.b,
             TreeBudget {
@@ -397,6 +397,7 @@ fn run(weak: &Weak<Inner>, plan: &Plan, ctx: &JobContext) -> EngineResult<Covera
             },
             MAX_ENTRIES,
             Some(ctx.cancel.clone()),
+            &|phase| ctx.set_coverage_progress(CoverageProgress { phase }),
         )
         .map_err(refusal)?;
     if ctx.is_cancelled() {

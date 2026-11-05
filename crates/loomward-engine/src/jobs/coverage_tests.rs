@@ -479,3 +479,54 @@ fn coverage_refuses_exhaustion_without_a_job_and_releases_on_success_failure_and
         assert_eq!(scan_workers(&e), 0, "permit leaked after outcome {outcome}");
     }
 }
+
+#[test]
+fn coverage_progress_revisions_are_idempotent_and_freeze_after_cancel() {
+    use loomward_protocol::CoveragePhase;
+    let e = engine();
+    let (context_tx, context_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let release_rx = Mutex::new(release_rx);
+    let first = CoverageProgress {
+        phase: CoveragePhase::ListingDestination,
+    };
+    let job = e
+        .coverage_submit_runner(
+            RootId::new("rt_a").unwrap(),
+            Arc::new(move |ctx, _| {
+                ctx.set_coverage_progress(first)?;
+                ctx.set_coverage_progress(first)?;
+                context_tx.send(ctx).unwrap();
+                release_rx
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(10))
+                    .unwrap();
+                Ok(CoverageState::Complete)
+            }),
+        )
+        .unwrap();
+    let ctx = context_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    let running = e.job_status(&job.job_id).unwrap();
+    assert_eq!(running.coverage_progress, Some(first));
+    assert_eq!(
+        running.rev.get(),
+        2,
+        "repeated phases must not publish revisions"
+    );
+    let cancelled = e.job_cancel(&job.job_id).unwrap();
+    ctx.set_coverage_progress(CoverageProgress {
+        phase: CoveragePhase::HashingSource,
+    })
+    .unwrap();
+    assert_eq!(e.job_status(&job.job_id).unwrap(), cancelled);
+    release_tx.send(()).unwrap();
+    let terminal = wait_terminal(&e, &job.job_id);
+    assert_eq!(terminal.state, JobState::Cancelled);
+    assert_eq!(terminal.coverage_progress, Some(first));
+    ctx.set_coverage_progress(CoverageProgress {
+        phase: CoveragePhase::RecheckingSource,
+    })
+    .unwrap();
+    assert_eq!(e.job_status(&job.job_id).unwrap(), terminal);
+}

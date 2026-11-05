@@ -530,6 +530,51 @@ mod native {
     }
 
     #[test]
+    fn coverage_job_publishes_each_read_phase_and_retains_the_last_snapshot() {
+        let Some(p) = pair(|a, b| {
+            put(a, "one.txt", b"same");
+            put(b, "two.txt", b"same");
+        }) else {
+            return;
+        };
+        let mut events = p.svc.inner.engine.subscribe_events(None).unwrap();
+        let started = start(&p, json!({}));
+        let done = finished(&p.svc, &started.job_id);
+        assert_eq!(done.state, JobState::Completed, "{:?}", done.error);
+        let mut phases = Vec::new();
+        let mut previous_rev = None;
+        while let RecvOutcome::Event(event) = events.recv_timeout(Duration::ZERO) {
+            if event.event != EventName::JobState
+                || event.data["job"]["job_id"] != json!(started.job_id)
+            {
+                continue;
+            }
+            let job = &event.data["job"];
+            let rev = job["rev"].as_u64().unwrap();
+            assert!(previous_rev.is_none_or(|previous| rev > previous));
+            previous_rev = Some(rev);
+            if job["state"] == "running" {
+                if let Some(progress) = job.get("coverage_progress") {
+                    phases.push(progress.clone());
+                }
+            }
+        }
+        assert_eq!(
+            phases,
+            vec![
+                json!({"phase": "listing_destination"}),
+                json!({"phase": "hashing_source"}),
+                json!({"phase": "hashing_destination"}),
+                json!({"phase": "rechecking_source"}),
+            ]
+        );
+        assert_eq!(
+            serde_json::to_value(&done).unwrap()["coverage_progress"],
+            json!({"phase": "rechecking_source"})
+        );
+    }
+
+    #[test]
     fn cancelling_ends_the_job_cancelled_and_keeps_no_result() {
         let Some(p) = pair(|a, b| {
             put(a, "one.txt", b"same");
@@ -683,6 +728,11 @@ mod native {
         hooks.until("completed coverage before storage", |h| {
             h.arrived.lock().unwrap().contains(&held)
         });
+        let before_cancel = p.svc.inner.engine.job_status(&started.job_id).unwrap();
+        assert_eq!(
+            serde_json::to_value(&before_cancel).unwrap()["coverage_progress"],
+            json!({"phase": "rechecking_source"})
+        );
         ok(
             "jobs.cancel",
             call(&p.svc, "jobs.cancel", json!({"job_id":started.job_id})),

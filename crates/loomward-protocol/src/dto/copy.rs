@@ -49,6 +49,7 @@ pub enum CopyRefusalCode {
     DestinationUnsupportedVolume,
     DestinationProtected,
     DestinationChanged,
+    DestinationAclNotInherited,
     CaseCollision,
     NameUnrepresentable,
     PathTooLong,

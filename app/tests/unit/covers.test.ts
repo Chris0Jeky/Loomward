@@ -72,6 +72,35 @@ describe('covers wording', () => {
     expect(coversRefusal(error('permission_denied', 'grant_not_active'))).toContain('Nothing was read');
     expect(coversRefusal(error('internal_error', 'plain'))).toBe('plain');
   });
+  it('shows each observed phase with elapsed time and an unknown remaining workload', () => {
+    const at = Date.parse('2026-10-30T09:00:07Z');
+    for (const [phase, label] of [
+      ['listing_destination', 'Listing folder B'],
+      ['hashing_source', 'Reading file contents in folder A'],
+      ['hashing_destination', 'Reading file contents in folder B'],
+      ['rechecking_source', 'Rechecking folder A for changes'],
+    ] as const) {
+      const text = statusText(job({ coverage_progress: { phase } }), null, false, at, 60);
+      expect(text).toContain(label);
+      expect(text).toContain('7 s elapsed');
+      expect(text).toContain('60 s read budget');
+      expect(text).toContain('Work remaining is unknown');
+      expect(text).not.toMatch(/%|no finer progress|at most/);
+    }
+    expect(statusText(job(), null, false, at, 60)).toContain('The service reports no finer progress');
+  });
+  it('keeps cancellation visible without treating the last phase as ongoing work after completion', () => {
+    const coverage_progress = { phase: 'hashing_source' as const };
+    const at = Date.parse('2026-10-30T09:00:07Z');
+    const cancelling = statusText(job({ state: 'cancel_requested', coverage_progress }), null, false, at, 60);
+    expect(cancelling).toContain('Cancelling');
+    expect(cancelling).toContain('Last phase: Reading file contents in folder A');
+    expect(cancelling).toContain('Waiting for the current read to finish');
+    const cancelled = statusText(job({ state: 'cancelled', coverage_progress }), null, false, at, 60);
+    expect(cancelled).toContain('Cancelled. No verdict was produced');
+    expect(cancelled).not.toMatch(/Reading file contents|still be finishing|background/);
+    expect(statusText(job({ state: 'completed', coverage_progress }), report(), false, at, 60)).toBe('');
+  });
 });
 
 async function mock() {
@@ -85,6 +114,18 @@ async function mock() {
 }
 
 describe('covers store', () => {
+  it('keeps the latest phase when older job events arrive and drops it for a new run', () => {
+    const store = new Covers();
+    store.apply(job({ rev: 3, coverage_progress: { phase: 'hashing_destination' } }));
+    store.apply(job({ rev: 2, coverage_progress: { phase: 'hashing_source' } }));
+    expect(store.job?.coverage_progress?.phase).toBe('hashing_destination');
+    store.apply(job({ state: 'cancel_requested', rev: 4, coverage_progress: { phase: 'hashing_destination' } }));
+    store.apply(job({ rev: 3, coverage_progress: { phase: 'hashing_source' } }));
+    expect(store.job?.state).toBe('cancel_requested');
+    expect(store.job?.coverage_progress?.phase).toBe('hashing_destination');
+    store.apply(job({ job_id: 'jb_2', seq: 2, state: 'queued' }));
+    expect(store.job?.coverage_progress).toBeUndefined();
+  });
   it('keeps a failed result readable again after a successful job-list resync', async () => {
     const finished = job({ state: 'completed' });
     const call = vi.fn(async (command: string) => {
@@ -168,6 +209,21 @@ describe('covers store', () => {
     expect(store.report!.not_covered[0]!.node_id).toMatch(/^nd_/);
     // Covered files are counts only.
     expect(JSON.stringify(store.report)).not.toContain('"covered":[');
+  });
+  it('follows synthetic phase events and stops advancing them when cancellation is requested', async () => {
+    const { store } = await mock();
+    await store.start('rt_mock_10', 'rt_mock_11');
+    expect(store.job?.coverage_progress).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(300);
+    expect(store.job?.coverage_progress?.phase).toBe('listing_destination');
+    await vi.advanceTimersByTimeAsync(300);
+    expect(store.job?.coverage_progress?.phase).toBe('hashing_source');
+    await store.cancel();
+    const phase = store.job?.coverage_progress;
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(store.job?.state).toBe('cancelled');
+    expect(store.job?.coverage_progress).toEqual(phase);
+    expect(store.report).toBeNull();
   });
   it('shows a finished answer when the other direction was read completely', async () => {
     const { store } = await mock();

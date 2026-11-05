@@ -673,6 +673,13 @@ export interface ScanProgress {
   limit_reason?: "depth_limit" | "directory_limit";
 }
 
+export type CoveragePhase = "listing_destination" | "hashing_source" | "hashing_destination" | "rechecking_source";
+
+/** Latest observed Coverage read pass, retained as the last phase after cancellation or completion. Work remaining and completion percentage are unknown. */
+export interface CoverageProgress {
+  phase: CoveragePhase;
+}
+
 export interface Job {
   job_id: JobId;
   seq: Count;
@@ -688,6 +695,8 @@ export interface Job {
   error: ErrorBody | null;
   duplicates?: DuplicateReport;
   reclaim?: ReclaimObserveProgress;
+  /** Present only on Coverage jobs once a read pass starts; older services omit it. */
+  coverage_progress?: CoverageProgress;
 }
 
 export interface JobRefRequest {
@@ -2390,7 +2399,7 @@ export type CopyOperationId = string;
 export type CopyState = "draft" | "refused" | "approved" | "expired" | "preparing" | "copying" | "staged" | "blocked" | "needs_attention" | "publishing" | "committed" | "cancelling" | "cancelled";
 
 /** docs/47 section 7. Codes with a P or S entry are refused before any write handle exists. */
-export type CopyRefusalCode = "identity_unverified" | "cloud_placeholder" | "reparse_point" | "unsupported_attribute" | "extended_attributes" | "alternate_streams_unsupported" | "too_many_streams" | "special_file" | "source_changed" | "staging_name_taken" | "staging_in_use" | "changed_after_verification" | "source_in_use" | "access_denied" | "insufficient_space" | "destination_inside_source" | "destination_cloud_synced" | "destination_unsupported_volume" | "destination_protected" | "destination_changed" | "case_collision" | "name_unrepresentable" | "path_too_long" | "publish_in_use" | "verification_mismatch" | "grant_revoked" | "elevated" | "approval_expired" | "digest_mismatch" | "manifest_limit";
+export type CopyRefusalCode = "identity_unverified" | "cloud_placeholder" | "reparse_point" | "unsupported_attribute" | "extended_attributes" | "alternate_streams_unsupported" | "too_many_streams" | "special_file" | "source_changed" | "staging_name_taken" | "staging_in_use" | "changed_after_verification" | "source_in_use" | "access_denied" | "insufficient_space" | "destination_inside_source" | "destination_cloud_synced" | "destination_unsupported_volume" | "destination_protected" | "destination_changed" | "destination_acl_not_inherited" | "case_collision" | "name_unrepresentable" | "path_too_long" | "publish_in_use" | "verification_mismatch" | "grant_revoked" | "elevated" | "approval_expired" | "digest_mismatch" | "manifest_limit";
 
 export interface CopyRefusal {
   code: CopyRefusalCode;
