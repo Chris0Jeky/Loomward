@@ -310,6 +310,7 @@ fn the_explanation_stays_bounded_with_every_refusal_code_present() {
         ChangedAfterVerification,
         GrantRevoked,
         DestinationChanged,
+        DestinationAclNotInherited,
     ];
     let facts = StagingDisposition {
         staging: id(1),

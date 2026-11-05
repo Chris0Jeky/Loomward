@@ -60,6 +60,7 @@ pub enum Code {
     DestinationUnsupportedVolume,
     DestinationProtected,
     DestinationChanged,
+    DestinationAclNotInherited,
     CaseCollision,
     NameUnrepresentable,
     PathTooLong,
@@ -73,7 +74,7 @@ pub enum Code {
 }
 
 impl Code {
-    pub const ALL: [Code; 30] = {
+    pub const ALL: [Code; 31] = {
         use Code::*;
         [
             IdentityUnverified,
@@ -96,6 +97,7 @@ impl Code {
             DestinationUnsupportedVolume,
             DestinationProtected,
             DestinationChanged,
+            DestinationAclNotInherited,
             CaseCollision,
             NameUnrepresentable,
             PathTooLong,
@@ -123,6 +125,7 @@ impl Code {
                 | AccessDenied
                 | PublishInUse
                 | VerificationMismatch
+                | DestinationAclNotInherited
         )
     }
 }
