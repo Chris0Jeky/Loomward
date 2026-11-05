@@ -509,7 +509,11 @@ fn coverage_progress_revisions_are_idempotent_and_freeze_after_cancel() {
     let ctx = context_rx.recv_timeout(Duration::from_secs(5)).unwrap();
     let running = e.job_status(&job.job_id).unwrap();
     assert_eq!(running.coverage_progress, Some(first));
-    assert_eq!(running.rev.get(), 2, "repeated phases must not publish revisions");
+    assert_eq!(
+        running.rev.get(),
+        2,
+        "repeated phases must not publish revisions"
+    );
     let cancelled = e.job_cancel(&job.job_id).unwrap();
     ctx.set_coverage_progress(CoverageProgress {
         phase: CoveragePhase::HashingSource,

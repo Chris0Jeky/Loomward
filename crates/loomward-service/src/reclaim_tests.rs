@@ -892,7 +892,10 @@ fn reclaim_nested_row_budget_keeps_unexamined_candidates() {
     crate::reclaim::nested::dedupe(&conn, &mut plan, &nodes).unwrap();
     assert!(plan.groups[0].candidates.is_empty());
     assert_eq!(plan.groups[1].candidates.len(), 2);
-    assert_eq!(plan.groups[1].candidates[0].node_id, Some(later.reference()));
+    assert_eq!(
+        plan.groups[1].candidates[0].node_id,
+        Some(later.reference())
+    );
     assert_eq!(plan.groups[1].candidates[0].evidence, ["fact"]);
     let kept_outer = &plan.groups[1].candidates[1];
     assert_eq!(kept_outer.node_id, Some(outer.reference()));
@@ -900,7 +903,10 @@ fn reclaim_nested_row_budget_keeps_unexamined_candidates() {
         kept_outer.evidence.last().unwrap(),
         "Contains 200 other recognised candidates, counted once here."
     );
-    assert!(plan.partial, "unexamined nesting must not look fully deduped");
+    assert!(
+        plan.partial,
+        "unexamined nesting must not look fully deduped"
+    );
     assert!(plan.truncated, "the engine's cut is still reported");
 
     // The retained leaf is readable and nested: only the spent budget kept it above.
@@ -910,7 +916,10 @@ fn reclaim_nested_row_budget_keeps_unexamined_candidates() {
     ]]);
     crate::reclaim::nested::dedupe(&conn, &mut fresh, &nodes).unwrap();
     assert_eq!(fresh.groups[0].candidates.len(), 1);
-    assert_eq!(fresh.groups[0].candidates[0].node_id, Some(outer.reference()));
+    assert_eq!(
+        fresh.groups[0].candidates[0].node_id,
+        Some(outer.reference())
+    );
     assert!(!fresh.partial);
 }
 

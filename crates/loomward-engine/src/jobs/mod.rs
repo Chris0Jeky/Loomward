@@ -4,8 +4,8 @@ use crate::{
     Component, Engine, EngineError, EngineResult,
 };
 use loomward_protocol::{
-    Count, CoverageProgress, CoverageState, EventName, Job, JobId, JobKind, JobList, JobListRequest,
-    JobState, RootId,
+    Count, CoverageProgress, CoverageState, EventName, Job, JobId, JobKind, JobList,
+    JobListRequest, JobState, RootId,
 };
 use std::{
     collections::HashMap,
