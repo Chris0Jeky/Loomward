@@ -52,3 +52,32 @@ volume root, including a `Windows` folder inside a project. The existing
 "System error minidump files". This synthetic fixture supplies no real-machine
 Disk Cleanup category witness and no multi-million-row real-catalogue timing;
 those #1076 evidence questions remain separate.
+
+## Component qualification, 5 November 2026
+
+Head `049e74328740e2547b6e9246b9b0491524b74775`, tree
+`c07bd33a3d8e152ba3731318f3550d28bc653d6f`, passed both complete attempt-1 workflows:
+[PR 41956207993](https://github.com/Chris0Jeky/Loomward/actions/runs/41956207993) and
+[push 41956201152](https://github.com/Chris0Jeky/Loomward/actions/runs/41956201152), each **9/9**.
+Both Windows jobs ran under a non-elevated standard-user token on NTFS, child exit 0. The new
+`windows_leftover_chain_rules_hide_descendants_of_unusable_intermediates` test actually passed
+in each 44-test machine-store suite, with zero failures and zero ignores. Formatting, Clippy
+and the remaining native/app/Python/desktop gates passed.
+
+The same test also passed in the corrected #1146 Linux integration. Final combined Windows
+qualification and main landing remain pending in #1146; this component receipt does not claim
+that later integration is complete. The real-machine and real-catalogue limits above remain.
+
+
+## Integrated landing — 5 November 2026
+
+[#1147](https://github.com/Chris0Jeky/Loomward/pull/1147) is merged through the preserved ancestry
+of [#1146](https://github.com/Chris0Jeky/Loomward/pull/1146). Actual main merge
+`1d5aaf0fd318bdeb692e9e0ec420f05266db96a9` has exactly the final qualified tree
+`29cf9220d575824e1e7e17b3ccf5d0ad8492de42`.
+Integrated head `c0ab2262bcfaf5c58fea09e181ca12637a80b72a` passed
+[PR 41960178507](https://github.com/Chris0Jeky/Loomward/actions/runs/41960178507) and
+[push 41960173043](https://github.com/Chris0Jeky/Loomward/actions/runs/41960173043), 9/9 jobs each.
+The chain regression actually passes in each 44-test machine-store suite on Linux and standard-user
+Windows. Together with the earlier complete standalone qualification, this closes the test gap,
+while #1076 remains open for the separately identified real-machine/performance/design work.

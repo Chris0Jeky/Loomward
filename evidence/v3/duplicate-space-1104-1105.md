@@ -179,3 +179,84 @@ The whitespace-only assertion correction is included in the subsequent update
 to PR #1145. Full exact-head qualification of that correction remains pending
 when this addendum is prepared. No measurement is claimed for a later head by
 this receipt.
+
+## 2026-11-05 integration completion
+
+The production count/cache integration completed in #1137, and
+[#1105](https://github.com/Chris0Jeky/Loomward/issues/1105) is closed. The
+[dated round-two receipt](round2-20261102.md#2026-11-05-completion-receipt) records
+the qualified head/tree, both 9/9 runs and main merge. The cache negative and the
+first measurement's formatting failure remain separate historical evidence.
+
+## Second hosted Windows comparison (2026-11-05)
+
+This is a separate measurement at the corrected #1145 head; it does not replace
+the `48471bada8a6bb2d6cb0b5931ed6fc60a3a1d627` receipt above.
+
+- Head: `129a36f1af1abaecff7d18e8a8a9fe33d48807ad`; checked-out PR merge:
+  `b00a9298cf2030af91e28927248a1a4a46b3e394`.
+- [Run 41955315631, attempt 1, job 127008710644](https://github.com/Chris0Jeky/Loomward/actions/runs/41955315631/job/127008710644).
+- [Receipt artifact 13383400462](https://github.com/Chris0Jeky/Loomward/actions/runs/41955315631/artifacts/13383400462),
+  `duplicate-candidate-space-receipt.txt`. Downloaded ZIP SHA-256:
+  `aab3a5cc506a67de218293be731295a0fef1df912ea19e7eaf45dca580fcaabd`;
+  the extracted receipt matches its archive entry byte for byte.
+- Windows X64, image `win25-vs2026` / `20261030.294.1`, four logical processors;
+  `AMD64 Family 25 Model 1 Stepping 1, AuthenticAMD`. Rust `1.99.1`, LLVM `23.1.1`,
+  SQLite `3.51.3`, optimized release with `debug_assertions=false`.
+
+The exact release command and same-fixture method described above were repeated:
+130,000 files, the unchanged 32M-step budget, the frozen reference query, one
+paired warm-up and ten interleaved pairs. It reported **1 passed, 0 failed,
+0 ignored, 118 filtered out** in **45.64 seconds**, with `cargo_exit_code=0`.
+All timings below are milliseconds as printed in this second receipt.
+
+| Shape | Count query | First uncached | Warm median | Warm min | Warm max |
+| --- | --- | ---: | ---: | ---: | ---: |
+| One size | Reference | 86.3 | 75.8 | 74.6 | 77.7 |
+| One size | Grouped | 54.2 | 54.3 | 53.5 | 60.3 |
+| 20,000 sizes | Reference | 868.8 | 883.1 | 863.5 | 1029.3 |
+| 20,000 sizes | Grouped | 101.0 | 91.3 | 90.8 | 92.7 |
+
+Every count retained exact parity: **130,000 files**, **1,300,000 bytes** for
+one size and **1,251,235,000 bytes** for 20,000 sizes. The logged grouped/reference
+median ratios, calculated from unrounded durations, were **0.717** and **0.103**.
+Separate current-production call measurements were:
+
+| Shape | Call | Warm median | Warm min | Warm max |
+| --- | --- | ---: | ---: | ---: |
+| One size | Full uncached call | 183.1 | 181.4 | 197.2 |
+| One size | Selection only | 127.7 | 127.1 | 130.8 |
+| One size | Cached full call | 128.2 | 126.4 | 131.7 |
+| 20,000 sizes | Full uncached call | 339.0 | 335.2 | 369.5 |
+| 20,000 sizes | Selection only | 248.1 | 244.4 | 384.3 |
+| 20,000 sizes | Cached full call | 247.8 | 246.2 | 402.9 |
+
+The same synthetic, hardware/load and unflushed-cache limits apply. The two runs
+remain distinct observations; neither establishes cold-disk or end-to-end latency.
+On this head, the normal
+[push run 41955308029](https://github.com/Chris0Jeky/Loomward/actions/runs/41955308029)
+passed **9/9 jobs**, while the
+[PR run 41955315627](https://github.com/Chris0Jeky/Loomward/actions/runs/41955315627)
+still awaits its Windows native job at this update. Full #1145 qualification
+remains pending.
+
+## Full qualification and landing, 5 November 2026
+
+The pending full-qualification snapshot above is superseded by both completed attempt-1 workflows
+at head `129a36f1af1abaecff7d18e8a8a9fe33d48807ad`, tree
+`346e55edc2ada543ead37a33368468f42859b117`:
+
+- [PR run 41955315627](https://github.com/Chris0Jeky/Loomward/actions/runs/41955315627): **9/9 successful**.
+- [Push run 41955308029](https://github.com/Chris0Jeky/Loomward/actions/runs/41955308029): **9/9 successful**.
+
+The real standard-user Windows gates ran on NTFS with TokenElevation 0 and child exit 0. Both strict
+four-case ACL and grant/regrant groups executed with zero failures/ignores and no setup skip; the
+full service suite passed **707 tests, 0 failed, 2 ignored**. Formatting, both Clippy gates,
+Linux/native, app/unit/build/mock/live browser, Python matrix and desktop gates passed. The separate
+current-head measurement receipt above remains **1 passed, 0 failed, 0 ignored**.
+
+[#1145](https://github.com/Chris0Jeky/Loomward/pull/1145) merged as
+`2aceefa0a51cbe8776ec0683f93707a17a3c0a0d`, with exactly the qualified tree. #1104 closed as
+completed; #1105 had already closed after #1137. These receipts establish the scoped query/cache
+repairs and the paired synthetic measurement, not cold-cache, real-machine or storage-throughput
+acceptance. Both measurements and the earlier formatting failure remain preserved.

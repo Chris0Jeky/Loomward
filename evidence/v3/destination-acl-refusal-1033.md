@@ -65,3 +65,28 @@ contracts and whitespace checks are current. Cargo, Windows and offline app depe
 in that workspace. The production revision therefore requires exact-head hosted native/app/Python checks,
 including the full real standard-user Windows suite, recorded on [PR #1138](https://github.com/Chris0Jeky/Loomward/pull/1138).
 This evidence does not open C8, establish physical power-loss safety or authorize original-file effects.
+
+## Integrated qualification and landing, 5 November 2026
+
+The local limits above describe the original authoring checkpoint. The implementation subsequently
+passed independent source review and both complete first-attempt workflows at integration head
+`0e7c94429920c488e9823cbd3fb6f42bbf3ed631`, tree
+`0a72674d826ca4a5043f6c8405ac1b67c032ba3f`:
+
+- [PR run 41955056422](https://github.com/Chris0Jeky/Loomward/actions/runs/41955056422): **9/9 successful**.
+- [Push run 41955048805](https://github.com/Chris0Jeky/Loomward/actions/runs/41955048805): **9/9 successful**.
+
+Both Windows jobs actually executed the strict four-case ACL gate under a non-elevated standard-user
+token on NTFS: **4 passed, 0 failed, 0 ignored**, with setup skips rejected and child exit **0**. The
+passing cases reached the payload/no-publication/source-preservation/reopened-status assertions that
+the negative checkpoint could not reach. The full Windows service suite passed **707 tests, 0 failed,
+2 ignored**; all-feature fixtures and both Clippy gates passed. Linux, contract, app, mock/live browser,
+Python and desktop gates also passed.
+
+The unchanged operations-vocabulary tests exposed a further integration omission before this success.
+The repair added the code to the operations enum and its 31-code exhaustive set, kept it runtime-only
+and ineligible for preflight, and completed the 19-refusal disposition list. No check was relaxed.
+
+[#1143](https://github.com/Chris0Jeky/Loomward/pull/1143) merged as
+`5dfcd4c8b29d715a12608113ca5e7162f8bb6810` with exactly the qualified tree. GitHub recognized #1138
+through preserved ancestry, and #1033 closed as completed. The boundaries above remain unchanged.

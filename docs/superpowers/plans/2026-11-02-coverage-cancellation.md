@@ -29,3 +29,27 @@ failed with observed workers 0 versus expected 1 (`coverage read bypassed the
 shared worker pool`). The standard-user service suite reported 684 passed,
 1 failed, 2 ignored in 110.99 seconds. This was behavioral red with the old API,
 not a compile error or an elevated skip. Production changes followed this receipt.
+
+
+## Completion and subsequent follow-ups — 5 November 2026
+
+This ownership/cancellation slice landed through
+[#1137](https://github.com/Chris0Jeky/Loomward/pull/1137), whose exact head
+`085f79fca49125b1290652bea42ca0c215dfde08` passed complete
+[PR 41951591904](https://github.com/Chris0Jeky/Loomward/actions/runs/41951591904) and
+[push 41951583002](https://github.com/Chris0Jeky/Loomward/actions/runs/41951583002) qualification,
+9/9 jobs each. Its historical tests-first worker-reservation failure above remains preserved.
+
+Separate follow-ups added observed phase progress through #1140/#1143 and completed final
+directory-query cancellation/uncertainty through
+[#1146](https://github.com/Chris0Jeky/Loomward/pull/1146). The final head
+`c0ab2262bcfaf5c58fea09e181ca12637a80b72a` passed both full PR/push workflows
+**41960178507 / 41960173043**, 9/9 each, including actual strict one-service/four-native passes
+under a real standard-user NTFS token with no setup skips. Actual main
+`1d5aaf0fd318bdeb692e9e0ec420f05266db96a9` has the exact qualified tree, and #1108/#1144 are
+closed after scoped acceptance. See the [complete final-loop evidence](../../../evidence/v3/coverage-identity-cancellation-1144.md).
+
+The original slice's no-progress-contract statement describes that slice only. The later phase
+contract is separate. Cancellation still cannot guarantee interruption of a synchronous kernel
+call; the held-return fixture and no-retrievable-cancelled-report guarantee retain their documented
+limits. C8 remains closed.

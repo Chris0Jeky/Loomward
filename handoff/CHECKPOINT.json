@@ -1,11 +1,11 @@
 {
   "project": "Loomward",
   "schema_version": 2,
-  "as_of": "2026-11-02",
+  "as_of": "2026-11-05",
   "version": "0.3.0-dev",
-  "base_commit": "f2546383f74feb1028cbc5d66ff6212250f6e893",
+  "base_commit": "1d5aaf0fd318bdeb692e9e0ec420f05266db96a9",
   "branch": "main",
-  "phase": "Implementation merged after full primary qualification; later duplicate Windows failure unresolved in #1129 despite independent post-merge main success; C8 remains closed",
+  "phase": "Maintenance implementation merged after independent review and complete exact-head PR/push qualification; runner communication-loss trigger remains open in #1129; C8 remains closed",
   "read_first": [
     "AGENTS.md",
     "handoff/START-HERE.md",
@@ -130,10 +130,13 @@
     "#787: remaining wedged-worker pins, retiring-watch hint coverage and sustained-load churn",
     "#414: actual durable-service 10M qualification, a new continuous 72-hour pass, required effect power-cut/restore evidence and owner UX acceptance",
     "#24/#101: manual Windows accessibility/field acceptance",
-    "#1108: app result retry is qualified and merged through PR1127 and its checkbox is checked; all other items remain open, including cancellation plumbing, job-registry/native test gaps, worker reservation and phase progress",
-    "#1121: recover the private Explorer-context source archive/bundle or publish the absent recorded branch before fixture repair and full qualification; source is absent from connected GitHub and uploaded material",
-    "#1124: implement and qualify direct collection-member search from the verified remote tests-only source e69e695; no implementation or PR yet",
-    "#1129: recover original failed duplicate Windows job125096338660 diagnostics, identify the last executed stage/cause and whether the deadline test ran, then choose evidence-based targeted repair or justified rerun; retain first-attempt failure and keep incident open while diagnostics are unavailable"
+    "#1121: recover the retained private Explorer-context source archive/bundle or publish the absent recorded branch before exact-source repair and qualification",
+    "#1129: both original and new failed Windows jobs have recovered hosted-runner-communication-loss annotations; underlying trigger, last test and missing execution diagnostics remain unresolved. Preserve both first attempts and qualified paired/integration receipts",
+    "#1037: complete the Coverage-to-plan_archive integration and valid custody verification evidence; last_content_verified_at remains null rather than inventing a timestamp",
+    "#1076: real-catalogue performance, real-machine category witnesses and remaining design work; synthetic ancestry/depth/budget and intermediate-chain gaps are now covered",
+    "#851: four source/destination revoke/regrant regressions are qualified and refuse old consent; remaining preview/approval timing and staging-name design questions stay distinct from a demonstrated execution bypass",
+    "#762: establish the final duplicate-read revocation/return contract with a targeted interleaving proof, and make mismatched timed/traced budget-cut search measurements explicit; the other old review claims are resolved or have recorded non-bug explanations",
+    "#74/#198/#437/#840: reconcile the native lexical-adapter acceptance evidence, execute the requested live native navigation/restart witness, retain the manual save/overwrite and real-window 100k/1M churn work, and complete the 1M-file forget comparison plus legacy-layout crash sweep; dated issue prefaces now distinguish these residuals from delivered implementation"
   ],
   "optional_independent_starts": [
     "LW-065",
@@ -180,7 +183,17 @@
     "evidence/v3/backlog-review-2026-10-20.md",
     "evidence/v3/backlog-review-2026-10-20.json",
     "evidence/v3/backlog-closure-evidence-2026-10-20.md",
-    "evidence/v3/reference-windows.md"
+    "evidence/v3/reference-windows.md",
+    "evidence/v3/round2-20261102.md",
+    "evidence/v3/scan-change-evidence-1098.md",
+    "evidence/v3/duplicate-space-1104-1105.md",
+    "evidence/v3/copy-grant-regrant-851.md",
+    "evidence/v3/destination-acl-refusal-1033.md",
+    "evidence/v3/windows-ci-diagnostics-1129.md",
+    "evidence/v3/coverage-phase-progress-1108.md",
+    "evidence/v3/coverage-identity-cancellation-1144.md",
+    "evidence/v3/reclaim-ancestry-bounds-1076.md",
+    "evidence/v3/reclaim-chain-filters-1076.md"
   ],
   "estate": {
     "repository": "Chris0Jeky/Loomward (public)",
@@ -1682,5 +1695,672 @@
       "issue_1126_boundary": "Specific deadline repair remains demonstrated by the primary run; reopen #1126 only if recovered evidence or targeted reproduction implicates its test or hook",
       "classification": "Unclassified: available metadata and missing logs do not establish a cause"
     }
+  },
+  "maintenance_2026_11_05": {
+    "status": "Implementation complete; documentation checkpoint based on the verified implementation main below",
+    "prior_checkpoint_metadata_and_next_work": {
+      "as_of": "2026-11-02",
+      "base_commit": "f2546383f74feb1028cbc5d66ff6212250f6e893",
+      "phase": "Implementation merged after full primary qualification; later duplicate Windows failure unresolved in #1129 despite independent post-merge main success; C8 remains closed",
+      "next_local_issues": [
+        "#120 / LW-101: required W0-B cold-cache and strategy/thread/volume measurements; keep in_progress despite completed strategy promotion",
+        "#787: remaining wedged-worker pins, retiring-watch hint coverage and sustained-load churn",
+        "#414: actual durable-service 10M qualification, a new continuous 72-hour pass, required effect power-cut/restore evidence and owner UX acceptance",
+        "#24/#101: manual Windows accessibility/field acceptance",
+        "#1108: app result retry is qualified and merged through PR1127 and its checkbox is checked; all other items remain open, including cancellation plumbing, job-registry/native test gaps, worker reservation and phase progress",
+        "#1121: recover the private Explorer-context source archive/bundle or publish the absent recorded branch before fixture repair and full qualification; source is absent from connected GitHub and uploaded material",
+        "#1124: implement and qualify direct collection-member search from the verified remote tests-only source e69e695; no implementation or PR yet",
+        "#1129: recover original failed duplicate Windows job125096338660 diagnostics, identify the last executed stage/cause and whether the deadline test ran, then choose evidence-based targeted repair or justified rerun; retain first-attempt failure and keep incident open while diagnostics are unavailable"
+      ]
+    },
+    "initial_main_sha": "ff9add48774c3adac07e58f021926180116898ec",
+    "initial_open_github_issue_count": 158,
+    "initial_open_prs": [
+      1131,
+      1132,
+      1133,
+      1135,
+      1136,
+      1137
+    ],
+    "issue_count_scope": "GitHub issue count excludes PRs; the unchanged top-level backlog_count=130 is the local LW catalogue",
+    "remaining_open_github_issue_count": 151,
+    "merged_implementation_pr_count": 15,
+    "merged_implementation_prs": [
+      {
+        "number": 1131,
+        "url": "https://github.com/Chris0Jeky/Loomward/pull/1131",
+        "state": "closed",
+        "merged": true,
+        "head_sha": "c942f40412878e6edb025712c0e5e1f4ad35d3b7",
+        "merge_commit_sha": "74723782018313e77f1da055ce48b909e6c01155",
+        "merged_at": "2026-11-05T02:31:57Z"
+      },
+      {
+        "number": 1132,
+        "url": "https://github.com/Chris0Jeky/Loomward/pull/1132",
+        "state": "closed",
+        "merged": true,
+        "head_sha": "e2fdd9db13bc2edc8f0e082a7d9babb5125aa49b",
+        "merge_commit_sha": "94d01faf2113f51967449fe85c83e0f4bdb5396d",
+        "merged_at": "2026-11-05T02:31:57Z"
+      },
+      {
+        "number": 1133,
+        "url": "https://github.com/Chris0Jeky/Loomward/pull/1133",
+        "state": "closed",
+        "merged": true,
+        "head_sha": "a67d02b475b438af7c634ef4a8e6675d5e55b812",
+        "merge_commit_sha": "94d01faf2113f51967449fe85c83e0f4bdb5396d",
+        "merged_at": "2026-11-05T02:31:57Z"
+      },
+      {
+        "number": 1135,
+        "url": "https://github.com/Chris0Jeky/Loomward/pull/1135",
+        "state": "closed",
+        "merged": true,
+        "head_sha": "c3e167c8e64ffc2570cfc4687281c466e66d534b",
+        "merge_commit_sha": "74723782018313e77f1da055ce48b909e6c01155",
+        "merged_at": "2026-11-05T02:31:57Z"
+      },
+      {
+        "number": 1136,
+        "url": "https://github.com/Chris0Jeky/Loomward/pull/1136",
+        "state": "closed",
+        "merged": true,
+        "head_sha": "cc6f7ee21ad1278e6c6153c63cc6920d2b7a6fcb",
+        "merge_commit_sha": "94d01faf2113f51967449fe85c83e0f4bdb5396d",
+        "merged_at": "2026-11-05T02:31:57Z"
+      },
+      {
+        "number": 1137,
+        "url": "https://github.com/Chris0Jeky/Loomward/pull/1137",
+        "state": "closed",
+        "merged": true,
+        "head_sha": "085f79fca49125b1290652bea42ca0c215dfde08",
+        "merge_commit_sha": "37ef170c0202edb2974b46f91ab5ed113ddef776",
+        "merged_at": "2026-11-05T02:31:55Z"
+      },
+      {
+        "number": 1138,
+        "url": "https://github.com/Chris0Jeky/Loomward/pull/1138",
+        "state": "closed",
+        "merged": true,
+        "head_sha": "dc7bca9e483c25b6f379f8a93a6d50020529e1db",
+        "merge_commit_sha": "c4507c19ca5133f74b81d3177719822056ca045f",
+        "merged_at": "2026-11-05T03:02:33Z"
+      },
+      {
+        "number": 1139,
+        "url": "https://github.com/Chris0Jeky/Loomward/pull/1139",
+        "state": "closed",
+        "merged": true,
+        "head_sha": "370018042df0762f9a62b4910471a25933f342d1",
+        "merge_commit_sha": "c4507c19ca5133f74b81d3177719822056ca045f",
+        "merged_at": "2026-11-05T03:02:33Z"
+      },
+      {
+        "number": 1140,
+        "url": "https://github.com/Chris0Jeky/Loomward/pull/1140",
+        "state": "closed",
+        "merged": true,
+        "head_sha": "ad1cb12874be3e61bc45bf2d26a384ecf4e3f6b0",
+        "merge_commit_sha": "c4507c19ca5133f74b81d3177719822056ca045f",
+        "merged_at": "2026-11-05T03:02:33Z"
+      },
+      {
+        "number": 1141,
+        "url": "https://github.com/Chris0Jeky/Loomward/pull/1141",
+        "state": "closed",
+        "merged": true,
+        "head_sha": "f2ee4276a5997ac3b302ea46602c2539d67b8cbf",
+        "merge_commit_sha": "c4507c19ca5133f74b81d3177719822056ca045f",
+        "merged_at": "2026-11-05T03:02:33Z"
+      },
+      {
+        "number": 1142,
+        "url": "https://github.com/Chris0Jeky/Loomward/pull/1142",
+        "state": "closed",
+        "merged": true,
+        "head_sha": "b18de23b8f8b2bb0bdf3f4efcdc49a3123e68d87",
+        "merge_commit_sha": "ef5236253ad037114f8a59754bf3deb8c924660e",
+        "merged_at": "2026-11-05T02:45:55Z"
+      },
+      {
+        "number": 1143,
+        "url": "https://github.com/Chris0Jeky/Loomward/pull/1143",
+        "state": "closed",
+        "merged": true,
+        "head_sha": "0e7c94429920c488e9823cbd3fb6f42bbf3ed631",
+        "merge_commit_sha": "5dfcd4c8b29d715a12608113ca5e7162f8bb6810",
+        "merged_at": "2026-11-05T03:02:31Z"
+      },
+      {
+        "number": 1145,
+        "url": "https://github.com/Chris0Jeky/Loomward/pull/1145",
+        "state": "closed",
+        "merged": true,
+        "head_sha": "129a36f1af1abaecff7d18e8a8a9fe33d48807ad",
+        "merge_commit_sha": "2aceefa0a51cbe8776ec0683f93707a17a3c0a0d",
+        "merged_at": "2026-11-05T03:09:16Z"
+      },
+      {
+        "number": 1146,
+        "url": "https://github.com/Chris0Jeky/Loomward/pull/1146",
+        "state": "closed",
+        "merged": true,
+        "head_sha": "c0ab2262bcfaf5c58fea09e181ca12637a80b72a",
+        "merge_commit_sha": "1d5aaf0fd318bdeb692e9e0ec420f05266db96a9",
+        "merged_at": "2026-11-05T03:54:52Z"
+      },
+      {
+        "number": 1147,
+        "url": "https://github.com/Chris0Jeky/Loomward/pull/1147",
+        "state": "closed",
+        "merged": true,
+        "head_sha": "049e74328740e2547b6e9246b9b0491524b74775",
+        "merge_commit_sha": "26119c36c9f6c37a045b9794f7a5c5692a7b5034",
+        "merged_at": "2026-11-05T03:54:54Z"
+      }
+    ],
+    "closed_issue_receipts": [
+      {
+        "number": 1033,
+        "url": "https://github.com/Chris0Jeky/Loomward/issues/1033",
+        "state": "closed",
+        "state_reason": "completed",
+        "closed_at": "2026-11-05T03:03:18Z"
+      },
+      {
+        "number": 1098,
+        "url": "https://github.com/Chris0Jeky/Loomward/issues/1098",
+        "state": "closed",
+        "state_reason": "completed",
+        "closed_at": "2026-11-05T02:33:43Z"
+      },
+      {
+        "number": 1101,
+        "url": "https://github.com/Chris0Jeky/Loomward/issues/1101",
+        "state": "closed",
+        "state_reason": "completed",
+        "closed_at": "2026-11-05T02:33:46Z"
+      },
+      {
+        "number": 1104,
+        "url": "https://github.com/Chris0Jeky/Loomward/issues/1104",
+        "state": "closed",
+        "state_reason": "completed",
+        "closed_at": "2026-11-05T03:09:39Z"
+      },
+      {
+        "number": 1105,
+        "url": "https://github.com/Chris0Jeky/Loomward/issues/1105",
+        "state": "closed",
+        "state_reason": "completed",
+        "closed_at": "2026-11-05T02:33:48Z"
+      },
+      {
+        "number": 1108,
+        "url": "https://github.com/Chris0Jeky/Loomward/issues/1108",
+        "state": "closed",
+        "state_reason": "completed",
+        "closed_at": "2026-11-05T03:55:43Z"
+      },
+      {
+        "number": 1124,
+        "url": "https://github.com/Chris0Jeky/Loomward/issues/1124",
+        "state": "closed",
+        "state_reason": "completed",
+        "closed_at": "2026-11-05T02:34:15Z"
+      },
+      {
+        "number": 1144,
+        "url": "https://github.com/Chris0Jeky/Loomward/issues/1144",
+        "state": "closed",
+        "state_reason": "completed",
+        "closed_at": "2026-11-05T03:55:44Z"
+      }
+    ],
+    "reconciled_open_issue_descriptions": [
+      74,
+      198,
+      437,
+      762,
+      840,
+      851,
+      1037,
+      1076,
+      1129
+    ],
+    "qualified_implementation_main_before_documentation_commit": "1d5aaf0fd318bdeb692e9e0ec420f05266db96a9",
+    "qualified_implementation_tree": "29cf9220d575824e1e7e17b3ccf5d0ad8492de42",
+    "qualified_slices": {
+      "integration": {
+        "pr": 1137,
+        "branch": "codex/ambitious-round2-20261102",
+        "sha": "085f79fca49125b1290652bea42ca0c215dfde08",
+        "tree": "8cd30032a1d34a241aa6227dd0f94cd700a94208",
+        "merge_sha": "37ef170c0202edb2974b46f91ab5ed113ddef776",
+        "qualified_runs": [
+          41951591904,
+          41951583002
+        ]
+      },
+      "grant": {
+        "pr": 1142,
+        "branch": "codex/copy-grant-regrant-20261105",
+        "sha": "b18de23b8f8b2bb0bdf3f4efcdc49a3123e68d87",
+        "tree": "86259a3f313ba66d903680d439512477b37ac36d",
+        "merge_sha": "ef5236253ad037114f8a59754bf3deb8c924660e",
+        "qualified_runs": [
+          41952563671,
+          41952559579
+        ]
+      },
+      "followups": {
+        "pr": 1143,
+        "branch": "codex/maintenance-followups-20261105",
+        "sha": "0e7c94429920c488e9823cbd3fb6f42bbf3ed631",
+        "tree": "0a72674d826ca4a5043f6c8405ac1b67c032ba3f",
+        "merge_sha": "5dfcd4c8b29d715a12608113ca5e7162f8bb6810",
+        "qualified_runs": [
+          41955056422,
+          41955048805
+        ]
+      },
+      "measurement": {
+        "pr": 1145,
+        "branch": "codex/candidate-count-measurement-20261105",
+        "sha": "129a36f1af1abaecff7d18e8a8a9fe33d48807ad",
+        "tree": "346e55edc2ada543ead37a33368468f42859b117",
+        "merge_sha": "2aceefa0a51cbe8776ec0683f93707a17a3c0a0d",
+        "qualified_runs": [
+          41955315627,
+          41955308029
+        ],
+        "measurement_run": 41955315631
+      },
+      "identity": {
+        "pr": 1146,
+        "branch": "codex/coverage-identity-cancellation-20261105",
+        "sha": "c0ab2262bcfaf5c58fea09e181ca12637a80b72a",
+        "tree": "29cf9220d575824e1e7e17b3ccf5d0ad8492de42",
+        "red_sha": "27d4160e300db39b49eea03ee7e13d41f18d6d12",
+        "first_red_sha": "b80b7f4fbf4fe3f07469f374fd04345c11a6003a",
+        "guard_failure_sha": "f630e26ad79a32205493d8f181243555c3e76e63",
+        "first_production_sha": "26119c36c9f6c37a045b9794f7a5c5692a7b5034",
+        "merge_sha": "1d5aaf0fd318bdeb692e9e0ec420f05266db96a9",
+        "qualified_runs": [
+          41960178507,
+          41960173043
+        ]
+      },
+      "chain": {
+        "pr": 1147,
+        "branch": "codex/reclaim-chain-filters-20261105",
+        "sha": "049e74328740e2547b6e9246b9b0491524b74775",
+        "tree": "c07bd33a3d8e152ba3731318f3550d28bc653d6f",
+        "qualified_runs": [
+          41956207993,
+          41956201152
+        ],
+        "merge_sha": "1d5aaf0fd318bdeb692e9e0ec420f05266db96a9",
+        "merged_through_pr": 1146
+      }
+    },
+    "source_reconciliation": "Uploaded ZIP matched all 1662 initial-main blobs. GitHub remained authoritative for live refs, publication and exact-head hosted CI; local synthetic mirror commits were never substituted for GitHub SHAs",
+    "hosted_evidence": {
+      "final_head": "c0ab2262bcfaf5c58fea09e181ca12637a80b72a",
+      "final_runs": [
+        {
+          "id": 41960178507,
+          "url": "https://github.com/Chris0Jeky/Loomward/actions/runs/41960178507",
+          "head_sha": "c0ab2262bcfaf5c58fea09e181ca12637a80b72a",
+          "event": "pull_request",
+          "run_attempt": 1,
+          "status": "completed",
+          "conclusion": "success",
+          "checkout_sha": "a10ad95d17f3f15d5facd0bbbd2c710d0667af3d",
+          "jobs": [
+            {
+              "id": 127024898987,
+              "name": "desktop",
+              "conclusion": "success"
+            },
+            {
+              "id": 127024899196,
+              "name": "python (ubuntu-latest, 3.13)",
+              "conclusion": "success"
+            },
+            {
+              "id": 127024899256,
+              "name": "python (windows-latest, 3.11)",
+              "conclusion": "success"
+            },
+            {
+              "id": 127024899258,
+              "name": "python (ubuntu-latest, 3.11)",
+              "conclusion": "success"
+            },
+            {
+              "id": 127024899277,
+              "name": "app (windows-latest)",
+              "conclusion": "success"
+            },
+            {
+              "id": 127024899328,
+              "name": "app (ubuntu-latest)",
+              "conclusion": "success"
+            },
+            {
+              "id": 127024899340,
+              "name": "native (ubuntu-latest)",
+              "conclusion": "success"
+            },
+            {
+              "id": 127024899379,
+              "name": "native (windows-latest)",
+              "conclusion": "success"
+            },
+            {
+              "id": 127024899462,
+              "name": "python (windows-latest, 3.13)",
+              "conclusion": "success"
+            }
+          ]
+        },
+        {
+          "id": 41960173043,
+          "url": "https://github.com/Chris0Jeky/Loomward/actions/runs/41960173043",
+          "head_sha": "c0ab2262bcfaf5c58fea09e181ca12637a80b72a",
+          "event": "push",
+          "run_attempt": 1,
+          "status": "completed",
+          "conclusion": "success",
+          "checkout_sha": "c0ab2262bcfaf5c58fea09e181ca12637a80b72a",
+          "jobs": [
+            {
+              "id": 127024835587,
+              "name": "native (ubuntu-latest)",
+              "conclusion": "success"
+            },
+            {
+              "id": 127024835753,
+              "name": "python (windows-latest, 3.11)",
+              "conclusion": "success"
+            },
+            {
+              "id": 127024835765,
+              "name": "app (ubuntu-latest)",
+              "conclusion": "success"
+            },
+            {
+              "id": 127024835781,
+              "name": "python (windows-latest, 3.13)",
+              "conclusion": "success"
+            },
+            {
+              "id": 127024835828,
+              "name": "python (ubuntu-latest, 3.11)",
+              "conclusion": "success"
+            },
+            {
+              "id": 127024835838,
+              "name": "native (windows-latest)",
+              "conclusion": "success"
+            },
+            {
+              "id": 127024835875,
+              "name": "python (ubuntu-latest, 3.13)",
+              "conclusion": "success"
+            },
+            {
+              "id": 127024835967,
+              "name": "app (windows-latest)",
+              "conclusion": "success"
+            },
+            {
+              "id": 127024835982,
+              "name": "desktop",
+              "conclusion": "success"
+            }
+          ]
+        }
+      ],
+      "automated_code_review": {
+        "commit_sha": "c0ab2262bcfaf5c58fea09e181ca12637a80b72a",
+        "status": "completed",
+        "has_any_findings": false,
+        "has_unresolved_findings": false,
+        "comment_id": 6649035817,
+        "url": "https://github.com/Chris0Jeky/Loomward/pull/1146#issuecomment-6649035817",
+        "completed_at": "2026-11-05T03:41:15Z"
+      },
+      "linux_workspace": {
+        "passed": 1967,
+        "failed": 0,
+        "ignored": 4,
+        "doc_tests_included": 3,
+        "overlapping_publication_passes_excluded": 7,
+        "jobs": [
+          127024899340,
+          127024835587
+        ],
+        "operations_passed": 68,
+        "machine_stores_passed": 44,
+        "architecture_guard": "executed and passed in both jobs",
+        "clippy": "passed in both jobs"
+      },
+      "windows_standard_user": {
+        "pending": false,
+        "test_stage_complete": true,
+        "passed": 2700,
+        "failed": 0,
+        "ignored": 10,
+        "doc_tests_included": 3,
+        "service_passed": 708,
+        "service_failed": 0,
+        "service_ignored": 2,
+        "operations_passed": 68,
+        "machine_stores_passed": 44,
+        "engine_passed": 291,
+        "child_exit_code": 0,
+        "token_elevation": 0,
+        "fixture_filesystem": "NTFS",
+        "jobs": [
+          127024899379,
+          127024835838
+        ],
+        "strict_gates": {
+          "coverage_service": {
+            "passed": 1,
+            "failed": 0,
+            "ignored": 0,
+            "setup_skip": false
+          },
+          "directory_recheck": {
+            "passed": 4,
+            "failed": 0,
+            "ignored": 0,
+            "setup_skip": false
+          },
+          "destination_acl": {
+            "passed": 4,
+            "failed": 0,
+            "ignored": 0,
+            "setup_skip": false
+          },
+          "grant_regrant": {
+            "passed": 4,
+            "failed": 0,
+            "ignored": 0,
+            "setup_skip": false
+          }
+        },
+        "fixture_all_features": {
+          "passed": 389,
+          "failed": 0,
+          "ignored": 3,
+          "overlaps_workspace": true
+        },
+        "overlapping_publication_passes_excluded": 7,
+        "setup_returns": "Only the existing no-8.3-alias fixture marker, once in workspace and once in the overlapping all-features run; no setup skips in the strict gates",
+        "embedded_negative_control": "crash_sweep::a_panicking_child_is_not_an_unreached_crash_point intentionally catches an invalid-synthetic-scenario child panic. Its captured subprocess prints 0 passed/1 failed; the enclosing crash suite passes20/0. Not a failed top-level workspace test.",
+        "artifacts": [
+          {
+            "run_id": 41960178507,
+            "job_id": 127024899379,
+            "artifact_id": 13386861576,
+            "zip_bytes": 124836,
+            "downloaded_zip_sha256": "3ef787326c4d54d1b00cfe5bfe2c8eb3f2c1b13ec908404afe35b904d71b9506",
+            "members": {
+              "stdout.log": 685536,
+              "stderr.log": 0,
+              "status.json": 386
+            },
+            "status": {
+              "schemaVersion": 1,
+              "runId": "41960178507",
+              "runAttempt": "1",
+              "workflowSha": "a10ad95d17f3f15d5facd0bbbd2c710d0667af3d",
+              "startedUtc": "2026-11-05T03:20:42.1629120Z",
+              "updatedUtc": "2026-11-05T03:52:02.5538042Z",
+              "phase": "finished",
+              "childExitCode": 0,
+              "timedOut": false,
+              "parentError": null,
+              "cleanupCompleted": true,
+              "cleanupFailed": false
+            }
+          },
+          {
+            "run_id": 41960173043,
+            "job_id": 127024835838,
+            "artifact_id": 13386069142,
+            "zip_bytes": 124805,
+            "downloaded_zip_sha256": "e3d56c03dc1dc62f03cfa2782d24676847c3dc987d0e8f70d94a691a500dacd1",
+            "members": {
+              "stdout.log": 685639,
+              "stderr.log": 0,
+              "status.json": 386
+            },
+            "status": {
+              "schemaVersion": 1,
+              "runId": "41960173043",
+              "runAttempt": "1",
+              "workflowSha": "c0ab2262bcfaf5c58fea09e181ca12637a80b72a",
+              "startedUtc": "2026-11-05T03:20:27.4570805Z",
+              "updatedUtc": "2026-11-05T03:52:03.6647292Z",
+              "phase": "finished",
+              "childExitCode": 0,
+              "timedOut": false,
+              "parentError": null,
+              "cleanupCompleted": true,
+              "cleanupFailed": false
+            }
+          }
+        ],
+        "clippy": "Both all-features Windows and workspace Clippy gates passed in both completed jobs"
+      },
+      "app": {
+        "passed": 1080,
+        "files": 77,
+        "svelte_errors": 0,
+        "svelte_warnings": 0,
+        "build": "passed in all four jobs",
+        "jobs": [
+          127024899328,
+          127024899277,
+          127024835765,
+          127024835967
+        ],
+        "linux_browser": "mock and live ALL PASS in both Linux jobs",
+        "windows_browser": "not executed on Windows"
+      },
+      "counts_scope": "Workspace totals exclude overlapping focused invocations; ignored measurements and platform-specific setup returns remain explicit. Earlier top-level native/reference counts retain their original measured revisions"
+    },
+    "duplicate_measurement": {
+      "scope": "Paired synthetic count-query timing, identical per-run database/flags/floor/32M budget; first observations plus ten alternating warmed pairs; not cold-cache or general end-to-end latency",
+      "first": {
+        "head": "48471bada8a6bb2d6cb0b5931ed6fc60a3a1d627",
+        "run": 41954090348,
+        "one_size_old_ms": 71.8,
+        "one_size_grouped_ms": 51.7,
+        "spread_old_ms": 837.2,
+        "spread_grouped_ms": 88.0,
+        "normal_ci": "Initial formatting failure preserved"
+      },
+      "qualified": {
+        "head": "129a36f1af1abaecff7d18e8a8a9fe33d48807ad",
+        "run": 41955315631,
+        "job": 127008710644,
+        "artifact": 13383400462,
+        "downloaded_zip_sha256": "aab3a5cc506a67de218293be731295a0fef1df912ea19e7eaf45dca580fcaabd",
+        "one_size_old_ms": 75.8,
+        "one_size_grouped_ms": 54.3,
+        "spread_old_ms": 883.1,
+        "spread_grouped_ms": 91.3,
+        "test_result": "1 passed, 0 failed, 0 ignored"
+      }
+    },
+    "preserved_negative_evidence": [
+      "ACL tests-only 997e57c: real standard-user Windows 0 passed/4 failed; exact null/wrong refusal assertions before the typed-error repair",
+      "Diagnostics probe 6c2fe705: child exit73 stayed failed; exactly stdout/stderr/status survived normal cleanup with verified archive digest",
+      "Coverage phase tests-only 308dae0: four valid phases rejected by the old closed schema",
+      "Coverage b80b7f4: Windows 1 passed/3 failed; Linux operations66 passed/1 failed",
+      "Coverage 27d4160: Linux operations66 passed/2 failed; strict Windows service0 passed/1 failed at query-count assertion",
+      "Production26119c36: one rustfmt layout failure before native compilation/tests",
+      "Productionf630e26: both Linux workflows rejected a direct service fixture reference with the unchanged architecture guard; operations68 and machine_stores44 passed before that later failure",
+      "Integration formatting, serde-map serialization, unavailable-root fixture, closed-schema fragments, command count and exhaustive operation-vocabulary failures were corrected without weakening the checks"
+    ],
+    "runner_loss_incident": {
+      "issue": 1129,
+      "jobs": [
+        125096338660,
+        126997824360
+      ],
+      "runs": [
+        41389074739,
+        41951875642
+      ],
+      "observed_at": "2026-11-05T03:05:00Z",
+      "observation_surface": "Public GitHub Actions job UI, expanded Annotations",
+      "annotation": "The hosted runner lost communication with the server.",
+      "failure_mode": "hosted runner communication loss",
+      "underlying_trigger": "unresolved",
+      "last_executed_test": "unknown",
+      "original_logs": "unavailable (BlobNotFound)",
+      "new_failure_windows_artifact": "absent",
+      "new_failure_log_last_checked": "2026-11-05T03:03:31Z",
+      "recovery_criterion": "original Actions annotation recovered; remaining cause and execution criteria open"
+    },
+    "coverage_boundary": "Cooperative cancellation before/after synchronous directory queries, owned worker until reader return, no retrievable cancelled report, preserved uncertainty. The service fixture holds a completed query return boundary; no in-flight kernel-call interruption or hard latency bound is claimed. A late cancellation can leave a bounded internal report between storage and terminal publication, but retrieval requires Completed; the controlled query-return regression proves no retention for its own cancellation timing",
+    "remaining_work": [
+      "#120 / LW-101: required W0-B cold-cache and strategy/thread/volume measurements; keep in_progress despite completed strategy promotion",
+      "#787: remaining wedged-worker pins, retiring-watch hint coverage and sustained-load churn",
+      "#414: actual durable-service 10M qualification, a new continuous 72-hour pass, required effect power-cut/restore evidence and owner UX acceptance",
+      "#24/#101: manual Windows accessibility/field acceptance",
+      "#1121: recover the retained private Explorer-context source archive/bundle or publish the absent recorded branch before exact-source repair and qualification",
+      "#1129: both original and new failed Windows jobs have recovered hosted-runner-communication-loss annotations; underlying trigger, last test and missing execution diagnostics remain unresolved. Preserve both first attempts and qualified paired/integration receipts",
+      "#1037: complete the Coverage-to-plan_archive integration and valid custody verification evidence; last_content_verified_at remains null rather than inventing a timestamp",
+      "#1076: real-catalogue performance, real-machine category witnesses and remaining design work; synthetic ancestry/depth/budget and intermediate-chain gaps are now covered",
+      "#851: four source/destination revoke/regrant regressions are qualified and refuse old consent; remaining preview/approval timing and staging-name design questions stay distinct from a demonstrated execution bypass",
+      "#762: establish the final duplicate-read revocation/return contract with a targeted interleaving proof, and make mismatched timed/traced budget-cut search measurements explicit; the other old review claims are resolved or have recorded non-bug explanations",
+      "#74/#198/#437/#840: reconcile the native lexical-adapter acceptance evidence, execute the requested live native navigation/restart witness, retain the manual save/overwrite and real-window 100k/1M churn work, and complete the 1M-file forget comparison plus legacy-layout crash sweep; dated issue prefaces now distinguish these residuals from delivered implementation"
+    ],
+    "evidence_notes": [
+      "evidence/v3/round2-20261102.md",
+      "evidence/v3/scan-change-evidence-1098.md",
+      "evidence/v3/duplicate-space-1104-1105.md",
+      "evidence/v3/copy-grant-regrant-851.md",
+      "evidence/v3/destination-acl-refusal-1033.md",
+      "evidence/v3/windows-ci-diagnostics-1129.md",
+      "evidence/v3/coverage-phase-progress-1108.md",
+      "evidence/v3/coverage-identity-cancellation-1144.md",
+      "evidence/v3/reclaim-ancestry-bounds-1076.md",
+      "evidence/v3/reclaim-chain-filters-1076.md"
+    ],
+    "checkpoint_scope": "base_commit is the qualified implementation main, before this docs-only checkpoint; no future/self-referential checkpoint SHA. All prior maintenance evidence and hard gates are preserved. This docs-only change uses whitespace, touched-link and independent-review checks rather than claiming a new native run",
+    "c8": "closed"
   }
 }

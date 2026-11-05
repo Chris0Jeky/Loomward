@@ -53,3 +53,38 @@ therefore hosted on the exact PR head and recorded in its qualification update.
 Phase progress does not bound cancellation latency within the existing directory identity-validation
 loop. The worker remains owned while it drains and cancelled results are discarded, but adding finer
 cancellation checks to that loop is separate work. No filesystem effects or copy capability are added.
+
+## Integrated phase qualification, 5 November 2026
+
+The phase implementation landed through [#1143](https://github.com/Chris0Jeky/Loomward/pull/1143)
+as `5dfcd4c8b29d715a12608113ca5e7162f8bb6810`. Its tree
+`0a72674d826ca4a5043f6c8405ac1b67c032ba3f` exactly matches qualified head
+`0e7c94429920c488e9823cbd3fb6f42bbf3ed631`. Both
+[PR run 41955056422](https://github.com/Chris0Jeky/Loomward/actions/runs/41955056422) and
+[push run 41955048805](https://github.com/Chris0Jeky/Loomward/actions/runs/41955048805) passed
+**9/9 jobs**, attempt 1.
+
+The Linux and real standard-user Windows suites executed the phase schema/DTO, revision/freeze,
+native phase-publication and callback-cancellation regressions. App unit/type/build and Linux
+mock/live browser gates passed. Windows reported `TokenElevation=0`, NTFS, child exit 0 and
+**707 service tests passed, 0 failed, 2 ignored**, followed by successful Clippy gates.
+
+The final directory-identity loop limitation above is addressed separately in #1146; its negative
+and positive qualification status is tracked in
+[the #1144 evidence note](coverage-identity-cancellation-1144.md). This phase receipt alone does
+not establish that later fix or a hard bound on a synchronous kernel call.
+
+
+## Final cancellation follow-up and issue closeout — 5 November 2026
+
+The remaining final directory-identity loop work is now qualified and merged through
+[#1146](https://github.com/Chris0Jeky/Loomward/pull/1146), actual main
+`1d5aaf0fd318bdeb692e9e0ec420f05266db96a9`. Exact head
+`c0ab2262bcfaf5c58fea09e181ca12637a80b72a` passed
+[PR 41960178507](https://github.com/Chris0Jeky/Loomward/actions/runs/41960178507) and
+[push 41960173043](https://github.com/Chris0Jeky/Loomward/actions/runs/41960173043), 9/9 each.
+Both real standard-user NTFS runs executed the strict one-service/four-native gates without
+setup skips. The broader worker, retry, registry and phase acceptance is complete and #1108 is
+closed. Full receipts and the query-return/kernel-call and internal-retention boundaries are in
+[the final-loop evidence](coverage-identity-cancellation-1144.md#final-qualification-and-landing--5-november-2026).
+The earlier phase-only qualification did not itself prove that later final-loop behavior.

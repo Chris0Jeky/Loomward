@@ -745,8 +745,9 @@ durable reference. NTFS and ReFS never fall back to this mode.
 
 ## Collections (local preferences)
 
-The four `collections.*` commands work in synthetic and personal sessions. They read catalogue
-metadata and write only Loomward's FULL-synchronous state store. Membership is meaning, never a
+The five `collections.*` commands, including [direct member search](#direct-collection-member-search-1124),
+work in synthetic and personal sessions. They read catalogue metadata and write only Loomward's
+FULL-synchronous state store. Membership is meaning, never a
 root grant, disclosure approval or file effect; no content is read, moved, copied or linked.
 Names are exact, case-sensitive keys (1-64 characters, no controls); a duplicate returns
 `invalid_request` with `detail.existing_id`. At most 256 collections are stored; further creates

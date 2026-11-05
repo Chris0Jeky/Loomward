@@ -125,9 +125,12 @@ service then removes, from every group, each candidate with a strict ancestor di
 candidate (a developer-clutter `node_modules` under a machine-store candidate, for example). The outermost candidate
 stays and carries one evidence line, "Contains N other recognised candidates, counted once here.", and its own sizes
 already include the nested bytes, so a sum over a group counts them once. The ancestry pass is the one
-`reclaim.observe` selection uses (a bounded walk of `main.dir` parents, 511 deep), run once per candidate under the
-read's deadline and a 100,000-row total budget. If a candidate's chain cannot be read to the root (depth cap, missing
-parent row, budget spent) it is **kept** and the plan is marked `partial`: dropping it would hide bytes, and keeping it
+`reclaim.observe` selection uses: a [bounded walk of `main.dir` parents](../crates/loomward-service/src/reclaim/nested.rs)
+of at most 511 parent edges (512 directory rows including the starting directory), run once per candidate under the
+read's deadline. The dedupe starts with a 100,000-row budget and starts a new walk only while budget remains.
+Each walk's rows are charged after it returns, so the final walk can exceed that budget by up to 511 rows before
+later walks stop. If a candidate's chain cannot be read to the root (depth cap, missing parent row, budget spent)
+it is **kept** and the plan is marked `partial`: dropping it would hide bytes, and keeping it
 silently would claim a dedupe that did not happen. `truncated` is left as the engine set it: the dedupe runs after
 each group is ranked and cut at `limit`, so a nested candidate whose outer candidate was cut stays listed (its outer is
 not in the plan, so nothing is counted twice). Candidates without a catalogue node (the Windows-reported Recycle Bin)
