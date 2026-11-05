@@ -1,4 +1,8 @@
 //! Default-stream equality evidence for admitted grants. Never effect authority or reclaimability.
+#[cfg(all(windows, any(test, feature = "fixtures")))]
+#[doc(hidden)]
+pub mod directory_recheck_fixture;
+
 use crate::{enumerate::OpenedIdentity, identity::ObservedIdentity};
 #[cfg(all(windows, feature = "copy-primitives"))]
 pub(crate) use native::{tree::security_metadata, CopySource};

@@ -102,6 +102,17 @@ enum Recheck {
 
 fn recheck_file(path: &Path, node: &Node, again: &Tree) -> Recheck {
     use crate::tree::MetadataClass::{ChangeTime, CreationTime, LastWriteTime};
+    if let Some(reason) =
+        path.ancestors()
+            .skip(1)
+            .find_map(|ancestor| match again.nodes.get(ancestor) {
+                Some(Ok(_)) => None,
+                Some(Err(reason)) => Some(*reason),
+                None => Some(RECHECK_INCOMPLETE),
+            })
+    {
+        return Recheck::Unverified(reason);
+    }
     match again.nodes.get(path) {
         Some(Err(reason)) => Recheck::Unverified(reason),
         Some(Ok(now)) => {
@@ -141,18 +152,27 @@ fn recheck_file(path: &Path, node: &Node, again: &Tree) -> Recheck {
 /// change time moved, loses its content with `changed_during_compare`, replacing whatever it held:
 /// the report must not judge bytes that may be gone. A file the recheck could not reach (budget,
 /// cancel, a cut-short listing) is not known to have changed: a hashed file becomes unknown with
-/// the recheck's own reason, and any content verdict already `Err` is kept. Files that appeared
-/// since are outside "A as read" and are not reported.
+/// the recheck's own reason. `not_requested` also becomes unknown because it can otherwise imply
+/// absence; existing unknown content reasons are kept. Matching directory errors reach A even
+/// when there are no files underneath, while earlier directory uncertainty keeps its own cause.
+/// Files that appeared since are outside "A as read" and are not reported.
 pub fn recheck_source(a: &mut Tree, again: &Tree) {
-    for (path, node) in &mut a.nodes {
-        let Ok(node) = node else { continue };
+    for (path, observation) in &mut a.nodes {
+        let Ok(node) = observation else { continue };
         if node.kind != Kind::File {
+            if node.children.is_ok() {
+                if let Some(Err(reason)) = again.nodes.get(path) {
+                    *observation = Err(*reason);
+                }
+            }
             continue;
         }
         match recheck_file(path, node, again) {
             Recheck::Same => {}
             Recheck::Changed => node.content = Err(CHANGED_DURING_COMPARE),
-            Recheck::Unverified(reason) if node.content.is_ok() => node.content = Err(reason),
+            Recheck::Unverified(reason) if matches!(node.content, Ok(_) | Err("not_requested")) => {
+                node.content = Err(reason)
+            }
             Recheck::Unverified(_) => {}
         }
     }
@@ -685,6 +705,111 @@ mod tests {
         recheck_source(&mut a, &again);
         assert_eq!(content_of(&a, "still"), Err("not_requested"));
         assert_eq!(content_of(&a, "moved"), Err(CHANGED_DURING_COMPARE));
+    }
+
+    #[test]
+    fn source_recheck_propagates_unvalidated_directory_identity_to_descendants() {
+        let mut deferred = stamped(5, 0, b"w1").unwrap();
+        deferred.content = Err("not_requested");
+        let mut unread = stamped(4, 0, b"w1").unwrap();
+        unread.content = Err("byte_budget");
+        let read = tree(&[
+            ("root-file", stamped(4, 1, b"w1")),
+            ("a", dir()),
+            ("a/nested", dir()),
+            ("a/nested/file", stamped(4, 2, b"w1")),
+            ("a/nested/deferred", Ok(deferred)),
+            ("a/nested/unread", Ok(unread)),
+        ]);
+        let b = tree(&[("root-copy", file(4, 1)), ("copy", file(4, 2))]);
+        for ancestor in ["", "a", "a/nested"] {
+            for reason in ["cancelled", "time_budget"] {
+                let mut again = read.clone();
+                for node in again.nodes.values_mut().flatten() {
+                    if node.kind == Kind::File {
+                        node.content = Err("not_requested");
+                    }
+                }
+                again.nodes.insert(ancestor.into(), Err(reason));
+                let mut a = read.clone();
+                recheck_source(&mut a, &again);
+                let report = containment(&a, &b);
+                for path in ["a/nested/file", "a/nested/deferred"] {
+                    let node = a.nodes[Path::new(path)].as_ref().unwrap();
+                    assert_eq!(node.content, Err(reason), "{ancestor:?}: {path}");
+                    let item = report
+                        .items
+                        .iter()
+                        .find(|item| item.path == Path::new(path))
+                        .unwrap();
+                    assert_eq!(
+                        item.size,
+                        Some(if path.ends_with("deferred") { 5 } else { 4 })
+                    );
+                    assert!(
+                        matches!(item.coverage, Coverage::Unknown { side: Side::Source, reason: why } if why == reason)
+                    );
+                }
+                assert_eq!(content_of(&a, "a/nested/unread"), Err("byte_budget"));
+                assert_eq!(
+                    content_of(&a, "root-file"),
+                    if ancestor.is_empty() {
+                        Err(reason)
+                    } else {
+                        Ok([1; 32])
+                    }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn source_recheck_keeps_empty_directory_identity_uncertainty() {
+        let read = tree(&[("a", dir()), ("a/nested", dir())]);
+        let b = tree(&[]);
+        assert!(containment(&read, &b).items.is_empty());
+        for ancestor in ["", "a", "a/nested"] {
+            for reason in ["cancelled", "time_budget"] {
+                let mut again = read.clone();
+                again.nodes.insert(ancestor.into(), Err(reason));
+                let mut a = read.clone();
+                recheck_source(&mut a, &again);
+                assert_eq!(a.nodes[Path::new(ancestor)].as_ref().unwrap_err(), &reason);
+                let report = containment(&a, &b);
+                let item = report
+                    .items
+                    .iter()
+                    .find(|item| item.path == Path::new(ancestor))
+                    .unwrap();
+                assert_eq!(
+                    item.coverage,
+                    Coverage::Unknown {
+                        side: Side::Source,
+                        reason,
+                    }
+                );
+            }
+        }
+        // Earlier unknown observations keep their own cause when the final recheck times out.
+        let mut partial = dir().unwrap();
+        partial.children = Err("entry_budget");
+        let mut a = tree(&[
+            ("unread", Err("sharing_violation")),
+            ("partial", Ok(partial)),
+        ]);
+        let again = tree(&[
+            ("unread", Err("time_budget")),
+            ("partial", Err("time_budget")),
+        ]);
+        recheck_source(&mut a, &again);
+        assert_eq!(
+            a.nodes[Path::new("unread")].as_ref().unwrap_err(),
+            &"sharing_violation"
+        );
+        assert_eq!(
+            a.nodes[Path::new("partial")].as_ref().unwrap().children,
+            Err("entry_budget")
+        );
     }
 
     #[test]

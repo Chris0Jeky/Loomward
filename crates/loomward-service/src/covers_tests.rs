@@ -574,6 +574,93 @@ mod native {
         );
     }
 
+    /// The gate holds the return boundary of a completed native identity query, not a pending
+    /// OS metadata call. The registered reader must still own the job, worker and admission.
+    #[test]
+    fn coverage_owns_the_identity_query_return_until_cancellation_drains() {
+        use loomward_engine::scan::directory_recheck_fixture::{self, Action, Point};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let Some(p) = pair(|a, b| {
+            put(a, "file", b"same");
+            for name in ["one", "two"] {
+                std::fs::create_dir(b.join(name)).unwrap();
+                put(&b.join(name), "file", b"same");
+            }
+        }) else {
+            return;
+        };
+        let held = (Command::CoverageStart, "identity_query_return");
+        p.svc.inner.hooks.closed.lock().unwrap().push(held);
+        let weak = Arc::downgrade(&p.svc.inner);
+        let queries = Arc::new(AtomicUsize::new(0));
+        let counted = queries.clone();
+        // The reader receives the stored grant path, which omits canonicalize's verbatim prefix.
+        let b_row = p.svc.inner.root_row(&p.b).unwrap();
+        let b_root = crate::db::roots(&p.svc.inner.db(), Some(b_row))
+            .unwrap()
+            .pop()
+            .unwrap();
+        let hook =
+            directory_recheck_fixture::install(Path::new(&b_root.display_path), move |point, _| {
+                if point == Point::QueryReturned && counted.fetch_add(1, Ordering::AcqRel) == 0 {
+                    weak.upgrade().unwrap().hooks.gate(held.0, held.1);
+                }
+                Action::Continue
+            });
+        let workers = || {
+            p.svc
+                .inner
+                .engine
+                .budgets_get()
+                .unwrap()
+                .pools
+                .iter()
+                .find(|pool| pool.pool == PoolName::ScanEnumerate)
+                .unwrap()
+                .current_workers
+                .get()
+        };
+        let started = start(&p, json!({}));
+        p.svc
+            .inner
+            .hooks
+            .until("identity query return held", |hooks| {
+                hooks.arrived.lock().unwrap().contains(&held)
+            });
+        let during_read = workers();
+        let (requested, _) = ok(
+            "jobs.cancel",
+            call(&p.svc, "jobs.cancel", json!({"job_id":started.job_id})),
+        );
+        let during_cancel = workers();
+        let busy = err(call(
+            &p.svc,
+            "coverage.start",
+            json!({"a_root_id":p.a,"b_root_id":p.b}),
+        ));
+        let result = err(call(
+            &p.svc,
+            "coverage.result",
+            json!({"job_id":started.job_id}),
+        ));
+        // Release before assertions, including the old-code failure of the query-count check.
+        p.svc.inner.hooks.open(held.0, held.1);
+        let terminal = finished(&p.svc, &started.job_id);
+        assert_eq!(during_read, 1);
+        assert_eq!(during_cancel, 1);
+        assert_eq!(requested["job"]["state"], "cancel_requested");
+        assert_eq!(busy.code, ErrorCode::Busy);
+        assert_eq!(busy.detail.unwrap()["job_id"], json!(started.job_id));
+        assert_eq!(result.code, ErrorCode::NotFound);
+        assert_eq!(terminal.state, JobState::Cancelled);
+        assert_eq!(queries.load(Ordering::Acquire), 1);
+        assert_eq!(workers(), 0);
+        assert!(p.svc.inner.covers.get(&started.job_id).is_none());
+        drop(hook);
+        let next = start(&p, json!({}));
+        assert_eq!(finished(&p.svc, &next.job_id).state, JobState::Completed);
+    }
+
     #[test]
     fn cancelling_ends_the_job_cancelled_and_keeps_no_result() {
         let Some(p) = pair(|a, b| {

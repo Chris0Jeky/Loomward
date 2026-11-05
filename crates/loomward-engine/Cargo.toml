@@ -9,6 +9,8 @@ description = "Loomward v0.3 engine: jobs, scan, events, telemetry, placement, l
 [features]
 # Explicit fixture-only grant constructor; absent from production builds.
 lab = []
+# Cross-crate native fixture hooks; never enabled by a normal build.
+test-support = ["loomward-windows/fixtures"]
 
 [dependencies]
 loomward-operations = { path = "../loomward-operations" }

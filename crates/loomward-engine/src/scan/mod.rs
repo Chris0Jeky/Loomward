@@ -201,6 +201,11 @@ fn native_source(
 /// The C1 comparison budget, re-exported so consumers stay outside the content reader.
 pub use loomward_windows::duplicate_reader::Budget as TreeBudget;
 
+/// Root-scoped native reader hooks for disposable integration tests only.
+#[cfg(all(windows, any(test, feature = "test-support")))]
+#[doc(hidden)]
+pub use loomward_windows::duplicate_reader::directory_recheck_fixture;
+
 /// The refusal text for a failed tree read. Only a geometry failure is about the volume rather than
 /// a file, so only it names one: the root's display path (the owner's own argument, never a GUID),
 /// because the letter alone is wrong for a mounted folder. The text reaches the local CLI only.

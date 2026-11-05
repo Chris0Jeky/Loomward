@@ -1,9 +1,11 @@
 //! C1 observations through the q-10 reader and validated directory source.
 use super::*;
+#[cfg(any(test, feature = "fixtures"))]
+use crate::duplicate_reader::directory_recheck_fixture as recheck_fixture;
 use crate::enumerate::{DirSource, Flow, ListOutcome, NativeSource};
 use loomward_operations::tree::{Kind, MetadataClass as Class, Node, Observation, Tree};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     mem::ManuallyDrop,
     os::windows::{ffi::OsStringExt, fs::OpenOptionsExt, io::FromRawHandle},
 };
@@ -21,6 +23,10 @@ use windows_sys::{
 
 /// Most entries one tree read may list (the root, every listed directory and every listed file).
 const MAX_TREE_ENTRIES: usize = 200_000;
+
+#[cfg(test)]
+#[path = "tree_recheck_tests.rs"]
+mod recheck_tests;
 
 #[cfg(test)]
 thread_local! {
@@ -42,6 +48,13 @@ fn record_tree_open_accesses(run: impl FnOnce()) -> Vec<u32> {
     let mut accesses = enumerate::record_open_accesses(run);
     ACL_OPEN_ACCESSES.with_borrow_mut(|acl| accesses.extend(acl.take().unwrap()));
     accesses
+}
+
+#[cfg(any(test, feature = "fixtures"))]
+fn recheck_point(root: &Path, point: recheck_fixture::Point, relative: &Path, meter: &mut Meter) {
+    if recheck_fixture::fire(root, point, relative) == recheck_fixture::Action::ExpireBudget {
+        meter.deadline = meter.now();
+    }
 }
 
 /// One entry budget: the root and every listed child, files and directories alike, count once.
@@ -342,12 +355,76 @@ fn read_tree_from(
         directories.push((path, dir, before));
     }
     // A later edit must not turn an earlier listing into evidence of absence.
-    for (path, dir, before) in directories {
-        if !observe(dir.file()).is_ok_and(|after| signature(&before, &after)) {
+    #[cfg(any(test, feature = "fixtures"))]
+    recheck_point(
+        root,
+        recheck_fixture::Point::BeforeLoop,
+        Path::new(""),
+        &mut meter,
+    );
+    let mut directories = directories.into_iter();
+    while let Some((path, dir, before)) = directories.next() {
+        if let Err(reason) = meter.check() {
+            invalidate_unchecked_directories(
+                &mut tree,
+                std::iter::once(path).chain(directories.map(|(path, _, _)| path)),
+                reason.as_str(),
+            );
+            break;
+        }
+        let after = observe(dir.file());
+        #[cfg(any(test, feature = "fixtures"))]
+        recheck_point(
+            root,
+            recheck_fixture::Point::QueryReturned,
+            &path,
+            &mut meter,
+        );
+        if let Err(reason) = meter.check() {
+            invalidate_unchecked_directories(
+                &mut tree,
+                std::iter::once(path).chain(directories.map(|(path, _, _)| path)),
+                reason.as_str(),
+            );
+            break;
+        }
+        if !after.is_ok_and(|after| signature(&before, &after)) {
             tree.nodes.insert(path, Err("changed_during_read"));
         }
     }
     Ok((tree, meter.read))
+}
+
+/// Unvalidated directories cannot vouch for their previously observed descendants. Retain file
+/// sizes and existing uncertainty, but discard content and deferred absence evidence in one node
+/// pass with ancestor-set lookups. This needs no further metadata queries.
+fn invalidate_unchecked_directories(
+    tree: &mut Tree,
+    paths: impl Iterator<Item = PathBuf>,
+    reason: &'static str,
+) {
+    let unchecked: BTreeSet<_> = paths.collect();
+    let root_unchecked = unchecked.contains(Path::new(""));
+    for path in &unchecked {
+        let directory_reason = tree
+            .nodes
+            .get(path)
+            .and_then(|node| match node {
+                Ok(node) => node.children.err(),
+                Err(reason) => Some(*reason),
+            })
+            .unwrap_or(reason);
+        tree.nodes.insert(path.clone(), Err(directory_reason));
+    }
+    for (path, node) in &mut tree.nodes {
+        let Ok(node) = node else { continue };
+        if node.kind == Kind::File
+            && matches!(node.content, Ok(_) | Err("not_requested"))
+            && (root_unchecked || path.ancestors().skip(1).any(|p| unchecked.contains(p)))
+        {
+            node.content = Err(reason);
+        }
+    }
 }
 
 /// The 64-bit index of an open handle, the query a 64-bit listing is compared with.
