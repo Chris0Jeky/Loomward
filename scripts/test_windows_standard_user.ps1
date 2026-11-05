@@ -42,9 +42,6 @@ public static class QualificationToken {
 }
 '@
     if ([QualificationToken]::IsElevated()) { throw 'The qualification child is elevated.' }
-    Write-Host 'LW-CI-DIAGNOSTICS-NEGATIVE-STDOUT'
-    [Console]::Error.WriteLine('LW-CI-DIAGNOSTICS-NEGATIVE-STDERR')
-    exit 73
     # Read-only Cloud Files probes diagnose whether the existing filter supports each volume.
     # They never classify an API failure as "not synced" or change the actual fixture location.
     Add-Type -TypeDefinition @'

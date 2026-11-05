@@ -1082,6 +1082,49 @@ fn collection_search_scopes_before_page_limit_and_binds_filters() {
 }
 
 #[test]
+fn collection_search_pages_overlapping_memberships_independently() {
+    let (_dir, svc, ids) = setup(DatasetClass::Synthetic);
+    let a = create(&svc, "Overlap A");
+    let b = create(&svc, "Overlap B");
+    let rev = svc.inner.revisions().unwrap().1;
+    ok(
+        "collections.update_members",
+        update(&svc, &a, &ids[..2], &[], rev),
+    );
+    let rev = svc.inner.revisions().unwrap().1;
+    ok(
+        "collections.update_members",
+        update(&svc, &b, &[ids[0].clone(), ids[2].clone()], &[], rev),
+    );
+    // The shared durable member appears in both searches. Each second page must retain
+    // its own exclusive member without admitting the other collection's member.
+    for (collection, exclusive) in [(&a, &ids[1]), (&b, &ids[2])] {
+        let (first, _) = ok(
+            "collections.search",
+            search_members(&svc, collection, "", 1, Value::Null),
+        );
+        assert_eq!(first["total_members"], 2);
+        assert_eq!(first["examined_members"], 1);
+        assert_eq!(first["unavailable_members"], 0);
+        assert_eq!(first["budget_hit"], false);
+        assert_eq!(first["hits"].as_array().unwrap().len(), 1);
+        assert_eq!(first["hits"][0]["row"]["node_id"], ids[0]);
+        assert!(!first["next_cursor"].is_null());
+        let (second, _) = ok(
+            "collections.search",
+            search_members(&svc, collection, "", 1, first["next_cursor"].clone()),
+        );
+        assert_eq!(second["total_members"], 2);
+        assert_eq!(second["examined_members"], 1);
+        assert_eq!(second["unavailable_members"], 0);
+        assert_eq!(second["budget_hit"], false);
+        assert_eq!(second["hits"].as_array().unwrap().len(), 1);
+        assert_eq!(second["hits"][0]["row"]["node_id"], exclusive.as_str());
+        assert!(second["next_cursor"].is_null());
+    }
+}
+
+#[test]
 fn collection_search_literal_predicates_and_direct_directory_only() {
     let (_dir, svc, ids) = setup(DatasetClass::Synthetic);
     let id = create(&svc, "Literal");
