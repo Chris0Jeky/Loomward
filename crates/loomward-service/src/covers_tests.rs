@@ -578,7 +578,7 @@ mod native {
     /// OS metadata call. The registered reader must still own the job, worker and admission.
     #[test]
     fn coverage_owns_the_identity_query_return_until_cancellation_drains() {
-        use loomward_windows::duplicate_reader::directory_recheck_fixture::{self, Action, Point};
+        use loomward_engine::scan::directory_recheck_fixture::{self, Action, Point};
         use std::sync::atomic::{AtomicUsize, Ordering};
         let Some(p) = pair(|a, b| {
             put(a, "file", b"same");
