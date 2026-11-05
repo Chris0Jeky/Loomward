@@ -158,6 +158,7 @@ public static class QualificationCloudProbe {
     # Preserve the existing tests and add exact native witnesses; do not turn setup refusal green.
     Invoke-QualificationCargo -CargoArguments @('test', '--locked', '-p', 'loomward-windows', '--all-features', 'pending_fence_tests') -MinimumPassed 18
     Invoke-QualificationCargo -CargoArguments @('test', '--locked', '-p', 'loomward-service', 'copy::pending_fence_tests') -MinimumPassed 5
+    Invoke-QualificationCargo -CargoArguments @('test', '--locked', '-p', 'loomward-service', '--lib', 'grant_regrant_', '--', '--show-output', '--test-threads=1') -MinimumPassed 4 -NoSetupSkip
     foreach ($test in @(
         'another_store_committing_a_pending_rename_keeps_the_annotation',
         'a_pending_fence_during_rename_commits_annotated',
