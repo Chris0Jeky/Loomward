@@ -45,3 +45,20 @@ new Rust tests remain unverified pending native CI. The focused native command
 is `cargo test -p loomward-service --lib reclaim_nested_`; the normal formatting
 and workspace gates still apply. No production behavior change or native pass
 is claimed by this receipt.
+
+## Hosted qualification, 5 November 2026
+
+The pending-native statement above records the original local checkpoint. All three new
+`reclaim_nested_` tests subsequently executed successfully in both Linux and real standard-user
+Windows workspace suites at integration head `0e7c94429920c488e9823cbd3fb6f42bbf3ed631`.
+[PR run 41955056422](https://github.com/Chris0Jeky/Loomward/actions/runs/41955056422) and
+[push run 41955048805](https://github.com/Chris0Jeky/Loomward/actions/runs/41955048805) each passed
+all **9 jobs** on attempt 1. Windows child exit was 0; the service suite was **707 passed, 0 failed,
+2 ignored**, with formatting and both Clippy gates successful.
+
+#1141 landed through [#1143](https://github.com/Chris0Jeky/Loomward/pull/1143), main merge
+`5dfcd4c8b29d715a12608113ca5e7162f8bb6810`, tree
+`0a72674d826ca4a5043f6c8405ac1b67c032ba3f`, exactly matching the qualified candidate.
+This closes the three authored boundary gaps, not the wider #1076 issue. Real-catalogue performance,
+category witnesses and the remaining design work are separate; the bounded-walk overshoot described
+above is unchanged.

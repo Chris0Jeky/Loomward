@@ -689,3 +689,113 @@ blocker as #1121. Its implementation and acceptance gates remain future work.
 C8 remains closed. Personal copying, provider/model activation, process controls, original-file effects,
 physical-device/WebView2/assistive-technology acceptance and owner-only decisions retain their existing
 gates. Historical results, hard gates and negative evidence remain preserved by this checkpoint.
+
+## Maintenance completion, 5 November 2026
+
+The earlier dated sections remain historical. This wave started from main
+`ff9add48774c3adac07e58f021926180116898ec`. The implementation main before this documentation
+checkpoint is `1d5aaf0fd318bdeb692e9e0ec420f05266db96a9`, tree `29cf9220d575824e1e7e17b3ccf5d0ad8492de42`. Final Coverage head
+`c0ab2262bcfaf5c58fea09e181ca12637a80b72a` was independently reviewed and qualified before merge; its tree exactly matches
+that implementation main. This is an implementation checkpoint, not a release or an opening of C8.
+The final head also received a completed [automated code review with no findings](https://github.com/Chris0Jeky/Loomward/pull/1146#issuecomment-6649035817).
+
+### Landed work and qualification
+
+| Work | PRs and landing | Complete qualification at the final head (run attempt 1) |
+|---|---|---|
+| Direct collection-member search, new-since evidence, duplicate query/cache corrections, model-store advice, Coverage ownership and refreshed Reclaim selection | #1137 integrated #1131, #1132, #1133, #1135 and #1136; merge `37ef170c0202edb2974b46f91ab5ed113ddef776` | [PR 41951591904](https://github.com/Chris0Jeky/Loomward/actions/runs/41951591904) and [push 41951583002](https://github.com/Chris0Jeky/Loomward/actions/runs/41951583002), both 9/9 |
+| Source/destination revoke-and-regrant consent regressions | #1142; merge `ef5236253ad037114f8a59754bf3deb8c924660e` | [PR 41952563671](https://github.com/Chris0Jeky/Loomward/actions/runs/41952563671) and [push 41952559579](https://github.com/Chris0Jeky/Loomward/actions/runs/41952559579), both 9/9 |
+| Typed ACL refusal, Windows diagnostics, Coverage phases and Reclaim ancestry boundaries | #1143 integrated #1138, #1139, #1140 and #1141; merge `5dfcd4c8b29d715a12608113ca5e7162f8bb6810` | [PR 41955056422](https://github.com/Chris0Jeky/Loomward/actions/runs/41955056422) and [push 41955048805](https://github.com/Chris0Jeky/Loomward/actions/runs/41955048805), both 9/9 |
+| Paired Windows duplicate-count measurement and reproducible receipt workflow | #1145; merge `2aceefa0a51cbe8776ec0683f93707a17a3c0a0d` | [PR 41955315627](https://github.com/Chris0Jeky/Loomward/actions/runs/41955315627) and [push 41955308029](https://github.com/Chris0Jeky/Loomward/actions/runs/41955308029), both 9/9; separate [measurement 41955315631](https://github.com/Chris0Jeky/Loomward/actions/runs/41955315631) executed one exact release benchmark |
+| Coverage final directory-query cancellation/uncertainty and Reclaim intermediate-chain regressions | #1146 integrated #1147; merge `1d5aaf0fd318bdeb692e9e0ec420f05266db96a9` | [PR 41960178507](https://github.com/Chris0Jeky/Loomward/actions/runs/41960178507) and [push 41960173043](https://github.com/Chris0Jeky/Loomward/actions/runs/41960173043), both 9/9 |
+
+Each integration preserves the component histories. GitHub's ancestry-based component merge records
+are distinct from the actual main merge commits in the table. The exact heads, trees and receipts are
+recorded in the linked evidence notes and `handoff/CHECKPOINT.json`; standalone failed component
+heads are not presented as independently qualified.
+
+### Executed results and practical limits
+
+The final app jobs passed **1,080 tests in 77 files**, with zero Svelte errors/warnings and successful
+production builds. Linux mock and production HTTP/browser journeys passed. The original collection
+journey used synthetic seeded SQLite inventory with the rebuilt Rust service and production app;
+it exercised pagination, unavailable members, query-bound cursors, inspection, submitted scope,
+selection retention, late/cancelled responses, reconnect and narrow/wide layouts. Its older-engine
+case removed the capability from a live handshake; it did not run an old binary or a native root scan.
+
+Final Linux workspace qualification reported **1,967 passed, 0 failed, 4
+ignored**, including both final-source uncertainty regressions and the intermediate-chain case.
+Final Windows qualification ran under a real standard-user token on NTFS, `TokenElevation=0`, child
+exit 0. It executed the strict **one service / four native** Coverage gates and the existing **four
+ACL / four grant-regrant** gates without setup skips. The full Windows workspace reported
+**2,700 passed, 0 failed, 10 ignored**, including **708
+service tests passed, 0 failed, 2 ignored**. Formatting, all-feature fixture qualification, both
+Clippy gates, the Python matrix and desktop gate passed. Focused invocations overlap the workspace
+and are not added as unique test totals. Platform-specific skips and measurement ignores remain
+explicit in their logs.
+
+The final directory-identity loop stops issuing further synchronous queries once cancellation or
+its time budget becomes visible. It preserves known sizes, earlier errors and honest uncertainty
+through the final source recheck, including deferred absence and empty directories. The worker stays
+owned until the actual reader returns. The fixture holds a query-return boundary after the OS query
+has completed; it does not prove interruption of an in-flight kernel call or a hard cancellation
+latency bound. See [Coverage evidence](../evidence/v3/coverage-identity-cancellation-1144.md).
+
+Two Windows measurements of the 130,000-file / 20,000-size synthetic fixture gave warmed paired
+count medians of **837.2 / 88.0 ms** and **883.1 / 91.3 ms** for the original/grouped queries. The
+same-size fixture gave **71.8 / 51.7 ms** and **75.8 / 54.3 ms**. Both implementations used the
+same database and unchanged work budget in each comparison; every count matched independent totals.
+These observations concern the count query, not cold-cache, real-disk or complete-inspection latency.
+The receipt workflow, first observations, ranges, full-operation timings and downloaded archive
+checksums are in [duplicate evidence](../evidence/v3/duplicate-space-1104-1105.md).
+
+### Negative evidence and CI incident
+
+The tests-first Windows ACL and Coverage failures, both pure final-source uncertainty failures,
+the service query-count failure, schema and operation-vocabulary failures, and formatting failures
+remain recorded. The final integration also exposed a service test reaching directly into the
+content reader. The unchanged architecture guard rejected it; a dev-only engine fixture facade
+repaired the dependency boundary without relaxing the guard or any behavioral assertion.
+
+The diagnostics exit-73 probe kept Actions failed while preserving exactly stdout, stderr and status
+through normal cleanup. Positive artifacts independently record child exit 0 and successful cleanup.
+The original #1129 failure and a newer duplicate Windows failure still have unavailable ordinary logs;
+the newer run has no Windows diagnostics artifact. At 03:05 UTC the public Actions annotations for
+[original job 125096338660](https://github.com/Chris0Jeky/Loomward/actions/runs/41389074739/job/125096338660)
+and [new job 126997824360](https://github.com/Chris0Jeky/Loomward/actions/runs/41951875642/job/126997824360)
+both established **hosted-runner communication loss**. The underlying trigger and last running test
+remain unknown. #1129 stays open; successful paired and integration workflows do not explain those
+failures, and normal cleanup/upload cannot guarantee retention after runner execution is lost.
+See [the complete diagnostics record](../evidence/v3/windows-ci-diagnostics-1129.md).
+
+### Closeout and remaining work
+
+Issues **#1033, #1098, #1101, #1104, #1105, #1108, #1124 and #1144** closed after their scoped
+acceptance and qualification completed. The remaining work is concrete:
+
+- **#1129:** recover or instrument the cause of runner communication loss and the missing execution
+  evidence. The annotation-recovery criterion is complete; the remaining cause criteria are open.
+- **#1121:** the recorded private Explorer-context commit/branch remains absent from connected
+  GitHub and the uploaded source. Exact-source repair needs the retained archive or published branch.
+- **#1037:** Coverage-to-archive planning and the archive verification timestamp still need their
+  separate integration. This wave's cancellation fix is not a durable custody receipt.
+- **#1076:** the synthetic ancestry and intermediate-directory gaps are covered; real-catalogue
+  measurement, category witnesses and broader design questions remain.
+- **#851:** the four real revoke/regrant cases prove that old copy consent cannot start; remaining
+  copy-design questions stay open. A stale approval acknowledgement is not execution permission.
+- **#762:** the old review bundle is narrowed to the final duplicate-read revocation boundary and
+  pairing timed/traced search measurements when a query exhausts its work budget. Historical
+  measurement partners diverged; this does not establish incorrect production search results.
+- **#120, #787, #414, #24/#101:** the existing hardware/scale, worker/watch-pressure, continuous
+  durability/effect, accessibility and field-acceptance gates remain.
+
+Dated status reconciliations also distinguish completed implementation from outstanding evidence in
+**#74** (native lexical adapter delivered; map the remaining original acceptance checklist), **#198**
+(bound-path recovery covered; the requested live native navigation/restart witness is not established
+by fake-engine recovery legs), **#437** (manual save/overwrite witness and real-window 100k/1M churn
+measurement), and **#840** (1M-file forget comparison and legacy-layout crash sweep). These issues stay
+open, and their original reports remain available as history.
+
+The JSON's `backlog_count: 130` refers to the local LW catalogue, not the live GitHub issue count.
+Historical measurements keep their original revisions. Personal copying, provider/model activation,
+original-file effects and owner/manual acceptance retain their existing gates; **C8 remains closed**.

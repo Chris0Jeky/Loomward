@@ -93,3 +93,11 @@ A native 50,000-file/5,000-directory regression checks exact totals and capped l
 within the existing reader budget; execution is deferred to hosted CI.
 
 No Cargo, rustfmt, clippy, native build or Windows result is claimed locally.
+
+## 2026-11-05 integration completion
+
+[#1098](https://github.com/Chris0Jeky/Loomward/issues/1098) is closed following
+the qualified #1137 integration into main at `37ef170c0202edb2974b46f91ab5ed113ddef776`.
+The [dated round-two receipt](round2-20261102.md#2026-11-05-completion-receipt)
+records the exact tested head/tree, both 9/9 runs, and the native/browser execution
+boundaries. The negative checkpoints and measurement limits above are preserved.

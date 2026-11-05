@@ -38,3 +38,21 @@ cargo test --locked -p loomward-service --lib grant_regrant_ -- --show-output --
 ```
 
 The normal applicable native test and formatting gates remain required. This note records the assertions and source analysis; it does not claim hosted test results.
+
+## 2026-11-05 completion receipt
+
+The hosted qualification pending above is complete for
+[PR #1142](https://github.com/Chris0Jeky/Loomward/pull/1142), head
+`b18de23b8f8b2bb0bdf3f4efcdc49a3123e68d87`, tree
+`86259a3f313ba66d903680d439512477b37ac36d`. Both
+[PR run 41952563671](https://github.com/Chris0Jeky/Loomward/actions/runs/41952563671)
+and [push run 41952559579](https://github.com/Chris0Jeky/Loomward/actions/runs/41952559579)
+passed **9/9 jobs**. In each run, the strict `grant_regrant_` gate executed all
+four fixtures: **4 passed, 0 failed, 0 ignored**, under an actual standard-user
+NTFS session with `TokenElevation=0` and child exit 0. These are executed native
+results, not filter-empty or setup-skip receipts.
+
+The PR merged as
+[`ef5236253ad037114f8a59754bf3deb8c924660e`](https://github.com/Chris0Jeky/Loomward/commit/ef5236253ad037114f8a59754bf3deb8c924660e).
+The tests characterize the existing re-grant refusal invariant; production
+behavior remains unchanged by this patch.

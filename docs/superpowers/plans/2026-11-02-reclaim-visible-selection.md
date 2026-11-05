@@ -13,3 +13,10 @@ Retain the generation fence and existing read-only observation semantics.
 Correct the old observe-worker comment: raw detector candidates include nested
 entries even though the displayed plan deduplicates them. Further ancestry
 budget/depth and cross-group design work stays explicitly open in #1076.
+
+## Completion update, 5 November 2026
+
+The visible-selection repair was independently reviewed, fully qualified and merged through #1137.
+The own-directory, exhausted-budget and depth-boundary regressions later landed through #1141/#1143;
+see [their native qualification](../../../evidence/v3/reclaim-ancestry-bounds-1076.md).
+The wider #1076 design and real-catalogue measurement work remains open.
