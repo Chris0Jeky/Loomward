@@ -1,5 +1,7 @@
 //! C1 observations through the q-10 reader and validated directory source.
 use super::*;
+#[cfg(any(test, feature = "fixtures"))]
+use crate::duplicate_reader::directory_recheck_fixture as recheck_fixture;
 use crate::enumerate::{DirSource, Flow, ListOutcome, NativeSource};
 use loomward_operations::tree::{Kind, MetadataClass as Class, Node, Observation, Tree};
 use std::{
@@ -23,6 +25,10 @@ use windows_sys::{
 const MAX_TREE_ENTRIES: usize = 200_000;
 
 #[cfg(test)]
+#[path = "tree_recheck_tests.rs"]
+mod recheck_tests;
+
+#[cfg(test)]
 thread_local! {
     static ACL_OPEN_ACCESSES: std::cell::RefCell<Option<Vec<u32>>> = const { std::cell::RefCell::new(None) };
 }
@@ -42,6 +48,13 @@ fn record_tree_open_accesses(run: impl FnOnce()) -> Vec<u32> {
     let mut accesses = enumerate::record_open_accesses(run);
     ACL_OPEN_ACCESSES.with_borrow_mut(|acl| accesses.extend(acl.take().unwrap()));
     accesses
+}
+
+#[cfg(any(test, feature = "fixtures"))]
+fn recheck_point(root: &Path, point: recheck_fixture::Point, relative: &Path, meter: &mut Meter) {
+    if recheck_fixture::fire(root, point, relative) == recheck_fixture::Action::ExpireBudget {
+        meter.deadline = meter.now();
+    }
 }
 
 /// One entry budget: the root and every listed child, files and directories alike, count once.
@@ -342,8 +355,18 @@ fn read_tree_from(
         directories.push((path, dir, before));
     }
     // A later edit must not turn an earlier listing into evidence of absence.
+    #[cfg(any(test, feature = "fixtures"))]
+    recheck_point(
+        root,
+        recheck_fixture::Point::BeforeLoop,
+        Path::new(""),
+        &mut meter,
+    );
     for (path, dir, before) in directories {
-        if !observe(dir.file()).is_ok_and(|after| signature(&before, &after)) {
+        let after = observe(dir.file());
+        #[cfg(any(test, feature = "fixtures"))]
+        recheck_point(root, recheck_fixture::Point::QueryReturned, &path, &mut meter);
+        if !after.is_ok_and(|after| signature(&before, &after)) {
             tree.nodes.insert(path, Err("changed_during_read"));
         }
     }

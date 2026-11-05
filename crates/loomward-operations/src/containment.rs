@@ -688,6 +688,62 @@ mod tests {
     }
 
     #[test]
+    fn source_recheck_propagates_unvalidated_directory_identity_to_descendants() {
+        let mut deferred = stamped(5, 0, b"w1").unwrap();
+        deferred.content = Err("not_requested");
+        let mut unread = stamped(4, 0, b"w1").unwrap();
+        unread.content = Err("byte_budget");
+        let read = tree(&[
+            ("root-file", stamped(4, 1, b"w1")),
+            ("a", dir()),
+            ("a/nested", dir()),
+            ("a/nested/file", stamped(4, 2, b"w1")),
+            ("a/nested/deferred", Ok(deferred)),
+            ("a/nested/unread", Ok(unread)),
+        ]);
+        let b = tree(&[("root-copy", file(4, 1)), ("copy", file(4, 2))]);
+        for ancestor in ["", "a", "a/nested"] {
+            for reason in ["cancelled", "time_budget"] {
+                let mut again = read.clone();
+                for node in again.nodes.values_mut().flatten() {
+                    if node.kind == Kind::File {
+                        node.content = Err("not_requested");
+                    }
+                }
+                again.nodes.insert(ancestor.into(), Err(reason));
+                let mut a = read.clone();
+                recheck_source(&mut a, &again);
+                let report = containment(&a, &b);
+                for path in ["a/nested/file", "a/nested/deferred"] {
+                    let node = a.nodes[Path::new(path)].as_ref().unwrap();
+                    assert_eq!(node.content, Err(reason), "{ancestor:?}: {path}");
+                    let item = report
+                        .items
+                        .iter()
+                        .find(|item| item.path == Path::new(path))
+                        .unwrap();
+                    assert_eq!(
+                        item.size,
+                        Some(if path.ends_with("deferred") { 5 } else { 4 })
+                    );
+                    assert!(
+                        matches!(item.coverage, Coverage::Unknown { side: Side::Source, reason: why } if why == reason)
+                    );
+                }
+                assert_eq!(content_of(&a, "a/nested/unread"), Err("byte_budget"));
+                assert_eq!(
+                    content_of(&a, "root-file"),
+                    if ancestor.is_empty() {
+                        Err(reason)
+                    } else {
+                        Ok([1; 32])
+                    }
+                );
+            }
+        }
+    }
+
+    #[test]
     fn report_items_serialize_flat() {
         let item = Item {
             path: "a".into(),
