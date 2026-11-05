@@ -823,6 +823,135 @@ fn reclaim_keeps_a_candidate_whose_ancestry_cannot_be_read_and_marks_the_plan_pa
     assert_eq!(plan.groups[0].candidates[0].evidence, ["fact"]);
 }
 
+#[test]
+fn reclaim_nested_file_is_counted_only_under_its_own_directory() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let c = chained(&svc);
+    let directory = NodeKey::Dir(c.dirs[2]);
+    let file = NodeKey::File(c.file);
+    // Only the file's own directory is listed; no higher ancestor can absorb it.
+    let mut plan = hand_plan(vec![vec![
+        candidate(Some(file), "f.bin"),
+        candidate(Some(directory), "c"),
+    ]]);
+    crate::reclaim::nested::dedupe(&svc.inner.db(), &mut plan, &nodes_of(&[directory, file]))
+        .unwrap();
+    assert_eq!(plan.groups[0].candidates.len(), 1);
+    let kept = &plan.groups[0].candidates[0];
+    assert_eq!(kept.node_id, Some(directory.reference()));
+    assert_eq!(
+        kept.evidence.last().unwrap(),
+        "Contains 1 other recognised candidate, counted once here."
+    );
+    assert!(!plan.partial);
+}
+
+/// Only the two columns read by the shared ancestry query; no detector or filesystem walk.
+fn ancestry_chain(rows: i64) -> rusqlite::Connection {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch("CREATE TABLE dir(id INTEGER PRIMARY KEY, parent_id INTEGER)")
+        .unwrap();
+    conn.execute(
+        "WITH RECURSIVE chain(id) AS (
+         VALUES(1) UNION ALL SELECT id+1 FROM chain WHERE id<?1)
+         INSERT INTO dir SELECT id,nullif(id-1,0) FROM chain",
+        [rows],
+    )
+    .unwrap();
+    conn
+}
+
+#[test]
+fn reclaim_nested_row_budget_keeps_unexamined_candidates() {
+    let conn = ancestry_chain(499);
+    conn.execute_batch(
+        "WITH RECURSIVE leaves(id) AS (
+         VALUES(500) UNION ALL SELECT id+1 FROM leaves WHERE id<700)
+         INSERT INTO dir SELECT id,499 FROM leaves",
+    )
+    .unwrap();
+    let examined: Vec<_> = (500..700).map(NodeKey::Dir).collect();
+    let later = NodeKey::Dir(700);
+    let outer = NodeKey::Dir(1);
+    let mut keys = examined.clone();
+    keys.extend([later, outer]);
+    let nodes = nodes_of(&keys);
+    // Each of the first 200 leaves has exactly 500 ancestry rows, including the root.
+    // Their completed walks spend all 100,000 rows before the next candidate is reached.
+    let mut plan = hand_plan(vec![
+        examined
+            .iter()
+            .map(|node| candidate(Some(*node), "nested"))
+            .collect(),
+        vec![
+            candidate(Some(later), "beyond-budget"),
+            candidate(Some(outer), "outer"),
+        ],
+    ]);
+    crate::reclaim::nested::dedupe(&conn, &mut plan, &nodes).unwrap();
+    assert!(plan.groups[0].candidates.is_empty());
+    assert_eq!(plan.groups[1].candidates.len(), 2);
+    assert_eq!(plan.groups[1].candidates[0].node_id, Some(later.reference()));
+    assert_eq!(plan.groups[1].candidates[0].evidence, ["fact"]);
+    let kept_outer = &plan.groups[1].candidates[1];
+    assert_eq!(kept_outer.node_id, Some(outer.reference()));
+    assert_eq!(
+        kept_outer.evidence.last().unwrap(),
+        "Contains 200 other recognised candidates, counted once here."
+    );
+    assert!(plan.partial, "unexamined nesting must not look fully deduped");
+    assert!(plan.truncated, "the engine's cut is still reported");
+
+    // The retained leaf is readable and nested: only the spent budget kept it above.
+    let mut fresh = hand_plan(vec![vec![
+        candidate(Some(later), "beyond-budget"),
+        candidate(Some(outer), "outer"),
+    ]]);
+    crate::reclaim::nested::dedupe(&conn, &mut fresh, &nodes).unwrap();
+    assert_eq!(fresh.groups[0].candidates.len(), 1);
+    assert_eq!(fresh.groups[0].candidates[0].node_id, Some(outer.reference()));
+    assert!(!fresh.partial);
+}
+
+#[test]
+fn reclaim_nested_depth_boundary_requires_the_root_within_511_edges() {
+    for (rows, complete) in [(512, true), (513, false)] {
+        let conn = ancestry_chain(rows);
+        let outer = NodeKey::Dir(1);
+        let descendant = NodeKey::Dir(rows);
+        let mut plan = hand_plan(vec![vec![
+            candidate(Some(descendant), "descendant"),
+            candidate(Some(outer), "outer"),
+        ]]);
+        crate::reclaim::nested::dedupe(&conn, &mut plan, &nodes_of(&[outer, descendant])).unwrap();
+        let kept: Vec<_> = plan.groups[0]
+            .candidates
+            .iter()
+            .map(|c| c.node_id.clone().unwrap())
+            .collect();
+        assert_eq!(
+            kept,
+            if complete {
+                vec![outer.reference()]
+            } else {
+                vec![descendant.reference(), outer.reference()]
+            },
+            "{rows} directory rows"
+        );
+        assert_eq!(plan.partial, !complete, "{rows} directory rows");
+        let evidence = &plan.groups[0].candidates.last().unwrap().evidence;
+        if complete {
+            assert_eq!(
+                evidence.last().unwrap(),
+                "Contains 1 other recognised candidate, counted once here."
+            );
+        } else {
+            assert_eq!(evidence, &["fact"]);
+        }
+    }
+}
+
 #[cfg(windows)]
 fn observe_job(svc: &Service) -> String {
     let (job, _) = ok(
