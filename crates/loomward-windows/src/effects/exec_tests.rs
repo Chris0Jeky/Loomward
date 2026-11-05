@@ -2304,6 +2304,88 @@ fn explicit_destination_aces_prevent_normal_commit() {
 }
 
 #[test]
+fn staging_root_acl_refusal_is_named_and_survives_restart() {
+    destination_acl_refusal_before_publish("");
+}
+
+#[test]
+fn nested_directory_acl_refusal_is_named_and_survives_restart() {
+    destination_acl_refusal_before_publish("sub");
+}
+
+fn destination_acl_refusal_before_publish(target: &'static str) {
+    let Some(mut lab) = Lab::new() else { return };
+    fs::create_dir_all(lab.src().join("top/sub")).unwrap();
+    fs::write(lab.src().join("top/sub/f"), b"payload").unwrap();
+    let before = source_snapshot(&lab.src());
+    let op = lab.start(&["top"]);
+    let plan = lab.plan(op);
+    let expected_item = if target.is_empty() {
+        None
+    } else {
+        Some(
+            plan.manifest
+                .items
+                .iter()
+                .position(|item| item.name == target)
+                .expect("nested directory is a manifest item") as u32,
+        )
+    };
+    let published = lab.dest().join(&plan.manifest.destination.folder_name);
+    let destination = lab.dest();
+    let injected = Arc::new(AtomicBool::new(false));
+    let observed = Arc::clone(&injected);
+    let control = Control::new(false).with_hook(move |point, _| {
+        // Content has been verified; directory metadata has not. This exercises the actual
+        // inherited-ACL guard, not the later post-publish tree comparison.
+        if matches!(point, Point::Verified(_)) && !injected.swap(true, Ordering::SeqCst) {
+            let staging = fs::read_dir(&destination)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .find(|path| {
+                    path.file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .starts_with("~lw-staging-")
+                })
+                .expect("identity-journaled staging exists");
+            let result = std::process::Command::new("icacls")
+                .arg(staging.join(target))
+                .args(["/grant", "*S-1-1-0:(R)"])
+                .output()
+                .unwrap();
+            assert!(result.status.success(), "{result:?}");
+        }
+        Flow::Continue
+    });
+    let outcome = run(&lab.store, op, &control).unwrap();
+    assert!(observed.load(Ordering::SeqCst));
+    assert_eq!(outcome.state, OpState::NeedsAttention);
+    assert_eq!(
+        outcome
+            .refusal
+            .map(|(code, item)| (serde_json::to_value(code).unwrap(), item)),
+        Some((
+            serde_json::json!("destination_acl_not_inherited"),
+            expected_item
+        )),
+        "target={target}: {outcome:?}"
+    );
+    assert!(!published.exists());
+    let staging = staging_dirs(&lab);
+    assert_eq!(staging.len(), 1);
+    assert_eq!(
+        fs::read(lab.dest().join(&staging[0]).join("sub/f")).unwrap(),
+        b"payload"
+    );
+    assert_eq!(source_snapshot(&lab.src()), before);
+    lab.reopen();
+    let restored = status(&lab.store, op).unwrap();
+    assert_eq!(restored.state, OpState::NeedsAttention);
+    assert_eq!(restored.refusal, outcome.refusal);
+}
+
+#[test]
 fn explicit_destination_aces_prevent_recovery_commit() {
     destination_aces_prevent_commit(true);
 }

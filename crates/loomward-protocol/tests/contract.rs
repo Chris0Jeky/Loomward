@@ -40,6 +40,21 @@ fn contracts() -> PathBuf {
 }
 
 #[test]
+fn destination_acl_refusal_survives_the_status_wire_contract() {
+    let mut schema = Schema::load();
+    let mut value = read(&contracts().join("examples/commands/copy.status.result.json"));
+    value["state"] = json!("needs_attention");
+    for node_id in [Value::Null, json!("nd_1")] {
+        value["refusal"] = json!({
+            "code": "destination_acl_not_inherited",
+            "node_id": node_id
+        });
+        assert!(schema.errors("CopyStatus", &value).is_empty());
+        assert_eq!(roundtrip("CopyStatus", &value).unwrap().unwrap(), value);
+    }
+}
+
+#[test]
 fn sampled_system_cpu_count_is_required_but_nullable() {
     let mut schema = Schema::load();
     let mut value = read(&contracts().join("examples/commands/telemetry.snapshot.result.json"))

@@ -113,6 +113,25 @@ describe('copy UI lifecycle (scripted transport only; no file effects)', () => {
     }
   });
 
+  it('explains a destination ACL refusal without offering resume or claiming no writes', async () => {
+    const f = selected(), { client, call } = scripted();
+    await f.review(client); await f.approve(client);
+    call.mockResolvedValueOnce({ result: {
+      ...status('needs_attention'),
+      refusal: { code: 'destination_acl_not_inherited', node_id: null },
+    } } as never);
+    await f.start(client);
+    expect(f.status?.state).toBe('needs_attention');
+    expect(f.canApprove).toBe(false);
+    expect(f.canStart).toBe(false);
+    expect(f.canCancel).toBe(true);
+    const explanation = refusalReason(f.status!.refusal!.code);
+    expect(explanation).toMatch(/inherited/i);
+    expect(explanation).toMatch(/staging.*kept/i);
+    expect(explanation).toMatch(/new preview/i);
+    expect(explanation).not.toMatch(/nothing was written/i);
+  });
+
   it('stops offering cancellation during publish and never calls cancel then', async () => {
     const f = selected(), { client, call } = scripted();
     await f.review(client); await f.approve(client);
