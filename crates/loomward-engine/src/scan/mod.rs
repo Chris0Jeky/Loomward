@@ -344,7 +344,9 @@ impl Engine {
         other_cancels.extend(job_cancel);
         let check_cancel = || {
             if a_cancel.load(Ordering::Acquire)
-                || other_cancels.iter().any(|flag| flag.load(Ordering::Acquire))
+                || other_cancels
+                    .iter()
+                    .any(|flag| flag.load(Ordering::Acquire))
             {
                 Err(EngineError::PermissionDenied {
                     message: "cancelled".into(),
@@ -393,12 +395,7 @@ impl Engine {
         #[cfg(test)]
         tree_gate_tests::point(tree_gate_tests::TreePoint::AfterCoverageListing);
         let b_sizes = sizes(&listed, false);
-        let mut a_tree = read(
-            "source",
-            a,
-            &|_, size| b_sizes.contains(&size),
-            &no_streams,
-        )?;
+        let mut a_tree = read("source", a, &|_, size| b_sizes.contains(&size), &no_streams)?;
         #[cfg(test)]
         tree_gate_tests::point(tree_gate_tests::TreePoint::AfterCoverageSourceHashing);
         let a_sizes = sizes(&a_tree, true);
