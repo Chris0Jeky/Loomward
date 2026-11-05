@@ -1903,6 +1903,109 @@ fn windows_leftover_stores_shield_their_subtrees() {
 }
 
 #[test]
+fn windows_leftover_chain_rules_hide_descendants_of_unusable_intermediates() {
+    let lab = Lab::new();
+    let windows = lab.directory(lab.dir, "Windows", 0);
+    let local = lab.path(lab.dir, &["Users", "synthetic-user", "AppData", "Local"]);
+    let nvidia = lab.directory(local, "NVIDIA", 0);
+    let dx = lab.directory(nvidia, "DXCache", 11);
+    let gl = lab.directory(nvidia, "GLCache", 12);
+    let network = lab.path(windows, &["ServiceProfiles", "NetworkService"]);
+    let delivery_parent = lab.path(
+        network,
+        &[
+            "AppData",
+            "Local",
+            "Microsoft",
+            "Windows",
+            "DeliveryOptimization",
+        ],
+    );
+    let cache = lab.directory(delivery_parent, "Cache", 13);
+    let distribution = lab.directory(windows, "SoftwareDistribution", 14);
+    let delivery = lab.directory(distribution, "DeliveryOptimization", 15);
+    let wer = lab.path(lab.dir, &["ProgramData", "Microsoft", "Windows", "WER"]);
+    let archive = lab.directory(wer, "ReportArchive", 16);
+    let queue = lab.directory(wer, "ReportQueue", 17);
+    let unrelated = lab.store(lab.dir, "npm", 18);
+    let all = sorted(
+        [
+            dx,
+            gl,
+            cache,
+            distribution,
+            delivery,
+            archive,
+            queue,
+            unrelated,
+        ]
+        .into_iter()
+        .map(NodeKey::Dir)
+        .collect(),
+    );
+    assert_eq!(lab.nodes(), all);
+
+    // Local and NetworkService exercise the recursive walk; SoftwareDistribution and WER
+    // exercise the root query's listed intermediate joins. The leaves themselves stay current.
+    for (label, ancestor, descendants) in [
+        ("Local", local, vec![dx, gl]),
+        ("NetworkService", network, vec![cache]),
+        ("SoftwareDistribution", distribution, vec![delivery]),
+        ("WER", wer, vec![archive, queue]),
+    ] {
+        for (set, hides_ancestor) in [
+            (format!("flags={EXCLUDED_FLAGS}"), true),
+            ("listing_state='excluded'".into(), true),
+            ("listing_outcome='stale'".into(), false),
+        ] {
+            lab.db
+                .execute(&format!("UPDATE dir SET {set} WHERE id=?1"), [ancestor])
+                .unwrap();
+            let report = lab.report(200);
+            let nodes = sorted(report.candidates.iter().map(|c| c.node).collect());
+            let expected: Vec<_> = all
+                .iter()
+                .copied()
+                .filter(|node| {
+                    !descendants.iter().any(|id| *node == NodeKey::Dir(*id))
+                        && !(hides_ancestor && *node == NodeKey::Dir(ancestor))
+                })
+                .collect();
+            assert_eq!(nodes, expected, "{label}: {set}");
+            let control = report
+                .candidates
+                .iter()
+                .find(|c| c.node == NodeKey::Dir(unrelated))
+                .expect("an unusable chain must not hide an unrelated current store");
+            assert_eq!(control.coverage, "complete");
+            assert_eq!(
+                (control.logical_bytes, control.allocated_bytes),
+                (Some(18), Some(18))
+            );
+            // Staleness invalidates knowledge of the directory's contents, not its own name.
+            // Its informational candidate stays unknown while DeliveryOptimization is hidden.
+            if ancestor == distribution && !hides_ancestor {
+                let system = report
+                    .candidates
+                    .iter()
+                    .find(|c| c.node == NodeKey::Dir(distribution))
+                    .unwrap();
+                assert_eq!(system.class, "system_managed");
+                assert_eq!((system.logical_bytes, system.allocated_bytes), (None, None));
+                assert!(report.partial);
+            }
+            lab.db
+                .execute(
+                    "UPDATE dir SET flags=0,listing_state='complete',listing_outcome=NULL WHERE id=?1",
+                    [ancestor],
+                )
+                .unwrap();
+            assert_eq!(lab.nodes(), all, "restored {label}: {set}");
+        }
+    }
+}
+
+#[test]
 fn windows_leftover_rules_respect_the_shared_safety_filters() {
     let lab = Lab::new();
     let windows = lab.directory(lab.dir, "Windows", 0);

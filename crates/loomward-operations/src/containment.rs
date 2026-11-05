@@ -102,6 +102,17 @@ enum Recheck {
 
 fn recheck_file(path: &Path, node: &Node, again: &Tree) -> Recheck {
     use crate::tree::MetadataClass::{ChangeTime, CreationTime, LastWriteTime};
+    if let Some(reason) = path
+        .ancestors()
+        .skip(1)
+        .find_map(|ancestor| match again.nodes.get(ancestor) {
+            Some(Ok(_)) => None,
+            Some(Err(reason)) => Some(*reason),
+            None => Some(RECHECK_INCOMPLETE),
+        })
+    {
+        return Recheck::Unverified(reason);
+    }
     match again.nodes.get(path) {
         Some(Err(reason)) => Recheck::Unverified(reason),
         Some(Ok(now)) => {
@@ -141,18 +152,27 @@ fn recheck_file(path: &Path, node: &Node, again: &Tree) -> Recheck {
 /// change time moved, loses its content with `changed_during_compare`, replacing whatever it held:
 /// the report must not judge bytes that may be gone. A file the recheck could not reach (budget,
 /// cancel, a cut-short listing) is not known to have changed: a hashed file becomes unknown with
-/// the recheck's own reason, and any content verdict already `Err` is kept. Files that appeared
-/// since are outside "A as read" and are not reported.
+/// the recheck's own reason. `not_requested` also becomes unknown because it can otherwise imply
+/// absence; existing unknown content reasons are kept. Matching directory errors reach A even
+/// when there are no files underneath, while earlier directory uncertainty keeps its own cause.
+/// Files that appeared since are outside "A as read" and are not reported.
 pub fn recheck_source(a: &mut Tree, again: &Tree) {
-    for (path, node) in &mut a.nodes {
-        let Ok(node) = node else { continue };
+    for (path, observation) in &mut a.nodes {
+        let Ok(node) = observation else { continue };
         if node.kind != Kind::File {
+            if node.children.is_ok() {
+                if let Some(Err(reason)) = again.nodes.get(path) {
+                    *observation = Err(*reason);
+                }
+            }
             continue;
         }
         match recheck_file(path, node, again) {
             Recheck::Same => {}
             Recheck::Changed => node.content = Err(CHANGED_DURING_COMPARE),
-            Recheck::Unverified(reason) if node.content.is_ok() => node.content = Err(reason),
+            Recheck::Unverified(reason) if matches!(node.content, Ok(_) | Err("not_requested")) => {
+                node.content = Err(reason)
+            }
             Recheck::Unverified(_) => {}
         }
     }

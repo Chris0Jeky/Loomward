@@ -5,7 +5,7 @@ use crate::duplicate_reader::directory_recheck_fixture as recheck_fixture;
 use crate::enumerate::{DirSource, Flow, ListOutcome, NativeSource};
 use loomward_operations::tree::{Kind, MetadataClass as Class, Node, Observation, Tree};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     mem::ManuallyDrop,
     os::windows::{ffi::OsStringExt, fs::OpenOptionsExt, io::FromRawHandle},
 };
@@ -362,7 +362,16 @@ fn read_tree_from(
         Path::new(""),
         &mut meter,
     );
-    for (path, dir, before) in directories {
+    let mut directories = directories.into_iter();
+    while let Some((path, dir, before)) = directories.next() {
+        if let Err(reason) = meter.check() {
+            invalidate_unchecked_directories(
+                &mut tree,
+                std::iter::once(path).chain(directories.map(|(path, _, _)| path)),
+                reason.as_str(),
+            );
+            break;
+        }
         let after = observe(dir.file());
         #[cfg(any(test, feature = "fixtures"))]
         recheck_point(
@@ -371,11 +380,51 @@ fn read_tree_from(
             &path,
             &mut meter,
         );
+        if let Err(reason) = meter.check() {
+            invalidate_unchecked_directories(
+                &mut tree,
+                std::iter::once(path).chain(directories.map(|(path, _, _)| path)),
+                reason.as_str(),
+            );
+            break;
+        }
         if !after.is_ok_and(|after| signature(&before, &after)) {
             tree.nodes.insert(path, Err("changed_during_read"));
         }
     }
     Ok((tree, meter.read))
+}
+
+/// Unvalidated directories cannot vouch for their previously observed descendants. Retain file
+/// sizes and existing uncertainty, but discard content and deferred absence evidence in one node
+/// pass with ancestor-set lookups. This needs no further metadata queries.
+fn invalidate_unchecked_directories(
+    tree: &mut Tree,
+    paths: impl Iterator<Item = PathBuf>,
+    reason: &'static str,
+) {
+    let unchecked: BTreeSet<_> = paths.collect();
+    let root_unchecked = unchecked.contains(Path::new(""));
+    for path in &unchecked {
+        let directory_reason = tree
+            .nodes
+            .get(path)
+            .and_then(|node| match node {
+                Ok(node) => node.children.err(),
+                Err(reason) => Some(*reason),
+            })
+            .unwrap_or(reason);
+        tree.nodes.insert(path.clone(), Err(directory_reason));
+    }
+    for (path, node) in &mut tree.nodes {
+        let Ok(node) = node else { continue };
+        if node.kind == Kind::File
+            && matches!(node.content, Ok(_) | Err("not_requested"))
+            && (root_unchecked || path.ancestors().skip(1).any(|p| unchecked.contains(p)))
+        {
+            node.content = Err(reason);
+        }
+    }
 }
 
 /// The 64-bit index of an open handle, the query a 64-bit listing is compared with.
