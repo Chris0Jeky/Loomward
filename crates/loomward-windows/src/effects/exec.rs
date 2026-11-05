@@ -1736,8 +1736,7 @@ impl Runner<'_, '_> {
                 Ok(false) => Unconfirmed::Changed,
                 Err(e)
                     if !renamed
-                        && e
-                            .get_ref()
+                        && e.get_ref()
                             .is_some_and(|r| r.is::<DestinationAclNotInherited>()) =>
                 {
                     Unconfirmed::Unverifiable(Some(Refusal::DestinationAclNotInherited))
