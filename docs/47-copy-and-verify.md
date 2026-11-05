@@ -477,8 +477,8 @@ can only be abandoned. Resume is a lane-sized change. It would need the followin
   `insufficient_space`, `staging_in_use`, `publish_in_use`). `needs_attention`, only for causes the owner can resolve
   outside Loomward (`staging_name_taken`, a taken final name). An interrupted `copying`, `staged` or `publishing`
   after a restart. Never from `refused`, `cancelling` or a terminal state. Never after `source_changed`,
-  `verification_mismatch`, `changed_after_verification`, `destination_changed` or `grant_revoked`: Abandon and a
-  new preview are the only exit.
+  `verification_mismatch`, `changed_after_verification`, `destination_changed`, `destination_acl_not_inherited`
+  or `grant_revoked`: Abandon and a new preview are the only exit.
 - **Journal.** A new `resumed` record, appended under the current epoch, binding a fresh single-use native
   confirmation to the unchanged manifest digest. The state machine already allows `blocked -> copying` and
   `needs_attention -> copying`. Resuming a publish-time block passes through `copying` and `staged` with every item
@@ -544,16 +544,24 @@ Checked at preview (P), at start or resume (S) and per item at open (I). "Resuma
 | `destination_inside_source` | a copied folder is the destination parent or one of its ancestors (compared by identity) | P, S | no |
 | `destination_cloud_synced`, `destination_unsupported_volume`, `destination_protected` | sync root; removable, network or non-NTFS/ReFS volume (fixed USB NTFS/ReFS without removable media is allowed only for synthetic lab sessions); state directory or the scan fences of #284/#286 | P, S | no |
 | `destination_changed` | the destination parent no longer opens as its pinned identity, or its ancestry no longer holds its grant's root (renamed, replaced, removed or moved after approval) | S | no |
+| `destination_acl_not_inherited` | a staged entry or the staging root has protected permissions or explicit ACL entries instead of inherited-only permissions when its metadata is verified before publication | I | no: `needs_attention`, staging kept, no publication; Abandon and a new preview |
 | `case_collision` | two names fold equal under the destination's rules (CompareStringOrdinal, ignore case) | P | no |
 | `name_unrepresentable` | reserved device name, trailing dot or space, component over 255 units [W13] | P | no |
 | `path_too_long` | final path over 32,767 units [W13] (over 259 is a warning: many apps and the shell cannot open it [W13]) | P | no |
 | `publish_in_use` | rename actually refused (access, sharing or lock violation) by an incompatible handle under staging (H2; not every stream hold blocks it) | publish | yes, after 10 tries over 30 s |
-| `verification_mismatch` | hash or metadata differs twice | I | no: `needs_attention` |
+| `verification_mismatch` | file verification fails after any permitted retry, or directory metadata differs | I | no: `needs_attention` |
 | `grant_revoked` | a source grant revoked, or emergency stop (section 5) | P, S, then every cooperative boundary | no: cancels the run |
 | `elevated`, `approval_expired`, `digest_mismatch`, `manifest_limit` | authority checks; limit 200,000 entries per operation (assumption) | P, S | no |
 
 A `refused` status with a null `refusal` means the engine could not classify the cause (for
 example an unrecognised OS error creating the staging folder). It is reported as unknown, never as a guessed code.
+
+The destination ACL guard preserves a typed refusal through directory verification, the final pre-publication
+check and journal replay, including copies without source-root metadata. Changes found after publication retain
+their `changed_after_verification` meaning. The guard does not modify permissions or infer a code from an error
+message. The app describes staging as it was at refusal, since later abandonment may remove it.
+An older engine that cannot deserialize this refusal rejects journal replay before effects; its service may
+report a journal error. It cannot resume or publish from that journal.
 
 **Preflight versus runtime refusals.** A refusal raised at P or S comes before the operation's first effect, so no
 write handle exists. That covers every code with a P or S entry, including the first check of codes that are checked
@@ -564,7 +572,8 @@ those the rule is **no further effects**:
 - for every code except the resumable ones, nothing more happens for the operation either;
 - sources are never touched;
 - staging already written is kept, except for identity-bound removal on cancel, abandon or the single permitted redo;
-- `verification_mismatch` allows exactly one redo of that item, then stops;
+- `verification_mismatch` allows at most one redo of a file when identity-bound staging removal is enabled;
+  otherwise the first mismatch stops. Directory and staging-root metadata mismatches stop without a redo;
 - `publish_in_use` allows only the bounded rename retries;
 - the receipt names the item, the code and the last journaled state.
 

@@ -1043,6 +1043,18 @@ fn disk_full_maps_to_resumable_insufficient_space() {
 }
 
 #[test]
+fn destination_acl_refusal_is_typed_not_inferred_from_error_text() {
+    let typed = io::Error::new(io::ErrorKind::InvalidInput, DestinationAclNotInherited);
+    assert!(matches!(
+        io_refusal(&typed),
+        Stop::Refused(Refusal::DestinationAclNotInherited, None)
+    ));
+    assert!(!Refusal::DestinationAclNotInherited.resumable());
+    let unknown = io::Error::new(io::ErrorKind::InvalidInput, typed.to_string());
+    assert!(matches!(io_refusal(&unknown), Stop::Attention(None)));
+}
+
+#[test]
 fn destination_case_sensitivity_is_the_folder_flag() {
     let Some(lab) = Lab::new() else { return };
     let key = identity::observe(&lab.dest()).unwrap().object;

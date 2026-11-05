@@ -673,6 +673,12 @@ fn io_refusal(e: &io::Error) -> Stop {
         Some(32 | 33) => Stop::Refused(Refusal::StagingInUse, None),
         Some(39 | 112) => Stop::Refused(Refusal::InsufficientSpace, None),
         _ if e.get_ref().is_some_and(|r| r.is::<Stopped>()) => Stop::Cancel,
+        _ if e
+            .get_ref()
+            .is_some_and(|r| r.is::<DestinationAclNotInherited>()) =>
+        {
+            Stop::Refused(Refusal::DestinationAclNotInherited, None)
+        }
         _ => Stop::Attention(None),
     }
 }
@@ -1554,8 +1560,12 @@ impl Runner<'_, '_> {
             })?;
             drop(step);
             hit("staging metadata set");
-            if !matches!(ok, Ok(true)) {
-                let stop = Stop::Attention(None);
+            let stop = match ok {
+                Ok(true) => None,
+                Ok(false) => Some(Stop::Refused(Refusal::VerificationMismatch, None)),
+                Err(error) => Some(io_refusal(&error)),
+            };
+            if let Some(stop) = stop {
                 self.refuse(&stop)?;
                 return Err(stop);
             }
@@ -1724,6 +1734,14 @@ impl Runner<'_, '_> {
             let cause = match &read {
                 Ok(true) => return Ok(()),
                 Ok(false) => Unconfirmed::Changed,
+                Err(e)
+                    if !renamed
+                        && e
+                            .get_ref()
+                            .is_some_and(|r| r.is::<DestinationAclNotInherited>()) =>
+                {
+                    Unconfirmed::Unverifiable(Some(Refusal::DestinationAclNotInherited))
+                }
                 Err(e) => unverifiable(e),
             };
             let stop = match cause {

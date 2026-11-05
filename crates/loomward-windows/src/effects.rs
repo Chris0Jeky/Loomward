@@ -51,6 +51,16 @@ impl std::fmt::Display for UnsupportedAttribute {
 }
 impl std::error::Error for UnsupportedAttribute {}
 
+/// Destination permissions differ from the inherited-only policy. Preserve the cause through I/O.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DestinationAclNotInherited;
+impl std::fmt::Display for DestinationAclNotInherited {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("destination ACL is not inherited")
+    }
+}
+impl std::error::Error for DestinationAclNotInherited {}
+
 fn supported_attributes(attributes: u32) -> io::Result<()> {
     let attributes = attributes
         & (FILE_ATTRIBUTE_SYSTEM
@@ -72,7 +82,10 @@ fn inherited_acl(file: &File) -> io::Result<()> {
     let (explicit, _, protected) =
         duplicate_reader::security_metadata(file).map_err(io::Error::other)?;
     if protected || !explicit.is_empty() {
-        return Err(refused("destination ACL is not inherited"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            DestinationAclNotInherited,
+        ));
     }
     Ok(())
 }
