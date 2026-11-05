@@ -600,15 +600,13 @@ mod native {
             .unwrap()
             .pop()
             .unwrap();
-        let hook = directory_recheck_fixture::install(
-            Path::new(&b_root.display_path),
-            move |point, _| {
+        let hook =
+            directory_recheck_fixture::install(Path::new(&b_root.display_path), move |point, _| {
                 if point == Point::QueryReturned && counted.fetch_add(1, Ordering::AcqRel) == 0 {
                     weak.upgrade().unwrap().hooks.gate(held.0, held.1);
                 }
                 Action::Continue
-            },
-        );
+            });
         let workers = || {
             p.svc
                 .inner
@@ -623,9 +621,12 @@ mod native {
                 .get()
         };
         let started = start(&p, json!({}));
-        p.svc.inner.hooks.until("identity query return held", |hooks| {
-            hooks.arrived.lock().unwrap().contains(&held)
-        });
+        p.svc
+            .inner
+            .hooks
+            .until("identity query return held", |hooks| {
+                hooks.arrived.lock().unwrap().contains(&held)
+            });
         let during_read = workers();
         let (requested, _) = ok(
             "jobs.cancel",

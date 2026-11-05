@@ -365,7 +365,12 @@ fn read_tree_from(
     for (path, dir, before) in directories {
         let after = observe(dir.file());
         #[cfg(any(test, feature = "fixtures"))]
-        recheck_point(root, recheck_fixture::Point::QueryReturned, &path, &mut meter);
+        recheck_point(
+            root,
+            recheck_fixture::Point::QueryReturned,
+            &path,
+            &mut meter,
+        );
         if !after.is_ok_and(|after| signature(&before, &after)) {
             tree.nodes.insert(path, Err("changed_during_read"));
         }

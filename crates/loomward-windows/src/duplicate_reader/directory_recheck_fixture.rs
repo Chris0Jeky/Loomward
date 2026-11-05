@@ -31,7 +31,10 @@ pub struct Guard {
 }
 
 /// Install one hook for this exact synthetic root; other parallel fixture roots are unaffected.
-pub fn install(root: &Path, hook: impl Fn(Point, &Path) -> Action + Send + Sync + 'static) -> Guard {
+pub fn install(
+    root: &Path,
+    hook: impl Fn(Point, &Path) -> Action + Send + Sync + 'static,
+) -> Guard {
     let root = root.to_path_buf();
     let mut hooks = hooks().lock().unwrap();
     assert!(

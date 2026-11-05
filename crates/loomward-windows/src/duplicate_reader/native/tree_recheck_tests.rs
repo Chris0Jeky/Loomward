@@ -83,21 +83,31 @@ fn assert_unknown(stopped: &Tree, complete: &Tree, after_queries: usize, reason:
         let node = stopped.nodes[Path::new(path)].as_ref().unwrap();
         let rechecked_node = rechecked.nodes[Path::new(path)].as_ref().unwrap();
         assert_eq!(node.size, Ok(4), "observed size is retained: {path}");
-        assert_eq!(rechecked_node.size, Ok(4), "recheck retains observed size: {path}");
+        assert_eq!(
+            rechecked_node.size,
+            Ok(4),
+            "recheck retains observed size: {path}"
+        );
         if path == "root-file" && after_queries == 2 {
             assert!(node.content.is_ok());
             assert!(rechecked_node.content.is_ok());
             continue;
         }
         assert_eq!(node.content, Err(reason), "unvalidated ancestor: {path}");
-        assert_eq!(rechecked_node.content, Err(reason), "final A recheck: {path}");
+        assert_eq!(
+            rechecked_node.content,
+            Err(reason),
+            "final A recheck: {path}"
+        );
         for report in [&report, &final_report] {
             let item = report
                 .items
                 .iter()
                 .find(|item| item.path == Path::new(path))
                 .unwrap();
-            assert!(matches!(item.coverage, Coverage::Unknown { reason: why, .. } if why == reason));
+            assert!(
+                matches!(item.coverage, Coverage::Unknown { reason: why, .. } if why == reason)
+            );
         }
     }
 }
