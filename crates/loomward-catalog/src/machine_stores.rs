@@ -167,7 +167,9 @@ fn query_candidates(
             NodeKey::File(id)
         };
         let row = query::get(conn, key)?;
-        report.candidates.push(candidate(row, &rule, sizes_uncertain)?);
+        report
+            .candidates
+            .push(candidate(row, &rule, sizes_uncertain)?);
     }
     Ok(report)
 }

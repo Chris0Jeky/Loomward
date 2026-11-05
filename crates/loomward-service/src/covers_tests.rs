@@ -213,7 +213,9 @@ mod native {
             // elevated marker. Name this particular unexecuted fixture as well.
             eprintln!(
                 "SKIPPED (elevated): {}: native identity unavailable",
-                std::thread::current().name().unwrap_or("coverage native test")
+                std::thread::current()
+                    .name()
+                    .unwrap_or("coverage native test")
             );
             return None;
         }
@@ -624,7 +626,10 @@ mod native {
             json!({"a_root_id":p.a,"b_root_id":p.b}),
         ));
         assert_eq!(busy.code, ErrorCode::Busy, "{busy:?}");
-        assert_eq!(busy.detail.as_ref().unwrap()["job_id"], json!(started.job_id));
+        assert_eq!(
+            busy.detail.as_ref().unwrap()["job_id"],
+            json!(started.job_id)
+        );
         hooks.open(held.0, held.1);
         assert_eq!(finished(&p.svc, &started.job_id).state, JobState::Cancelled);
         let until = Instant::now() + Duration::from_secs(20);

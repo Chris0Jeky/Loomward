@@ -359,7 +359,10 @@ fn coverage_conflicts_globally_until_the_cancelled_runner_returns() {
             .unwrap_err();
         let body = error.to_body();
         assert_eq!(body.code, ErrorCode::Busy);
-        assert_eq!(body.detail.unwrap()["job_id"], serde_json::json!(first.job_id));
+        assert_eq!(
+            body.detail.unwrap()["job_id"],
+            serde_json::json!(first.job_id)
+        );
         // Other job kinds on the same root retain their independent admission rules.
         let other = e
             .job_submit_runner(
@@ -412,7 +415,10 @@ fn coverage_reserves_one_worker_and_keeps_it_through_cancellation() {
         ErrorCode::Busy,
         "live coverage takes precedence over exhausted workers"
     );
-    assert_eq!(error.detail.unwrap()["job_id"], serde_json::json!(first.job_id));
+    assert_eq!(
+        error.detail.unwrap()["job_id"],
+        serde_json::json!(first.job_id)
+    );
     e.job_cancel(&first.job_id).unwrap();
     assert_eq!(
         scan_workers(&e),
