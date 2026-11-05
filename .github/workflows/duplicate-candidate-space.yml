@@ -1,0 +1,67 @@
+name: duplicate-candidate-space
+on:
+  pull_request:
+    paths:
+      - crates/loomward-catalog/src/duplicates.rs
+      - .github/workflows/duplicate-candidate-space.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: duplicate-candidate-space-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  measure:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install stable Rust
+        run: rustup toolchain install stable --profile minimal
+      # This catalogue fixture writes only synthetic SQLite rows in a temporary directory.
+      # It neither grants a native filesystem root nor runs the Windows effect/handle tests.
+      - name: Compare the exact ignored candidate-count benchmark
+        shell: pwsh
+        env:
+          CARGO_TERM_COLOR: never
+          MEASUREMENT_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $rawLog = Join-Path $env:RUNNER_TEMP 'duplicate-candidate-space-raw.txt'
+          $receipt = Join-Path $env:RUNNER_TEMP 'duplicate-candidate-space-receipt.txt'
+          $measurementExit = 1
+          @(
+            "checked_out_sha=$env:GITHUB_SHA head_sha=$env:MEASUREMENT_HEAD_SHA run=$env:GITHUB_RUN_ID attempt=$env:GITHUB_RUN_ATTEMPT"
+            "runner=$env:RUNNER_OS arch=$env:RUNNER_ARCH image=$env:ImageOS version=$env:ImageVersion"
+            "processor=$env:PROCESSOR_IDENTIFIER logical_processors=$env:NUMBER_OF_PROCESSORS"
+            'Synthetic SQLite; timings describe this hosted runner, not cold disk or user-machine latency.'
+          ) | Tee-Object -FilePath $rawLog
+          try {
+            rustc +stable --version --verbose 2>&1 | Tee-Object -FilePath $rawLog -Append
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot identify the compiler.' }
+            cargo +stable test --release --locked -p loomward-catalog --lib duplicates::tests::measure_the_candidate_space_count_at_130k -- --exact --ignored --nocapture --test-threads=1 2>&1 | Tee-Object -FilePath $rawLog -Append
+            $measurementExit = $LASTEXITCODE
+            "cargo_exit_code=$measurementExit" | Add-Content -LiteralPath $rawLog
+            if ($measurementExit -eq 0 -and -not (Select-String -LiteralPath $rawLog -Pattern '^test result: ok\. 1 passed; 0 failed; 0 ignored;' -Quiet)) {
+              'ERROR: the exact ignored benchmark did not report one passing test.' | Add-Content -LiteralPath $rawLog
+              $measurementExit = 1
+            }
+          } finally {
+            # Retain only a bounded text tail; the full output remains in the Actions job log.
+            'Receipt tail: at most 1000 lines, each capped at 1024 characters.' | Set-Content -LiteralPath $receipt -Encoding utf8
+            Get-Content -LiteralPath $rawLog -Tail 1000 | ForEach-Object {
+              $_.Substring(0, [Math]::Min($_.Length, 1024))
+            } | Add-Content -LiteralPath $receipt -Encoding utf8
+          }
+          exit $measurementExit
+      - name: Retain candidate-count measurement receipt
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: duplicate-candidate-space-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/duplicate-candidate-space-receipt.txt
+          if-no-files-found: error
+          retention-days: 14
