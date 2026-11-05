@@ -744,6 +744,49 @@ mod tests {
     }
 
     #[test]
+    fn source_recheck_keeps_empty_directory_identity_uncertainty() {
+        let read = tree(&[("a", dir()), ("a/nested", dir())]);
+        let b = tree(&[]);
+        assert!(containment(&read, &b).items.is_empty());
+        for ancestor in ["", "a", "a/nested"] {
+            for reason in ["cancelled", "time_budget"] {
+                let mut again = read.clone();
+                again.nodes.insert(ancestor.into(), Err(reason));
+                let mut a = read.clone();
+                recheck_source(&mut a, &again);
+                assert_eq!(a.nodes[Path::new(ancestor)].as_ref().unwrap_err(), &reason);
+                let report = containment(&a, &b);
+                let item = report
+                    .items
+                    .iter()
+                    .find(|item| item.path == Path::new(ancestor))
+                    .unwrap();
+                assert_eq!(
+                    item.coverage,
+                    Coverage::Unknown {
+                        side: Side::Source,
+                        reason,
+                    }
+                );
+            }
+        }
+        // Earlier unknown observations keep their own cause when the final recheck times out.
+        let mut partial = dir().unwrap();
+        partial.children = Err("entry_budget");
+        let mut a = tree(&[("unread", Err("sharing_violation")), ("partial", Ok(partial))]);
+        let again = tree(&[("unread", Err("time_budget")), ("partial", Err("time_budget"))]);
+        recheck_source(&mut a, &again);
+        assert_eq!(
+            a.nodes[Path::new("unread")].as_ref().unwrap_err(),
+            &"sharing_violation"
+        );
+        assert_eq!(
+            a.nodes[Path::new("partial")].as_ref().unwrap().children,
+            Err("entry_budget")
+        );
+    }
+
+    #[test]
     fn report_items_serialize_flat() {
         let item = Item {
             path: "a".into(),
