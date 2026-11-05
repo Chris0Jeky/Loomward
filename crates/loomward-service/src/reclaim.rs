@@ -206,16 +206,17 @@ impl Inner {
                 }
                 Err(e) => return Err(catalog_error(e)),
             };
-            let mut machine = match reader.machine_stores(root.root, DETECTOR_CAP) {
-                Ok(found) => found,
-                Err(loomward_catalog::Error::ResourceBudget) => MachineStores {
-                    rules_version: reclaim::RULES_VERSION,
-                    partial: true,
-                    budget_hit: true,
-                    ..Default::default()
-                },
-                Err(e) => return Err(catalog_error(e)),
-            };
+            let mut machine =
+                match reader.machine_stores_with_root_staleness(root.root, DETECTOR_CAP, stale) {
+                    Ok(found) => found,
+                    Err(loomward_catalog::Error::ResourceBudget) => MachineStores {
+                        rules_version: reclaim::RULES_VERSION,
+                        partial: true,
+                        budget_hit: true,
+                        ..Default::default()
+                    },
+                    Err(e) => return Err(catalog_error(e)),
+                };
             developer.partial |= coverage != "complete";
             machine.partial |= coverage != "complete";
             if stale {
@@ -441,7 +442,8 @@ impl Inner {
                 .candidates
                 .iter()
                 .map(|c| (c.node, c.class, c.logical_bytes, c.allocated_bytes));
-            // Same order and de-duplication as the plan, so a node is observed as the plan shows it.
+            // Observe each raw detector node once. The displayed plan additionally hides nested
+            // candidates, so this read job's candidate total can exceed the number of listed rows.
             for (node, class, logical, allocated) in developer.chain(machine) {
                 if !seen.insert(node) {
                     continue;

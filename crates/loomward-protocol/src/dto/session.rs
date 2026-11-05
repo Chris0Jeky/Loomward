@@ -49,6 +49,13 @@ pub struct SessionInfoFeatures {
     pub diagnostics_save: bool,
     /// The engine honours the federated `search.query` fields (docs/46 section 4, F1).
     pub federated_search: bool,
+    /// Absent on older engines; owner-local direct human collection members only.
+    #[serde(
+        default,
+        deserialize_with = "crate::types::optional_present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub collection_search: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

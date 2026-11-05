@@ -324,16 +324,7 @@ fn changes_new_since_is_owner_only_closed_and_keeps_unknowns_null() {
         (
             "ChangesNewSince",
             &result,
-            &[
-                "generation",
-                "baseline",
-                "latest",
-                "new_files",
-                "new_dirs",
-                "logical_bytes",
-                "allocated_bytes",
-                "allocation_unknown_files",
-            ][..],
+            &["generation", "latest", "allocated_bytes"][..],
         ),
         ("NewSinceRun", &result["baseline"], &["finished_at"][..]),
         (

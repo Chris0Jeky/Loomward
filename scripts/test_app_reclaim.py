@@ -6,10 +6,96 @@ import re
 import subprocess
 import sys
 import tempfile
+from copy import deepcopy
 
 from playwright.sync_api import expect
+from test_app_views import FakeEngine, TOKEN
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+class SelectionPlanEngine(FakeEngine):
+    """Synthetic current-plan changes over the production HTTP transport."""
+
+    def __init__(self):
+        super().__init__()
+        self.keep_nested = True
+        self.refuse = False
+        self.plan_requests = []
+
+    def result(self, req):
+        command = req['command']
+        fixtures = ROOT / 'contracts/v3/examples/commands'
+        if command == 'volumes.list':
+            return json.loads((fixtures / 'volumes.list.result.json').read_text())
+        if command == 'reclaim.plan':
+            self.plan_requests.append(deepcopy(req['payload']))
+            if self.refuse:
+                return ('resource_budget', 'Synthetic current plan unavailable')
+            answer = json.loads((fixtures / 'reclaim.plan.result.json').read_text())
+            answer['volume']['volume_id'] = req['payload']['volume_id']
+            candidate = deepcopy(answer['groups'][0]['candidates'][0])
+            for group in answer['groups']:
+                group['candidates'] = []
+            visible = dict(candidate, node_id='nd_shown', name='Visible store')
+            nested = dict(candidate, node_id='nd_nested', name='Nested cache')
+            answer['groups'][0]['candidates'] = [visible, nested] if self.keep_nested else [visible]
+            if req['payload'].get('selection'):
+                answer['selection'] = {
+                    'members': req['payload']['selection'], 'status': 'recorded',
+                    'observed_at': '2026-10-29T00:00:00Z',
+                    'reclaimable_bytes': '999' if len(req['payload']['selection']) > 1 else '12',
+                    'reason': None,
+                }
+            return answer
+        return super().result(req)
+
+
+def run_reclaim_visible_selection(browser):
+    for width in (1440, 390):
+        engine = SelectionPlanEngine()
+        engine.start()
+        context = browser.new_context(viewport={'width': width, 'height': 900})
+        page = context.new_page()
+        try:
+            page.goto(f'{engine.base}/?transport=http#token={TOKEN}')
+            expect(page.get_by_role('heading', name='Today', level=1)).to_be_visible()
+            page.evaluate("location.hash = '#/reclaim'")
+            expect(page.get_by_role('heading', name='Reclaim', level=1)).to_be_visible()
+            expect(page.get_by_role('checkbox')).to_have_count(2)
+            for choice in page.get_by_role('checkbox').all():
+                choice.focus()
+                page.keyboard.press('Space')
+            page.get_by_label('Space target (bytes)', exact=True).fill('1')
+            expect(page.get_by_text('2 of 12 selected.', exact=False)).to_be_visible()
+            engine.keep_nested = False
+            page.get_by_role('button', name='Look again', exact=True).click()
+            expect(page.get_by_role('checkbox')).to_have_count(1)
+            expect(page.get_by_role('checkbox')).to_be_checked()
+            expect(page.get_by_label('Selection changes', exact=True)).to_have_text(
+                '1 selected candidate is no longer listed and was removed from the selection.')
+            expect(page.get_by_text('1 of 12 selected.', exact=False)).to_be_visible()
+            expect(page.get_by_label('Selection estimate', exact=True)).to_contain_text('Union estimate: unknown.')
+            assert engine.plan_requests[-1]['selection'] == ['nd_shown', 'nd_nested']
+            page.get_by_role('button', name='Look again', exact=True).click()
+            expect(page.get_by_label('Selection estimate', exact=True)).to_contain_text('12 bytes')
+            assert engine.plan_requests[-1]['selection'] == ['nd_shown']
+            engine.refuse = True
+            page.get_by_role('button', name='Look again', exact=True).click()
+            expect(page.locator('main').get_by_role('alert')).to_contain_text('Synthetic current plan unavailable')
+            expect(page.get_by_role('button', name='Observe selection', exact=True)).to_be_disabled()
+            expect(page.get_by_text('1 of 12 selected.', exact=False)).to_be_visible()
+            engine.refuse = False
+            page.get_by_role('button', name='Look again', exact=True).click()
+            expect(page.get_by_role('checkbox')).to_be_checked()
+            expect(page.get_by_role('button', name='Observe selection', exact=True)).to_be_enabled()
+            page.get_by_role('button', name='Clear selection', exact=True).click()
+            expect(page.get_by_text('0 of 12 selected.', exact=False)).to_be_visible()
+            assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+        finally:
+            context.close()
+            engine.stop()
+    print('PASS Reclaim selection: hidden choices removed, old union discarded, failed reads guarded, keyboard and narrow layout')
 
 
 def live_reclaim(browser, exe, dist, check, live_call):

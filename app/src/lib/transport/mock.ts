@@ -37,7 +37,7 @@ const EPOCH = 'e_mock_epoch';
 /** Which revision scopes (semantics.md section 5) a command's response is read at: catalogue, state.db, both, or neither. */
 const REVS: Partial<Record<string, 'c' | 's' | 'cs'>> = {
   'reclaim.plan': 'cs',
-  'collections.list': 'cs', 'collections.create': 'cs', 'collections.members': 'cs', 'collections.update_members': 'cs',
+  'collections.search': 'cs', 'collections.list': 'cs', 'collections.create': 'cs', 'collections.members': 'cs', 'collections.update_members': 'cs',
   'node.inspect': 'cs', 'threads.meaning': 'cs',
   'health.get': 'c', 'tree.children': 'c', 'search.query': 'c', 'stats.breakdown': 'c',
   'roots.list': 'cs', 'tree.slice': 'cs', 'placement.candidates': 'cs', 'placement.simulate': 'cs',
@@ -358,7 +358,7 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
         observation: { metadata_scan: true, duplicate_content_read: false, process_observation: true, gpu_observation: false, disk_io_observation: false, teacher_disclosure: false },
         effects: { file_move: false, file_delete: false, file_rename: false, file_write: false, content_read: false, process_kill: false, process_suspend: false, process_priority: false, memory_trim: false, uninstall: false, elevation: false },
       },
-      features: { grant_picker: false, disclosure_dialog: false, teacher_available: false, telemetry_available: true, gpu_available: true, diagnostics_save: false, federated_search: false },
+      features: { grant_picker: false, disclosure_dialog: false, teacher_available: false, telemetry_available: true, gpu_available: true, diagnostics_save: false, federated_search: false, collection_search: true },
       limits: { max_request_bytes: 65536, max_slice_nodes: 6000, max_page_items: 200 },
     }),
     'health.get': (): Health => ({
@@ -469,7 +469,8 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
   Object.assign(handlers, createClientMock(now, fail, () => handlers['roots.list']!({}) as RootList));
 
   const collections = createCollectionMock(now, failWith, rawNodeFor, entryRow,
-    (n) => topOf(n).some((a) => views.revokedRoots.has(rootId(a))), views.stateRev);
+    (n) => topOf(n).some((a) => views.revokedRoots.has(rootId(a))), views.stateRev, views.catalogRev,
+    (n) => ({ root_id: rootId(topOf(n)[0]!), path: { text: topOf(n).slice(1).map(a => a.name).join('\\'), truncated: false } }));
   const retained = new Map<string, { binding: string; at: number; response: Promise<ResponseEnvelope> }>();
   const respond = async (req: RequestEnvelope): Promise<ResponseEnvelope> => {
     const base = { protocol: 'loomward/3' as const, request_id: req.request_id };

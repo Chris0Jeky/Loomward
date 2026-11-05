@@ -13,6 +13,8 @@ import { formFrom, settingsFrom } from '../../src/views/alerts/model';
 import { formatBytes, parseBytes } from '../../src/lib/format/bytes';
 import { formatCount } from '../../src/lib/format/time';
 import { isSound } from '../../src/views/tiers/plan';
+import { collectionCoverage, searchableCollections, type CollectionCoverage } from '../../src/views/explorer/collection-search';
+import type { Collection } from '../../src/lib/contracts.gen';
 import { planFind } from '../../src/lib/search/find';
 import { reserveBytes, reserveDraft } from '../../src/views/tiers/reserve';
 import rootList from '../../../contracts/v3/examples/commands/roots.list.result.json';
@@ -877,7 +879,7 @@ function explorer(call: ReturnType<typeof vi.fn>) {
     route: { search: '' },
     session: { client: { call }, epoch: 0, connectionEpoch: 0, state: 'connected', handle: (e: Error) => e.message },
     untrack, tick: async () => {}, document: { activeElement: null }, HTMLElement: class {},
-    LoomwardError, fallbackStep, onRefetchError, resolveTrail, planFind,
+    LoomwardError, fallbackStep, onRefetchError, resolveTrail, planFind, collectionCoverage, searchableCollections,
     PAGE: 50, gen: 0, startsRequest: 0, inspection: 0, abort: null, inspectAbort: null, pageGen: null,
     starts: [] as { id: string; name: string }[], trail: [] as { id: string; name: string }[],
     get here() { return this.trail.at(-1); },
@@ -885,8 +887,9 @@ function explorer(call: ReturnType<typeof vi.fn>) {
     searching: false, query: '', extension: '', minBytes: '', kind: 'any', basis: 'logical', sort: 'size_desc',
     next: null as string | null, total: null, error: '', busy: false,
     notice: '', gone: null as { lost: string; now: string | null } | null,
+    collectionChoices: [] as Collection[], submittedCollection: null as Collection | null, collectionProgress: null as CollectionCoverage | null,
     rootChoices: [] as Root[], rootChoice: '' as string | null, submittedRoot: null as Root | null,
-    rootsRequest: 0, rootsAbort: null, rootsLoading: false, rootProblem: '', scopeBlocked: false,
+    rootsRequest: 0, rootsAbort: null, rootsLoading: false, rootProblem: '', collectionProblem: '', scopeBlocked: false,
     scopedSearchOpen: false, mountedConnection: 0, reconnectScopePending: false,
     selectionConnection: 0, selected: [] as { node_id: string; name: string }[],
   };
@@ -1552,4 +1555,65 @@ describe('Today loads', () => {
       vi.useRealTimers();
     }
   });
+});
+
+describe('Explorer submitted collection scope', () => {
+  const collection = (id: string): Collection => ({ collection_id: id, name: 'Reading', kind: 'human', member_count: 100, logical_bytes: null, created_at: '2026-10-01T00:00:00Z' });
+  const result = (id = 'co_1', cursor: string | null = 'next') => ({ collection_id: id, hits: searchExample.hits.slice(0, 1), total_members: 100, examined_members: 50, unavailable_members: 2, partial: true, budget_hit: false, next_cursor: cursor });
+
+  it('freezes direct collection and predicates through an empty continuation page', async () => {
+    const call = vi.fn(async (_command: string, _payload: Record<string, unknown>) => ({ result: { ...result(), hits: [] } }));
+    const { state, code } = explorer(call);
+    state.collectionChoices = [collection('co_1'), collection('co_2')];
+    state.rootChoice = 'co_1'; state.query = 'report';
+    expect(code.commit()).toBe(true);
+    await code.show();
+    state.rootChoice = 'co_2'; state.query = 'changed';
+    await code.show(true);
+    expect(call.mock.calls.map(c => c[0])).toEqual(['collections.search', 'collections.search']);
+    expect(call.mock.calls[1]![1]).toMatchObject({ collection_id: 'co_1', text: 'report', cursor: 'next' });
+    expect(state.rows).toEqual([]);
+    expect(state.next).toBe('next');
+    expect(state.collectionProgress).toEqual({ total: 100, examined: 100, unavailable: 4, partial: true });
+  });
+
+  it('drops a cancelled collection reply after a different scope wins', async () => {
+    const late = deferred<{ result: ReturnType<typeof result> }>();
+    const call = vi.fn((command: string, payload: Record<string, unknown>) => payload.collection_id === 'co_1' ? late.promise : Promise.resolve({ result: result('co_2', null) }));
+    const { state, code } = explorer(call);
+    state.collectionChoices = [collection('co_1'), collection('co_2')];
+    state.rootChoice = 'co_1'; state.query = 'report'; expect(code.commit()).toBe(true);
+    const old = code.show();
+    state.rootChoice = 'co_2'; expect(code.commit()).toBe(true); await code.show();
+    late.resolve({ result: { ...result(), hits: [] } }); await old;
+    expect(state.submittedCollection?.collection_id).toBe('co_2');
+    expect(state.rows).toHaveLength(1);
+    expect(state.next).toBeNull();
+  });
+
+  it('keeps unknown scope blocked and permits an explicitly chosen empty direct collection query', () => {
+    const call = vi.fn(); const { state, code } = explorer(call);
+    state.rootChoice = 'co_missing'; state.query = 'report';
+    expect(code.commit()).toBe(false); expect(call).not.toHaveBeenCalled();
+    state.collectionChoices = [collection('co_1')]; state.rootChoice = 'co_1'; state.query = '';
+    expect(code.commit()).toBe(true);
+    expect(state.submittedCollection?.collection_id).toBe('co_1');
+  });
+});
+
+it('Explorer keeps granted-root search usable when the optional collection list fails', async () => {
+  const call = vi.fn(async (command: string) => {
+    if (command === 'collections.list') throw new Error('Collections unavailable');
+    if (command === 'roots.list') return { result: rootList };
+    if (command === 'tree.slice') return { result: { nodes: [] } };
+    return { result: searchExample };
+  });
+  const { state, code } = explorer(call);
+  Object.assign(state.session, { info: { features: { collection_search: true } } });
+  state.query = 'report'; expect(code.commit()).toBe(true);
+  await code.reload();
+  expect(state.rootProblem).toBe('');
+  expect(state.collectionProblem).toBe('Collections unavailable');
+  expect(state.rows).toEqual(searchExample.hits.map(h => h.row));
+  expect(state.submittedCollection).toBeNull();
 });

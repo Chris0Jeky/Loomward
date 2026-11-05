@@ -321,27 +321,47 @@ impl Engine {
     /// only for sizes B has; B is then hashed only for sizes among A's hashed files, so a B file
     /// of a size no A file has is never read. A is then listed once more and any file that moved
     /// since its hashing is marked unread (`recheck_source`). Returns (A, B, bytes read).
+    /// Every pass observes the optional job flag and both root revocation flags. Cancellation
+    /// returns only after the reader has drained pending I/O; metadata calls remain driver-bound.
     pub fn observe_coverage(
         &self,
         a: &GrantedRoot,
         b: &GrantedRoot,
         budget: loomward_windows::duplicate_reader::Budget,
         max_entries: usize,
+        job_cancel: Option<Arc<AtomicBool>>,
     ) -> EngineResult<(
         loomward_operations::tree::Tree,
         loomward_operations::tree::Tree,
         u64,
     )> {
         use loomward_operations::tree::{Kind, Tree};
-        use loomward_windows::duplicate_reader::{read_tree_wanting, Budget};
+        use loomward_windows::duplicate_reader::{read_tree_wanting_with_cancels, Budget};
         use std::{collections::BTreeSet, path::Path, time::Instant};
         let a_cancel = self.duplicate_read_admission(a)?;
         let b_cancel = self.duplicate_read_admission(b)?;
+        let mut other_cancels = vec![b_cancel.clone()];
+        other_cancels.extend(job_cancel);
+        let check_cancel = || {
+            if a_cancel.load(Ordering::Acquire)
+                || other_cancels
+                    .iter()
+                    .any(|flag| flag.load(Ordering::Acquire))
+            {
+                Err(EngineError::PermissionDenied {
+                    message: "cancelled".into(),
+                })
+            } else {
+                Ok(())
+            }
+        };
+        check_cancel()?;
         let started = Instant::now();
         let mut remaining_bytes = budget.bytes;
         type Want<'a> = &'a dyn Fn(&Path, u64) -> bool;
-        let mut read = |side: &str, root: &GrantedRoot, cancel, want: Want, want_streams: Want| {
-            let (tree, bytes) = read_tree_wanting(
+        let mut read = |side: &str, root: &GrantedRoot, want: Want, want_streams: Want| {
+            check_cancel()?;
+            let (tree, bytes) = read_tree_wanting_with_cancels(
                 root.path(),
                 root.expected.as_ref().unwrap(),
                 Budget {
@@ -349,13 +369,15 @@ impl Engine {
                     time: budget.time.saturating_sub(started.elapsed()),
                 },
                 max_entries,
-                cancel,
+                a_cancel.clone(),
+                &other_cancels,
                 want,
                 want_streams,
             )
             .map_err(|reason| EngineError::PermissionDenied {
                 message: tree_refusal(reason, side, root.path()),
             })?;
+            check_cancel()?;
             remaining_bytes = remaining_bytes.saturating_sub(bytes);
             Ok::<_, EngineError>(tree)
         };
@@ -369,28 +391,17 @@ impl Engine {
         };
         // `covers` compares the default data stream only, so it never reads a named stream.
         let no_streams = |_: &Path, _| false;
-        let listed = read(
-            "destination",
-            b,
-            b_cancel.clone(),
-            &|_, _| false,
-            &no_streams,
-        )?;
+        let listed = read("destination", b, &|_, _| false, &no_streams)?;
         #[cfg(test)]
         tree_gate_tests::point(tree_gate_tests::TreePoint::AfterCoverageListing);
         let b_sizes = sizes(&listed, false);
-        let mut a_tree = read(
-            "source",
-            a,
-            a_cancel.clone(),
-            &|_, size| b_sizes.contains(&size),
-            &no_streams,
-        )?;
+        let mut a_tree = read("source", a, &|_, size| b_sizes.contains(&size), &no_streams)?;
+        #[cfg(test)]
+        tree_gate_tests::point(tree_gate_tests::TreePoint::AfterCoverageSourceHashing);
         let a_sizes = sizes(&a_tree, true);
         let b_tree = read(
             "destination",
             b,
-            b_cancel.clone(),
             &|_, size| a_sizes.contains(&size),
             &no_streams,
         )?;
@@ -398,10 +409,14 @@ impl Engine {
         tree_gate_tests::point(tree_gate_tests::TreePoint::AfterCoverageHashing);
         // A was last read before B's hashing: list it again (no content, no read budget) so a file
         // that changed since loses its verdict (#1037).
-        let a_again = read("source", a, a_cancel.clone(), &|_, _| false, &no_streams)?;
+        let a_again = read("source", a, &|_, _| false, &no_streams)?;
+        #[cfg(test)]
+        tree_gate_tests::point(tree_gate_tests::TreePoint::AfterCoverageRecheck);
+        check_cancel()?;
         loomward_operations::containment::recheck_source(&mut a_tree, &a_again);
         let bytes = budget.bytes - remaining_bytes;
-        self.finish_tree_reads(a, b, a_cancel, b_cancel)?;
+        self.finish_tree_reads(a, b, a_cancel.clone(), b_cancel)?;
+        check_cancel()?;
         Ok((a_tree, b_tree, bytes))
     }
 

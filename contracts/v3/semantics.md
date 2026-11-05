@@ -1255,20 +1255,26 @@ the previous scan"). The result names that `baseline` and the `latest` completed
 `finished_at`, `mode` and whether it was `complete`: a clean full traversal), so a client words the date from
 the run, not from the clock. With fewer than two completed full-root runs and no `baseline_run`, `outcome` is
 `no_baseline`: the baseline and every figure are null and the lists are empty. That is "no earlier scan", never
-zero, and it is what a re-granted root reports until it has been scanned twice.
+zero, and it is what a re-granted root reports until it has been scanned twice. An explicitly requested
+failed or cancelled run also returns `no_baseline`, with `partial: true` and `baseline_not_completed`;
+its unfinished observations cannot establish a comparison. The outcome/baseline/figure/list coupling is
+enforced by both schema and DTO: `ok` requires a baseline and non-null counts and logical bytes, while
+allocation can remain unknown.
 
 For `ok`, `new_files` and `new_dirs` count the rows born after the baseline in the root's visible tree
 (entries the scan saw but did not follow, and directories pending removal, are never counted, as for
 `stats.breakdown`); `logical_bytes` sums the new files and `allocated_bytes` is null as soon as one new
 file's allocation is unknown (`allocation_unknown_files` says how many), never a partial sum. `largest_files`
 are the `limit` largest new files by logical size (row order breaking ties); `largest_folders` are new
-folders whose parent is not new, largest first, each with its whole recorded size now and its coverage.
+folders whose parent is not new (or is the granted root), largest first, each with its whole recorded size
+now and its coverage. The granted root itself is not a new folder. Excluded flags and excluded or
+absent-pending directory states prune that directory and all descendants from both totals and rankings.
 `node_id`s open in Explorer like any other. All figures come from one bounded pass over the root's files; a
 root too large for the work budget is `resource_budget` and an expired deadline `deadline_exceeded`, never a
 short count.
 
-`partial` is true, with `partial_reasons`, when the figures are not a clean answer: `baseline_not_completed`
-(the baseline run was cancelled or failed), `baseline_incomplete` (it finished without being a clean full
+`partial` is true, with `partial_reasons`, when an explicitly requested baseline is unusable
+(`baseline_not_completed`) or the figures are not a clean answer: `baseline_incomplete` (it finished without being a clean full
 traversal, or has no recorded counter), `coverage_partial`, `scan_running` (rows a running scan has listed so
 far are included), `catalogue_repairing` (folder sizes are not current) and `changes_since_scan` (the watcher
 saw changes after the scan, so the figures describe an earlier state). Anything an earlier run could not
@@ -1316,8 +1322,10 @@ app side of `loomward-native covers`). It starts a `coverage` job (`JobResult`, 
 `jobs.get`, `jobs.cancel`; `job.root_id` is A's) and is owner-only on Tauri and HTTP: client principals are
 refused, and neither command is in any client allowlist. It is a mutation of the job registry, so
 `request_id` is idempotent for ten minutes like `duplicates.inspect`. One coverage read runs at a time:
-a start while a job is live is `busy` with `detail.job_id`, and a start while a cancelled job's read is
-still finishing in the background is `busy` with reason `read_still_finishing` (retryable, no `job_id`).
+a start while a job is live, including cancellation draining, is `busy` with `detail.job_id`.
+The short admission race before a job is published returns retryable `busy` with reason
+`coverage_starting` and no `job_id`. Each job reserves one shared scan-enumeration worker until
+its runner returns, including cancellation, refusal and panic cleanup.
 
 Both roots must be distinct, active, granted roots of the session's own dataset class, admitted exactly as
 a duplicates inspection admits one (q-10: registered lab roots in a synthetic session, owner-granted
@@ -1331,10 +1339,14 @@ stream is read. `budget_bytes` (default 1 GiB) and `budget_secs` (default 60, at
 all passes; at most 200,000 entries per folder are listed. The job reports no phase progress: it is
 `queued`, `running`, then terminal.
 
-`jobs.cancel` ends the job `cancelled` at once and it keeps no result. The read already in progress cannot
-be interrupted (the engine call takes no per-job cancel flag), so it keeps reading until it finishes or
-spends its time budget and its output is discarded; the slot stays busy until it ends. A refused read (an unsupported volume, a revoked grant, an identity change) fails the
-job with the reason only, never a path.
+`jobs.cancel` acknowledges as `cancel_requested` and signals the actual reader. Every pass observes
+the job flag and both root revocation flags. Pending content I/O is cancelled and drained; synchronous
+metadata calls and cancellation draining still depend on the filesystem driver returning. The job
+stays live and holds its worker and coverage slot until the read returns, then becomes `cancelled`.
+It exposes no result, and no detached reader remains behind a terminal cancelled job. A refused read
+(an unsupported volume, a revoked grant, an identity change) fails the job with the reason only,
+never a path. The completed-job check also prevents a result stored just before cancellation from
+being retrieved.
 
 `coverage.result { job_id }` answers the finished job's `CoverageReport`, kept for ten minutes (newest
 eight). A job that is not `completed` (running, cancelled, failed) or has expired answers `not_found`. Revoking, forgetting or
@@ -1389,3 +1401,34 @@ never manage `ask:` (use `ask.grant`/`ask.revoke`) or the teacher's `grants.*` c
 Before creating a grant that includes `path`, the Agent access panel displays: "The agent's host
 may send what it reads to its model provider. Loomward cannot see or control that."
 The connection command is `claude mcp add loomward -- "%LOCALAPPDATA%\Loomward\loomward-mcp.exe" --client <name>`.
+
+### Direct collection-member search (#1124)
+
+`features.collection_search: true` advertises the additive owner-local `collections.search` read.
+Absence (older engines) or false means unavailable. It is not available to client principals or MCP,
+and leaves `search.query` federated-field refusal and ranked-index gates unchanged. The required
+collection ID selects one existing human collection; malformed, missing, unavailable or stale scope
+never means all roots. Label views refuse this operation.
+
+The request carries the v1 kind, one extension, logical size and modified-time predicates. Name text
+is a case-insensitive literal substring, including one-character text and punctuation; no wildcard,
+regex, ranking or descendant expansion. Empty text permits filter-only search or all direct members.
+Dates and size bounds are inclusive; unknown values cannot satisfy a bound; reversed ranges refuse.
+Direct durable membership and current root grants are resolved before result slots are counted.
+Unavailable members contribute no metadata or guessed matches. Directory entries do not include
+descendants and use already-recorded aggregate size and completeness.
+
+Each page examines at most 2,000 memberships and returns at most 100 hits. `total_members` counts
+unfiltered durable memberships; it is not a matching total. `examined_members` and
+`unavailable_members` count this page's examined references only. Clients may sum them across a
+cursor chain, resetting on a new search or stale cursor. An empty hit page can have `next_cursor`:
+continue it to inspect the remaining membership window. `budget_hit` means the examination bound
+was reached with more memberships remaining. `partial` reports unavailable, incomplete or stale
+observations; no-match does not establish absence in unavailable metadata.
+Deadline expiry refuses the page and stops work; no cursor is silently advanced on an error.
+
+Order is stable durable member ID. Opaque cursors bind operation, all filters, collection ID,
+service session, catalogue revision and state revision (including grants and memberships). Page
+limit may change. A concurrent publication or preference change during hydration discards the
+page. Collection search reads metadata only, never opens a member's contents, creates a grant,
+changes membership, activates a provider or changes catalogue schema.

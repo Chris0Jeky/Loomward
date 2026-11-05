@@ -31,6 +31,16 @@ impl Reader {
     /// Read bounded, name-only advice for an active granted root, without repairing it.
     /// Unknown sizes stay null; commands and relocation settings are display text only.
     pub fn machine_stores(&mut self, root: i64, cap: usize) -> Result<MachineStores> {
+        self.machine_stores_with_root_staleness(root, cap, false)
+    }
+
+    /// Watcher staleness must invalidate known-empty filtering before candidates are selected.
+    pub fn machine_stores_with_root_staleness(
+        &mut self,
+        root: i64,
+        cap: usize,
+        root_stale: bool,
+    ) -> Result<MachineStores> {
         if !(1..=200).contains(&cap) {
             return Err(Error::Invalid("machine stores cap"));
         }
@@ -41,7 +51,7 @@ impl Reader {
         // Reader::read can ask the writer to repair aggregates; this advice must not write.
         let result = (|| {
             let tx = self.conn.transaction()?;
-            let report = detect(&tx, root, cap, deadline)?;
+            let report = detect(&tx, root, cap, deadline, root_stale)?;
             tx.commit()?;
             Ok(report)
         })();
@@ -63,6 +73,7 @@ fn detect(
     root: i64,
     cap: usize,
     deadline: Option<Instant>,
+    root_stale: bool,
 ) -> Result<MachineStores> {
     let guard = query::WorkGuard::new(conn, 2_000_000, deadline)?;
     query::revisions(conn, Some(root))?;
@@ -72,22 +83,22 @@ fn detect(
         |r| r.get(0),
     )?;
     let observed = query::get(conn, NodeKey::Dir(root_dir))?;
-    let scanning = query::live(conn, root)?;
+    let sizes_uncertain = query::live(conn, root)? || root_stale;
     // Finish root advice before the walk can spend the remaining work budget.
     let mut report = query_candidates(
         conn,
         include_str!("machine-stores-root.sql"),
         root_dir,
         cap,
-        scanning,
+        sizes_uncertain,
     )?;
-    report.partial |= observed.coverage() != "complete" || !observed.valid || scanning;
+    report.partial |= observed.coverage() != "complete" || !observed.valid || sizes_uncertain;
     match query_candidates(
         conn,
         include_str!("machine-stores.sql"),
         root_dir,
         cap,
-        scanning,
+        sizes_uncertain,
     ) {
         Ok(walk) => {
             report.partial |= walk.partial;
@@ -121,7 +132,7 @@ fn query_candidates(
     sql: &str,
     root_dir: i64,
     cap: usize,
-    scanning: bool,
+    sizes_uncertain: bool,
 ) -> Result<MachineStores> {
     let mut report = MachineStores {
         rules_version: 5,
@@ -134,7 +145,7 @@ fn query_candidates(
                 root_dir,
                 EXCLUDED_FLAGS | 1 | (1 << 1) | (1 << 6) | (1 << 7) | (1 << 9),
                 cap as i64 + 1,
-                scanning
+                sizes_uncertain
             ],
             |r| {
                 Ok((
@@ -156,12 +167,14 @@ fn query_candidates(
             NodeKey::File(id)
         };
         let row = query::get(conn, key)?;
-        report.candidates.push(candidate(row, &rule, scanning)?);
+        report
+            .candidates
+            .push(candidate(row, &rule, sizes_uncertain)?);
     }
     Ok(report)
 }
 
-fn candidate(row: query::Raw, rule: &str, scanning: bool) -> Result<MachineStoreCandidate> {
+fn candidate(row: query::Raw, rule: &str, sizes_uncertain: bool) -> Result<MachineStoreCandidate> {
     let (class, provider, owner_step, relocation, reason, uncertainty) = match rule {
         "cargo-target" => ("shared_build_output", "cargo",
             "Use cargo clean --target-dir <dir> in the owning tool after reviewing the shared build output.", Some("CARGO_TARGET_DIR"),
@@ -188,9 +201,12 @@ fn candidate(row: query::Raw, rule: &str, scanning: bool) -> Result<MachineStore
         "cargo-cache" => ("package_cache", "cargo", "Owner judgement: review registry/cache or git/db before deleting by hand, as cargo cache tools are third-party.", Some("CARGO_HOME"),
             "Recorded .cargo child registry with cache, or git with db.",
             "Source availability, active builds and regeneration cost are unknown, and third-party cleanup tools are unverified. This is advice, never a disposability claim."),
-        "huggingface" => ("model_store", "huggingface", "Use the host's model manager or huggingface-cli delete-cache after owner review.", Some("HF_HOME / HF_HUB_CACHE"),
+        "huggingface" => ("model_store", "huggingface", "Inspect this detected folder with hf cache ls --cache-dir <dir>, replacing <dir> with its path, before any model-manager cleanup.", Some("HF_HOME / HF_HUB_CACHE"),
             "Recorded models-- or datasets-- child directory containing blobs and snapshots.",
             "External hard links, unique datasets, model availability, credentials and active users are unverified. This is advice, never a disposability claim."),
+        "huggingface-comfyui" => ("model_store", "huggingface", "Inspect this detected folder with hf cache ls --cache-dir <dir>, replacing <dir> with its path, before any model-manager cleanup.", Some("extra_model_paths.yaml (ComfyUI)"),
+            "Recorded ComfyUI models child with models-- or datasets-- cache structure, including blobs and snapshots.",
+            "Custom checkpoints and trained LoRAs may be unique and not re-downloadable; cache contents, external links and active workflows are unverified. This is advice, never a disposability claim."),
         "lmstudio" => ("model_store", "lmstudio", "Review models in LM Studio My Models before using its model manager.", Some("LM Studio models directory setting"),
             "Recorded models directory directly under .lmstudio.",
             "Model contents, unique local models, availability and active leases are unknown. This is advice, never a disposability claim."),
@@ -254,7 +270,7 @@ fn candidate(row: query::Raw, rule: &str, scanning: bool) -> Result<MachineStore
         _ => return Err(Error::Invalid("machine store rule")),
     };
     let coverage = row.coverage();
-    let known = coverage == "complete" && row.valid && !scanning;
+    let known = coverage == "complete" && row.valid && !sizes_uncertain;
     Ok(MachineStoreCandidate {
         node: row.key,
         name: row.name,

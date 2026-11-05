@@ -45,11 +45,12 @@ from test_app_a11y import run_a11y
 import test_app_views
 from test_app_reserve import run_live_reserve
 from test_app_views import run_views, wait_until
+from test_app_new_since import run_new_since
 from test_app_copy import run_copy
 from test_app_inventory import run_inventory
 from test_app_ask import live_ask_isolated, run_ask
 from test_app_clutter import live_clutter, run_clutter
-from test_app_reclaim import live_reclaim
+from test_app_reclaim import live_reclaim, run_reclaim_visible_selection
 from test_app_projects import live_projects
 from test_app_agent_access import run_agent_access
 
@@ -1477,6 +1478,8 @@ def main() -> None:
         # --- product views (lane L13): Explorer, Tiers, Companion, Grants & health ------------------
         run_collections(page, base)
         run_views(page, base, a.view_shots)
+        run_new_since(page.context.browser)
+        run_reclaim_visible_selection(page.context.browser)
         run_inventory(page, base, check, shots=a.view_shots)
         run_copy(page, base, a.view_shots)
         run_ask(page, base)

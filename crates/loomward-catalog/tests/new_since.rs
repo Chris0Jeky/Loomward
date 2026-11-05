@@ -311,18 +311,16 @@ fn excluded_entries_other_roots_and_hidden_directories_are_not_counted() {
 }
 
 #[test]
-fn an_incomplete_or_failed_baseline_makes_the_answer_partial() {
+fn an_incomplete_completed_baseline_makes_the_answer_partial() {
     let lab = Lab::new();
-    let failed = lab.run("full", "failed", None);
+    lab.run("full", "failed", None);
     let partial = lab.run("full", "completed", Some(false));
     let unknown = lab.run("full", "completed", None); // an older row without counters
     let clean = lab.run("full", "completed", Some(true));
-    let cancelled = lab.run("full", "cancelled", None);
+    lab.run("full", "cancelled", None);
     let newest = lab.run("full", "completed", Some(true));
     lab.file(lab.dir, "later", newest, 3, Some(3));
     for (baseline, reason) in [
-        (failed, "baseline_not_completed"),
-        (cancelled, "baseline_not_completed"),
         (partial, "baseline_incomplete"),
         (unknown, "baseline_incomplete"),
     ] {
@@ -486,4 +484,86 @@ fn a_budget_hit_or_an_expired_deadline_is_an_error_never_a_short_count() {
         late.new_since(lab.root, Some(first), 5),
         Err(Error::Cancelled)
     ));
+}
+
+#[test]
+fn failed_and_cancelled_explicit_baselines_are_unknown_even_with_new_rows() {
+    for state in ["failed", "cancelled"] {
+        let lab = Lab::new();
+        let failed = lab.run("full", state, None);
+        let next = lab.run("full", "completed", Some(true));
+        lab.file(lab.dir, "later", next, 99, Some(99));
+        let r = lab.since(Some(failed), 5).unwrap();
+        assert!(r.baseline.is_none() && r.totals.is_none());
+        assert!(r.largest_files.is_empty() && r.largest_folders.is_empty());
+        assert_eq!(r.partial_reasons, ["baseline_not_completed"]);
+        assert_eq!(r.latest.unwrap().run, next);
+    }
+}
+
+#[test]
+fn excluded_flags_prune_ancestry_and_the_root_is_not_a_new_folder() {
+    let lab = Lab::new();
+    let first = lab.run("full", "completed", Some(true));
+    let second = lab.run("full", "completed", Some(true));
+    lab.db
+        .execute(
+            "UPDATE dir SET born_run=?1 WHERE id=?2",
+            params![second, lab.dir],
+        )
+        .unwrap();
+    for flag in [1 << 3, 1 << 4, 1 << 5] {
+        let hidden = lab.directory_in(
+            lab.root,
+            lab.dir,
+            &format!("hidden{flag}"),
+            second,
+            999,
+            "complete",
+            flag,
+        );
+        let child = lab.directory(hidden, "child", second, 999);
+        lab.file(child, "hidden.bin", second, 999, Some(999));
+    }
+    let visible = lab.directory(lab.dir, "visible", second, 7);
+    lab.file(visible, "visible.bin", second, 7, Some(7));
+    let r = lab.since(Some(first), 5).unwrap();
+    let t = r.totals.unwrap();
+    assert_eq!((t.new_dirs, t.new_files, t.logical_bytes), (1, 1, 7));
+    assert_eq!(r.largest_folders.len(), 1);
+    assert_eq!(r.largest_folders[0].node, NodeKey::Dir(visible));
+    lab.db
+        .execute(
+            "UPDATE dir SET listing_state='absent_pending' WHERE id=?1",
+            [lab.dir],
+        )
+        .unwrap();
+    // An unavailable granted root cannot establish a known-empty comparison.
+    assert!(matches!(lab.since(Some(first), 5), Err(Error::NotFound)));
+}
+
+#[test]
+fn a_large_synthetic_tree_is_complete_within_the_existing_budget() {
+    let lab = Lab::new();
+    let first = lab.run("full", "completed", Some(true));
+    let second = lab.run("full", "completed", Some(true));
+    lab.db.execute_batch("BEGIN").unwrap();
+    for i in 0..5000 {
+        let parent = lab.directory(lab.dir, &format!("d{i}"), second, 10);
+        for j in 0..10 {
+            lab.file(parent, &format!("f{j}"), second, 1, Some(1));
+        }
+    }
+    lab.db.execute_batch("COMMIT").unwrap();
+    let started = std::time::Instant::now();
+    let result = lab.since(Some(first), 5).unwrap();
+    eprintln!(
+        "new_since: 50000 files / 5000 folders: {:?}",
+        started.elapsed()
+    );
+    let totals = result.totals.unwrap();
+    assert_eq!((totals.new_files, totals.new_dirs), (50_000, 5000));
+    assert_eq!(totals.logical_bytes, 50_000);
+    assert_eq!(result.largest_files.len(), 5);
+    assert_eq!(result.largest_folders.len(), 5);
 }

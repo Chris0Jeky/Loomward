@@ -22,6 +22,7 @@
   let members = $state<string[]>([]);
   let target = $state('');
   let selectionResult = $state<ReclaimSelection | null>(null);
+  let selectionNotice = $state('');
   let now = $state(Date.now());
   const observe = new ReclaimObserve();
   const lines = $derived(observeLines(observe));
@@ -31,11 +32,16 @@
     if (!c || !id) { generation++; report = null; loading = false; return; }
     const mine = ++generation;
     const requested = [...members];
-    loading = true; error = ''; report = null; selectionResult = null;
+    loading = true; error = ''; report = null; selectionResult = null; selectionNotice = '';
     try {
       const { result } = await c.call('reclaim.plan', { volume_id: id, limit: 50, ...(requested.length ? { selection: requested } : {}) });
       if (mine === generation) {
         report = result;
+        const listed = new Set(result.groups.flatMap((group) => group.candidates.map((candidate) => candidate.node_id)));
+        const before = members.length;
+        members = members.filter((member) => listed.has(member));
+        const removed = before - members.length;
+        if (removed) selectionNotice = `${removed} selected candidate${removed === 1 ? ' is' : 's are'} no longer listed and ${removed === 1 ? 'was' : 'were'} removed from the selection.`;
         if (requested.join() === members.join() && result.selection?.members.length === members.length
             && result.selection.members.every((m) => members.includes(m))) selectionResult = result.selection;
       }
@@ -47,6 +53,7 @@
   function toggle(id: string, checked: boolean): void {
     members = checked ? [...members, id] : members.filter((m) => m !== id);
     selectionResult = null;
+    selectionNotice = '';
   }
 
   async function observeSelection(): Promise<void> {
@@ -146,11 +153,12 @@
       <input id="reclaim-target" type="text" inputmode="numeric" maxlength="20" bind:value={target}
         aria-invalid={target !== '' && targetBytes(target) === null} aria-describedby="selection-comparison" />
     </div>
-    <button class="btn" disabled={!members.length || loading || observe.pending || observe.active || targetBytes(target) === null}
+    <button class="btn" disabled={!report || !members.length || loading || observe.pending || observe.active || targetBytes(target) === null}
       onclick={() => void observeSelection()}>Observe selection</button>
-    <button class="btn" disabled={!members.length} onclick={() => { members = []; selectionResult = null; }}>Clear selection</button>
+    <button class="btn" disabled={!members.length} onclick={() => { members = []; selectionResult = null; selectionNotice = ''; }}>Clear selection</button>
   </div>
   <p class="muted small">{members.length} of 12 selected. Moving items to the Recycle Bin or renaming them on the same volume does not immediately free this space.</p>
+  <p class="live muted" class:has={!!selectionNotice} role="status" aria-label="Selection changes">{selectionNotice}</p>
   <div role="status" aria-label="Selection estimate">
     {#if selectionResult?.status === 'recorded'}
       <p>Recorded union estimate: {selectionResult.reclaimable_bytes === null ? 'unknown' : `${selectionResult.reclaimable_bytes} bytes (${formatBytes(selectionResult.reclaimable_bytes)})`}.</p>

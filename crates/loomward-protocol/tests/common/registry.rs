@@ -306,6 +306,8 @@ pub fn roundtrip(def: &str, v: &Value) -> Option<Result<Value, String>> {
         "LearningDeferredResult" => rt::<LearningDeferredResult>(v),
         "LearningQueue" => rt::<LearningQueue>(v),
         "Collection" => rt::<Collection>(v),
+        "CollectionSearchRequest" => rt::<CollectionSearchRequest>(v),
+        "CollectionSearchPage" => rt::<CollectionSearchPage>(v),
         "CollectionMember" => rt::<CollectionMember>(v),
         "CollectionMemberPage" => rt::<CollectionMemberPage>(v),
         "CollectionList" => rt::<CollectionList>(v),

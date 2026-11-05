@@ -312,3 +312,170 @@ fn a_scan_whose_actual_strategy_is_both_publishes_final_progress() {
     assert_eq!(progress_jobs[0].progress, done.progress);
     assert_eq!(progress_jobs[1], done);
 }
+
+fn coverage_spec(root: &str) -> JobSpec {
+    JobSpec::new(JobKind::Coverage, Some(RootId::new(root).unwrap()))
+}
+
+fn held_coverage_runner() -> (
+    JobRunner,
+    std::sync::mpsc::Receiver<()>,
+    std::sync::mpsc::Sender<()>,
+) {
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let release_rx = Mutex::new(release_rx);
+    let runner: JobRunner = Arc::new(move |_, _| {
+        entered_tx.send(()).unwrap();
+        release_rx
+            .lock()
+            .unwrap()
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap();
+        Ok(CoverageState::Complete)
+    });
+    (runner, entered_rx, release_tx)
+}
+
+fn complete_runner() -> JobRunner {
+    Arc::new(|_, _| Ok(CoverageState::Complete))
+}
+
+#[test]
+fn coverage_conflicts_globally_until_the_cancelled_runner_returns() {
+    let e = engine();
+    let (runner, entered, release) = held_coverage_runner();
+    let first = e.job_submit_runner(coverage_spec("rt_a"), runner).unwrap();
+    entered.recv_timeout(Duration::from_secs(5)).unwrap();
+    for cancelled in [false, true] {
+        if cancelled {
+            assert_eq!(
+                e.job_cancel(&first.job_id).unwrap().state,
+                JobState::CancelRequested
+            );
+        }
+        let error = e
+            .job_submit_runner(coverage_spec("rt_b"), complete_runner())
+            .unwrap_err();
+        let body = error.to_body();
+        assert_eq!(body.code, ErrorCode::Busy);
+        assert_eq!(
+            body.detail.unwrap()["job_id"],
+            serde_json::json!(first.job_id)
+        );
+        // Other job kinds on the same root retain their independent admission rules.
+        let other = e
+            .job_submit_runner(
+                JobSpec::new(JobKind::Refit, first.root_id.clone()),
+                complete_runner(),
+            )
+            .unwrap();
+        assert_eq!(wait_terminal(&e, &other.job_id).state, JobState::Completed);
+    }
+    release.send(()).unwrap();
+    assert_eq!(wait_terminal(&e, &first.job_id).state, JobState::Cancelled);
+    for root in ["rt_b", "rt_c"] {
+        let next = e
+            .job_submit_runner(coverage_spec(root), complete_runner())
+            .unwrap();
+        assert_eq!(wait_terminal(&e, &next.job_id).state, JobState::Completed);
+    }
+}
+
+fn scan_workers(e: &Engine) -> i64 {
+    e.budgets_get()
+        .unwrap()
+        .pools
+        .iter()
+        .find(|pool| pool.pool == loomward_protocol::PoolName::ScanEnumerate)
+        .unwrap()
+        .current_workers
+        .get()
+}
+
+#[test]
+fn coverage_reserves_one_worker_and_keeps_it_through_cancellation() {
+    let e = engine();
+    let other_workers = e.budgets.reserve_scan_workers(Some(7)).unwrap();
+    let (runner, entered, release) = held_coverage_runner();
+    let first = e
+        .coverage_submit_runner(RootId::new("rt_a").unwrap(), runner)
+        .unwrap();
+    entered.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(scan_workers(&e), 8);
+    let error = e
+        .coverage_submit_runner(
+            RootId::new("rt_b").unwrap(),
+            Arc::new(|_, _| panic!("conflict must not run")),
+        )
+        .unwrap_err()
+        .to_body();
+    assert_eq!(
+        error.code,
+        ErrorCode::Busy,
+        "live coverage takes precedence over exhausted workers"
+    );
+    assert_eq!(
+        error.detail.unwrap()["job_id"],
+        serde_json::json!(first.job_id)
+    );
+    e.job_cancel(&first.job_id).unwrap();
+    assert_eq!(
+        scan_workers(&e),
+        8,
+        "cancel request cannot release active I/O"
+    );
+    assert!(matches!(
+        e.budgets.reserve_scan_workers(Some(1)),
+        Err(EngineError::ResourceBudget { .. })
+    ));
+    release.send(()).unwrap();
+    assert_eq!(wait_terminal(&e, &first.job_id).state, JobState::Cancelled);
+    assert_eq!(scan_workers(&e), 7);
+    drop(other_workers);
+    assert_eq!(scan_workers(&e), 0);
+}
+
+#[test]
+fn coverage_refuses_exhaustion_without_a_job_and_releases_on_success_failure_and_panic() {
+    let e = engine();
+    let all_workers = e.budgets.reserve_scan_workers(Some(8)).unwrap();
+    let list = || {
+        e.job_list(&serde_json::from_value(serde_json::json!({"limit":50})).unwrap())
+            .unwrap()
+    };
+    let before = list();
+    let error = e
+        .coverage_submit_runner(
+            RootId::new("rt_a").unwrap(),
+            Arc::new(|_, _| panic!("exhausted start must not run")),
+        )
+        .unwrap_err();
+    assert!(matches!(error, EngineError::ResourceBudget { .. }));
+    assert_eq!(list(), before);
+    assert_eq!(scan_workers(&e), 8);
+    drop(all_workers);
+    for outcome in 0..3 {
+        let job = e
+            .coverage_submit_runner(
+                RootId::new("rt_a").unwrap(),
+                Arc::new(move |_, _| match outcome {
+                    0 => Ok(CoverageState::Complete),
+                    1 => Err(EngineError::PermissionDenied {
+                        message: "synthetic refusal".into(),
+                    }),
+                    _ => panic!("synthetic coverage failure"),
+                }),
+            )
+            .unwrap();
+        assert_eq!(
+            wait_terminal(&e, &job.job_id).state,
+            if outcome == 0 {
+                JobState::Completed
+            } else {
+                JobState::Failed
+            }
+        );
+        assert_eq!(scan_workers(&e), 0, "permit leaked after outcome {outcome}");
+    }
+}

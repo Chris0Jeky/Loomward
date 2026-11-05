@@ -1,0 +1,38 @@
+{
+  "def": "ChangesNewSince",
+  "reason": "Outcome, usable baseline, figures and lists must agree.",
+  "value": {
+    "root_id": "rt_synthetic",
+    "generation": "7",
+    "outcome": "no_baseline",
+    "baseline": null,
+    "latest": {
+      "run": "7",
+      "mode": "full",
+      "finished_at": "2026-10-30T08:30:00.000Z",
+      "complete": true
+    },
+    "new_files": null,
+    "new_dirs": null,
+    "logical_bytes": null,
+    "allocated_bytes": null,
+    "allocation_unknown_files": null,
+    "largest_files": [],
+    "largest_folders": [
+      {
+        "node_id": "nd_synthetic_dir",
+        "name": "capture",
+        "path": {
+          "text": "Synthetic root / projects / capture",
+          "truncated": false
+        },
+        "logical_bytes": "9663676416",
+        "allocated_bytes": null,
+        "coverage": "complete"
+      }
+    ],
+    "partial": false,
+    "partial_reasons": [],
+    "caveats": []
+  }
+}

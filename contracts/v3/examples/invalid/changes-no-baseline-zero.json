@@ -1,0 +1,26 @@
+{
+  "def": "ChangesNewSince",
+  "reason": "Outcome, usable baseline, figures and lists must agree.",
+  "value": {
+    "root_id": "rt_synthetic",
+    "generation": "7",
+    "outcome": "no_baseline",
+    "baseline": null,
+    "latest": {
+      "run": "7",
+      "mode": "full",
+      "finished_at": "2026-10-30T08:30:00.000Z",
+      "complete": true
+    },
+    "new_files": 0,
+    "new_dirs": null,
+    "logical_bytes": null,
+    "allocated_bytes": null,
+    "allocation_unknown_files": null,
+    "largest_files": [],
+    "largest_folders": [],
+    "partial": false,
+    "partial_reasons": [],
+    "caveats": []
+  }
+}

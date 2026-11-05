@@ -721,7 +721,10 @@ fn hugging_face_caches_under_a_comfyui_models_folder_report_huggingface() {
         .into_iter()
         .find(|c| c.node == NodeKey::Dir(diffusers))
         .unwrap();
-    assert!(c.owner_step.contains("huggingface-cli delete-cache"));
+    assert!(c.owner_step.contains("hf cache ls --cache-dir"));
+    assert!(c.owner_step.contains("this detected folder"));
+    assert!(c.uncertainty.contains("unique"));
+    assert_eq!(c.relocation, Some("extra_model_paths.yaml (ComfyUI)"));
     assert_eq!(
         provider(&lab, checkpoints),
         Some(("comfyui", "model_store"))
@@ -735,6 +738,129 @@ fn hugging_face_caches_under_a_comfyui_models_folder_report_huggingface() {
         )
         .unwrap();
     assert_eq!(provider(&lab, diffusers), Some(("comfyui", "model_store")));
+}
+
+#[test]
+fn root_staleness_keeps_previously_empty_model_folders_with_unknown_sizes() {
+    let lab = Lab::new();
+    let (_, models) = comfy_install(&lab, lab.dir, "ComfyUI");
+    let empty = lab.directory(models, "loras", 0);
+    assert!(lab.report(200).candidates.is_empty());
+    let report = lab
+        .catalog
+        .reader()
+        .unwrap()
+        .machine_stores_with_root_staleness(lab.root, 200, true)
+        .unwrap();
+    assert!(report.partial);
+    assert_eq!(report.candidates.len(), 1);
+    assert_eq!(report.candidates[0].node, NodeKey::Dir(empty));
+    assert_eq!(report.candidates[0].logical_bytes, None);
+    assert_eq!(report.candidates[0].allocated_bytes, None);
+    assert!(lab.report(200).candidates.is_empty());
+}
+
+#[test]
+fn mixed_cache_signatures_keep_the_existing_provider_precedence() {
+    let lab = Lab::new();
+    let (_, models) = comfy_install(&lab, lab.dir, "ComfyUI");
+    let cache = lab.directory(models, "_cacache", 40);
+    lab.directory(cache, "content-v2", 0);
+    lab.directory(cache, "index-v5", 0);
+    let model = lab.directory(cache, "models--synthetic", 40);
+    lab.directory(model, "blobs", 0);
+    lab.directory(model, "snapshots", 0);
+    let report = lab.report(200);
+    let candidate = report
+        .candidates
+        .iter()
+        .find(|c| c.node == NodeKey::Dir(cache))
+        .unwrap();
+    assert_eq!(candidate.provider, "npm");
+}
+
+#[test]
+fn a_comfyui_cache_always_has_one_provider_when_its_hf_signature_is_unusable() {
+    for damaged in [
+        "none",
+        "model_stale",
+        "model_shielded",
+        "blobs_excluded",
+        "snapshots_flagged",
+    ] {
+        let lab = Lab::new();
+        let (_, models) = comfy_install(&lab, lab.dir, "ComfyUI");
+        let cache = lab.directory(models, "diffusers", 40);
+        let model = lab.directory(cache, "models--synthetic", 40);
+        let blobs = lab.directory(model, "blobs", 0);
+        let snapshots = lab.directory(model, "snapshots", 0);
+        match damaged {
+            "model_stale" => {
+                lab.db
+                    .execute(
+                        "UPDATE dir SET listing_outcome='stale' WHERE id=?1",
+                        [model],
+                    )
+                    .unwrap();
+            }
+            "model_shielded" => {
+                lab.db
+                    .execute(
+                        "UPDATE dir SET flags=?2 WHERE id=?1",
+                        params![model, EXCLUDED_FLAGS],
+                    )
+                    .unwrap();
+            }
+            "blobs_excluded" => {
+                lab.db
+                    .execute(
+                        "UPDATE dir SET listing_state='excluded' WHERE id=?1",
+                        [blobs],
+                    )
+                    .unwrap();
+            }
+            "snapshots_flagged" => {
+                lab.db
+                    .execute(
+                        "UPDATE dir SET flags=?2 WHERE id=?1",
+                        params![snapshots, EXCLUDED_FLAGS],
+                    )
+                    .unwrap();
+            }
+            _ => {}
+        }
+        let report = lab.report(200);
+        let matches: Vec<_> = report
+            .candidates
+            .iter()
+            .filter(|c| c.node == NodeKey::Dir(cache))
+            .collect();
+        assert_eq!(matches.len(), 1, "{damaged}");
+        assert_eq!(
+            matches[0].provider,
+            if damaged == "none" {
+                "huggingface"
+            } else {
+                "comfyui"
+            }
+        );
+    }
+}
+
+#[test]
+fn model_and_game_children_need_context_inside_the_grant() {
+    for root_name in ["models", "common"] {
+        let lab = Lab::new();
+        lab.db
+            .execute(
+                "UPDATE dir SET name=?2 WHERE id=?1",
+                params![lab.dir, root_name],
+            )
+            .unwrap();
+        let child = lab.directory(lab.dir, "synthetic-content", 7);
+        lab.file(child, "unique.bin", 7, Some(7));
+        assert!(lab.report(200).candidates.is_empty(), "{root_name}");
+    }
 }
 
 #[test]

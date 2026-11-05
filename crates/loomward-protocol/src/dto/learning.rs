@@ -291,3 +291,41 @@ pub struct CollectionMemberPage {
     pub total: Count,
     pub budget_hit: bool,
 }
+
+/// Owner-local deterministic filtering of direct durable collection members.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CollectionSearchRequest {
+    pub collection_id: CollectionId,
+    pub text: Text<256>,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub extension: Option<Text<32>>,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub min_bytes: Option<Bytes>,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub max_bytes: Option<Bytes>,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub modified_after: Option<Timestamp>,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub modified_before: Option<Timestamp>,
+    pub kind: SearchRequestKind,
+    pub limit: Int<1, 100>,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub cursor: Option<Cursor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CollectionSearchPage {
+    pub collection_id: CollectionId,
+    pub hits: BoundedVec<SearchHit, 0, 100>,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub next_cursor: Option<Cursor>,
+    pub budget_hit: bool,
+    pub total_members: Count,
+    /// Memberships examined on this page, including nonmatches and unavailable entries.
+    pub examined_members: Count,
+    /// Unavailable memberships encountered on this page; never a matching count.
+    pub unavailable_members: Count,
+    pub partial: bool,
+}

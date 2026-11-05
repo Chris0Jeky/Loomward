@@ -230,6 +230,12 @@ across its reads.
   Explorer links where the catalogue holds them. It is owner-only (no client or MCP access), never calls a run
   complete when anything is unknown, and shows nothing per covered file. See `contracts/v3/semantics.md`, "Coverage
   check".
+- A coverage job reserves one worker from the same bounded pool as scans and duplicates. Cancelling
+  acknowledges immediately as `cancel_requested`; the job remains live, keeps its worker and the global
+  coverage slot, and exposes no result while the actual read returns. The read observes the job flag and
+  both roots' revocation flags during all four passes and at final admission. Pending content I/O is
+  cancelled and drained; synchronous metadata calls and cancellation draining still depend on the
+  filesystem driver returning. A terminal cancelled job has no detached coverage reader behind it.
 
 ## 5. What may live on the external disk
 

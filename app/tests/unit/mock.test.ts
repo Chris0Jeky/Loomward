@@ -88,7 +88,7 @@ describe('mock transport', () => {
     expect(result.dataset_class).toBe('synthetic');
     expect(Object.values(result.capabilities.effects).every((v) => v === false)).toBe(true);
     expect(result.capabilities.observation).toHaveProperty('duplicate_content_read', false);
-    expect({ ...result.features, telemetry_available: false, gpu_available: false }).toEqual(Object.fromEntries(Object.keys(result.features).map((k) => [k, false]))); // only (synthetic) telemetry, GPU included, is served
+    expect({ ...result.features, telemetry_available: false, gpu_available: false, collection_search: false }).toEqual(Object.fromEntries(Object.keys(result.features).map((k) => [k, false]))); // synthetic telemetry/GPU and direct-member search are served
   });
 
   it('answers unimplemented commands with an error, never invented data', async () => {

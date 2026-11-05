@@ -39,6 +39,15 @@ fn bytes(b: Option<u64>) -> Value {
     b.map(|b| b.to_string()).into()
 }
 
+/// Platform-independent disclosure seam; the tracker owns detecting unresolved changes.
+fn comparison_reasons(found: &NewSince, stale: bool) -> Vec<&'static str> {
+    let mut reasons = found.partial_reasons.clone();
+    if stale && found.totals.is_some() {
+        reasons.push("changes_since_scan");
+    }
+    reasons
+}
+
 impl Inner {
     pub(crate) fn changes_new_since(
         &self,
@@ -68,11 +77,7 @@ impl Inner {
             .read_reader(work)?
             .new_since(row, baseline, r.limit.get() as usize)
             .map_err(catalog_error)?;
-        let mut reasons: Vec<&str> = found.partial_reasons.clone();
-        // Unresolved watcher changes since the scan: the figures describe an earlier state.
-        if stale && found.totals.is_some() {
-            reasons.push("changes_since_scan");
-        }
+        let reasons = comparison_reasons(&found, stale);
         let mut value = json!({
             "root_id": r.root_id,
             "generation": generation.map(|g| g.to_string()),
@@ -135,5 +140,23 @@ impl Inner {
             catalog_rev: Some(revs.0),
             state_rev: Some(revs.1),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn watcher_changes_qualify_known_figures_without_inventing_a_baseline() {
+        let mut found = NewSince::default();
+        assert!(comparison_reasons(&found, true).is_empty());
+        found.totals = Some(loomward_catalog::NewSinceTotals::default());
+        found.partial_reasons.push("coverage_partial");
+        assert_eq!(comparison_reasons(&found, false), ["coverage_partial"]);
+        assert_eq!(
+            comparison_reasons(&found, true),
+            ["coverage_partial", "changes_since_scan"]
+        );
     }
 }
