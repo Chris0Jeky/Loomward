@@ -55,9 +55,21 @@ jobs:
         run: ./scripts/test_windows_elevated_refusals.ps1
       # The fixture guards require a real non-elevated token; the hosted bootstrap is elevated.
       - name: Windows native gates under a disposable standard user
+        id: windows_standard_user
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./scripts/test_windows_standard_user.ps1
+      - name: Preserve Windows standard-user diagnostics
+        if: ${{ always() && runner.os == 'Windows' && steps.windows_standard_user.outcome != 'skipped' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-standard-user-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/loomward-standard-user-diagnostics/stdout.log
+            ${{ runner.temp }}/loomward-standard-user-diagnostics/stderr.log
+            ${{ runner.temp }}/loomward-standard-user-diagnostics/status.json
+          if-no-files-found: error
+          retention-days: 14
       - name: Scan publication cancellation receipts
         if: runner.os == 'Linux'
         run: cargo +stable test --locked -p loomward-engine publication_tests

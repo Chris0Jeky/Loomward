@@ -247,6 +247,8 @@ pub fn roundtrip(def: &str, v: &Value) -> Option<Result<Value, String>> {
         "DuplicateReport" => rt::<DuplicateReport>(v),
         "JobKind" => rt::<JobKind>(v),
         "CoverageStartRequest" => rt::<CoverageStartRequest>(v),
+        "CoveragePhase" => rt::<CoveragePhase>(v),
+        "CoverageProgress" => rt::<CoverageProgress>(v),
         "CoverageOutcome" => rt::<CoverageOutcome>(v),
         "CoverageStop" => rt::<CoverageStop>(v),
         "CoverageSide" => rt::<CoverageSide>(v),

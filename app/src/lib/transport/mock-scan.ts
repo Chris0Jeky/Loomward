@@ -1,6 +1,6 @@
 import coverageFixture from '../../../../contracts/v3/examples/commands/coverage.result.result.json';
 import type {
-  CoverageReport, DuplicateReport, CoverageState, ErrorBody, ErrorCode, EventKey, EventMap, Job, JobList, JobResult, Root, RootScanState, ScanProgress, SubtreeTotals,
+  CoveragePhase, CoverageReport, DuplicateReport, CoverageState, ErrorBody, ErrorCode, EventKey, EventMap, Job, JobList, JobResult, Root, RootScanState, ScanProgress, SubtreeTotals,
 } from '../contracts.gen';
 
 // Invented, contract-shaped scan jobs for the mock transport: two synthetic lab roots the mock "service"
@@ -199,7 +199,13 @@ export function createScanMock(o: ScanMockOptions): ScanMock {
     o.emit('job.state', { job: { ...job } });
     later(QUEUE_MS, () => {
       if (job.state !== 'queued') return;
-      set(job, { state: 'running', started_at: iso() });
+      set(job, { state: 'running', started_at: iso(), coverage_progress: { phase: 'listing_destination' } });
+      const phases: CoveragePhase[] = ['hashing_source', 'hashing_destination', 'rechecking_source'];
+      phases.forEach((phase, index) => later(COVERS_MS * (index + 1) / 4, () => {
+        if (job.state === 'running' && !o.isRevoked(a as string) && !o.isRevoked(b as string)) {
+          set(job, { coverage_progress: { phase } });
+        }
+      }));
       later(COVERS_MS, () => {
         if (job.state !== 'running') return; // cancelled meanwhile: no result is kept
         if (o.isRevoked(a as string) || o.isRevoked(b as string)) { set(job, { state: 'failed', finished_at: iso(), error: { code: 'permission_denied', message: 'cancelled', retryable: false, detail: null } }); return; }

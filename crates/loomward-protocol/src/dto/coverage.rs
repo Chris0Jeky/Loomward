@@ -3,6 +3,23 @@
 //! never permission to delete (docs/48 section 4.5).
 use super::*;
 
+/// The current Coverage read pass, not a count or completion estimate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CoveragePhase {
+    ListingDestination,
+    HashingSource,
+    HashingDestination,
+    RecheckingSource,
+}
+
+/// Latest observed pass; retained as the last phase after cancellation or completion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CoverageProgress {
+    pub phase: CoveragePhase,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CoverageStartRequest {

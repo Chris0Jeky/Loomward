@@ -978,6 +978,40 @@ fn job_counters_are_required_unsigned_exact_integers() {
 }
 
 #[test]
+fn coverage_progress_is_optional_and_contains_only_a_known_phase() {
+    let mut schema = Schema::load();
+    let mut job = read(&contracts().join("examples/commands/jobs.get.result.json"))["job"].clone();
+    job["kind"] = json!("coverage");
+    job["progress"] = Value::Null;
+    assert!(schema.errors("Job", &job).is_empty());
+    assert_eq!(roundtrip("Job", &job).unwrap().unwrap(), job);
+    for phase in [
+        "listing_destination",
+        "hashing_source",
+        "hashing_destination",
+        "rechecking_source",
+    ] {
+        let mut value = job.clone();
+        value["coverage_progress"] = json!({"phase": phase});
+        assert!(schema.errors("Job", &value).is_empty(), "{phase}");
+        assert_eq!(roundtrip("Job", &value).unwrap().unwrap(), value);
+    }
+    for progress in [
+        Value::Null,
+        json!({}),
+        json!({"phase": null}),
+        json!({"phase": "done"}),
+        json!({"phase": "hashing_source", "percent": 50}),
+        json!({"phase": "hashing_source", "files_total": 0}),
+    ] {
+        let mut value = job.clone();
+        value["coverage_progress"] = progress;
+        assert!(!schema.errors("Job", &value).is_empty());
+        assert!(roundtrip("Job", &value).unwrap().is_err());
+    }
+}
+
+#[test]
 fn every_def_has_a_rust_type() {
     let schema = Schema::load();
     for def in schema.defs().keys() {

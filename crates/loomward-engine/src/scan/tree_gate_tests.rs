@@ -787,3 +787,48 @@ fn an_already_cancelled_coverage_job_never_starts_a_read() {
     );
     assert!(seen.borrow().is_empty());
 }
+
+#[cfg(windows)]
+#[test]
+fn coverage_rechecks_cancellation_after_publishing_each_phase() {
+    if skip_elevated() {
+        return;
+    }
+    let phases = [
+        CoveragePhase::ListingDestination,
+        CoveragePhase::HashingSource,
+        CoveragePhase::HashingDestination,
+        CoveragePhase::RecheckingSource,
+    ];
+    let completed = [
+        TreePoint::AfterCoverageListing,
+        TreePoint::AfterCoverageSourceHashing,
+        TreePoint::AfterCoverageHashing,
+    ];
+    for (index, stop) in phases.into_iter().enumerate() {
+        let pair = pair_of(b"same", b"same");
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (seen, _guard) = record_points();
+        let announced = RefCell::new(Vec::new());
+        let progress = |phase| {
+            announced.borrow_mut().push(phase);
+            if phase == stop {
+                cancel.store(true, Ordering::Release);
+            }
+            Ok(())
+        };
+        assert_eq!(
+            refusal(pair.engine.observe_coverage_with_progress(
+                &pair.left,
+                &pair.right,
+                cover_budget(1 << 20),
+                100,
+                Some(cancel.clone()),
+                &progress,
+            )),
+            "cancelled"
+        );
+        assert_eq!(*announced.borrow(), phases[..=index]);
+        assert_eq!(*seen.borrow(), completed[..index]);
+    }
+}

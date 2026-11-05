@@ -794,6 +794,14 @@
         "limit_reason": { "enum": ["depth_limit", "directory_limit"] }
       }
     },
+    "CoveragePhase": { "enum": ["listing_destination", "hashing_source", "hashing_destination", "rechecking_source"] },
+    "CoverageProgress": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["phase"],
+      "properties": { "phase": { "$ref": "#/$defs/CoveragePhase" } },
+      "$comment": "Latest observed Coverage read pass, retained as the last phase after cancellation or completion. Work remaining and completion percentage are unknown."
+    },
     "Job": {
       "type": "object",
       "additionalProperties": false,
@@ -812,7 +820,8 @@
         "coverage": { "anyOf": [{ "$ref": "#/$defs/CoverageState" }, { "type": "null" }] },
         "error": { "anyOf": [{ "$ref": "#/$defs/ErrorBody" }, { "type": "null" }] },
         "duplicates": { "$ref": "#/$defs/DuplicateReport" },
-        "reclaim": { "$ref": "#/$defs/ReclaimObserveProgress" }
+        "reclaim": { "$ref": "#/$defs/ReclaimObserveProgress" },
+        "coverage_progress": { "$ref": "#/$defs/CoverageProgress", "$comment": "Present only on Coverage jobs once a read pass starts; older services omit it." }
       }
     },
     "JobRefRequest": {

@@ -3,7 +3,7 @@
 // Honesty rules (AGENTS.md invariants 4 and 9): a run with anything unknown is partial and never reads as a clean
 // verdict in either direction; unknown sizes are "unknown", never zero; and nothing here says a file is safe to
 // delete: covered means an equal-size, equal-content file was in B when read.
-import type { CoverageReport, CoverageStop, Job } from '../../lib/contracts.gen';
+import type { CoveragePhase, CoverageReport, CoverageStop, Job } from '../../lib/contracts.gen';
 import { formatBytes, parseBytes } from '../../lib/format/bytes';
 import { LoomwardError } from '../../lib/transport/client';
 
@@ -107,15 +107,29 @@ export function totalRows(report: CoverageReport): TotalRow[] {
   ];
 }
 
+const PHASE_WORDS: Record<CoveragePhase, string> = {
+  listing_destination: 'Listing folder B',
+  hashing_source: 'Reading file contents in folder A',
+  hashing_destination: 'Reading file contents in folder B',
+  rechecking_source: 'Rechecking folder A for changes',
+};
+
 /** What a job without a report says. `now` is the clock, so the elapsed time is testable. */
 export function statusText(job: Job | null, report: CoverageReport | null, pending: boolean, now: number, budgetSecs: number): string {
   if (!job) return pending ? 'Sending request…' : '';
   const elapsed = job.started_at ? Math.max(0, Math.round((now - Date.parse(job.started_at)) / 1000)) : 0;
+  const phase = job.coverage_progress ? PHASE_WORDS[job.coverage_progress.phase] : null;
   switch (job.state) {
     case 'queued': return 'Check queued.';
-    case 'running': return `Reading both folders · ${n(elapsed)} s so far, at most ${n(budgetSecs)} s. The service reports no finer progress.`;
-    case 'cancel_requested': return 'Cancelling. No verdict will be produced. The read may still be finishing in the background.';
-    case 'cancelled': return 'Cancelled. No verdict was produced and nothing was changed. The read may still be finishing in the background; a new check starts once it has ended.';
+    case 'running': return phase
+      ? `${phase} · ${n(elapsed)} s elapsed · ${n(budgetSecs)} s read budget. Work remaining is unknown.`
+      : `Reading both folders · ${n(elapsed)} s so far, at most ${n(budgetSecs)} s. The service reports no finer progress.`;
+    case 'cancel_requested': return phase
+      ? `Cancelling. Waiting for the current read to finish; no verdict will be produced. Last phase: ${phase}.`
+      : 'Cancelling. No verdict will be produced. The read may still be finishing in the background.';
+    case 'cancelled': return phase
+      ? 'Cancelled. No verdict was produced and nothing was changed.'
+      : 'Cancelled. No verdict was produced and nothing was changed. The read may still be finishing in the background; a new check starts once it has ended.';
     case 'failed': return `Failed${job.error ? `: ${job.error.message}` : ''}. No verdict was produced.`;
     case 'completed':
       return report ? '' : 'Finished, but its report is no longer available: it is kept for ten minutes and ends if either folder\'s grant ends. Run the check again.';

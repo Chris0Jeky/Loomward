@@ -1332,17 +1332,23 @@ a duplicates inspection admits one (q-10: registered lab roots in a synthetic se
 folders in a personal one; liveness and, for personal roots, today's path fences). The same root twice is
 `invalid_request` (reason `roots_must_differ`). Overlapping grants are refused when granted; one folder
 inside the other is `invalid_request` (reason `roots_overlap`) should it ever be seen. The job calls the
-engine's `observe_coverage` and `loomward_operations::containment::containment` unchanged: B is listed
+engine's `observe_coverage_with_progress` and `loomward_operations::containment::containment`: B is listed
 without content, then A is hashed only for sizes B has, then B only for sizes among A's hashed files, and
 A is listed once more so that a file that moved meanwhile loses its verdict. Only each file's default data
 stream is read. `budget_bytes` (default 1 GiB) and `budget_secs` (default 60, at most 3600) are shared by
-all passes; at most 200,000 entries per folder are listed. The job reports no phase progress: it is
-`queued`, `running`, then terminal.
+all passes; at most 200,000 entries per folder are listed. Once a read pass starts, the optional
+`job.coverage_progress` names its `phase`: `listing_destination`, `hashing_source`,
+`hashing_destination`, then `rechecking_source`. Each transition advances `job.rev` and publishes
+`job.state`; `jobs.get` and `jobs.list` retain the latest snapshot. The phase is an observed pass,
+not a completion estimate: file/byte totals, work remaining and percentages are unknown. Queued
+jobs and older services omit the field. A terminal job may retain its last phase, which must not
+be presented as work still running.
 
 `jobs.cancel` acknowledges as `cancel_requested` and signals the actual reader. Every pass observes
 the job flag and both root revocation flags. Pending content I/O is cancelled and drained; synchronous
 metadata calls and cancellation draining still depend on the filesystem driver returning. The job
 stays live and holds its worker and coverage slot until the read returns, then becomes `cancelled`.
+Cancellation freezes the last phase; it never advances progress while draining the read.
 It exposes no result, and no detached reader remains behind a terminal cancelled job. A refused read
 (an unsupported volume, a revoked grant, an identity change) fails the job with the reason only,
 never a path. The completed-job check also prevents a result stored just before cancellation from
