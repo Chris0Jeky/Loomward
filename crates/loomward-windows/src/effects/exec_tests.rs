@@ -2305,20 +2305,35 @@ fn explicit_destination_aces_prevent_normal_commit() {
 
 #[test]
 fn staging_root_acl_refusal_is_named_and_survives_restart() {
-    destination_acl_refusal_before_publish("");
+    destination_acl_refusal_before_publish(&["top"], "", "sub/f");
 }
 
 #[test]
 fn nested_directory_acl_refusal_is_named_and_survives_restart() {
-    destination_acl_refusal_before_publish("sub");
+    destination_acl_refusal_before_publish(&["top"], "sub", "sub/f");
 }
 
-fn destination_acl_refusal_before_publish(target: &'static str) {
+#[test]
+fn single_file_staging_root_acl_refusal_is_named_and_survives_restart() {
+    destination_acl_refusal_before_publish(&["top/sub/f"], "", "f");
+}
+
+#[test]
+fn multi_selection_staging_root_acl_refusal_is_named_and_survives_restart() {
+    destination_acl_refusal_before_publish(&["top/sub", "top/g"], "", "sub/f");
+}
+
+fn destination_acl_refusal_before_publish(
+    selection: &[&str],
+    target: &'static str,
+    staged_file: &str,
+) {
     let Some(mut lab) = Lab::new() else { return };
     fs::create_dir_all(lab.src().join("top/sub")).unwrap();
     fs::write(lab.src().join("top/sub/f"), b"payload").unwrap();
+    fs::write(lab.src().join("top/g"), b"other file").unwrap();
     let before = source_snapshot(&lab.src());
-    let op = lab.start(&["top"]);
+    let op = lab.start(selection);
     let plan = lab.plan(op);
     let expected_item = if target.is_empty() {
         None
@@ -2375,7 +2390,7 @@ fn destination_acl_refusal_before_publish(target: &'static str) {
     let staging = staging_dirs(&lab);
     assert_eq!(staging.len(), 1);
     assert_eq!(
-        fs::read(lab.dest().join(&staging[0]).join("sub/f")).unwrap(),
+        fs::read(lab.dest().join(&staging[0]).join(staged_file)).unwrap(),
         b"payload"
     );
     assert_eq!(source_snapshot(&lab.src()), before);
