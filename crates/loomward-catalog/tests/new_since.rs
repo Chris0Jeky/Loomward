@@ -538,7 +538,8 @@ fn excluded_flags_prune_ancestry_and_the_root_is_not_a_new_folder() {
             [lab.dir],
         )
         .unwrap();
-    assert_eq!(lab.totals(Some(first)).new_files, 0);
+    // An unavailable granted root cannot establish a known-empty comparison.
+    assert!(matches!(lab.since(Some(first), 5), Err(Error::NotFound)));
 }
 
 #[test]

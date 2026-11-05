@@ -157,6 +157,8 @@ public static class QualificationCloudProbe {
     # The resolved binaries are the stable toolchain installed by the workflow, copied below.
     # Preserve the existing tests and add exact native witnesses; do not turn setup refusal green.
     Invoke-QualificationCargo -CargoArguments @('test', '--locked', '-p', 'loomward-windows', '--all-features', 'pending_fence_tests') -MinimumPassed 18
+    # Exercise the inherited-only ACL guard for every source selection shape; setup refusal is red.
+    Invoke-QualificationCargo -CargoArguments @('test', '--locked', '-p', 'loomward-windows', '--all-features', 'acl_refusal_is_named_and_survives_restart', '--', '--show-output', '--test-threads=1') -MinimumPassed 4 -NoSetupSkip
     Invoke-QualificationCargo -CargoArguments @('test', '--locked', '-p', 'loomward-service', 'copy::pending_fence_tests') -MinimumPassed 5
     foreach ($test in @(
         'another_store_committing_a_pending_rename_keeps_the_annotation',
