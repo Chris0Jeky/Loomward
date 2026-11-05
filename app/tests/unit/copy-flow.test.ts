@@ -124,7 +124,8 @@ describe('copy UI lifecycle (scripted transport only; no file effects)', () => {
     expect(f.status?.state).toBe('needs_attention');
     expect(f.canApprove).toBe(false);
     expect(f.canStart).toBe(false);
-    expect(f.canCancel).toBe(true);
+    expect(f.canCancel).toBe(false);
+    expect(f.canAbandon).toBe(true);
     const explanation = refusalReason(f.status!.refusal!.code);
     expect(explanation).toMatch(/inherited/i);
     expect(explanation).toMatch(/staging.*kept/i);
