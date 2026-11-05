@@ -42,6 +42,9 @@ public static class QualificationToken {
 }
 '@
     if ([QualificationToken]::IsElevated()) { throw 'The qualification child is elevated.' }
+    Write-Host 'LW-CI-DIAGNOSTICS-NEGATIVE-STDOUT'
+    [Console]::Error.WriteLine('LW-CI-DIAGNOSTICS-NEGATIVE-STDERR')
+    exit 73
     # Read-only Cloud Files probes diagnose whether the existing filter supports each volume.
     # They never classify an API failure as "not synced" or change the actual fixture location.
     Add-Type -TypeDefinition @'
@@ -188,6 +191,41 @@ $parentPrincipal = [Security.Principal.WindowsPrincipal]::new($parentIdentity)
 if (-not $parentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     throw 'The hosted bootstrap must already have account-management rights; it never elevates.'
 }
+# Keep only synthetic qualification diagnostics outside the disposable account workspace.
+# The workflow uploads these explicit files even when qualification fails. Never upload $work.
+$diagnostics = Join-Path $runnerTemp 'loomward-standard-user-diagnostics'
+New-Item -ItemType Directory -Path $diagnostics | Out-Null
+$stdout = Join-Path $diagnostics 'stdout.log'
+$stderr = Join-Path $diagnostics 'stderr.log'
+$statusPath = Join-Path $diagnostics 'status.json'
+$diagnosticsFailed = $false
+$qualificationStatus = [ordered]@{
+    schemaVersion = 1
+    runId = $env:GITHUB_RUN_ID
+    runAttempt = $env:GITHUB_RUN_ATTEMPT
+    workflowSha = $env:GITHUB_SHA
+    startedUtc = [DateTime]::UtcNow.ToString('o')
+    updatedUtc = $null
+    phase = 'bootstrap'
+    childExitCode = $null
+    timedOut = $false
+    parentError = $null
+    cleanupCompleted = $false
+    cleanupFailed = $false
+}
+function Write-QualificationStatus {
+    param([string]$Phase)
+    $qualificationStatus.phase = $Phase
+    $qualificationStatus.updatedUtc = [DateTime]::UtcNow.ToString('o')
+    try {
+        $qualificationStatus | ConvertTo-Json | Set-Content -LiteralPath $statusPath -Encoding utf8
+    } catch {
+        Write-Warning "Cannot preserve qualification status: $_"
+        $script:diagnosticsFailed = $true
+    }
+}
+Write-QualificationStatus -Phase 'bootstrap'
+if ($diagnosticsFailed) { throw 'Cannot initialize qualification diagnostics.' }
 Write-Host '::group::Installed Cloud Files filter diagnostics (read only)'
 $cloudDriver = Get-CimInstance Win32_SystemDriver -Filter "Name='CldFlt'" -OperationTimeoutSec 10
 if ($null -eq $cloudDriver) { Write-Host 'CldFlt system-driver registration: absent' }
@@ -341,6 +379,7 @@ function Set-QualificationGrant {
 }
 
 try {
+    Write-QualificationStatus -Phase 'setup'
     if ($null -eq $cloudDriver -or $cloudDriver.State -ne 'Running') {
         throw 'The installed Cloud Files filter must already be running.'
     }
@@ -392,17 +431,19 @@ try {
         rustc = Join-Path $work 'toolchain/bin/rustc.exe'
         cargo = Join-Path $work 'toolchain/bin/cargo.exe'
     } | ConvertTo-Json | Set-Content -LiteralPath $configurationPath -Encoding utf8
-    $stdout = Join-Path $work 'stdout.log'
-    $stderr = Join-Path $work 'stderr.log'
     $credential = [PSCredential]::new("$env:COMPUTERNAME\$accountName", $password)
+    Write-QualificationStatus -Phase 'launching-child'
     $process = Start-Process -FilePath (Join-Path $PSHOME 'pwsh.exe') -Credential $credential -LoadUserProfile -UseNewEnvironment -NoNewWindow -PassThru -WorkingDirectory $work -ArgumentList "-NoProfile -NonInteractive -File `"$childScript`" -Child -Configuration `"$configurationPath`"" -RedirectStandardOutput $stdout -RedirectStandardError $stderr
     # Force the process handle open so ExitCode cannot depend on the object outliving its wait handle.
     $null = $process.Handle
-    # This bound must stay well below the native job's timeout-minutes in ci.yml, so it always fires
-    # first and the `finally` below prints the child's logs; a job-level kill would lose them.
+    # Keep this child bound well below the native job's timeout-minutes in ci.yml so normal
+    # failures reach cleanup. A job-level kill can prevent cleanup and the later artifact upload.
     $deadline = [DateTime]::UtcNow.AddMinutes(35)
+    Write-QualificationStatus -Phase 'running-child'
     while (-not $process.WaitForExit(1000)) {
         if ([DateTime]::UtcNow -ge $deadline) {
+            $qualificationStatus.timedOut = $true
+            Write-QualificationStatus -Phase 'child-timeout'
             $process.Kill($true)
             if (-not $process.WaitForExit(10000)) { throw 'The timed-out process tree did not stop.' }
             throw 'Standard-user native qualification exceeded its 35-minute bound.'
@@ -410,8 +451,15 @@ try {
     }
     $childExit = $process.ExitCode
     if ($childExit -isnot [int]) { throw 'The qualification child did not provide an integer exit code.' }
+    $qualificationStatus.childExitCode = $childExit
+    Write-QualificationStatus -Phase 'child-exited'
     Write-Host "Standard-user qualification child exit code: $childExit"
+} catch {
+    $qualificationStatus.parentError = $_.Exception.Message
+    Write-QualificationStatus -Phase 'parent-error'
+    throw
 } finally {
+    Write-QualificationStatus -Phase 'cleanup'
     if ($null -ne $process) {
         try {
             if (-not $process.HasExited) {
@@ -427,7 +475,7 @@ try {
     if ($createdWork) {
         foreach ($name in @('stdout.log', 'stderr.log')) {
             try {
-                $log = Join-Path $work $name
+                $log = Join-Path $diagnostics $name
                 if (Test-Path -LiteralPath $log) { Get-Content -LiteralPath $log }
             } catch { Write-Warning "Cannot print ${name}: $_" }
         }
@@ -539,6 +587,11 @@ try {
             Write-Host "Detached owned CldFlt instance '$attachedCloudInstance' from $fixtureVolume"
         } catch { Write-Warning "Temporary filter-instance cleanup failed: $_"; $cleanupFailed = $true }
     }
+    # Completion means every cleanup block was attempted; failures remain explicit and fatal.
+    $qualificationStatus.cleanupCompleted = $true
+    $qualificationStatus.cleanupFailed = $cleanupFailed
+    Write-QualificationStatus -Phase 'finished'
 }
 if ($cleanupFailed) { throw 'Qualification cleanup did not complete.' }
+if ($diagnosticsFailed) { throw 'Qualification diagnostics could not be preserved.' }
 exit $childExit
