@@ -1060,8 +1060,7 @@ mod tests {
             for reference in [shape == 0, shape != 0] {
                 let (first, elapsed) = timed_count(&reader.conn, root, flags, reference);
                 assert_eq!(
-                    first,
-                    expected,
+                    first, expected,
                     "first count, {name}, reference={reference}"
                 );
                 println!(
@@ -1078,11 +1077,7 @@ mod tests {
                 let (mut old, mut grouped) = (Duration::ZERO, Duration::ZERO);
                 for reference in [run % 2 == 0, run % 2 != 0] {
                     let (result, elapsed) = timed_count(&reader.conn, root, flags, reference);
-                    assert_eq!(
-                        result,
-                        expected,
-                        "{name}, run={run}, reference={reference}"
-                    );
+                    assert_eq!(result, expected, "{name}, run={run}, reference={reference}");
                     if reference {
                         old = elapsed;
                     } else {
