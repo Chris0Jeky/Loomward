@@ -102,14 +102,14 @@ enum Recheck {
 
 fn recheck_file(path: &Path, node: &Node, again: &Tree) -> Recheck {
     use crate::tree::MetadataClass::{ChangeTime, CreationTime, LastWriteTime};
-    if let Some(reason) = path
-        .ancestors()
-        .skip(1)
-        .find_map(|ancestor| match again.nodes.get(ancestor) {
-            Some(Ok(_)) => None,
-            Some(Err(reason)) => Some(*reason),
-            None => Some(RECHECK_INCOMPLETE),
-        })
+    if let Some(reason) =
+        path.ancestors()
+            .skip(1)
+            .find_map(|ancestor| match again.nodes.get(ancestor) {
+                Some(Ok(_)) => None,
+                Some(Err(reason)) => Some(*reason),
+                None => Some(RECHECK_INCOMPLETE),
+            })
     {
         return Recheck::Unverified(reason);
     }
