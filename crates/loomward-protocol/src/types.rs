@@ -443,54 +443,86 @@ macro_rules! id_newtype {
 
 id_newtype!(
     /// Root grant id.
-    RootId, "rt_");
+    RootId,
+    "rt_"
+);
 id_newtype!(
     /// Volume id.
-    VolumeId, "vo_");
+    VolumeId,
+    "vo_"
+);
 id_newtype!(
     /// Opaque, session-tagged catalogue row id. Identifies a row for viewing only; never an
     /// effect operand (invariant 5).
-    NodeId, "nd_");
+    NodeId,
+    "nd_"
+);
 id_newtype!(
     /// Job id.
-    JobId, "jb_");
+    JobId,
+    "jb_"
+);
 id_newtype!(
     /// Root or disclosure grant id.
-    GrantId, "gr_");
+    GrantId,
+    "gr_"
+);
 id_newtype!(
     /// Collection id.
-    CollectionId, "co_");
+    CollectionId,
+    "co_"
+);
 id_newtype!(
     /// Saved placement simulation id.
-    ProposalId, "pp_");
+    ProposalId,
+    "pp_"
+);
 id_newtype!(
     /// Telemetry subscription id.
-    SubscriptionId, "sb_");
+    SubscriptionId,
+    "sb_"
+);
 id_newtype!(
     /// Teacher payload preview id.
-    PreviewId, "tp_");
+    PreviewId,
+    "tp_"
+);
 id_newtype!(
     /// Process reference: pid plus start time, so PID reuse cannot alias; when the start time is
     /// unknown, image name, pid and parent pid (that exact tuple can alias). Observation only.
-    ProcessRef, "pc_");
+    ProcessRef,
+    "pc_"
+);
 id_newtype!(
     /// Student model id.
-    ModelId, "md_");
+    ModelId,
+    "md_"
+);
 id_newtype!(
     /// Feedback event id.
-    EventId, "fe_");
+    EventId,
+    "fe_"
+);
 id_newtype!(
     /// Placement candidate group id.
-    GroupId, "cg_");
+    GroupId,
+    "cg_"
+);
 id_newtype!(
     /// Stored backup evidence record id.
-    BackupEvidenceId, "be_");
+    BackupEvidenceId,
+    "be_"
+);
 id_newtype!(
     /// Copy-and-verify operation id (docs/47).
-    CopyOperationId, "cp_");
+    CopyOperationId,
+    "cp_"
+);
 id_newtype!(
     /// Ask turn id (LW-118): held in memory for this session only.
-    AskTurnId, "at_");
+    AskTurnId,
+    "at_"
+);
 
 string_newtype!(
     /// An owner-chosen backup repository label: 1-64 of `[A-Za-z0-9._-]`, so a URL, path or
@@ -498,7 +530,8 @@ string_newtype!(
     BackupLabel,
     "1-64 characters of [A-Za-z0-9._-]",
     |s| (1..=64).contains(&s.len())
-        && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
 );
 
 string_newtype!(
@@ -508,7 +541,8 @@ string_newtype!(
     "1-64 characters of [a-z0-9_], starting with a letter",
     |s| (1..=64).contains(&s.len())
         && s.as_bytes()[0].is_ascii_lowercase()
-        && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+        && s.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
 );
 
 string_newtype!(
@@ -555,9 +589,11 @@ string_newtype!(
     /// `sha256:` followed by 64 lowercase hex digits.
     Digest,
     "sha256: followed by 64 lowercase hex digits",
-    |s| s
-        .strip_prefix("sha256:")
-        .is_some_and(|h| h.len() == 64 && h.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')))
+    |s| {
+        s.strip_prefix("sha256:").is_some_and(|h| {
+            h.len() == 64 && h.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        })
+    }
 );
 
 string_newtype!(
@@ -621,8 +657,11 @@ string_newtype!(
     /// Owner-managed MCP principal; Ask uses its own commands.
     McpClient,
     "mcp: followed by 1-64 characters of [A-Za-z0-9._-]",
-    |s| s.strip_prefix("mcp:").is_some_and(|n| (1..=64).contains(&n.len())
-        && n.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b)))
+    |s| s
+        .strip_prefix("mcp:")
+        .is_some_and(|n| (1..=64).contains(&n.len())
+            && n.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b)))
 );
 
 fn two(b: &[u8]) -> Option<u32> {
