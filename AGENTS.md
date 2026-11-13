@@ -95,7 +95,7 @@ q-20 to q-46 (12 Oct), q-47 onwards dated in place.
   updates both itself.
 - Codex starts only through `bash ~/.claude/tools/codex_safe.sh <sol|terra|astra> <effort> ...`, never a plain
   `codex exec` or a sandbox-bypass flag. A Sol worker cannot commit in a worktree: it leaves the change uncommitted
-  and reports the proving command and output; the driver commits. Lane tooling: `scripts/lanes/README.md`.
+  and reports the proving command and output; the driver commits.
 - Merge only a reviewed, green head that is up to date with `main`, with a merge commit (never squash).
 - Lane report (last message, under 300 words): PR URL or "left uncommitted", commands run with pass/fail counts,
   what is NOT verified, and what you noticed but did not do.
