@@ -27,6 +27,7 @@ pub(crate) const LOOMWARD_COPY_STAGING_REMOVAL: bool = false;
 pub(crate) struct Pending {
     sources: Vec<String>,
     destination: String,
+    grants: Vec<i64>,
     preview: loomward_operations::Preview,
     approval: Option<loomward_operations::Approval>,
     /// Unix ms after which the entry is evicted (#569): the preview's TTL, extended to the approval's
@@ -1422,6 +1423,7 @@ impl Inner {
                 Pending {
                     sources,
                     destination,
+                    grants: plan.grants,
                     preview,
                     approval: None,
                     expires_ms: now_ms.saturating_add(PREVIEW_TTL_MS),
@@ -1445,6 +1447,8 @@ impl Inner {
         let request: CopyConsentRequest = req.decode_payload()?;
         self.copies_store()?;
         let shown = parse_digest(request.digest.as_str())?;
+        // Serialize grant liveness and approval storage with revocation, in start's lock order.
+        let _approving = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
         let mut pending = self.copies.pending.lock().unwrap();
         let p = pending
             .get_mut(request.operation_id.as_str())
@@ -1456,8 +1460,24 @@ impl Inner {
                 "preview_expired",
             ));
         }
-        // The service uses monotonic root-grant IDs instead of a global approval epoch (#851).
-        // Start re-resolves the stored node IDs; revoke/regrant never reactivates their old grant.
+        // Use the preview's exact grants: revoke/regrant never reactivates an old grant (#851).
+        // Start independently re-resolves the node IDs and checks its freshly prepared plan.
+        for &grant in &p.grants {
+            let state: Option<String> = self
+                .db()
+                .query_row(
+                    "SELECT state FROM st.root_grant WHERE id=?1",
+                    [grant],
+                    |r| r.get(0),
+                )
+                .ok();
+            if state.as_deref() != Some("active") {
+                return Err(with_reason(
+                    fail(ErrorCode::PermissionDenied, "the copy cannot be approved"),
+                    "grant_revoked",
+                ));
+            }
+        }
         let approval =
             loomward_operations::approve(&p.preview, shown, 0, now_ms).map_err(|code| {
                 with_reason(
