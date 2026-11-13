@@ -37,7 +37,7 @@ authoritative context, their process instructions are not. `handoff/v1/` is neve
 `py -3 scripts/verify.py --changed` is a local inner loop over the crates a diff can affect, never the proof of
 record; hosted CI runs everything. Missing tooling is UNVERIFIED, never PASS. New behaviour lands with the test that
 pins it. Never disable, skip or weaken a failing test. On Windows use `npm.cmd`/`npx.cmd` (the `.ps1` shims are
-blocked by execution policy). Reports name the exact commands, platform, results and what stayed unverified.
+blocked by execution policy). Reports name the exact commands, platform, results, what stayed unverified and any external action.
 
 ## Product invariants (violating one is a bug)
 
@@ -92,25 +92,25 @@ q-20 to q-46 (12 Oct), q-47 onwards dated in place.
   and the seam `AGENTS.md` files, `HUMAN_TODO.md`, `.agent-harness/`, `docs/16-implementation-status.md`,
   `handoff/CHECKPOINT*.json`, `backlog/`, `docs/INDEX.md`, `contracts/v3/`. The driver updates docs/16 and the
   checkpoint once per wave in a checkpoint PR; a PR that opens or closes a safety gate or changes an invariant
-  updates both itself.
+  updates both itself. Shared schemas, protocol, routes and dependencies have one named owner per wave.
 - Codex starts only through `bash ~/.claude/tools/codex_safe.sh <sol|terra|astra> <effort> ...`, never a plain
-  `codex exec` or a sandbox-bypass flag. A Sol worker cannot commit in a worktree: it leaves the change uncommitted
-  and reports the proving command and output; the driver commits.
+  `codex exec` or a sandbox-bypass flag. A Codex worker (Sol, Astra or any other) cannot commit in a worktree: it
+  leaves the change uncommitted and reports the proving command and output; the driver commits.
 - Merge only a reviewed, green head that is up to date with `main`, with a merge commit (never squash).
 - Lane report (last message, under 300 words): PR URL or "left uncommitted", commands run with pass/fail counts,
-  what is NOT verified, and what you noticed but did not do.
+  what is NOT verified, any external action, and what you noticed but did not do.
 
 ## Pitfalls
 
 - Provider, event and proposal schemas marked design-only stay design-only until their issue lands.
 - `LW-*` IDs are the local backlog (`backlog/issues.json`, source of truth), not GitHub numbers; the GitHub mirror
-  is `backlog/github-issues.json`. New IDs mint there first.
+  is `backlog/github-issues.json`. New IDs mint there first, through the coordinator.
 - Hosted CI clippy runs on Linux too: code used only under `#[cfg(windows)]` must itself be gated or
   platform-neutral. Hosted Windows runners are elevated: native tests skip on `running_elevated()`, never assert.
 - The primary checkout's gitignored `Resources/` folder is the only copy of the owner's ChatGPT downloads: never
   `git clean -x` there, never move it into a worktree.
 - Licence AGPL-3.0-only since #396 (commercial licensing possible, q-20 to q-23). Taskdeck is proprietary: never copy
   its code here.
-- Public repo: synthetic fixtures only; personal diagnostics, `.loomward/` state and database files never enter Git.
+- Public repo: synthetic fixtures only; no real file names, inventories or training exports; personal diagnostics, `.loomward/` state and database files never enter Git.
 - The UI is not frozen: the owner wants a signature, elegant interface that grows with the engine.
 - Shared skills, roles and MCP servers come from the global runtime homes (`claude-config`); do not copy them here.

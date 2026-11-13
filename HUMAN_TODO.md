@@ -12,6 +12,9 @@ when completion is directly verified; never infer a human decision.
   bundle save and overwrite witness (#437). Its CLA and Dependabot lines are q-22 and q-19.
 - **q-47**: not yet asked (elevated helper launch model, Everything results outside the grants, the Store privacy
   page). Three questions took their recorded defaults on expiry (2026-10-25); the owner can reopen any of them.
+- **q-23, q-28, q-30** (owner actions): trademark register hand-search; Microsoft Store account and a code-signing
+  certificate; the updater signing key as a repository secret.
+- **q-39**: the daily-use readiness bar (docs/45) is met only when every line carries pass evidence.
 - **q-5**: answered; waits on the teacher broker's enforcement canaries, then the `sensitive_data` overlay.
 - **q-6**: not yet needed (an elevated firewall rule when LW-111 reaches it).
 
