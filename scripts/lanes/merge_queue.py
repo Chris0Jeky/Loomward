@@ -43,6 +43,8 @@ def decide(facts):
         return "rerun", "CI cancelled"
     if pending:
         return "wait", "CI pending or absent"
+    if not any((c.get("conclusion") or c.get("state")) == "SUCCESS" for c in facts["checks"]):
+        return "park", "no successful check (estate_merge treats all-skipped CI as absent)"
     if facts["observed_seconds"] < 180:
         return "wait", "head observed for less than 180 s"
     return "merge", "reviewed head, current main, green CI, observed for at least 180 s"
@@ -52,7 +54,9 @@ def run(repo, *args, check=True):
     result = subprocess.run(args, cwd=repo, text=True, encoding="utf-8",
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
     if check and result.returncode:
-        raise RuntimeError(f"{' '.join(args[:2])} exited {result.returncode}")
+        # estate_merge.py prints its refusal reason as JSON on stdout; keep it in the log line.
+        detail = (result.stdout.strip() or result.stderr.strip())[-400:]
+        raise RuntimeError(f"{' '.join(args[:2])} exited {result.returncode}: {detail}")
     return result
 
 
@@ -166,9 +170,15 @@ def one_pass(repo, home, slug, dry_run):
             facts = gather(repo, slug, reviewed, info)
             facts["observed_seconds"] = age
             action, reason = decide(facts)
+            if action == "merge":
+                # Narrow the race with a moving main: re-compare just before the call. estate_merge.py
+                # re-checks CI and pins the head itself, but not the base (GitHub offers no atomic check).
+                again = json.loads(run(repo, "gh", "api", f"repos/{slug}/compare/main...{facts['head']}").stdout)
+                if again["behind_by"]:
+                    action, reason = "update", "main moved during the pass"
         if action == "merge":
             args = ["py", "-3", str(Path.home() / ".claude/tools/estate_merge.py"), slug, pr,
-                    "--head", facts["head"], "--actor", "lane-merge-queue", "--runtime", "claude"]
+                    "--head", facts["head"], "--actor", "agent:claude-opus-5-5", "--runtime", "claude"]
             if dry_run:
                 args.append("--dry-run")
             run(repo, *args)

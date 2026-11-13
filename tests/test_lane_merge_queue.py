@@ -113,9 +113,16 @@ class MergeDecisionTests(unittest.TestCase):
 
     def test_skipped_and_neutral_are_green(self):
         self.assertEqual(queue.decide(ready(checks=[
+            {"status": "COMPLETED", "conclusion": "SUCCESS"},
             {"status": "COMPLETED", "conclusion": "SKIPPED"},
             {"status": "COMPLETED", "conclusion": "NEUTRAL"},
         ]))[0], "merge")
+
+    def test_only_skipped_checks_park_as_absent_ci(self):
+        self.assertEqual(queue.decide(ready(checks=[
+            {"status": "COMPLETED", "conclusion": "SKIPPED"},
+            {"status": "COMPLETED", "conclusion": "NEUTRAL"},
+        ]))[0], "park")
 
     def test_unknown_facts_wait(self):
         for changes in ({"state": "UNKNOWN"}, {"behind": None}, {"merge_state": "UNKNOWN"},
