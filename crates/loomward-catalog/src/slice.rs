@@ -39,6 +39,7 @@ fn virtual_row(key: NodeKey, name: String) -> Raw {
         accessed: None,
         born_run: 0,
         valid: true,
+        empty_established: false,
     }
 }
 fn sum_into(parent: &mut Raw, child: &Raw) -> Result<()> {
