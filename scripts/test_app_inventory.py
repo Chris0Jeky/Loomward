@@ -3,6 +3,7 @@ import re
 from copy import deepcopy
 
 from playwright.sync_api import expect
+from test_app_server import route_call, unroute_call
 
 
 def run_inventory(page, base, check, *, live=False, shots=None):
@@ -63,11 +64,11 @@ def run_inventory(page, base, check, *, live=False, shots=None):
                                     'error': {'code': 'resource_budget', 'message': 'Synthetic inventory refused', 'retryable': True, 'detail': None}})
             else:
                 route.continue_()
-        page.route('**/api/v3/call', refuse)
+        route_call(page, refuse)
         page.get_by_role('link', name='Applications', exact=True).click()
         expect(page.locator('main p.bad')).to_contain_text('Synthetic inventory refused')
         check(page.locator('main table').count() == 0, 'Applications: a refused refresh removes earlier data')
-        page.unroute('**/api/v3/call', refuse)
+        unroute_call(page, refuse)
         page.get_by_role('button', name='Refresh applications').click()
         expect(page.locator('main table tbody tr')).to_have_count(2)
         expect(page.locator('main p.bad')).to_have_count(0)
@@ -117,7 +118,7 @@ def run_inventory_sort(page, check):
         response['result']['next_cursor'] = f'synthetic_{order}_200' if offset == 0 else None
         route.fulfill(json=response)
 
-    page.route('**/api/v3/call', inventory)
+    route_call(page, inventory)
     try:
         refresh = page.get_by_role('button', name='Refresh applications', exact=True)
         next_page = page.get_by_role('button', name='Next page', exact=True)
@@ -158,4 +159,4 @@ def run_inventory_sort(page, check):
             ('size_desc', None), ('size_desc', 'synthetic_size_desc_200'), ('registry', None),
         ], 'Applications: Largest first changes rendered order, resets paging in both directions, and keeps unknown estimates last (203 routed synthetic apps)')
     finally:
-        page.unroute('**/api/v3/call', inventory)
+        unroute_call(page, inventory)

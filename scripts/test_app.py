@@ -40,7 +40,7 @@ from urllib.parse import urlsplit
 from playwright.sync_api import Page, expect, sync_playwright
 
 from test_app_collections import run_collections, run_live_collections
-from test_app_server import ThreadingHTTPServer
+from test_app_server import ThreadingHTTPServer, route_call, unroute_call
 from test_app_a11y import run_a11y
 import test_app_views
 from test_app_reserve import run_live_reserve
@@ -328,12 +328,12 @@ def live_review_deferral(page: Page, token: str, state: Path) -> dict:
                                 'error': {'code': 'invalid_request', 'message': 'Unknown queue field.', 'retryable': False, 'detail': None}})
         else:
             route.continue_()
-    page.route('**/api/v3/call', old_service)
+    route_call(page, old_service)
     panel.get_by_role('button', name='Deferred', exact=True).press('Enter')
     expect(panel.get_by_text('Review deferral is unavailable in this service.', exact=False)).to_be_visible()
     expect(panel.get_by_role('row')).to_have_count(21)
     expect(page.get_by_role('region', name='Human feedback history').get_by_role('row')).to_have_count(21)
-    page.unroute('**/api/v3/call', old_service)
+    unroute_call(page, old_service)
     page.reload()
     expect(panel.get_by_role('row')).to_have_count(21)
     response = live_call(page, token, 'learning.queue', {'root_id': None, 'limit': 100, 'cursor': None})
@@ -485,11 +485,11 @@ def live_learning(page: Page, token: str, state: Path) -> dict:
                                 'error': {'code': 'unknown_command', 'message': 'History is unavailable on this older service.', 'retryable': False, 'detail': None}})
         else:
             route.continue_()
-    page.route('**/api/v3/call', unavailable_history)
+    route_call(page, unavailable_history)
     history.get_by_role('button', name='Newest records').click()
     expect(history.get_by_role('alert')).to_contain_text('older service')
     expect(page.get_by_role('button', name='Review <img src=x onerror=alert(1)>.txt')).to_be_visible()
-    page.unroute('**/api/v3/call', unavailable_history)
+    unroute_call(page, unavailable_history)
     history.get_by_role('button', name='Retry history').click()
     expect(history.get_by_role('row')).to_have_count(4)
     def unavailable_status(route):
@@ -499,11 +499,11 @@ def live_learning(page: Page, token: str, state: Path) -> dict:
                                 'error': {'code': 'capability_unavailable', 'message': 'Learning status unavailable.', 'retryable': False, 'detail': None}})
         else:
             route.continue_()
-    page.route('**/api/v3/call', unavailable_status)
+    route_call(page, unavailable_status)
     page.get_by_role('button', name='Refresh review').click()
     expect(page.get_by_text('Learning status unknown.', exact=True)).to_be_visible()
     check(page.get_by_role('table', name=re.compile('Review queue')).count() == 0, 'learning: a failed status refresh clears stale queue data')
-    page.unroute('**/api/v3/call', unavailable_status)
+    unroute_call(page, unavailable_status)
     page.get_by_role('button', name='Retry learning status').click()
     expect(page.get_by_role('table', name=re.compile('Review queue'))).to_contain_text('<img src=x onerror=alert(1)>.txt')
     shots = ROOT / '.loomward'
@@ -968,7 +968,7 @@ def live_alerts(page: Page, token: str) -> None:
 
     page.on('request', observe)
     try:
-        page.route('**/api/v3/call', hold_refresh)
+        route_call(page, hold_refresh)
         refresh.focus()
         refresh.press('Enter')
         wait_until(page, lambda: len(held) == 1)
@@ -982,8 +982,8 @@ def live_alerts(page: Page, token: str) -> None:
         held.pop().continue_()
         expect(result).to_contain_text('Checks refreshed from recorded observations.')
         expect(save_button).to_be_focused()  # Completion must not take focus back from the user's newer choice.
-        page.unroute('**/api/v3/call', hold_refresh)
-        page.route('**/api/v3/call', capture_refresh)
+        unroute_call(page, hold_refresh)
+        route_call(page, capture_refresh)
         for width in (1360, 390):
             page.set_viewport_size({'width': width, 'height': 900 if width == 1360 else 844})
             calls.clear()
@@ -1006,9 +1006,9 @@ def live_alerts(page: Page, token: str) -> None:
             check(page.evaluate('document.documentElement.scrollWidth <= innerWidth'), f'alerts refresh: controls fit {width}px')
             (ROOT / '.loomward').mkdir(exist_ok=True)
             page.screenshot(path=str(ROOT / '.loomward' / f'search-root-alerts-refresh-{width}.png'), full_page=True)
-        page.unroute('**/api/v3/call', capture_refresh)
+        unroute_call(page, capture_refresh)
         calls.clear()
-        page.route('**/api/v3/call', fail_refresh)
+        route_call(page, fail_refresh)
         refresh.press('Enter')
         expect(page.get_by_role('alert').filter(has_text='Synthetic alert refresh timeout.')).to_be_visible()
         expect(page.get_by_text('Alerts unavailable.', exact=True)).to_be_visible()
@@ -1016,7 +1016,7 @@ def live_alerts(page: Page, token: str) -> None:
         expect(refresh).to_have_attribute('aria-disabled', 'false')
         check([command for command in calls if command.startswith('alerts.')] == ['alerts.list'], 'alerts refresh failure: no automatic retry or configure')
         page.screenshot(path=str(ROOT / '.loomward' / 'search-root-alerts-refresh-error-390.png'), full_page=True)
-        page.unroute('**/api/v3/call', fail_refresh)
+        unroute_call(page, fail_refresh)
         calls.clear()
         refresh.press('Enter')
         expect(result).to_contain_text('Checks refreshed from recorded observations.')
@@ -1027,9 +1027,9 @@ def live_alerts(page: Page, token: str) -> None:
     finally:
         for route in held:
             route.abort()
-        page.unroute('**/api/v3/call', hold_refresh)
-        page.unroute('**/api/v3/call', capture_refresh)
-        page.unroute('**/api/v3/call', fail_refresh)
+        unroute_call(page, hold_refresh)
+        unroute_call(page, capture_refresh)
+        unroute_call(page, fail_refresh)
         page.remove_listener('request', observe)
         page.set_viewport_size({'width': 1440, 'height': 900})
     after = live_call(page, token, 'alerts.list', {})
