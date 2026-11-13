@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import time
 
@@ -50,9 +51,9 @@ def decide(facts):
     return "merge", "reviewed head, current main, green CI, observed for at least 180 s"
 
 
-def run(repo, *args, check=True):
+def run(repo, *args, check=True, env=None, timeout=120):
     result = subprocess.run(args, cwd=repo, text=True, encoding="utf-8",
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, env=env)
     if check and result.returncode:
         # estate_merge.py prints its refusal reason as JSON on stdout; keep it in the log line.
         detail = (result.stdout.strip() or result.stderr.strip())[-400:]
@@ -145,17 +146,21 @@ def one_pass(repo, home, slug, dry_run):
         if not first:
             log(pr, "wait", "queue empty", dry_run)
             return
-        entry = re.fullmatch(r"([1-9][0-9]*)\s+([0-9a-fA-F]{40})", first.strip())
+        entry = re.fullmatch(r"([1-9][0-9]*)\s+([0-9a-fA-F]{40})(?:\s+(\S+))?", first.strip())
+        lane = None
+        if entry:
+            pr, reviewed, lane = entry.groups()
         if not entry:
-            action, reason = "park", "expected <PR> <40-hex reviewed SHA>"
+            action, reason = "park", "expected <PR> <40-hex reviewed SHA> [<lane>]"
             reviewed = "?"
+        elif lane is not None and not re.fullmatch(r"[A-Za-z0-9_-]+", lane):
+            action, reason = "park", "invalid lane: expected [A-Za-z0-9_-]+"
         else:
-            pr, reviewed = entry.groups()
             reviewed = reviewed.lower()
             seen_file = home / "mergeq.seen.json"
             seen = json.loads(seen_file.read_text(encoding="utf-8")) if seen_file.exists() else {}
             info = json.loads(run(repo, "gh", "pr", "view", pr, "--repo", slug, "--json",
-                                  "state,mergeStateStatus,headRefOid,statusCheckRollup,baseRefName,isDraft").stdout)
+                                  "state,mergeStateStatus,headRefOid,headRefName,statusCheckRollup,baseRefName,isDraft").stdout)
             age = 0
             if info["state"] == "OPEN":
                 head = info["headRefOid"]
@@ -184,6 +189,34 @@ def one_pass(repo, home, slug, dry_run):
             run(repo, *args)
             if not dry_run:
                 pop(queue, first)
+            # Tear down only the worktree that still holds this PR's branch: a lane name reused
+            # for other work while the line waited must never be removed (#1171 review).
+            branch = None
+            if lane is not None:
+                found = run(Path.cwd(), "git", "-C", str(home / "wt" / lane), "branch",
+                            "--show-current", check=False)
+                branch = found.stdout.strip() if found.returncode == 0 else None
+                if branch != info.get("headRefName"):
+                    log(pr, "teardown", f"{lane} skipped: worktree branch {branch or '(none)'} "
+                        f"is not the PR head {info.get('headRefName')}", dry_run)
+                    lane = None
+            if lane is not None:
+                # Pin PATH's Bash: Windows' process search can otherwise select WSL's bash.exe.
+                teardown = [shutil.which("bash") or "bash",
+                            str(Path(repo) / "scripts/lanes/rmwt.sh"), lane]
+                if dry_run:
+                    log(pr, "teardown", f"would run {subprocess.list2cmdline(teardown)}", True)
+                else:
+                    # The merge is already consumed: a teardown refusal must never retry it.
+                    try:
+                        # Removing a multi-GB target/ can outlast the 120 s gh timeout.
+                        result = run(Path.cwd(), *teardown, check=False, timeout=900,
+                                     env={**os.environ, "LW_HOME": str(home)})
+                        output = (result.stdout + "\n" + result.stderr).strip().splitlines()
+                        last = output[-1] if output else "(no output)"
+                        log(pr, "teardown", f"{lane} exited {result.returncode}: {last}", False)
+                    except (OSError, subprocess.SubprocessError) as exc:
+                        log(pr, "teardown", f"{lane} failed: {' '.join(str(exc).splitlines())}", False)
         elif not dry_run:
             if action == "park":
                 with (home / "mergeq.parked").open("a", encoding="utf-8") as parked:

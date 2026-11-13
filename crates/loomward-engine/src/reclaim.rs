@@ -20,7 +20,8 @@ use loomward_windows::{
 use serde::Serialize;
 use std::{
     cmp::Reverse,
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    time::Instant,
 };
 
 /// The plan's recogniser rules version (docs/52 section 3).
@@ -192,6 +193,12 @@ pub struct ReclaimPlan {
 
 /// Build the plan from catalogue reads and link observations. Pure: no I/O, no effects.
 pub fn plan(input: ReclaimInput) -> EngineResult<ReclaimPlan> {
+    plan_until(input, None)
+}
+
+/// Build advice within a caller's soft deadline, retaining already ranked candidates on a cut.
+/// The caller reserves time after this deadline to project and deliver the bounded result.
+pub fn plan_until(input: ReclaimInput, deadline: Option<Instant>) -> EngineResult<ReclaimPlan> {
     let invalid = |message: &str| EngineError::InvalidRequest {
         message: message.into(),
     };
@@ -206,45 +213,66 @@ pub fn plan(input: ReclaimInput) -> EngineResult<ReclaimPlan> {
     {
         return Err(invalid("reclaim rules version"));
     }
-    let mut partial = false;
-    let mut truncated = false;
-    let mut budget_hit = false;
+    let mut partial =
+        input.developer.iter().any(|r| r.partial) || input.machine.iter().any(|r| r.partial);
+    let mut truncated =
+        input.developer.iter().any(|r| r.truncated) || input.machine.iter().any(|r| r.truncated);
+    let mut budget_hit = input.machine.iter().any(|r| r.budget_hit);
     let mut seen = HashSet::new();
-    let mut groups: Vec<(GroupKind, Vec<ReclaimCandidate>)> = [
+    let mut groups: Vec<(GroupKind, BTreeMap<_, ReclaimCandidate>)> = [
         GroupKind::ToolOwnedCleanup,
         GroupKind::Relocate,
         GroupKind::ArchiveCandidates,
         GroupKind::Informational,
     ]
-    .map(|kind| (kind, Vec::new()))
+    .map(|kind| (kind, BTreeMap::new()))
     .into();
+    let mut rank_truncated = false;
     let mut push = |kind: GroupKind, candidate: ReclaimCandidate| {
-        groups
+        let ranked = &mut groups
             .iter_mut()
             .find(|(k, _)| *k == kind)
             .expect("four groups")
-            .1
-            .push(candidate);
+            .1;
+        ranked.insert(
+            (
+                candidate.reclaimable_bytes.is_none(),
+                Reverse(candidate.reclaimable_bytes),
+                candidate.allocated_bytes.is_none(),
+                Reverse(candidate.allocated_bytes),
+                candidate.node_id.clone(),
+            ),
+            candidate,
+        );
+        if ranked.len() > input.limit {
+            rank_truncated = true;
+            ranked.pop_last();
+        }
     };
     let relocation = |variable_or_setting| Relocation {
         variable_or_setting,
         suggested_target_volume: input.relocation_target_volume.clone(),
     };
 
-    for report in &input.developer {
+    'developer: for report in &input.developer {
         partial |= report.partial;
         truncated |= report.truncated;
         for c in &report.candidates {
+            if deadline.is_some_and(|end| Instant::now() >= end) {
+                budget_hit = true;
+                break 'developer;
+            }
             if !seen.insert(c.directory) {
                 continue;
             }
-            let (reclaimable, reason) = reclaimable(
+            let (reclaimable, reason) = reclaimable_until(
                 "project_clutter",
                 c.logical_bytes,
                 c.allocated_bytes,
                 input.files.get(&c.directory),
                 input.observed.get(&c.directory).copied(),
                 &input.volume,
+                deadline,
             )?;
             let owner_step = match c.provider {
                 "cargo" => "Use cargo clean in the owning project after review; preview it with cargo clean --dry-run.",
@@ -282,21 +310,26 @@ pub fn plan(input: ReclaimInput) -> EngineResult<ReclaimPlan> {
     }
 
     let mut bin_listed = false;
-    for report in &input.machine {
+    'machine: for report in &input.machine {
         partial |= report.partial;
         truncated |= report.truncated;
         budget_hit |= report.budget_hit;
         for c in &report.candidates {
+            if deadline.is_some_and(|end| Instant::now() >= end) {
+                budget_hit = true;
+                break 'machine;
+            }
             if !seen.insert(c.node) {
                 continue;
             }
-            let (reclaimable, reason) = reclaimable(
+            let (reclaimable, reason) = reclaimable_until(
                 c.class,
                 c.logical_bytes,
                 c.allocated_bytes,
                 input.files.get(&c.node),
                 input.observed.get(&c.node).copied(),
                 &input.volume,
+                deadline,
             )?;
             let mut evidence = vec![c.reason.to_string()];
             if c.class == "virtual_disk" {
@@ -366,21 +399,14 @@ pub fn plan(input: ReclaimInput) -> EngineResult<ReclaimPlan> {
         );
     }
 
+    truncated |= rank_truncated;
+    budget_hit |= deadline.is_some_and(|end| Instant::now() >= end);
+    partial |= budget_hit;
     let groups = groups
         .into_iter()
-        .map(|(kind, mut candidates)| {
-            candidates.sort_by_key(|c| {
-                (
-                    c.reclaimable_bytes.is_none(),
-                    Reverse(c.reclaimable_bytes),
-                    c.allocated_bytes.is_none(),
-                    Reverse(c.allocated_bytes),
-                    c.node_id.clone(),
-                )
-            });
-            truncated |= candidates.len() > input.limit;
-            candidates.truncate(input.limit);
-            ReclaimGroup { kind, candidates }
+        .map(|(kind, candidates)| ReclaimGroup {
+            kind,
+            candidates: candidates.into_values().collect(),
         })
         .collect();
     Ok(ReclaimPlan {
@@ -425,6 +451,18 @@ pub fn reclaimable(
     observed: Option<u64>,
     volume: &ReclaimVolume,
 ) -> EngineResult<(Option<u64>, Option<&'static str>)> {
+    reclaimable_until(class, logical, allocated, files, observed, volume, None)
+}
+
+fn reclaimable_until(
+    class: &str,
+    logical: Option<u64>,
+    allocated: Option<u64>,
+    files: Option<&CandidateFiles>,
+    observed: Option<u64>,
+    volume: &ReclaimVolume,
+    deadline: Option<Instant>,
+) -> EngineResult<(Option<u64>, Option<&'static str>)> {
     let unknown = |reason| Ok((None, Some(reason)));
     match class {
         "virtual_disk" => return unknown(VIRTUAL_DISK),
@@ -445,6 +483,9 @@ pub fn reclaimable(
     let mut tally = ReliefTally::default();
     let (mut logical_seen, mut allocated_seen) = (0u64, 0u64);
     for f in &files.files {
+        if deadline.is_some_and(|end| Instant::now() >= end) {
+            return unknown(RELIEF_UNOBSERVED);
+        }
         // A repeated name would inflate the names seen and could hide an outside link.
         if !names.insert(f.node_id.as_str()) {
             return unknown(RELIEF_UNOBSERVED);
@@ -468,4 +509,32 @@ pub fn reclaimable(
         Some(bytes) => (Some(bytes), None),
         None => (None, Some(RELIEF_UNOBSERVED)),
     })
+}
+
+#[cfg(test)]
+mod deadline_tests {
+    use super::*;
+
+    #[test]
+    fn an_expired_empty_plan_is_partial_and_a_generous_plan_is_unchanged() {
+        let input = ReclaimInput {
+            limit: 20,
+            ..Default::default()
+        };
+        let cut = plan_until(input.clone(), Some(Instant::now())).unwrap();
+        assert!(cut.budget_hit && cut.partial);
+        assert_eq!(cut.groups.len(), 4);
+        assert!(cut.groups.iter().all(|g| g.candidates.is_empty()));
+        assert_eq!(cut.unaccounted_bytes, None);
+        let ordinary = plan(input.clone()).unwrap();
+        let generous = plan_until(
+            input,
+            Some(Instant::now() + std::time::Duration::from_secs(60)),
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(ordinary).unwrap(),
+            serde_json::to_value(generous).unwrap()
+        );
+    }
 }
