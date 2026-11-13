@@ -166,7 +166,8 @@ well-known store locations**:
 - `%LOCALAPPDATA%\NuGet\v3-cache` and `%LOCALAPPDATA%\NuGet\Cache`
 - `%LOCALAPPDATA%\Docker` (Docker Desktop data, not the profile's `.docker` registry credentials)
 - `%LOCALAPPDATA%\Packages\<distro>\LocalState` (`<distro>` is exactly one folder and a WSL distro package: its name
-  contains `CanonicalGroupLimited.`, `Linux`, `SUSE` or `WhitewaterFoundry`; other packaged apps keep account state there)
+  starts with a known distro publisher such as `CanonicalGroupLimited.`, `TheDebianProject.`, `KaliLinux.` or
+  `46932SUSE.`; other packaged apps keep account state there and stay refused)
 - `%USERPROFILE%\.cargo\registry` and `%USERPROFILE%\.cargo\git`
 - `%USERPROFILE%\.npm\_cacache`
 - `%USERPROFILE%\.gradle\caches`

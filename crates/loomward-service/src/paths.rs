@@ -172,11 +172,16 @@ pub fn validate_profile_root(root: &Path, profile: &Path) -> Result<(), String> 
     const TOOL_STORES: [&str; 6] = ["appdata", ".cargo", ".npm", ".gradle", ".m2", ".ollama"];
     // `Packages\<name>\LocalState` is WSL distro data only for a distro package; other packaged
     // apps (mail, notes, password managers, WebView2 apps) keep account state there.
-    const WSL_PACKAGES: [&str; 4] = [
+    // Store package family names start with their publisher; unknown publishers stay refused.
+    const WSL_PACKAGES: [&str; 8] = [
         "canonicalgrouplimited.",
-        "linux",
-        "suse",
-        "whitewaterfoundry",
+        "thedebianproject.",
+        "kalilinux.",
+        "46932suse.",
+        "suse.",
+        "whitewaterfoundryltd.",
+        "oracleamericainc.",
+        "almalinuxosfoundation.",
     ];
     if parts
         .iter()
@@ -191,7 +196,7 @@ pub fn validate_profile_root(root: &Path, profile: &Path) -> Result<(), String> 
         // A tool-store parent may appear only as the cache's first component: `Temp\.cargo` is
         // a Cargo home (with `credentials.toml`) inside Temp, not Temp.
         let nested = cache.iter().skip(1).any(|part| TOOL_STORES.contains(part));
-        let distro = |name: &str| WSL_PACKAGES.iter().any(|w| name.contains(w));
+        let distro = |name: &str| WSL_PACKAGES.iter().any(|w| name.starts_with(w));
         let packaged = matches!(cache.as_slice(),
             ["appdata", "local", "packages", name, "localstate", ..] if distro(name));
         if nested
@@ -819,6 +824,7 @@ mod tests {
             ".cargo/registry/.ollama",
             // Only distro packages: other packaged apps keep account state in LocalState.
             "AppData/Local/Packages/fixture-vault/LocalState",
+            "AppData/Local/Packages/Contoso.LinuxPasswordManager_fixture/LocalState",
         ] {
             for relative in [relative.to_owned(), relative.to_uppercase()] {
                 assert_eq!(
