@@ -5,6 +5,7 @@ from contextlib import closing
 import re
 from pathlib import Path
 from playwright.sync_api import expect
+from test_app_server import route_call, unroute_call
 
 
 def run_collections(page, base: str) -> None:
@@ -223,7 +224,7 @@ def run_live_collections(page, token: str, state: Path, check) -> None:
         route.fulfill(json={'protocol': 'loomward/3', 'request_id': request['request_id'], 'ok': False,
                             'error': {'code': 'deadline_exceeded', 'message': 'Outcome unknown', 'retryable': True, 'detail': None}})
 
-    page.route('**/api/v3/call', timeout_after_commit)
+    route_call(page, timeout_after_commit)
     try:
         rows.first.get_by_role('checkbox').check()
         remove_selected.click()
@@ -235,7 +236,7 @@ def run_live_collections(page, token: str, state: Path, check) -> None:
         expect(result).to_contain_text('may already have been saved')
         check(len(uncertain_writes) == 1, 'curation: reread does not replay an uncertain write')
     finally:
-        page.unroute('**/api/v3/call', timeout_after_commit)
+        unroute_call(page, timeout_after_commit)
     check(call('grants.list', {}, 'curation_grants_after')['result'] == grants, 'curation: grants unchanged')
     with closing(sqlite3.connect(state / 'state.db')) as db:
         db.execute("INSERT INTO collection(name,kind,created_at_ns) VALUES('Read-only label view','label_view',0)")
@@ -333,7 +334,7 @@ def run_live_collection_search(page, state: Path, check, call, collection_id: st
             held.append((route, route.fetch().json()))
         else:
             route.continue_()
-    page.route('**/api/v3/call', hold_search)
+    route_call(page, hold_search)
     try:
         search.fill('curation')
         with page.expect_request(lambda request: request.method == 'POST' and request.post_data_json.get('command') == 'collections.search'):
@@ -350,7 +351,7 @@ def run_live_collection_search(page, state: Path, check, call, collection_id: st
     finally:
         for route, _ in held:
             route.abort()
-        page.unroute('**/api/v3/call', hold_search)
+        unroute_call(page, hold_search)
 
     # A transport loss unmounts the view. Its restored collection search requires a new explicit
     # scope choice; the durable collection ID in the route is not a session authorization.
@@ -361,7 +362,7 @@ def run_live_collection_search(page, state: Path, check, call, collection_id: st
             route.abort('failed')
         else:
             route.continue_()
-    page.route('**/api/v3/call', disconnect_once)
+    route_call(page, disconnect_once)
     try:
         search.fill('curation')
         search.press('Enter')
@@ -372,14 +373,14 @@ def run_live_collection_search(page, state: Path, check, call, collection_id: st
         search.press('Enter')
         expect(rows).to_have_count(2)
     finally:
-        page.unroute('**/api/v3/call', disconnect_once)
+        unroute_call(page, disconnect_once)
 
     def old_engine(route):
         response = route.fetch().json()
         if route.request.post_data_json['command'] == 'session.hello' and response.get('ok'):
             response['result']['features'].pop('collection_search', None)
         route.fulfill(json=response)
-    page.route('**/api/v3/call', old_engine)
+    route_call(page, old_engine)
     try:
         page.reload()
         expect(scope).to_be_visible()
@@ -388,6 +389,6 @@ def run_live_collection_search(page, state: Path, check, call, collection_id: st
         page.get_by_role('link', name='Collections', exact=True).click()
         expect(page.get_by_role('link', name='Search direct members', exact=True)).to_have_count(0)
     finally:
-        page.unroute('**/api/v3/call', old_engine)
+        unroute_call(page, old_engine)
     page.reload()
     print('PASS native collection search: scope/filter pages, honest unavailable counts, inspection, keyboard cross-page subset retention/reload, late cancellation, reconnect refusal, old-engine absence and narrow layout')

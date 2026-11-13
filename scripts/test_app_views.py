@@ -19,7 +19,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from playwright.sync_api import Page, expect
-from test_app_server import ThreadingHTTPServer
+from test_app_server import ThreadingHTTPServer, route_call, unroute_call
 
 ROOT = Path(__file__).resolve().parents[1]
 # The same directory test_app.py builds (.loomward/app-e2e). test_app.py also assigns this before running any leg,
@@ -1210,13 +1210,13 @@ def check_backups_update(page: Page, engine: FakeEngine, *, baseline: bool = Fal
                     route.abort('failed')
                 else:
                     route.continue_()
-            page.route('**/api/v3/call', fail_import)
+            route_call(page, fail_import)
             try:
                 choose.click()
                 expect(page.get_by_role('status', name='Session status')).to_contain_text('unavailable', ignore_case=True)
                 ok(engine.backups == original, 'pre-dispatch transport error keeps stored evidence')
             finally:
-                page.unroute('**/api/v3/call', fail_import)
+                unroute_call(page, fail_import)
         reopen(); update.click()
 
         snapshot.fill('3' * 64)
@@ -1371,8 +1371,38 @@ def check_wait_until_dispatches_routes(browser) -> None:
         engine.stop()
 
 
+def check_unroute_waits_for_inflight_handler(browser) -> None:
+    """A handler still awaiting upstream work when its route is removed must finish cleanly (run 43362934378)."""
+    engine = FakeEngine()
+    engine.start()
+    page = browser.new_page()
+    entered = []
+    try:
+        page.goto(engine.base)
+        def slow(route):
+            entered.append(True)
+            page.wait_for_timeout(400)  # yields to the dispatcher, as route.fetch() does
+            route.fulfill(status=200, content_type='text/plain', body='late')
+        url = engine.base + '/slow-probe'
+        route_call(page, slow, url)
+        try:
+            route_call(page, slow, url)
+            raise AssertionError('route_call must refuse a second routed handler')
+        except AssertionError as e:
+            ok('still routed' in str(e), 'route_call refuses a second handler, so the waiting removal cannot drop another')
+        page.evaluate("url => { window.slowProbe = fetch(url).then(r => r.text(), e => 'error: ' + e); }", url)
+        wait_until(page, lambda: bool(entered), timeout_ms=1500)
+        unroute_call(page, slow)
+        page.wait_for_timeout(600)  # a late 'Route is already handled!' would surface on this call
+        ok(page.evaluate('window.slowProbe') == 'late', 'removing a route waits for its in-flight handler to fulfil')
+    finally:
+        page.close()
+        engine.stop()
+
+
 def check_resource_trends(browser) -> None:
     check_wait_until_dispatches_routes(browser)
+    check_unroute_waits_for_inflight_handler(browser)
     engine = FakeEngine()
     engine.process_error = ''
     engine.trend_mode = 'gap'
