@@ -673,6 +673,160 @@ fn roots_list_keeps_a_root_mid_scan_with_unknown_totals() {
     assert_eq!(roots["roots"][0]["grant_state"], "active");
 }
 
+/// #1159: finishing a run does not turn an unobserved aggregate into an empty tree.
+#[test]
+fn roots_list_partial_totals_require_observations() {
+    for (listing, files, end, known) in [
+        (None, 0, "cancelled", false),
+        (None, 0, "failed", false),
+        (None, 0, "partial", false),
+        (Some("denied"), 0, "partial", false),
+        (Some("partial"), 0, "partial", false),
+        (Some("partial"), 1, "partial", true),
+        (Some("denied"), 1, "partial", true),
+        (Some("complete"), 0, "partial", false),
+        (Some("complete"), 0, "completed", true),
+    ] {
+        let tmp = temp_root();
+        let svc = open(tmp.path(), DatasetClass::Synthetic);
+        let writer = svc.inner.catalog.writer();
+        let WriteReply::Root {
+            grant_id, dir_id, ..
+        } = writer
+            .call(WriteCommand::RegisterRoot(RootObservation {
+                volume_guid: None,
+                volume_key: "fixture".into(),
+                display_name: "Synthetic".into(),
+                display_path: "Synthetic root".into(),
+                root_file_id: Some(vec![1; 16]),
+                filesystem: Some("NTFS".into()),
+                origin: "fixture".into(),
+                granted_via: "fixture".into(),
+                observed_at_ns: 0,
+            }))
+            .unwrap()
+        else {
+            panic!("register root")
+        };
+        let WriteReply::Run(run_id) = writer
+            .call(WriteCommand::BeginRun {
+                grant_id,
+                mode: "full".into(),
+                strategy: "fixture".into(),
+                started_at_ns: 0,
+            })
+            .unwrap()
+        else {
+            panic!("begin run")
+        };
+        if let Some(state) = listing {
+            writer
+                .call(WriteCommand::DirListing(DirListing {
+                    run_id,
+                    dir_id,
+                    files: (0..files)
+                        .map(|_| Observation::file("ordinary.bin", 7, Some(8)))
+                        .collect(),
+                    dirs: if state == "complete" && end == "partial" {
+                        // A complete root listing cannot establish totals for an unvisited child.
+                        vec![Observation::file("unvisited", 0, Some(0))]
+                    } else {
+                        vec![]
+                    },
+                    state: state.into(),
+                    skipped: 0,
+                    errors: u64::from(state == "denied"),
+                }))
+                .unwrap();
+        }
+        writer
+            .call(WriteCommand::EndRun {
+                run_id,
+                state: end.into(),
+                finished_at_ns: 1,
+            })
+            .unwrap();
+        let (roots, _) = ok("roots.list", call(&svc, "roots.list", json!({})));
+        let root = &roots["roots"][0];
+        assert_eq!(
+            root["scan"]["state"],
+            if end == "completed" {
+                "complete"
+            } else {
+                "partial"
+            }
+        );
+        assert_eq!(
+            !root["totals"].is_null(),
+            known,
+            "{listing:?}/{end}: {root}"
+        );
+        let detail = svc
+            .inner
+            .catalog
+            .reader()
+            .unwrap()
+            .inspect(loomward_catalog::NodeKey::Dir(dir_id))
+            .unwrap();
+        assert_eq!(
+            detail.subtree.is_some(),
+            known,
+            "catalogue: {listing:?}/{end}"
+        );
+        assert_eq!(detail.row.files.is_some(), known);
+        assert_eq!(detail.row.logical_bytes.is_some(), known);
+        assert_eq!(detail.row.allocated_bytes.is_some(), known);
+        if listing == Some("denied") {
+            assert_eq!(detail.row.coverage, "denied");
+        }
+        if known {
+            assert_eq!(root["totals"]["files"], files);
+            assert_eq!(root["totals"]["logical_bytes"], (files * 7).to_string());
+        }
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn scan_worktree_folders_count_ordinary_files_and_keep_partial_counts() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    svc.inner.freshness.pause_pump();
+    for child in ["worktree-a", "worktree-b", "worktree-c"] {
+        let path = lab.path.join(child);
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(path.join("ordinary.bin"), [0; 7]).unwrap();
+        for folder in [".claude", ".codex", ".agent-harness"] {
+            std::fs::create_dir(path.join(folder)).unwrap();
+            std::fs::write(path.join(folder).join("synthetic.bin"), [0; 7]).unwrap();
+        }
+    }
+    for partial in [false, true] {
+        if partial {
+            // The walk's actual name exclusion supplies a deterministic coverage gap.
+            std::fs::create_dir(lab.path.join(".loomward")).unwrap();
+            std::fs::write(lab.path.join(".loomward").join("excluded.bin"), [0; 99]).unwrap();
+        }
+        let job = start(svc, &lab.root, "full");
+        let done = settle(svc, &job);
+        assert_eq!(done["state"], "completed", "{done:?}");
+        assert_eq!(
+            done["coverage"],
+            if partial { "partial" } else { "complete" }
+        );
+        let (roots, _) = ok("roots.list", call(svc, "roots.list", json!({})));
+        let root = &roots["roots"][0];
+        assert_eq!(
+            root["scan"]["coverage"],
+            if partial { "partial" } else { "complete" }
+        );
+        assert_eq!(root["totals"]["files"], 17);
+        assert_eq!(root["totals"]["logical_bytes"], "249");
+        assert_eq!(root["totals"]["complete"], !partial);
+        assert_eq!(root["totals"]["skipped"], u64::from(partial));
+    }
+}
+
 /// #722: several large roots cannot push `roots.list` past its deadline. Each root's unique
 /// totals get a share of the budget; a root past its share reports them unknown, the stored
 /// aggregates stay exact, and a small root is still measured exactly.
@@ -5564,7 +5718,14 @@ fn f3_limited_full_scan_stays_stale_until_an_unlimited_pass() {
         assert_eq!(scan["coverage"], "partial");
         assert!(!scan["finished_at"].is_null(), "{scan:?}");
         assert!(!scan["generation"].is_null(), "{scan:?}");
-        assert_eq!(roots["roots"][0]["totals"]["complete"], false);
+        let totals = &roots["roots"][0]["totals"];
+        let observed_files = job["progress"]["indexed_files"].as_u64().unwrap();
+        if observed_files == 0 {
+            assert!(totals.is_null(), "unestablished aggregate: {totals}");
+        } else {
+            assert_eq!(totals["files"], observed_files);
+            assert_eq!(totals["complete"], false);
+        }
         let (alerts, _) = ok("alerts.list", call(svc, "alerts.list", json!({})));
         let growth = alerts["items"]
             .as_array()
