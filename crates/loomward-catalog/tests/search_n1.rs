@@ -37,6 +37,10 @@ fn pairing_reports_matching_pages_and_budget_cut_divergence() {
         json!({"counted_budget_hit":true,"counted_hits":0,"counted_has_cursor":true,
             "paired":false,"unpaired_reason":"budget_cut_diverged"})
     );
+    // The cursor position is the pass as well as the key (#1173 review).
+    counted = timed.clone();
+    counted.next_cursor.as_mut().unwrap().pass = 1;
+    assert_eq!(search_pairing::pairing(&timed, &counted)["paired"], false);
     counted = timed.clone();
     counted.budget_hit = false;
     assert_eq!(search_pairing::pairing(&timed, &counted)["paired"], false);
