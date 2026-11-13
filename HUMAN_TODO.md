@@ -4,6 +4,17 @@ Only actions an agent cannot safely complete belong here: accounts, agreements, 
 spending, real-machine permissions, or a material product choice. Agents check an item off only
 when completion is directly verified; never infer a human decision.
 
+## Open now (2026-11-13; details in each item below)
+
+- **q-19** (owner action): dismiss Dependabot alert 1 as not reachable; measured still `open` on 2026-11-13.
+- **q-22** (owner action): connect CLA Assistant and read `CLA.md` before the first outside contribution.
+- **q-45** (owner actions): install the preview and nightly; FAT/exFAT stick and real-picker tests; the diagnostic
+  bundle save and overwrite witness (#437). Its CLA and Dependabot lines are q-22 and q-19.
+- **q-47**: not yet asked (elevated helper launch model, Everything results outside the grants, the Store privacy
+  page). Three questions took their recorded defaults on expiry (2026-10-25); the owner can reopen any of them.
+- **q-5**: answered; waits on the teacher broker's enforcement canaries, then the `sensitive_data` overlay.
+- **q-6**: not yet needed (an elevated firewall rule when LW-111 reaches it).
+
 ## q-1 — Confirm the T1 sandbox tier — CONFIRMED 2026-10-10, CLOSED
 
 Declared T1 (push and merge free) on 2026-10-09 with no production signals. Proposed promotion
@@ -414,13 +425,16 @@ they reach the cockpit when that PR merges. Answer there or in chat. Still not a
   Windows 11 Home, without Hyper-V), a power pull on a disposable machine, or neither yet (copy stays lab-only).
   Recommended: Hyper-V. Gate G5 stays shut until one is done.
   ANSWERED 2026-10-25 in chat: (a) Hyper-V VM. Hyper-V was already enabled on the desktop (measured: vmms running); the test VM and image live on E: (owner, same chat). G5 lane follows.
-- [ ] **loomward-copy-destination-shape** (Q3): v1 new folder only (recommended, built), or also into an existing
+- [x] **loomward-copy-destination-shape** (Q3): v1 new folder only (recommended, built), or also into an existing
   folder with new names only. Defaults to new folder only on 2026-10-24 if unanswered (reversible).
-- [ ] **loomward-ask-local-preview** (docs/46 Q3, posed 2026-10-17 in agent-hq#461): for a model on this machine, is
+  DEFAULT APPLIED 2026-10-25 on expiry (agent-hq `decisions/loomward-copy-destination-shape.json`, `default_on_expiry` a): new folder only. A default, not the owner's answer; the owner can reopen it.
+- [x] **loomward-ask-local-preview** (docs/46 Q3, posed 2026-10-17 in agent-hq#461): for a model on this machine, is
   the per-folder grant enough (recommended, what the local provider #556 and the Ask panel #409 build), or also a preview
   before every request? Defaults to the grant only on 2026-10-24 if unanswered (reversible).
-- [ ] **loomward-ask-retention** (docs/46 Q4, posed 2026-10-17 in agent-hq#461): keep Ask conversations until you
+  DEFAULT APPLIED 2026-10-25 on expiry (agent-hq `decisions/loomward-ask-local-preview.json`, `default_on_expiry` a): the grant only. A default, not the owner's answer; the owner can reopen it.
+- [x] **loomward-ask-retention** (docs/46 Q4, posed 2026-10-17 in agent-hq#461): keep Ask conversations until you
   delete them (recommended; Forget cascades) or delete them after N days. Defaults to keep on 2026-10-24 if unanswered.
+  DEFAULT APPLIED 2026-10-25 on expiry (agent-hq `decisions/loomward-ask-retention.json`, `default_on_expiry` a): keep until deleted. A default, not the owner's answer; the owner can reopen it.
 - Find & Ask, not asked yet (docs/46 section 11 names each question's trigger lane):
   - the elevated helper's launch model;
   - Everything results outside the grants (hidden is recommended).
@@ -450,7 +464,7 @@ Also answered in the same chat (agent questions, recorded so they bind):
 - [x] Owner runs the deep-research prompt in ChatGPT Pro and drops the report into `docs/research/`.
   Done 2026-10-25: `docs/research/deep-research-report-storage-2026-10.md` (#867); reconciled in docs/51.
 
-### q-49 — Research programme (docs/51) — POSED 2026-10-25 (agent-hq inbox, lane `loomward-research`)
+### q-49 — Research programme (docs/51) — POSED 2026-10-25, all five ANSWERED by 2026-10-31, CLOSED
 
 The research lane reconciled the deep-research report with the repository ([docs/51](docs/51-research-programme.md),
 section 9). Five questions only you can answer; none blocks the read-only work (reclaim planner, categoriser contract):
@@ -459,7 +473,7 @@ section 9). Five questions only you can answer; none blocks the read-only work (
 - [x] **loomward-power-loss-hardware**: ANSWERED 2026-10-26 (a): "Hyper-V only (Recommended)"
 - [x] **loomward-categoriser-model-downloads**: ANSWERED 2026-10-26 (Other): "If space allows it and using the slower disks is not a problem for this, you can research and download all the models you want, there are definitely some interesting ones similar to the ternary bonsai 2 (not sure if that's the best, I'm just naming a type of model that is efficient when it comes to resources used, which is good for this application)"
 
-- [ ] **loomward-model-runtime: How should agents run the downloaded small models for the categoriser screen?**
+- [x] **loomward-model-runtime: How should agents run the downloaded small models for the categoriser screen?**
   - (a) Agents download the official llama.cpp Windows build to E: and run llama-server on 127.0.0.1 for benchmarks (recommended): Agents fetch llama-b11890-bin-win-vulkan-x64.zip from ggml-org's GitHub releases to E:\loomward-models\runtime, record its hash, and run llama-server bound to 127.0.0.1 only while benchmarking. LM Studio is untouched.
     + Runs every candidate, including Bonsai 2 and Laya; + Leaves your LM Studio library alone; - Runs a downloaded executable on your machine
   - (b) Use LM Studio: agents add the models to its library and use its local server: Agents import the downloaded models into LM Studio (links, not copies) and benchmark through its 127.0.0.1 server. Bonsai 2 and Laya wait for an LM Studio update.
@@ -469,8 +483,9 @@ section 9). Five questions only you can answer; none blocks the read-only work (
   - Why: It is the official upstream build, runs all candidates, binds to localhost only, and leaves your own LM Studio setup untouched.
   - Why an agent may not decide: It downloads and runs an executable, which the owner's model-download answer did not cover.
   - Source: `decisions/loomward-model-runtime.json`
+  - ANSWERED 2026-10-31 in chat (Other), as recorded verbatim in that agent-hq decision (its line break shown as /): "image generation jobs, local LLM models use, Blender, Video and image editing, and other things that might require the dedicated GPU are all permitted, but only one can be done at the time for smart resource use / For Loomward, LAS, local models operations, and other repos and projects: new tools, models, files, resources, etc can be downloaded and used if needed"
 
-### q-50 — Disk survey setup — POSED 2026-10-26 (agent-hq inbox, owner action)
+### q-50 — Disk survey setup — POSED and ANSWERED 2026-10-26, done the same day, CLOSED
 
 The external-disk lane shipped USB scan roots, the read-only `loomward-mcp` server with space tools and `plan_archive`,
 and the Agent access view (docs/48). Only you can grant whole volumes (q-7):
