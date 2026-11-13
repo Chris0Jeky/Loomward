@@ -10,5 +10,5 @@ while true; do
 done
 for lane in "$@"; do
   printf '%s: ' "$lane"
-  grep '^EXIT ' "$LW_HOME/logs/$lane.log" 2>/dev/null || echo running
+  grep -a '^EXIT ' "$LW_HOME/logs/$lane.log" 2>/dev/null || echo running
 done

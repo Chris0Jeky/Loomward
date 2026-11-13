@@ -84,6 +84,7 @@ const FILETIME_UNIX_EPOCH: i64 = 116_444_736_000_000_000;
 #[cfg(windows)]
 struct Tracked {
     restart: Restart,
+    pace: RefreshPace,
     opening: bool,
     #[cfg(windows)]
     watch: Option<Arc<loomward_windows::watch::Watcher>>,
@@ -106,6 +107,69 @@ struct Tracked {
     // The bit witnesses targeted hint coverage; the final value retains the pre-run filter boundary.
     started: Option<(u64, Option<Bookmark>, bool, i64)>,
     completed: Option<(u64, Option<Bookmark>, bool)>,
+}
+
+/// Automatic refreshes wait at least sixty seconds after the previous pass settles. A refresh
+/// can outlast any fixed interval counted from its start, causing back-to-back passes on churn.
+/// A root that re-dirties inside its current interval doubles it, capped at fifteen minutes.
+/// These limits survive settlement; explicit owner scans do not use this clock.
+/// Owner-pre-empted passes refund the interval with their attempt, so deferred work can resume.
+#[cfg(windows)]
+const AUTO_REFRESH_MIN_INTERVAL: Duration = Duration::from_secs(60);
+#[cfg(windows)]
+const AUTO_REFRESH_MAX_INTERVAL: Duration = Duration::from_secs(15 * 60);
+/// Coalesce hints for 500 ms of quiet, but stop debouncing after twenty seconds of pending
+/// work. The fixed pending boundary never moves with newer hints, so churn cannot starve scans.
+#[cfg(windows)]
+const AUTO_REFRESH_QUIET: Duration = Duration::from_millis(500);
+#[cfg(windows)]
+const AUTO_REFRESH_MAX_WAIT: Duration = Duration::from_secs(20);
+
+#[cfg(windows)]
+struct RefreshPace {
+    last_settled: Option<Instant>,
+    interval: Duration,
+    pending_since: Option<Instant>,
+}
+
+#[cfg(windows)]
+impl Default for RefreshPace {
+    fn default() -> Self {
+        Self {
+            last_settled: None,
+            interval: AUTO_REFRESH_MIN_INTERVAL,
+            pending_since: None,
+        }
+    }
+}
+
+#[cfg(windows)]
+impl RefreshPace {
+    fn ready(&mut self, now: Instant, changed: Instant) -> bool {
+        if self.pending_since.is_none() {
+            self.pending_since = Some(now);
+            self.interval = match self.last_settled {
+                Some(last) if changed < last + self.interval => {
+                    (self.interval * 2).min(AUTO_REFRESH_MAX_INTERVAL)
+                }
+                _ => AUTO_REFRESH_MIN_INTERVAL,
+            };
+        }
+        self.last_settled
+            .is_none_or(|last| now >= last + self.interval)
+            && (now.saturating_duration_since(changed) >= AUTO_REFRESH_QUIET
+                || now.saturating_duration_since(self.pending_since.unwrap())
+                    >= AUTO_REFRESH_MAX_WAIT)
+    }
+
+    fn admitted(&mut self) {
+        self.pending_since = None;
+    }
+
+    fn settled(&mut self, now: Instant) {
+        self.last_settled = Some(now);
+        self.pending_since = None;
+    }
 }
 
 /// Retry history survives recovery so a flapping root cannot reset the hourly limit.
@@ -194,6 +258,11 @@ impl Tracker {
         root.job = None;
         root.full = false;
         root.changed = Instant::now() - Duration::from_secs(1);
+        // This fixture explicitly makes the next refresh due: expire its per-root interval
+        // as well as the quiet period, without changing production admission or retry history.
+        // (Clearing it rather than back-dating it: `Instant::now() - 15 min` panics on a host
+        // that booted less than 15 minutes ago, such as a fresh CI runner.)
+        root.pace.last_settled = None;
     }
     #[cfg(all(test, windows))]
     pub(crate) fn unclaimed(&self, row: i64) -> bool {
@@ -629,6 +698,7 @@ impl Inner {
             root.attempts = 0;
             root.retry_after = None;
             if epoch == root.epoch {
+                root.pace.pending_since = None;
                 root.at = now_ns();
                 root.stale_since = None;
                 root.restart.recovered();
@@ -780,6 +850,7 @@ fn ensure_roots_with_clock(inner: &Arc<Inner>, now: impl Fn() -> Instant) {
                 row.root,
                 Tracked {
                     restart: Restart::default(),
+                    pace: RefreshPace::default(),
                     opening: false,
                     watch: None,
                     checkpoint: Arc::default(),
@@ -1020,6 +1091,7 @@ fn replay(
         root.targets = targets;
         if root.targets.is_empty() && root.epoch == epoch {
             root.stale_since = None;
+            root.pace.pending_since = None;
             root.restart.recovered();
             root.at = now_ns();
             root.caught_up = true;
@@ -1039,6 +1111,28 @@ fn replay(
     // Wrapped/recreated/unsupported journals and read budgets are loss of coverage, never empty.
     root.full = true;
     root.auto = false;
+}
+
+#[cfg(windows)]
+fn automatic_now(inner: &Inner) -> Instant {
+    #[cfg(test)]
+    if let Some(now) = *inner.hooks.automatic_clock.lock().unwrap() {
+        return now;
+    }
+    #[cfg(not(test))]
+    let _ = inner;
+    Instant::now()
+}
+
+#[cfg(windows)]
+fn pace_ready(inner: &Inner, root: &mut Tracked) -> bool {
+    // Tests that do not drive the automatic clock keep the bare quiet-period gate they were
+    // written against; the f3_issue1158 tests set the clock and exercise the pacing itself.
+    #[cfg(test)]
+    if inner.hooks.automatic_clock.lock().unwrap().is_none() {
+        return root.changed.elapsed() >= AUTO_REFRESH_QUIET;
+    }
+    root.pace.ready(automatic_now(inner), root.changed)
 }
 
 #[cfg(windows)]
@@ -1081,6 +1175,10 @@ pub(crate) fn refresh(inner: &Inner) {
                     // Owner pre-emption is deferred work, not a failed automatic attempt.
                     if job.state == loomward_protocol::JobState::Cancelled {
                         root.attempts = root.attempts.saturating_sub(1);
+                        // Resume the interrupted pass when the owner releases the pool.
+                        root.pace = RefreshPace::default();
+                    } else {
+                        root.pace.settled(automatic_now(inner));
                     }
                 }
                 root.job = None;
@@ -1089,7 +1187,7 @@ pub(crate) fn refresh(inner: &Inner) {
                 || !root.auto
                 || root.attempts >= 3
                 || root.stale_since.is_none()
-                || root.changed.elapsed() < Duration::from_millis(500)
+                || !pace_ready(inner, root)
             {
                 continue;
             }
@@ -1172,6 +1270,7 @@ pub(crate) fn refresh(inner: &Inner) {
         if let Some(root) = inner.freshness.roots.lock().unwrap().get_mut(&row.root) {
             match job {
                 Ok(job) => {
+                    root.pace.admitted();
                     root.job = Some(job.job_id);
                 }
                 // Admission refusal is deferred work; no run failed or consumed a retry.
@@ -1295,6 +1394,7 @@ mod tests {
             row,
             Tracked {
                 restart: Restart::default(),
+                pace: RefreshPace::default(),
                 opening: false,
                 watch: None,
                 checkpoint: Arc::default(),
@@ -1462,6 +1562,7 @@ mod tests {
                 root_id,
                 Tracked {
                     restart: Restart::default(),
+                    pace: RefreshPace::default(),
                     opening: false,
                     watch: None,
                     checkpoint: Arc::default(),

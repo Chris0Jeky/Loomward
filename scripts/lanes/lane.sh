@@ -10,6 +10,10 @@ mkdir -p "$LW_HOME/logs"
 unset CARGO_TARGET_DIR
 export CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=line-tables-only
 export CARGO_PROFILE_TEST_DEBUG=line-tables-only CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-3}
+# The Codex sandbox cannot write the user Temp (lw1159, 2026-11-13: the same test binary failed under it
+# and passed with a worktree-local temp). Keep lane temp under target/ so rmwt.sh removes it with the lane (#1160).
+export TMP="$LW_HOME/wt/$lane/target/lane-tmp" TEMP="$LW_HOME/wt/$lane/target/lane-tmp"
+[[ -f "$LW_HOME/wt/$lane/.git" ]] && mkdir -p "$TMP"
 {
   if [[ -r "$DIR/brief.md" && -r "$LW_HOME/prompts/${P:-$lane}.md" ]]; then
     cat "$DIR/brief.md" "$LW_HOME/prompts/${P:-$lane}.md" |
