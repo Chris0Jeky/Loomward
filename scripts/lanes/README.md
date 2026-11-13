@@ -36,5 +36,8 @@ py -3 scripts/lanes/merge_queue.py
 # After merge, stop the loop and remove from another worktree:
 bash scripts/lanes/rmwt.sh example
 ```
+Smoke-tested 2026-11-13 (KRASPYON): `lane.sh` with a fresh `mkwt.sh` worktree ran `cargo test -p loomward-core`
+under the wrapper's workspace-write sandbox, 30 passed, in the worktree's own `target/`. The sandbox has no network:
+cargo needs a warm `~/.cargo` registry, so run `cargo fetch` in the worktree first when dependencies change.
 Machine-local under `LW_HOME`: `logs/`, `prompts/`, soak runs, `wt/`,
 `mergeq.txt`, `mergeq.parked`, `mergeq.seen.json` and `logs/queue.lanes`.
