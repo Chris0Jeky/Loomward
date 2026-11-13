@@ -835,7 +835,7 @@ queued PRs below are recorded in their PRs.
 | #1166 | Grant fence: tool caches grantable at known cache folders; credential/browser stores always refused | #1157 (items 1-2) | Sol + Opus | queued, reviewed (3 lenses) |
 | #1167 | An unestablished zero aggregate reads unknown, not 0 (`roots.list`, tree, search) | #1159 (items 1-2) | Sol + Opus | queued, reviewed |
 | #1171 | The merge queue tears a lane down after merging it, only if the worktree still holds the PR branch | #1160 (item 1) | Sol + Opus | queued, reviewed |
-| #1172 | `reclaim.plan` returns a partial plan with `budget_hit` at its deadline (1 M-file synthetic: unused unique-totals root inspection was 863 ms of 0.7 ms) | #1156 | Sol + Opus | queued, reviewed |
+| #1172 | `reclaim.plan` returns a partial plan with `budget_hit` at its deadline (1 M-file synthetic: the root inspection took 863 ms computing unused unique totals; metadata-only it takes 0.7 ms) | #1156 | Sol + Opus | queued, reviewed |
 | #1173 | Explicit timed/counted search pairing; duplicate-read revocation linearisation point pinned at the final gate acquisition | #762 | Sol | queued, reviewed |
 | #1174 | `copy.approve` refuses once a preview grant is revoked (synthetic lab copy only) | #851 (approve item) | Sol | queued, reviewed (2 lenses) |
 
