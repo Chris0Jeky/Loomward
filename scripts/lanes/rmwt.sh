@@ -17,8 +17,8 @@ if [ -d "$WT" ]; then
   [ "$(git -C "$WT" rev-parse --path-format=absolute --git-common-dir)" = \
     "$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir)" ] || { echo 'different repository' >&2; exit 3; }
   case "$(pwd -P)/" in "$WT/"*) echo 'cannot remove current worktree' >&2; exit 3;; esac
-  git -C "$WT" status --porcelain --ignored
-  [ -z "$(git -C "$WT" status --porcelain)" ] || { echo 'work remains in worktree' >&2; exit 3; }
+  git -c core.fscache=false -C "$WT" status --porcelain --ignored
+  [ -z "$(git -c core.fscache=false -C "$WT" status --porcelain)" ] || { echo 'work remains in worktree' >&2; exit 3; }
   [ ! -L "$WT/app" ] || { echo 'app is a symlink' >&2; exit 3; }
   for path in "$WT/target" "$WT/app/node_modules" "$WT/app/dist" "$WT/.loomward"; do
     [ ! -L "$path" ] || { echo "refusing symlink $path" >&2; exit 3; }

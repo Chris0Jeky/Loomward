@@ -1873,6 +1873,140 @@ impl NativeSource {
 #[cfg(test)]
 mod cancellation_tests {
     use super::*;
+    // Only owns synthetic directories made by create_boundary_directory.
+    struct BoundaryTree(tempfile::TempDir);
+
+    impl BoundaryTree {
+        fn path(&self) -> &Path {
+            self.0.path()
+        }
+    }
+
+    impl Drop for BoundaryTree {
+        fn drop(&mut self) {
+            if let Err(error) = remove_boundary_children(self.path()) {
+                // Never double-panic while unwinding a failed fixture assertion.
+                eprintln!("boundary fixture cleanup failed: {error}");
+            }
+        }
+    }
+
+    // Shorten from the top before descending: the original leaf may be beyond
+    // even the extended Win32 path limit. Delete the shortened tree bottom-up.
+    fn remove_boundary_children(path: &Path) -> std::io::Result<()> {
+        let entries = std::fs::read_dir(path)?.collect::<std::io::Result<Vec<_>>>()?;
+        for entry in entries {
+            let short = path.join("d");
+            if entry.path() != short {
+                std::fs::rename(entry.path(), &short)?;
+            }
+            remove_boundary_children(&short)?;
+            std::fs::remove_dir(short)?;
+        }
+        Ok(())
+    }
+
+    // Create synthetic children relative to handles, so fixture construction
+    // does not hit CreateDirectoryW's separate full-path limit (#770).
+    fn create_boundary_directory(parent: &File, name: &str) -> Result<File, i32> {
+        use windows_sys::Wdk::Storage::FileSystem::{FILE_CREATE, FILE_DIRECTORY_FILE};
+        let mut name: Vec<_> = name.encode_utf16().collect();
+        assert!(!name.is_empty() && name.len() <= 255);
+        let unicode = UNICODE_STRING {
+            Length: (name.len() * 2) as u16,
+            MaximumLength: (name.len() * 2) as u16,
+            Buffer: name.as_mut_ptr(),
+        };
+        let attributes = OBJECT_ATTRIBUTES {
+            Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
+            RootDirectory: parent.as_raw_handle(),
+            ObjectName: &unicode as *const _ as *mut _,
+            Attributes: 0,
+            SecurityDescriptor: null_mut(),
+            SecurityQualityOfService: null_mut(),
+        };
+        let mut status: IO_STATUS_BLOCK = unsafe { zeroed() };
+        let mut handle = null_mut();
+        let code = unsafe {
+            NtCreateFile(
+                &mut handle,
+                FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                &attributes,
+                &mut status,
+                null(),
+                0,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                FILE_CREATE,
+                FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+                null(),
+                0,
+            )
+        };
+        if code < 0 {
+            Err(code)
+        } else {
+            Ok(unsafe { File::from_raw_handle(handle) })
+        }
+    }
+
+    #[test]
+    fn boundary_tree_cleanup_survives_return_and_panics() {
+        use std::{fs::OpenOptions, os::windows::fs::OpenOptionsExt, panic};
+
+        let root = super::super::tests::canonical_tempdir();
+        // Partial construction, a full boundary tree, and normal scope exit.
+        for (levels, should_panic) in [(3, true), (260, true), (260, false)] {
+            let result = panic::catch_unwind(|| {
+                let tree = BoundaryTree(tempfile::tempdir_in(root.path()).unwrap());
+                let mut parent = OpenOptions::new()
+                    .read(true)
+                    .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_NO_RECALL)
+                    .open(tree.path())
+                    .unwrap();
+                let mut appended = 0;
+                for _ in 0..levels {
+                    match create_boundary_directory(&parent, &"x".repeat(127)) {
+                        Ok(child) => {
+                            parent = child;
+                            appended += 128;
+                        }
+                        Err(code) => {
+                            assert!(matches!(
+                                code,
+                                STATUS_OBJECT_NAME_INVALID
+                                    | STATUS_NAME_TOO_LONG
+                                    | STATUS_INTEGER_OVERFLOW
+                                    | STATUS_BUFFER_TOO_SMALL
+                            ));
+                            break;
+                        }
+                    }
+                }
+                if levels > 3 {
+                    // A filesystem that stops the chain earlier still proves cleanup, but not past
+                    // the Win32 limit: say so, as the boundary test does, instead of failing (#1177).
+                    if appended <= 32_000 {
+                        eprintln!("SKIPPED beyond-limit depth: chain stopped at {appended} units");
+                    }
+                    // Fill the final partial component up to the handle-relative limit.
+                    for length in (1..128).rev() {
+                        if let Ok(child) = create_boundary_directory(&parent, &"z".repeat(length)) {
+                            drop(child);
+                        }
+                    }
+                }
+                assert!(!should_panic, "synthetic fixture panic");
+            });
+            let empty = std::fs::read_dir(root.path()).unwrap().next().is_none();
+            // Rescue a failing regression so even the red test cannot strand a tree.
+            if !empty {
+                remove_boundary_children(root.path()).unwrap();
+            }
+            assert_eq!(result.is_err(), should_panic);
+            assert!(empty, "boundary fixture survived scope exit");
+        }
+    }
+
     #[test]
     fn volume_binding_handles_guid_path_longer_than_initial_buffer() {
         use std::{fs::OpenOptions, os::windows::fs::OpenOptionsExt};
@@ -1880,7 +2014,7 @@ mod cancellation_tests {
             eprintln!("SKIP: native enumeration requires a non-elevated token");
             return;
         }
-        let tree = super::super::tests::canonical_tempdir();
+        let tree = BoundaryTree(super::super::tests::canonical_tempdir());
         let open = |path: &Path| {
             OpenOptions::new()
                 .read(true)
@@ -1926,48 +2060,6 @@ mod cancellation_tests {
             // Probe construction's own limit as well as the query limit.
             32768 - relative_units,
         ];
-        // Create synthetic children relative to handles, so fixture construction
-        // does not hit CreateDirectoryW's separate full-path limit (#770).
-        let create = |parent: &File, name: &str| {
-            use windows_sys::Wdk::Storage::FileSystem::{FILE_CREATE, FILE_DIRECTORY_FILE};
-            let mut name: Vec<_> = name.encode_utf16().collect();
-            assert!(!name.is_empty() && name.len() <= 255);
-            let unicode = UNICODE_STRING {
-                Length: (name.len() * 2) as u16,
-                MaximumLength: (name.len() * 2) as u16,
-                Buffer: name.as_mut_ptr(),
-            };
-            let attributes = OBJECT_ATTRIBUTES {
-                Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
-                RootDirectory: parent.as_raw_handle(),
-                ObjectName: &unicode as *const _ as *mut _,
-                Attributes: 0,
-                SecurityDescriptor: null_mut(),
-                SecurityQualityOfService: null_mut(),
-            };
-            let mut status: IO_STATUS_BLOCK = unsafe { zeroed() };
-            let mut handle = null_mut();
-            let code = unsafe {
-                NtCreateFile(
-                    &mut handle,
-                    FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-                    &attributes,
-                    &mut status,
-                    null(),
-                    0,
-                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                    FILE_CREATE,
-                    FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
-                    null(),
-                    0,
-                )
-            };
-            if code < 0 {
-                Err(code)
-            } else {
-                Ok(unsafe { File::from_raw_handle(handle) })
-            }
-        };
         // All child names are short synthetic ASCII. At these full-path sizes,
         // filesystems can reject name construction before the query is possible.
         let construction_limit = |code| {
@@ -1983,7 +2075,7 @@ mod cancellation_tests {
         let mut appended = 0;
         let mut parent = file;
         while appended + 128 <= trunk_limit {
-            parent = match create(&parent, &"x".repeat(127)) {
+            parent = match create_boundary_directory(&parent, &"x".repeat(127)) {
                 Ok(file) => file,
                 Err(code) if construction_limit(code) => {
                     eprintln!(
@@ -2003,7 +2095,8 @@ mod cancellation_tests {
         let mut fallback_checked = 0;
         let mut skipped = 0;
         for target in targets {
-            let file = match create(&parent, &"z".repeat(target - appended - 1)) {
+            let file = match create_boundary_directory(&parent, &"z".repeat(target - appended - 1))
+            {
                 Ok(file) => file,
                 Err(code) if construction_limit(code) => {
                     eprintln!(
