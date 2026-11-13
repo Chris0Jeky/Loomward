@@ -42,9 +42,11 @@ fn shortcut_reader_is_capped_feature_gated_and_shell_only() {
     }
     for entry in std::fs::read_dir(workspace.join("crates")).unwrap() {
         let path = entry.unwrap().path();
-        if !["loomward-shell", "loomward-windows"]
-            .iter()
-            .any(|name| path.ends_with(name))
+        // Only crate directories: plain files such as crates/AGENTS.md belong to no crate.
+        if path.is_dir()
+            && !["loomward-shell", "loomward-windows"]
+                .iter()
+                .any(|name| path.ends_with(name))
         {
             check(&path);
         }
@@ -102,9 +104,10 @@ fn content_reader_is_feature_gated_and_engine_only() {
         check_manifest(&workspace.join("Cargo.toml"));
         for entry in std::fs::read_dir(workspace.join("crates")).unwrap() {
             let path = entry.unwrap().path();
-            if !["loomward-engine", "loomward-windows"]
-                .iter()
-                .any(|name| path.ends_with(name))
+            if path.is_dir()
+                && !["loomward-engine", "loomward-windows"]
+                    .iter()
+                    .any(|name| path.ends_with(name))
             {
                 check(&path);
             }

@@ -1,5 +1,7 @@
 # Loomward v0.2: an evidence-based workspace control layer
 
+> **Historical (banner added 2026-11-13).** The current agent entry point is [`AGENTS.md`](../AGENTS.md); current status is the latest section of `16-implementation-status.md`. This v0.2 overview is kept for its product content.
+
 9 October 2026. This is the second engineering pass over the original repository, not a replacement greenfield package. The original user request, research, code, tests, negative experiment and native foundation remain available. Documents 24-40 extend rather than silently supersede them.
 
 ## The thesis in one sentence

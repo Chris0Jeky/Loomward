@@ -1,5 +1,7 @@
 # Local execution packs and ownership
 
+> **Historical (banner added 2026-11-13).** The current agent entry point is [`AGENTS.md`](../AGENTS.md); lane ownership and handoff rules live there (superseded first by docs/43); this plan is kept as history.
+
 No subagents ran during this authoring pass. The packs below support future parallel local sessions without pretending every lane can merge independently. Read the current source and exact backlog body before editing. Do not equate a dependency's reference implementation with its production completion.
 
 ## Coordinator contract

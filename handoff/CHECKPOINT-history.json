@@ -1,0 +1,2088 @@
+{
+  "project": "Loomward",
+  "note": "Dated wave records moved out of CHECKPOINT.json on 2026-11-13 unchanged, oldest first. History only: current state is CHECKPOINT.json phase, next_local_issues and hard_gates plus the latest section of docs/16-implementation-status.md.",
+  "wave4": {
+    "merged": [
+      "#173",
+      "#177",
+      "#178",
+      "#179",
+      "#183",
+      "#186",
+      "#187",
+      "#188",
+      "#189",
+      "#192",
+      "#193",
+      "#195",
+      "#197",
+      "#199",
+      "#200",
+      "#202",
+      "#203",
+      "#204",
+      "#205",
+      "#207"
+    ],
+    "rust_tests_by_crate": {
+      "catalog": 69,
+      "core": 30,
+      "engine": 106,
+      "http": 40,
+      "lab": 22,
+      "learn": 8,
+      "protocol": 35,
+      "service": 35,
+      "telemetry": 28,
+      "windows": 37
+    },
+    "rust_tests": 410,
+    "app_vitest": 174,
+    "python_tests": 221,
+    "scan_through_product": "synthetic lab roots only (#205); personal sessions answer capability_unavailable (personal_scan_gated_184)",
+    "parked_or_rejected": [
+      "perf/catalog-p4b-parked (bulk load, -31% P4)",
+      "spill-bounded temp cache (-37.5% P4, #208)"
+    ]
+  },
+  "wave5": {
+    "merged": [
+      "#209",
+      "#210",
+      "#212",
+      "#214",
+      "#215",
+      "#216",
+      "#217",
+      "#220",
+      "#221",
+      "#222",
+      "#225",
+      "#226",
+      "#227",
+      "#229",
+      "#232",
+      "#233",
+      "#234",
+      "#237",
+      "#242",
+      "#243",
+      "#244",
+      "#245",
+      "#249",
+      "#250",
+      "#251",
+      "#252"
+    ],
+    "rust_tests_by_crate_at_ee39877": {
+      "apps": 10,
+      "catalog": 78,
+      "core": 30,
+      "engine": 125,
+      "http": 55,
+      "lab": 26,
+      "learn": 8,
+      "protocol": 35,
+      "service": 40,
+      "shell": 15,
+      "telemetry": 33,
+      "windows": 61
+    },
+    "rust_tests_at_ee39877": 516,
+    "app_vitest_at_befd890": 248,
+    "python_tests": 221,
+    "personal_scan_gate": "personal_scan_gated_184 stays; #206 and #240 closed, #184 remainder open (superseded by wave6: #184 closed in #274)"
+  },
+  "wave6": {
+    "merged": [
+      "#253",
+      "#255",
+      "#256",
+      "#257",
+      "#259",
+      "#261",
+      "#262",
+      "#263",
+      "#265",
+      "#267",
+      "#270",
+      "#271",
+      "#272",
+      "#274"
+    ],
+    "rust_tests_by_crate_at_6052bad": {
+      "apps": 18,
+      "catalog": 115,
+      "core": 30,
+      "engine": 143,
+      "http": 56,
+      "lab": 26,
+      "learn": 8,
+      "protocol": 36,
+      "service": 58,
+      "shell": 23,
+      "telemetry": 33,
+      "windows": 82,
+      "doc": 3
+    },
+    "rust_tests_at_6052bad": 631,
+    "app_vitest": 255,
+    "python_tests": 222,
+    "personal_scan_gate": "personal_scan_gated_184 stays; #184, #206, #240 closed; #269 in review (PR #278)",
+    "process": "status files are updated once per wave by the driver (AGENTS.md)"
+  },
+  "wave7": {
+    "merged": [
+      "#278",
+      "#279",
+      "#280",
+      "#282",
+      "#284",
+      "#290",
+      "#291",
+      "#294",
+      "#295",
+      "#296",
+      "#297",
+      "#298",
+      "#301",
+      "#302",
+      "#304",
+      "#305",
+      "#306",
+      "#307",
+      "#308",
+      "#311",
+      "#313",
+      "#314",
+      "#315",
+      "#316",
+      "#318",
+      "#321",
+      "#322",
+      "#324",
+      "#325",
+      "#328",
+      "#330",
+      "#331",
+      "#332"
+    ],
+    "rust_tests_by_crate_at_0b27935": {
+      "apps": 23,
+      "catalog": 130,
+      "core": 30,
+      "engine": 164,
+      "http": 66,
+      "lab": 27,
+      "learn": 18,
+      "protocol": 36,
+      "service": 112,
+      "shell": 27,
+      "telemetry": 34,
+      "windows": 93,
+      "doc": 3
+    },
+    "rust_tests_at_0b27935": 763,
+    "app_vitest": 320,
+    "python_tests": 224,
+    "wired_commands": "every product command the app uses is served by loomward-service; contract 50 commands",
+    "scan_throughput": "100k-file lab 32.9 s to 4.3 s; one real folder 134.3 s to 4.8 s (shared host, #322)",
+    "p12": "0.53% of one core above idle, shortened shared-host A/B (#307); 10-minute quiet-host run owed",
+    "p4": "bench path about 109k rows/s after P4f (#332); 250k not reached",
+    "open_decision": "loomward-revoked-root-retention (HUMAN_TODO q-9; default (a) on 2026-10-18)",
+    "effects": "none: duplicates, placement and collections observe, simulate or record preferences only"
+  },
+  "wave8": {
+    "merged": [
+      "#334",
+      "#335",
+      "#336",
+      "#338",
+      "#340",
+      "#343",
+      "#345",
+      "#346",
+      "#347",
+      "#350",
+      "#351",
+      "#354",
+      "#355",
+      "#357",
+      "#358",
+      "#360",
+      "#362",
+      "#364",
+      "#365",
+      "#367",
+      "#368",
+      "#371",
+      "#372",
+      "#374",
+      "#376",
+      "#379",
+      "#380",
+      "#381",
+      "#383",
+      "#387",
+      "#388",
+      "#382"
+    ],
+    "rust_tests_by_crate_at_b00c564": {
+      "apps": 24,
+      "backup": 19,
+      "catalog": 164,
+      "core": 30,
+      "engine": 206,
+      "http": 72,
+      "lab": 27,
+      "learn": 18,
+      "protocol": 36,
+      "service": 163,
+      "shell": 27,
+      "telemetry": 34,
+      "windows": 97
+    },
+    "rust_tests_at_b00c564": 917,
+    "app_vitest": 383,
+    "python_tests": 227,
+    "wired_commands": "contract 56 commands after #399 (diagnostics.preview, diagnostics.save; was 54 after #382 (roots.forget; backups.list, backups.import, backups.forget from #383)); state schema v7; counts above measured before #382 (its lane: 936 workspace tests at 39b372e)",
+    "p4": "first full scans build in bulk tables and publish atomically (#387); 250k not reached; quiet-host A/B unverified (#148)",
+    "p14": "regressed 155 to 230 bytes/entry at 1M under the bulk path; freed build pages stay on the freelist (#386)",
+    "crash_recovery": "a host shutdown zeroed the primary .git/config and six manifests in one worktree; config rebuilt, manifests restored from Git, every checkout scanned",
+    "in_review": "#390 long-lived state.db reader delays the WAL cut",
+    "effects": "none: duplicates, placement, collections and backups observe, simulate or record only",
+    "forget": "roots.forget (#382): purges a revoked root's name, catalogue, labels and references (shared hard-linked objects kept), scrubs start-up and migration copies of state.db, VACUUMs state and cuts the logs; anonymised audit entry kept; residual: #390, #391"
+  },
+  "wave9": {
+    "merged": [
+      "#394",
+      "#395",
+      "#396",
+      "#397",
+      "#399",
+      "#400",
+      "#401",
+      "#403",
+      "#422",
+      "#423",
+      "#424",
+      "#425",
+      "#426",
+      "#427",
+      "#428",
+      "#429",
+      "#430",
+      "#432",
+      "#438",
+      "#440",
+      "#443",
+      "#445"
+    ],
+    "rust_tests_by_crate_at_129373f": {
+      "apps": 24,
+      "backup": 19,
+      "catalog": 213,
+      "core": 30,
+      "engine": 209,
+      "http": 72,
+      "lab": 27,
+      "learn": 18,
+      "protocol": 36,
+      "service": 179,
+      "shell": 27,
+      "telemetry": 34,
+      "windows": 100
+    },
+    "rust_tests_at_129373f": 988,
+    "app_vitest": 406,
+    "python_tests": 256,
+    "wired_commands": 56,
+    "first_file_write": "q-15 diagnostic bundle (#399, ADR-V3-24): previewed redacted bytes to an owner-picked file; Loomward's own Cancel-default replace box; path never crosses IPC",
+    "forget": "also rewrites catalog.db (VACUUM main) with a crash-safe scrub marker, because first scans stage chunks (#427); RAM and silent-retry follow-ups #434",
+    "release": "v0.3.0-preview.1 published; nightly and opt-in updater merged (#432), updater inactive until the owner key exists",
+    "crash_sweep": "full mode at a9299b4: every catalogue write boundary killed and recovered (272 lifecycle, 14 migration, 3,870 double crashes); default CI mode samples; no full sweep since #438's search triggers (#427)",
+    "licence": "AGPL-3.0-only since #396; CLA.md, TRADEMARKS.md",
+    "effects": "one file write: the diagnostic export, which may overwrite an existing owner-picked file only after Loomward's own confirmation; no other effect on existing owner files, none on processes"
+  },
+  "wave10": {
+    "host": "KRASPYON laptop, Windows 11 Home 10.0.26100, 18 threads, 16 GB",
+    "merged": [
+      "#458",
+      "#459",
+      "#471",
+      "#472",
+      "#474",
+      "#476",
+      "#477",
+      "#478",
+      "#479",
+      "#480",
+      "#482",
+      "#484",
+      "#485",
+      "#486",
+      "#487",
+      "#488",
+      "#490",
+      "#491",
+      "#493",
+      "#496",
+      "#497",
+      "#498",
+      "#499",
+      "#500",
+      "#501",
+      "#503",
+      "#505",
+      "#507",
+      "#508",
+      "#509",
+      "#510",
+      "#511",
+      "#512",
+      "#513",
+      "#514",
+      "#516",
+      "#517",
+      "#518",
+      "#522",
+      "#523",
+      "#524",
+      "#525"
+    ],
+    "rust_tests_at_8a3dc6f": 1288,
+    "rust_note": "1,283 passed, 1 ignored, 4 lab-copy tests fail only in a OneDrive-synced checkout (#527, open at writing, makes them skip)",
+    "app_vitest": 466,
+    "python_tests": 279,
+    "wired_commands": 64,
+    "copy_and_verify": "C1 tree verifier (#471), C2 native primitives (#503), C3 journal (#474), C4 consent and contracts (#508), C5 executor for synthetic sessions on registered lab roots only (#522), C7 UI (#516); personal sessions copy_effect_gated; staging removal off until Q1; C6 crash matrix in progress; G5/G9 not run",
+    "owner_questions_posed": "copy-and-verify Q1-Q3 drafted for the owner inbox in agent-hq#461 (published when it merges)",
+    "soak": "72-hour run started 2026-10-17 03:39 local on KRASPYON; pass rule in docs/45 row 7",
+    "find_and_ask": "F1 contract and grammar (#476); F2 ranked search (#513), token index off by default until #520",
+    "effects": "diagnostic export (owner file) plus copy-and-verify on synthetic lab roots only; no owner file or process otherwise touched"
+  },
+  "wave11": {
+    "host": "KRASPYON laptop, Windows 11 Home 10.0.26100, 18 threads, 16 GB; WSL 2 Ubuntu 24.04 added for Linux reproduction (#495)",
+    "merged": [
+      "#529",
+      "#531",
+      "#532",
+      "#534",
+      "#536",
+      "#537",
+      "#539",
+      "#540",
+      "#541",
+      "#542",
+      "#544",
+      "#546",
+      "#548",
+      "#549",
+      "#551",
+      "#554",
+      "#555",
+      "#556",
+      "#557",
+      "#558",
+      "#559",
+      "#562",
+      "#563",
+      "#564",
+      "#565",
+      "#566",
+      "#570",
+      "#572",
+      "#573",
+      "#574",
+      "#575",
+      "#576",
+      "#577"
+    ],
+    "rust_tests_at_4b05fd6": 1442,
+    "rust_note": "1,440 passed, 2 ignored, 0 failed (RUST_TEST_THREADS=3)",
+    "app_vitest": 483,
+    "python_tests": 279,
+    "wired_commands": 64,
+    "copy_and_verify": "C6 crash matrix (#532 landed with 476 kills; full re-run 482 kills, 0 source changes, 0 false commits) and journal-append faults (#566); journal head anchor (#539); revocation fence and admission lock (#544); identity-change fence and bounded cancel (#564); copy service hardening (#573); still lab-only, personal sessions copy_effect_gated, staging removal off",
+    "find_and_ask": "F3 watchers and USN catch-up (#531, #548); F3a per-client grants (#541, #555); Ask provider LW-117 local loopback broker (#556, #572); explicit scans/duplicates pre-empt automatic refreshes (#565, #577); search v1 follow-ups (#575); federated_search and ranked index off",
+    "forget": "exact-grant retention, honest pending cleanup, file-backed VACUUM temp (#562); sidecars and catalogue scrub-pending health (#576)",
+    "soak": "72-hour run started 2026-10-17 03:39 local; 14.2 h, 0 errors at writing; legacy receipt (started before #534 wall-clock continuity)",
+    "owner_questions_posed": "copy Q1-Q3 and Ask Q3 (local-model preview) / Q4 (retention) in agent-hq#461; Ask Q3/Q4 default to the recommended option on 2026-10-24 if unanswered",
+    "open_followups": [
+      "#495 Linux CI hang (watchdog in place)",
+      "#526 remaining C5 items",
+      "#550 F3 identity-gap check cost",
+      "#552 search/writer perf hypotheses",
+      "#567/#569 copy residuals",
+      "#506 LOW API items",
+      "#409 Ask chat panel (in progress)"
+    ]
+  },
+  "maintenance_2026_10_20": {
+    "updated_at": "2026-10-21",
+    "baseline_main": "828ef592eaa10388ce99e760d8985fae865facb8",
+    "checkpoint_parent": "132e10e8c43a963658d03cbeaec34d8f20a6c0a8",
+    "reviewed_open_issues": 173,
+    "initial_open_prs": [
+      802,
+      803,
+      804,
+      805
+    ],
+    "merged_prs": [
+      802,
+      803,
+      804,
+      805,
+      806,
+      807,
+      808,
+      809,
+      810,
+      811,
+      812,
+      813,
+      815
+    ],
+    "remaining_prs": [
+      814
+    ],
+    "closed_issues": [
+      122,
+      124,
+      176,
+      416,
+      763,
+      781,
+      785
+    ],
+    "reopened_issues": [
+      120
+    ],
+    "evidence": [
+      "evidence/v3/backlog-review-2026-10-20.md",
+      "evidence/v3/backlog-review-2026-10-20.json",
+      "evidence/v3/backlog-closure-evidence-2026-10-20.md"
+    ],
+    "cumulative": {
+      "initial_open_issue_count": 191,
+      "original_prs_merged": 33,
+      "closed_issue_count": 25,
+      "closed_issues": [
+        122,
+        124,
+        176,
+        416,
+        675,
+        696,
+        700,
+        710,
+        722,
+        723,
+        733,
+        739,
+        751,
+        753,
+        758,
+        760,
+        763,
+        775,
+        776,
+        777,
+        781,
+        782,
+        785,
+        789,
+        793
+      ],
+      "remaining_open_issue_count": 166,
+      "scope": "Original 18 closures plus this wave's 7 retained closures; issue120 was reopened after final acceptance review. No newly opened issue or blanket completion claim."
+    },
+    "previous_top_level_status": {
+      "as_of": "2026-10-17",
+      "base_commit": "0b27935",
+      "phase": "v0.3 wave 10: copy-and-verify C1-C5 and C7 built and lab-only (personal gate C8 closed); Find & Ask F1 and F2 (ranked index gated off); readiness rows 1, 3-7 advanced (row 4 PASS; 72-hour soak running); alerts; first session on the KRASPYON laptop",
+      "next_local_issues": [
+        "G5 power-cut proof (needs owner Q2) and G9 proven restore before any personal copy; remaining #526 items (window before Committed, refusal code naming, resume) and #567/#569 residuals",
+        "#409 Ask chat panel (LW-118, in progress) on the #556 local broker and #541 grants; Ask Q3/Q4 posed",
+        "#520 before enabling the ranked index; #552 search and writer perf hypotheses (measure at 10M first); #550 F3 identity-gap check cost",
+        "the 72-hour soak result (docs/45 row 7; legacy receipt, wall clock not checked)",
+        "#495 Linux catalogue hang cause (watchdog now prints thread state); #386 P14 200 B/entry with the trigram index"
+      ],
+      "backlog_count": 112,
+      "independent_subagents_used": false
+    },
+    "verification_scope": "Exact-head hosted CI and independent source review; native qualifications and historical measurements retain their stated limits."
+  },
+  "external_disk_2026_10_25": {
+    "design": "docs/48-external-disk-and-agent-storage.md",
+    "merged_prs": [
+      860,
+      861,
+      863,
+      864,
+      866,
+      868,
+      869,
+      885,
+      894,
+      897,
+      902
+    ],
+    "owner_decisions": [
+      "loomward-copy-power-cut-method: a (Hyper-V; VM on E:)",
+      "loomward-copy-staging-removal: allowed after assess-and-explain (flag stays false until built)",
+      "loomward-first-cleanup-copier: b (agent robocopy + verify-tree)",
+      "loomward-archive-originals: b (Recycle Bin after per-plan confirmation, unbuilt, own gate)"
+    ],
+    "usb_roots": "fixed-media NTFS/ReFS allowed as scan roots; personal copy destinations on detachable volumes refused",
+    "c8": "closed",
+    "not_verified": [
+      "real MCP host",
+      "real H: scan",
+      "physical unplug/replug",
+      "installer"
+    ],
+    "follow_ups": [
+      865,
+      886,
+      887,
+      888,
+      895,
+      898,
+      903
+    ]
+  },
+  "external_disk_2026_10_27": {
+    "merged_prs": [
+      902,
+      904,
+      905,
+      906,
+      909,
+      910,
+      922,
+      925,
+      926,
+      932,
+      933,
+      936,
+      938
+    ],
+    "survey": "owner-authorised agent-run read-only survey of C:, E:, G:, H: via loomward-mcp; report local only",
+    "fixed_from_survey": [
+      908,
+      916,
+      887,
+      912,
+      913
+    ],
+    "open": [
+      898,
+      924,
+      934,
+      935,
+      937
+    ],
+    "owner_decisions": [
+      "loomward-archive-second-copy: c (single copy for now; second disk later)",
+      "loomward-power-loss-hardware: a (Hyper-V only)",
+      "loomward-categoriser-model-downloads: Other (download what space allows, efficient models)",
+      "loomward-space-survey-setup: Other (agent does it end to end)"
+    ],
+    "not_verified": [
+      "real Safely Remove on H:",
+      "real #924 hang interruptible",
+      "installer"
+    ],
+    "c8": "closed"
+  },
+  "day_wave_2026_10_27": {
+    "merged_prs": [
+      949,
+      950,
+      951,
+      952,
+      953,
+      955,
+      956,
+      957,
+      958,
+      959,
+      960,
+      961,
+      962
+    ],
+    "closed_or_advanced": {
+      "fixed": [
+        855,
+        921,
+        940,
+        948
+      ],
+      "advanced": [
+        844,
+        870,
+        928,
+        931,
+        934,
+        937,
+        942
+      ]
+    },
+    "lw_131_r1d": "reclaim.plan (owner-only, read-only, volume_id from volumes.list) and the app Reclaim view; reclaimable bytes stay unknown until the link-count pass (#939)",
+    "scan_cancel": "a cancelled scan drops its queued listing steps (#961); unsettled but uncancelled runs still commit everything",
+    "negative_evidence": "#960: FTS segment count costs milliseconds, not the 211-750 ms cold first query (#937 item 1 open)",
+    "tracked": [
+      939,
+      954,
+      963
+    ],
+    "not_verified": [
+      "live volume-root Recycle Bin read",
+      "reclaim view in the native Tauri window",
+      "real cancel time on a loaded survey",
+      "cold first query on the real 1.1M-entry store"
+    ],
+    "c8": "closed"
+  },
+  "evening_wave_2026_10_27": {
+    "merged_prs": [
+      965,
+      966,
+      967,
+      968,
+      969,
+      970,
+      971,
+      972,
+      973,
+      975,
+      976,
+      977,
+      978,
+      980,
+      981,
+      982,
+      983,
+      984,
+      985,
+      986,
+      988,
+      989,
+      990,
+      991,
+      992,
+      993,
+      994,
+      995,
+      996,
+      997,
+      998
+    ],
+    "closed_or_advanced": {
+      "fixed": [
+        766,
+        819,
+        821,
+        826,
+        838,
+        841,
+        843,
+        844,
+        871,
+        923,
+        934,
+        937,
+        942
+      ],
+      "advanced": [
+        876,
+        935,
+        939,
+        954
+      ]
+    },
+    "lw_131_r1g": "reclaim.observe bounded, cancellable link-count job; verified relief no longer always unknown (#970, #984)",
+    "lw_132": "copy status receipt: read_back or no label; published_unverified only for an observed publish; higher labels never emitted (#992)",
+    "grants": "re-grant of a renamed root retires the old grant first and fails closed (#996)",
+    "tracked": [
+      935,
+      954,
+      840,
+      762,
+      787,
+      851
+    ],
+    "not_verified": [
+      "native copy end to end with the receipt",
+      "reclaim.observe on a real volume",
+      "Reclaim and copy views in the native Tauri window",
+      "directory-symlink case of #997 on this host"
+    ],
+    "c8": "closed"
+  },
+  "flagship_wave_2026_10_30": {
+    "merged_prs": [
+      814,
+      1008,
+      1017,
+      1018,
+      1019,
+      1020,
+      1021,
+      1022,
+      1023,
+      1025,
+      1028,
+      1030,
+      1032,
+      1034,
+      1036,
+      1038,
+      1039,
+      1040,
+      1042,
+      1045,
+      1046,
+      1047
+    ],
+    "closed": [
+      515,
+      939,
+      944,
+      987,
+      1003,
+      1009,
+      1010,
+      1011,
+      1013,
+      1014,
+      1027
+    ],
+    "windows_native_ci": "native gates run under a disposable standard user on hosted Windows; elevated-skip markers fail the run (#814); pathological tree.slice waits for aggregate repair (#1042)",
+    "reclaim": "selection validates against all gathered candidates (#1017); placement uses stored verdicts (#1025); relief check (#1030); rules v3 (#1023)",
+    "custody_lw_136": "verify-tree --only (#1019); covers A B (#1036); plan_archive custody fields and sole-copy warning (#1046); manifest root primitive (#1047); originals removal waits for LW-135 (#1040)",
+    "lw_138": "explanation renderer (#1045); insight.folder pending (#1051)",
+    "app": "Today landing view (#1022, #1038); empty-state grant links (#1021); duplicates coverage (#1032)",
+    "open_at_checkpoint": [
+      1044,
+      1049,
+      1050,
+      1051,
+      1052
+    ],
+    "tracked": [
+      1007,
+      1024,
+      1029,
+      1031,
+      1033,
+      1048
+    ],
+    "not_verified": [
+      "real Safely Remove veto delivering QUERYREMOVEFAILED",
+      "relief check on a real volume",
+      "Today view in the native Tauri window"
+    ],
+    "c8": "closed"
+  },
+  "flagship_wave_2026_10_30_afternoon": {
+    "merged_prs": [
+      1043,
+      1044,
+      1049,
+      1050,
+      1051,
+      1052,
+      1055,
+      1056,
+      1057,
+      1058,
+      1059,
+      1060,
+      1061,
+      1062,
+      1063,
+      1064,
+      1065,
+      1071,
+      1072,
+      1074,
+      1075,
+      1077,
+      1079
+    ],
+    "closed": [
+      823,
+      1007,
+      1012,
+      1015,
+      1016,
+      1024,
+      1029,
+      1031,
+      1048,
+      1054,
+      1066,
+      1067,
+      1068,
+      1069,
+      1070
+    ],
+    "windows_ci": "elevated-refusal tests run in their own elevated step, each must print its skip marker (#1064)",
+    "disk_health_lw_137": "storage-path facts and disk health on volumes.list (#1049); NVMe counters unelevated and bounded (#1065); critical warning mapping and offline guard (#1072); Today health line (#1062)",
+    "reclaim": "verdict age (#1044, #1058); Inspect in Explorer (#1075); rules v4 Windows leftovers (#1074); relief follow-ups (#1052)",
+    "custody_lw_136": "verify-tree --only never hashes unplanned files (#1043); --manifest-roots (#1055)",
+    "lw_138": "insight.folder (#1051); About this folder panel (#1060); renderer follow-ups (#1057)",
+    "tooling": "verify.py --changed is a local-loop shortcut, never the proof of record (#1063)",
+    "open_at_checkpoint": [
+      1083,
+      1085,
+      1086,
+      1087,
+      1088,
+      1089,
+      1090
+    ],
+    "tracked": [
+      954,
+      1026,
+      1033,
+      1035,
+      1037
+    ],
+    "not_verified": [
+      "NVMe counters on a real NVMe drive through the app",
+      "About this folder panel and disk-health lines in the native window",
+      "real Safely Remove veto"
+    ],
+    "c8": "closed"
+  },
+  "maintenance_2026_11_02": {
+    "status": "Implementation merged after full primary qualification; later duplicate Windows failure remains unresolved in #1129. Independent post-merge main passed 9/9; that success does not explain the failure.",
+    "prior_checkpoint_metadata_and_next_work": {
+      "as_of": "2026-10-30",
+      "base_commit": "132e10e8c43a963658d03cbeaec34d8f20a6c0a8",
+      "branch": "main",
+      "phase": "Maintenance reconciliation of open issues and PRs; scoped source fixes and retained acceptance evidence; C8 remains closed",
+      "next_local_issues": [
+        "#120 / LW-101: required W0-B cold-cache and strategy/thread/volume measurements; keep in_progress despite completed strategy promotion",
+        "#738 / PR814: supported non-elevated Windows/NTFS foreign-Store rename qualification; keep personal copy gate C8 closed",
+        "#766: retain the next complete panic and identify the original failing stage; PR812 is diagnostic only",
+        "#787: remaining wedged-worker pins, retiring-watch hint coverage and sustained-load churn",
+        "#414: actual durable-service 10M qualification, a new continuous 72-hour pass, required effect power-cut/restore evidence and owner UX acceptance",
+        "#24/#101: manual Windows accessibility/field acceptance"
+      ]
+    },
+    "initial_main_sha": "6ac587c1564decf342ca036a0b12bd5270e2ab65",
+    "initial_open_github_issue_count": 164,
+    "issue_count_scope": "GitHub open-issue inventory at wave start; independent of the preserved local backlog_count of 130",
+    "original_parked_prs": [
+      1109,
+      1113,
+      1118
+    ],
+    "candidate_prs": [
+      {
+        "number": 1125,
+        "head_sha": "d7eab8c045caa16dad8244e2526390b06a8614cc",
+        "state": "merged as recognized by GitHub ancestry after PR1127 integration; no standalone merge claimed",
+        "scope": "destination reserves, Learning deferral, selected collection removal and Explorer Atlas-independent search refresh (#1116)",
+        "gate_snapshot": "PR run41385886994 and push run41385882882 both succeeded 9/9",
+        "landing": "Integrated through PR1127 merge ad58c9036931b981c9c47a99fb54dccd50377773",
+        "merge_sha": "d7eab8c045caa16dad8244e2526390b06a8614cc",
+        "merged_at": "2026-11-02T05:07:13Z",
+        "landing_main_commit": "ad58c9036931b981c9c47a99fb54dccd50377773",
+        "tree_sha": "d3c65c0dce034c565d38ea5f7c55a54f524d691f"
+      },
+      {
+        "number": 1127,
+        "head_sha": "ad725931b2db276416302b5376b1fd56f98d45c1",
+        "tree_sha": "fa59a3cf5ab194f1ca93298c2384d1caddb10f24",
+        "state": "qualified and merged at 2026-11-02T05:07:11Z",
+        "scope": "Find #1073, Applications browser proof #1081, cross-client preferences refresh #1110 and app result retry only from #1108",
+        "pr_run_id": 41389075842,
+        "push_run_id": 41389070502,
+        "base_branch": "main",
+        "prior_prospective_merge": {
+          "sha": "417f7bf58d862bc966c6e5b5e1d2cfe1a0ab8fd4",
+          "tree_sha": "fa59a3cf5ab194f1ca93298c2384d1caddb10f24",
+          "tree_matches_candidate": true,
+          "status": "Historical pre-merge preview only; actual merge is ad58c9036931b981c9c47a99fb54dccd50377773"
+        },
+        "merge_sha": "ad58c9036931b981c9c47a99fb54dccd50377773",
+        "merged_at": "2026-11-02T05:07:11Z",
+        "landing_main_commit": "ad58c9036931b981c9c47a99fb54dccd50377773"
+      },
+      {
+        "number": 1128,
+        "head_sha": "b21b2d9986efd338249f3f7d22cd32626ef9d32b",
+        "tree_sha": "14e5ec7d86ba30cdefb2a5917b817ccf41334969",
+        "state": "merged after full primary PR qualification; later duplicate push Windows failure unresolved in #1129",
+        "scope": "deterministic reclaim deadline regression #1126; one-shot per-Service test hook, production budget unchanged",
+        "pr_run_id": 41389080388,
+        "push_run_id": 41389074739,
+        "base_branch": "main",
+        "merge_sha": "f2546383f74feb1028cbc5d66ff6212250f6e893",
+        "merged_at": "2026-11-02T05:39:01Z",
+        "landing_main_commit": "f2546383f74feb1028cbc5d66ff6212250f6e893",
+        "duplicate_push_current_result": {
+          "current_result": "Windows job125096338660 failed at 2026-11-02T05:43:15Z after primary qualification and merge",
+          "incident": 1129,
+          "cause": "unresolved; original log unavailable with 404 BlobNotFound through 2026-11-02T11:49:17Z"
+        }
+      }
+    ],
+    "local_evidence": {
+      "app": {
+        "tests_passed": 1061,
+        "test_files": 75,
+        "check_errors": 0,
+        "check_warnings": 0,
+        "production_build": "passed; existing large-bundle advisory retained",
+        "source_scope": "Latest combined follow-up source including compiled-Svelte coverage retry regression; coordinator-confirmed before the current PR1127/PR1128 pushes"
+      },
+      "python_earlier_integration": {
+        "tests_run": 440,
+        "skipped": 5,
+        "result": "successful with platform-specific skips",
+        "platform": "Linux / Python 3.12",
+        "scope": "earlier integration candidate; not a fresh final-stack native or browser result"
+      },
+      "native": "UNVERIFIED locally: Rust/rustfmt and Windows unavailable",
+      "browser": "UNVERIFIED locally: Chromium installer returned an invalid archive; hosted execution required",
+      "coverage_client_reactivity_regression": {
+        "method": "Compile the actual Covers class with the installed Svelte client compiler/runtime; hold then reject coverage.result and observe canRetryResult in a Svelte effect without DOM emulation",
+        "negative_control": "With plain fetched, the direct getter becomes true after rejection but the subscribed effect remains false; the regression fails",
+        "repair": "private fetched = $state<string | null>(null); invalidates the effect when the completed-result read fails",
+        "positive_control": "With reactive fetched, the observed effect changes from false to true; focused coverage tests pass 19/19",
+        "browser_assertions": "Unchanged; visibility, same-job retry, no duplicate coverage.start, expired no-retry and focus assertions retained"
+      }
+    },
+    "partial_issue_1108": "App retry checkbox checked with qualified PR1127 merge evidence; all other items remain open. Source-grounded remaining-work note: https://github.com/Chris0Jeky/Loomward/issues/1108#issuecomment-6569289567",
+    "current_next_work_reconciliation": {
+      "removed_closed_issues": [
+        {
+          "number": 738,
+          "state": "closed",
+          "state_reason": "completed",
+          "closed_at": "2026-10-30T02:15:10Z"
+        },
+        {
+          "number": 766,
+          "state": "closed",
+          "state_reason": "completed",
+          "closed_at": "2026-10-27T19:46:28Z"
+        }
+      ],
+      "source": "Live GitHub connector issue snapshots, 2026-11-02; prior complete list archived above",
+      "retained": [
+        120,
+        787,
+        414,
+        24,
+        101
+      ],
+      "added": [
+        1108,
+        1121,
+        1124,
+        1129
+      ]
+    },
+    "gates": "C8 remains closed; no personal-copy, provider/model, process-control or original-file effect gate changes; physical-device, WebView2, assistive-technology and owner acceptance remain separate",
+    "current_main_sha": "f2546383f74feb1028cbc5d66ff6212250f6e893",
+    "prior_candidate_heads": [
+      {
+        "number": 1127,
+        "head_sha": "5333cf3cf02e2a2d1761878d2be6fb041b3a191c",
+        "tree_sha": "2d6cfcb23e34f4a37fe3723bf4ad3bebd9f1b8f3",
+        "state": "Historical superseded candidate; subsequent qualification and landing are recorded in candidate_prs",
+        "scope": "Find #1073, Applications browser proof #1081, cross-client preferences refresh #1110 and app result retry only from #1108"
+      },
+      {
+        "number": 1128,
+        "head_sha": "4dcc727cc12f7932abde558b86e232a2059d4854",
+        "tree_sha": "83e1b830001dd3c932ef19d540d46cb0e3bb2154",
+        "state": "Historical superseded candidate; subsequent qualification and landing are recorded in candidate_prs",
+        "scope": "deterministic reclaim deadline regression #1126; one-shot per-Service test hook, production budget unchanged"
+      }
+    ],
+    "prior_local_app_evidence": {
+      "tests_passed": 1060,
+      "test_files": 74,
+      "check_errors": 0,
+      "check_warnings": 0,
+      "production_build": "passed; existing large-bundle advisory retained",
+      "source_scope": "PR1127 source tree 2d6cfcb23e34f4a37fe3723bf4ad3bebd9f1b8f3"
+    },
+    "source_recovery_boundaries": {
+      "issue_1121": {
+        "commit_sha": "1a9bc36810d65bb10ee912ce5ad37491819a98ce",
+        "branch": "codex/explorer-context-20261031",
+        "remote_checks": "Commit lookup returned 422 No commit found; branch lookup returned 404 Branch not found",
+        "workspace_check": "No private coordinator source packet or named-branch bundle in the uploaded workspace material; uploaded main ZIP has no recovery archive",
+        "prerequisite": "Supply the retained private source archive/bundle or publish the recorded source to the accessible repository before exact-source repair and qualification",
+        "receipt": "https://github.com/Chris0Jeky/Loomward/issues/1121#issuecomment-6569274159"
+      },
+      "issue_1124": {
+        "remote_tests_only_head_prefix": "e69e695",
+        "source_status": "Remote tests-only branch verified; issue body corrected from local-only. Implementation absent; no PR. Not integrated or qualified in this wave",
+        "qualification": "Preserve scoped direct-member search semantics and existing acceptance gates; source availability does not establish implementation or passing proof"
+      },
+      "issue_1108": {
+        "remaining_work_receipt": "https://github.com/Chris0Jeky/Loomward/issues/1108#issuecomment-6569289567",
+        "status": "App retry checkbox now checked with qualified PR1127 merge evidence; all other issue items remain open"
+      }
+    },
+    "external_merge_receipt": {
+      "pr_number": 1109,
+      "merged_at": "2026-11-02T04:44:38Z",
+      "merge_sha": "280aa69b3f29577f117db20c87532fe69f769a0b",
+      "tree_sha": "bb8d92234dd7da630666da3dbe989447adc1bc9a",
+      "first_parent_sha": "6ac587c1564decf342ca036a0b12bd5270e2ab65",
+      "actor_scope": "External concurrent merge; not performed by this session",
+      "issue_closures": "Issue1111 independently confirmed closed completed at 2026-11-02T04:44:49Z",
+      "second_parent_sha": "9a8004506fe657895124f29d503c1fcbb7df7f16"
+    },
+    "integration_landing_receipt": {
+      "pr_number": 1127,
+      "merged_at": "2026-11-02T05:07:11Z",
+      "merge_sha": "ad58c9036931b981c9c47a99fb54dccd50377773",
+      "tree_sha": "fa59a3cf5ab194f1ca93298c2384d1caddb10f24",
+      "parents": [
+        "280aa69b3f29577f117db20c87532fe69f769a0b",
+        "ad725931b2db276416302b5376b1fd56f98d45c1"
+      ],
+      "qualification_run_id": 41389070502
+    },
+    "ancestry_recognized_merge_receipts": [
+      {
+        "pr_number": 1125,
+        "merged_at": "2026-11-02T05:07:13Z",
+        "github_reported_merge_sha": "d7eab8c045caa16dad8244e2526390b06a8614cc",
+        "landing_scope": "GitHub ancestry recognition after PR1127/ad58 integration; not a standalone merge"
+      },
+      {
+        "pr_number": 1113,
+        "merged_at": "2026-11-02T05:07:13Z",
+        "github_reported_merge_sha": "b10e6117ca4804e07d68295e43fba4bc38a4cf4c",
+        "landing_scope": "GitHub ancestry recognition after PR1127/ad58 integration; not a standalone merge"
+      },
+      {
+        "pr_number": 1118,
+        "merged_at": "2026-11-02T05:07:13Z",
+        "github_reported_merge_sha": "b10e6117ca4804e07d68295e43fba4bc38a4cf4c",
+        "landing_scope": "GitHub ancestry recognition after PR1127/ad58 integration; not a standalone merge"
+      }
+    ],
+    "completed_issue_receipts": [
+      {
+        "number": 1111,
+        "state": "closed",
+        "state_reason": "completed",
+        "closed_at": "2026-11-02T04:44:49Z",
+        "via": "concurrent #1109 merge"
+      },
+      {
+        "number": 1114,
+        "state": "closed",
+        "state_reason": "completed",
+        "closed_at": "2026-11-02T05:07:15Z",
+        "via": "#1127 merge"
+      },
+      {
+        "number": 1119,
+        "state": "closed",
+        "state_reason": "completed",
+        "closed_at": "2026-11-02T05:07:17Z",
+        "via": "#1127 merge"
+      },
+      {
+        "number": 1116,
+        "state": "closed",
+        "state_reason": "completed",
+        "closed_at": "2026-11-02T05:07:18Z",
+        "via": "#1127 merge"
+      },
+      {
+        "number": 1073,
+        "state": "closed",
+        "state_reason": "completed",
+        "closed_at": "2026-11-02T05:07:13Z",
+        "via": "#1127 merge"
+      },
+      {
+        "number": 1081,
+        "state": "closed",
+        "state_reason": "completed",
+        "closed_at": "2026-11-02T05:07:15Z",
+        "via": "#1127 merge"
+      },
+      {
+        "number": 1110,
+        "state": "closed",
+        "state_reason": "completed",
+        "closed_at": "2026-11-02T05:07:16Z",
+        "via": "#1127 merge"
+      },
+      {
+        "number": 1126,
+        "state": "closed",
+        "state_reason": "completed",
+        "closed_at": "2026-11-02T05:39:03Z",
+        "via": "#1128 merge"
+      }
+    ],
+    "initial_intended_issue_closures": [
+      1111,
+      1114,
+      1119,
+      1116,
+      1073,
+      1081,
+      1110,
+      1126
+    ],
+    "remaining_intended_issue_closures": [],
+    "broad_issues_remaining_open": [
+      31,
+      36
+    ],
+    "qualified_implementation_main_before_documentation_commit": "f2546383f74feb1028cbc5d66ff6212250f6e893",
+    "hosted_evidence": {
+      "retained_initial_failure_run_id": 41385000577,
+      "retained_initial_failure_url": "https://github.com/Chris0Jeky/Loomward/actions/runs/41385000577",
+      "repair": "Separate reserve-in-flight state from tier declaration; fence an old scenario-list reply across reserve submission and failed recovery; retain the failing browser assertion unchanged",
+      "integration_http_browser_success": {
+        "head_sha": "d7eab8c045caa16dad8244e2526390b06a8614cc",
+        "job_id": 125086524284,
+        "result": "success (coordinator-confirmed native HTTP/browser job)",
+        "run_id": 41385882882,
+        "scope": "Exact-head app success within the complete 9/9 PR1125 push gate; integrated through PR1127",
+        "url": "https://github.com/Chris0Jeky/Loomward/actions/runs/41385882882/job/125086524284"
+      },
+      "retained_coverage_render_failure": {
+        "head_sha": "5333cf3cf02e2a2d1761878d2be6fb041b3a191c",
+        "run_id": 41387093488,
+        "job_id": 125090246259,
+        "url": "https://github.com/Chris0Jeky/Loomward/actions/runs/41387093488",
+        "finding": "Retry result was absent while Synthetic result read failed was visible. Plain fetched let canRetryResult short-circuit before subscribing to problem/resultPending; clearing fetched after rejection did not invalidate the UI.",
+        "repair": "Make fetched a $state field; retain the original browser assertions and add the compiled-client negative/positive regression"
+      },
+      "followup_app_browser_success": {
+        "pr_number": 1128,
+        "head_sha": "b21b2d9986efd338249f3f7d22cd32626ef9d32b",
+        "tree_sha": "14e5ec7d86ba30cdefb2a5917b817ccf41334969",
+        "run_id": 41389074739,
+        "job_id": 125096338479,
+        "url": "https://github.com/Chris0Jeky/Loomward/actions/runs/41389074739/job/125096338479",
+        "result": "success (coordinator-confirmed full mock and live browser app job)",
+        "coverage_witness": "Same completed job result retry succeeds without duplicate coverage.start; expired results have no retry",
+        "scope": "Individual app job succeeded in duplicate PR1128 push run; that run later failed in Windows job125096338660. Primary PR run41389080388 completed 9/9 before merge; the duplicate failure remains unresolved in #1129."
+      },
+      "followup_pr_app_browser_success": {
+        "pr_number": 1127,
+        "head_sha": "ad725931b2db276416302b5376b1fd56f98d45c1",
+        "tree_sha": "fa59a3cf5ab194f1ca93298c2384d1caddb10f24",
+        "run_id": 41389075842,
+        "job_id": 125096344380,
+        "url": "https://github.com/Chris0Jeky/Loomward/actions/runs/41389075842/job/125096344380",
+        "result": "success (coordinator-confirmed mock and full live browser suites)",
+        "scope": "PR1127 PR-run app success; this duplicate PR run completed 9/9 after merge. Pre-merge full qualification came from push run41389070502"
+      },
+      "integration_full_pr_gate_success": {
+        "pr_number": 1125,
+        "head_sha": "d7eab8c045caa16dad8244e2526390b06a8614cc",
+        "run_id": 41385886994,
+        "url": "https://github.com/Chris0Jeky/Loomward/actions/runs/41385886994",
+        "result": "success, 9/9 jobs",
+        "windows_job_id": 125086531859,
+        "windows_result": "Full standard-user gate succeeded; service suite 684 passed, 2 ignored",
+        "scope": "Qualifies original PR1125 exact head; its work landed via qualified PR1127 integration, not a standalone merge",
+        "push_snapshot": {
+          "run_id": 41385882882,
+          "result": "success, 9/9 jobs"
+        }
+      },
+      "followup_full_push_gate_success": {
+        "pr_number": 1127,
+        "head_sha": "ad725931b2db276416302b5376b1fd56f98d45c1",
+        "run_id": 41389070502,
+        "url": "https://github.com/Chris0Jeky/Loomward/actions/runs/41389070502",
+        "result": "success, 9/9 jobs",
+        "windows_job_id": 125096361698,
+        "windows_result": "684 service tests passed, 2 ignored; actual standard-user gate exit 0; cleanup and Clippy passed",
+        "pr_run_snapshot": {
+          "run_id": 41389075842,
+          "historical_status_at_merge_check": "8/9, no failure",
+          "current_result": "completed 9/9 after merge",
+          "windows_job_id": 125096344101,
+          "windows_result": "success"
+        },
+        "scope": "Exact-head full qualification before actual PR1127 merge"
+      },
+      "qualified_implementation_main_before_documentation_commit": "f2546383f74feb1028cbc5d66ff6212250f6e893",
+      "deadline_full_pr_gate_success": {
+        "pr_number": 1128,
+        "head_sha": "b21b2d9986efd338249f3f7d22cd32626ef9d32b",
+        "tree_sha": "14e5ec7d86ba30cdefb2a5917b817ccf41334969",
+        "run_id": 41389080388,
+        "url": "https://github.com/Chris0Jeky/Loomward/actions/runs/41389080388",
+        "result": "success, 9/9 jobs before merge",
+        "windows_job_id": 125096355148,
+        "windows_result": "Target reclaim_observe_budget_inside_a_candidate_is_partial executed with registered fixture, no elevated skip; standard-user child exit 0; service suite 684 passed, 0 failed, 2 ignored",
+        "duplicate_push_snapshot": {
+          "run_id": 41389074739,
+          "historical_status_at_merge_check": "8/9, no failures; not claimed complete",
+          "current_result": "Windows job125096338660 failed at 2026-11-02T05:43:15Z after primary qualification and merge",
+          "incident": 1129,
+          "cause": "unresolved; original log unavailable with 404 BlobNotFound through 2026-11-02T11:49:17Z"
+        },
+        "proof": {
+          "job": 125096355148,
+          "run": 41389080388,
+          "targetSuccess": "2026-11-02T05:35:43.7277363Z test tests::clutter_tests::reclaim_tests::reclaim_observe_budget_inside_a_candidate_is_partial ... ok\r",
+          "targetStdout": [
+            "2026-11-02T05:35:43.8109949Z ---- tests::clutter_tests::reclaim_tests::reclaim_observe_budget_inside_a_candidate_is_partial stdout ----\r",
+            "2026-11-02T05:35:43.8110872Z Loomward lab grant: registered manifest digest sha256:0000000000000000000000000000000000000000000000000000000000000000 (not reverified)\r",
+            "2026-11-02T05:35:43.8111584Z \r"
+          ],
+          "childExit": "2026-11-02T05:35:42.9204985Z Standard-user qualification child exit code: 0\r",
+          "serviceSummary": [
+            "2026-11-02T05:35:43.9335076Z test result: ok. 684 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 261.38s\r"
+          ],
+          "targetExecuted": true
+        }
+      },
+      "main_post_merge_qualification": {
+        "head": "f2546383f74feb1028cbc5d66ff6212250f6e893",
+        "tree": "14e5ec7d86ba30cdefb2a5917b817ccf41334969",
+        "run": 41395259053,
+        "run_attempt": 1,
+        "conclusion": "success",
+        "jobs": [
+          {
+            "id": 125115444740,
+            "name": "app (windows-latest)",
+            "conclusion": "success"
+          },
+          {
+            "id": 125115444884,
+            "name": "native (ubuntu-latest)",
+            "conclusion": "success"
+          },
+          {
+            "id": 125115444887,
+            "name": "native (windows-latest)",
+            "conclusion": "success"
+          },
+          {
+            "id": 125115444909,
+            "name": "desktop",
+            "conclusion": "success"
+          },
+          {
+            "id": 125115444912,
+            "name": "app (ubuntu-latest)",
+            "conclusion": "success"
+          },
+          {
+            "id": 125115444927,
+            "name": "python (windows-latest, 3.11)",
+            "conclusion": "success"
+          },
+          {
+            "id": 125115444967,
+            "name": "python (ubuntu-latest, 3.11)",
+            "conclusion": "success"
+          },
+          {
+            "id": 125115445074,
+            "name": "python (ubuntu-latest, 3.13)",
+            "conclusion": "success"
+          },
+          {
+            "id": 125115445112,
+            "name": "python (windows-latest, 3.13)",
+            "conclusion": "success"
+          }
+        ],
+        "scope": "Independent first-attempt exact implementation-main success, all 9 jobs passed; does not explain the failed duplicate",
+        "completed_by": "2026-11-02T06:19:02Z",
+        "url": "https://github.com/Chris0Jeky/Loomward/actions/runs/41395259053"
+      }
+    },
+    "pr_landing_receipts": [
+      {
+        "number": 1109,
+        "state": "closed",
+        "merged": true,
+        "head": "9a8004506fe657895124f29d503c1fcbb7df7f16",
+        "reported_merge_sha": "280aa69b3f29577f117db20c87532fe69f769a0b",
+        "merged_at": "2026-11-02T04:44:38Z",
+        "landing_main_commit": "280aa69b3f29577f117db20c87532fe69f769a0b",
+        "landing_mode": "concurrent external merge"
+      },
+      {
+        "number": 1125,
+        "state": "closed",
+        "merged": true,
+        "head": "d7eab8c045caa16dad8244e2526390b06a8614cc",
+        "reported_merge_sha": "d7eab8c045caa16dad8244e2526390b06a8614cc",
+        "merged_at": "2026-11-02T05:07:13Z",
+        "landing_main_commit": "ad58c9036931b981c9c47a99fb54dccd50377773",
+        "landing_mode": "recognized through preserved ancestry"
+      },
+      {
+        "number": 1113,
+        "state": "closed",
+        "merged": true,
+        "head": "d0e52fc86b460ec5db52b4ece5d06e25901daab8",
+        "reported_merge_sha": "b10e6117ca4804e07d68295e43fba4bc38a4cf4c",
+        "merged_at": "2026-11-02T05:07:13Z",
+        "landing_main_commit": "ad58c9036931b981c9c47a99fb54dccd50377773",
+        "landing_mode": "recognized through preserved ancestry"
+      },
+      {
+        "number": 1118,
+        "state": "closed",
+        "merged": true,
+        "head": "5584c55ac0a9139f14b88aba7298b88ddcf43008",
+        "reported_merge_sha": "b10e6117ca4804e07d68295e43fba4bc38a4cf4c",
+        "merged_at": "2026-11-02T05:07:13Z",
+        "landing_main_commit": "ad58c9036931b981c9c47a99fb54dccd50377773",
+        "landing_mode": "recognized through preserved ancestry"
+      },
+      {
+        "number": 1127,
+        "state": "closed",
+        "merged": true,
+        "head": "ad725931b2db276416302b5376b1fd56f98d45c1",
+        "reported_merge_sha": "ad58c9036931b981c9c47a99fb54dccd50377773",
+        "merged_at": "2026-11-02T05:07:11Z",
+        "landing_main_commit": "ad58c9036931b981c9c47a99fb54dccd50377773",
+        "landing_mode": "direct merge"
+      },
+      {
+        "number": 1128,
+        "state": "closed",
+        "merged": true,
+        "head": "b21b2d9986efd338249f3f7d22cd32626ef9d32b",
+        "reported_merge_sha": "f2546383f74feb1028cbc5d66ff6212250f6e893",
+        "merged_at": "2026-11-02T05:39:01Z",
+        "landing_main_commit": "f2546383f74feb1028cbc5d66ff6212250f6e893",
+        "landing_mode": "direct merge"
+      }
+    ],
+    "deadline_landing_receipt": {
+      "pr_number": 1128,
+      "merged_at": "2026-11-02T05:39:01Z",
+      "merge_sha": "f2546383f74feb1028cbc5d66ff6212250f6e893",
+      "tree_sha": "14e5ec7d86ba30cdefb2a5917b817ccf41334969",
+      "parents": [
+        "ad58c9036931b981c9c47a99fb54dccd50377773",
+        "b21b2d9986efd338249f3f7d22cd32626ef9d32b"
+      ],
+      "qualification_run_id": 41389080388,
+      "later_evidence": "Duplicate push Windows job125096338660 failed after merge, cause unresolved in #1129; exact post-merge main run41395259053 independently passed 9/9 on first attempt"
+    },
+    "checkpoint_scope": "base_commit is the implementation main f2546383f74feb1028cbc5d66ff6212250f6e893 merged after full primary qualification, before this documentation commit. The later duplicate Windows failure remains unresolved in #1129 despite independent post-merge 9/9 success. No future/self-referential documentation SHA is required; historical evidence and hard gates are preserved.",
+    "late_duplicate_failure": {
+      "issue": 1129,
+      "url": "https://github.com/Chris0Jeky/Loomward/issues/1129",
+      "head": "b21b2d9986efd338249f3f7d22cd32626ef9d32b",
+      "run": 41389074739,
+      "job": 125096338660,
+      "status": "failure",
+      "completed_at": "2026-11-02T05:43:15Z",
+      "status_at_merge": "8/9; Windows still running; no failures reported",
+      "cause": "unresolved",
+      "diagnostic_limit": "Job metadata retained an in-progress standard-user step and pending later steps; original log unavailable with HTTP 404 BlobNotFound; no failed assertion, child exit, timeout or cleanup result recovered",
+      "log_read_times": [
+        "2026-11-02T05:43:50Z",
+        "2026-11-02T05:45:04Z",
+        "2026-11-02T05:46:07Z",
+        "2026-11-02T11:49:17Z"
+      ],
+      "source_action": "No source change or rerun justified without causal evidence; preserve target repair in1126 and investigate separately",
+      "issue_state": "open",
+      "recovery_criteria": [
+        "Recover the original first-attempt failed job log, Actions annotation or runner diagnostic without replacing that attempt",
+        "Identify the last executed stage and actual failure, including whether the repaired deadline test ran",
+        "Classify the cause from recovered evidence and choose a targeted source/fixture/workflow repair or justified rerun if warranted",
+        "Record exact source and resulting proof while retaining the original failure and primary/duplicate outcomes; keep #1129 open if original diagnostics remain unavailable"
+      ],
+      "issue_1126_boundary": "Specific deadline repair remains demonstrated by the primary run; reopen #1126 only if recovered evidence or targeted reproduction implicates its test or hook",
+      "classification": "Unclassified: available metadata and missing logs do not establish a cause"
+    }
+  },
+  "maintenance_2026_11_05": {
+    "status": "Implementation complete; documentation checkpoint based on the verified implementation main below",
+    "prior_checkpoint_metadata_and_next_work": {
+      "as_of": "2026-11-02",
+      "base_commit": "f2546383f74feb1028cbc5d66ff6212250f6e893",
+      "phase": "Implementation merged after full primary qualification; later duplicate Windows failure unresolved in #1129 despite independent post-merge main success; C8 remains closed",
+      "next_local_issues": [
+        "#120 / LW-101: required W0-B cold-cache and strategy/thread/volume measurements; keep in_progress despite completed strategy promotion",
+        "#787: remaining wedged-worker pins, retiring-watch hint coverage and sustained-load churn",
+        "#414: actual durable-service 10M qualification, a new continuous 72-hour pass, required effect power-cut/restore evidence and owner UX acceptance",
+        "#24/#101: manual Windows accessibility/field acceptance",
+        "#1108: app result retry is qualified and merged through PR1127 and its checkbox is checked; all other items remain open, including cancellation plumbing, job-registry/native test gaps, worker reservation and phase progress",
+        "#1121: recover the private Explorer-context source archive/bundle or publish the absent recorded branch before fixture repair and full qualification; source is absent from connected GitHub and uploaded material",
+        "#1124: implement and qualify direct collection-member search from the verified remote tests-only source e69e695; no implementation or PR yet",
+        "#1129: recover original failed duplicate Windows job125096338660 diagnostics, identify the last executed stage/cause and whether the deadline test ran, then choose evidence-based targeted repair or justified rerun; retain first-attempt failure and keep incident open while diagnostics are unavailable"
+      ]
+    },
+    "initial_main_sha": "ff9add48774c3adac07e58f021926180116898ec",
+    "initial_open_github_issue_count": 158,
+    "initial_open_prs": [
+      1131,
+      1132,
+      1133,
+      1135,
+      1136,
+      1137
+    ],
+    "issue_count_scope": "GitHub issue count excludes PRs; the unchanged top-level backlog_count=130 is the local LW catalogue",
+    "remaining_open_github_issue_count": 151,
+    "merged_implementation_pr_count": 15,
+    "merged_implementation_prs": [
+      {
+        "number": 1131,
+        "url": "https://github.com/Chris0Jeky/Loomward/pull/1131",
+        "state": "closed",
+        "merged": true,
+        "head_sha": "c942f40412878e6edb025712c0e5e1f4ad35d3b7",
+        "merge_commit_sha": "74723782018313e77f1da055ce48b909e6c01155",
+        "merged_at": "2026-11-05T02:31:57Z"
+      },
+      {
+        "number": 1132,
+        "url": "https://github.com/Chris0Jeky/Loomward/pull/1132",
+        "state": "closed",
+        "merged": true,
+        "head_sha": "e2fdd9db13bc2edc8f0e082a7d9babb5125aa49b",
+        "merge_commit_sha": "94d01faf2113f51967449fe85c83e0f4bdb5396d",
+        "merged_at": "2026-11-05T02:31:57Z"
+      },
+      {
+        "number": 1133,
+        "url": "https://github.com/Chris0Jeky/Loomward/pull/1133",
+        "state": "closed",
+        "merged": true,
+        "head_sha": "a67d02b475b438af7c634ef4a8e6675d5e55b812",
+        "merge_commit_sha": "94d01faf2113f51967449fe85c83e0f4bdb5396d",
+        "merged_at": "2026-11-05T02:31:57Z"
+      },
+      {
+        "number": 1135,
+        "url": "https://github.com/Chris0Jeky/Loomward/pull/1135",
+        "state": "closed",
+        "merged": true,
+        "head_sha": "c3e167c8e64ffc2570cfc4687281c466e66d534b",
+        "merge_commit_sha": "74723782018313e77f1da055ce48b909e6c01155",
+        "merged_at": "2026-11-05T02:31:57Z"
+      },
+      {
+        "number": 1136,
+        "url": "https://github.com/Chris0Jeky/Loomward/pull/1136",
+        "state": "closed",
+        "merged": true,
+        "head_sha": "cc6f7ee21ad1278e6c6153c63cc6920d2b7a6fcb",
+        "merge_commit_sha": "94d01faf2113f51967449fe85c83e0f4bdb5396d",
+        "merged_at": "2026-11-05T02:31:57Z"
+      },
+      {
+        "number": 1137,
+        "url": "https://github.com/Chris0Jeky/Loomward/pull/1137",
+        "state": "closed",
+        "merged": true,
+        "head_sha": "085f79fca49125b1290652bea42ca0c215dfde08",
+        "merge_commit_sha": "37ef170c0202edb2974b46f91ab5ed113ddef776",
+        "merged_at": "2026-11-05T02:31:55Z"
+      },
+      {
+        "number": 1138,
+        "url": "https://github.com/Chris0Jeky/Loomward/pull/1138",
+        "state": "closed",
+        "merged": true,
+        "head_sha": "dc7bca9e483c25b6f379f8a93a6d50020529e1db",
+        "merge_commit_sha": "c4507c19ca5133f74b81d3177719822056ca045f",
+        "merged_at": "2026-11-05T03:02:33Z"
+      },
+      {
+        "number": 1139,
+        "url": "https://github.com/Chris0Jeky/Loomward/pull/1139",
+        "state": "closed",
+        "merged": true,
+        "head_sha": "370018042df0762f9a62b4910471a25933f342d1",
+        "merge_commit_sha": "c4507c19ca5133f74b81d3177719822056ca045f",
+        "merged_at": "2026-11-05T03:02:33Z"
+      },
+      {
+        "number": 1140,
+        "url": "https://github.com/Chris0Jeky/Loomward/pull/1140",
+        "state": "closed",
+        "merged": true,
+        "head_sha": "ad1cb12874be3e61bc45bf2d26a384ecf4e3f6b0",
+        "merge_commit_sha": "c4507c19ca5133f74b81d3177719822056ca045f",
+        "merged_at": "2026-11-05T03:02:33Z"
+      },
+      {
+        "number": 1141,
+        "url": "https://github.com/Chris0Jeky/Loomward/pull/1141",
+        "state": "closed",
+        "merged": true,
+        "head_sha": "f2ee4276a5997ac3b302ea46602c2539d67b8cbf",
+        "merge_commit_sha": "c4507c19ca5133f74b81d3177719822056ca045f",
+        "merged_at": "2026-11-05T03:02:33Z"
+      },
+      {
+        "number": 1142,
+        "url": "https://github.com/Chris0Jeky/Loomward/pull/1142",
+        "state": "closed",
+        "merged": true,
+        "head_sha": "b18de23b8f8b2bb0bdf3f4efcdc49a3123e68d87",
+        "merge_commit_sha": "ef5236253ad037114f8a59754bf3deb8c924660e",
+        "merged_at": "2026-11-05T02:45:55Z"
+      },
+      {
+        "number": 1143,
+        "url": "https://github.com/Chris0Jeky/Loomward/pull/1143",
+        "state": "closed",
+        "merged": true,
+        "head_sha": "0e7c94429920c488e9823cbd3fb6f42bbf3ed631",
+        "merge_commit_sha": "5dfcd4c8b29d715a12608113ca5e7162f8bb6810",
+        "merged_at": "2026-11-05T03:02:31Z"
+      },
+      {
+        "number": 1145,
+        "url": "https://github.com/Chris0Jeky/Loomward/pull/1145",
+        "state": "closed",
+        "merged": true,
+        "head_sha": "129a36f1af1abaecff7d18e8a8a9fe33d48807ad",
+        "merge_commit_sha": "2aceefa0a51cbe8776ec0683f93707a17a3c0a0d",
+        "merged_at": "2026-11-05T03:09:16Z"
+      },
+      {
+        "number": 1146,
+        "url": "https://github.com/Chris0Jeky/Loomward/pull/1146",
+        "state": "closed",
+        "merged": true,
+        "head_sha": "c0ab2262bcfaf5c58fea09e181ca12637a80b72a",
+        "merge_commit_sha": "1d5aaf0fd318bdeb692e9e0ec420f05266db96a9",
+        "merged_at": "2026-11-05T03:54:52Z"
+      },
+      {
+        "number": 1147,
+        "url": "https://github.com/Chris0Jeky/Loomward/pull/1147",
+        "state": "closed",
+        "merged": true,
+        "head_sha": "049e74328740e2547b6e9246b9b0491524b74775",
+        "merge_commit_sha": "26119c36c9f6c37a045b9794f7a5c5692a7b5034",
+        "merged_at": "2026-11-05T03:54:54Z"
+      }
+    ],
+    "closed_issue_receipts": [
+      {
+        "number": 1033,
+        "url": "https://github.com/Chris0Jeky/Loomward/issues/1033",
+        "state": "closed",
+        "state_reason": "completed",
+        "closed_at": "2026-11-05T03:03:18Z"
+      },
+      {
+        "number": 1098,
+        "url": "https://github.com/Chris0Jeky/Loomward/issues/1098",
+        "state": "closed",
+        "state_reason": "completed",
+        "closed_at": "2026-11-05T02:33:43Z"
+      },
+      {
+        "number": 1101,
+        "url": "https://github.com/Chris0Jeky/Loomward/issues/1101",
+        "state": "closed",
+        "state_reason": "completed",
+        "closed_at": "2026-11-05T02:33:46Z"
+      },
+      {
+        "number": 1104,
+        "url": "https://github.com/Chris0Jeky/Loomward/issues/1104",
+        "state": "closed",
+        "state_reason": "completed",
+        "closed_at": "2026-11-05T03:09:39Z"
+      },
+      {
+        "number": 1105,
+        "url": "https://github.com/Chris0Jeky/Loomward/issues/1105",
+        "state": "closed",
+        "state_reason": "completed",
+        "closed_at": "2026-11-05T02:33:48Z"
+      },
+      {
+        "number": 1108,
+        "url": "https://github.com/Chris0Jeky/Loomward/issues/1108",
+        "state": "closed",
+        "state_reason": "completed",
+        "closed_at": "2026-11-05T03:55:43Z"
+      },
+      {
+        "number": 1124,
+        "url": "https://github.com/Chris0Jeky/Loomward/issues/1124",
+        "state": "closed",
+        "state_reason": "completed",
+        "closed_at": "2026-11-05T02:34:15Z"
+      },
+      {
+        "number": 1144,
+        "url": "https://github.com/Chris0Jeky/Loomward/issues/1144",
+        "state": "closed",
+        "state_reason": "completed",
+        "closed_at": "2026-11-05T03:55:44Z"
+      }
+    ],
+    "reconciled_open_issue_descriptions": [
+      74,
+      198,
+      437,
+      762,
+      840,
+      851,
+      1037,
+      1076,
+      1129
+    ],
+    "qualified_implementation_main_before_documentation_commit": "1d5aaf0fd318bdeb692e9e0ec420f05266db96a9",
+    "qualified_implementation_tree": "29cf9220d575824e1e7e17b3ccf5d0ad8492de42",
+    "qualified_slices": {
+      "integration": {
+        "pr": 1137,
+        "branch": "codex/ambitious-round2-20261102",
+        "sha": "085f79fca49125b1290652bea42ca0c215dfde08",
+        "tree": "8cd30032a1d34a241aa6227dd0f94cd700a94208",
+        "merge_sha": "37ef170c0202edb2974b46f91ab5ed113ddef776",
+        "qualified_runs": [
+          41951591904,
+          41951583002
+        ]
+      },
+      "grant": {
+        "pr": 1142,
+        "branch": "codex/copy-grant-regrant-20261105",
+        "sha": "b18de23b8f8b2bb0bdf3f4efcdc49a3123e68d87",
+        "tree": "86259a3f313ba66d903680d439512477b37ac36d",
+        "merge_sha": "ef5236253ad037114f8a59754bf3deb8c924660e",
+        "qualified_runs": [
+          41952563671,
+          41952559579
+        ]
+      },
+      "followups": {
+        "pr": 1143,
+        "branch": "codex/maintenance-followups-20261105",
+        "sha": "0e7c94429920c488e9823cbd3fb6f42bbf3ed631",
+        "tree": "0a72674d826ca4a5043f6c8405ac1b67c032ba3f",
+        "merge_sha": "5dfcd4c8b29d715a12608113ca5e7162f8bb6810",
+        "qualified_runs": [
+          41955056422,
+          41955048805
+        ]
+      },
+      "measurement": {
+        "pr": 1145,
+        "branch": "codex/candidate-count-measurement-20261105",
+        "sha": "129a36f1af1abaecff7d18e8a8a9fe33d48807ad",
+        "tree": "346e55edc2ada543ead37a33368468f42859b117",
+        "merge_sha": "2aceefa0a51cbe8776ec0683f93707a17a3c0a0d",
+        "qualified_runs": [
+          41955315627,
+          41955308029
+        ],
+        "measurement_run": 41955315631
+      },
+      "identity": {
+        "pr": 1146,
+        "branch": "codex/coverage-identity-cancellation-20261105",
+        "sha": "c0ab2262bcfaf5c58fea09e181ca12637a80b72a",
+        "tree": "29cf9220d575824e1e7e17b3ccf5d0ad8492de42",
+        "red_sha": "27d4160e300db39b49eea03ee7e13d41f18d6d12",
+        "first_red_sha": "b80b7f4fbf4fe3f07469f374fd04345c11a6003a",
+        "guard_failure_sha": "f630e26ad79a32205493d8f181243555c3e76e63",
+        "first_production_sha": "26119c36c9f6c37a045b9794f7a5c5692a7b5034",
+        "merge_sha": "1d5aaf0fd318bdeb692e9e0ec420f05266db96a9",
+        "qualified_runs": [
+          41960178507,
+          41960173043
+        ]
+      },
+      "chain": {
+        "pr": 1147,
+        "branch": "codex/reclaim-chain-filters-20261105",
+        "sha": "049e74328740e2547b6e9246b9b0491524b74775",
+        "tree": "c07bd33a3d8e152ba3731318f3550d28bc653d6f",
+        "qualified_runs": [
+          41956207993,
+          41956201152
+        ],
+        "merge_sha": "1d5aaf0fd318bdeb692e9e0ec420f05266db96a9",
+        "merged_through_pr": 1146
+      }
+    },
+    "source_reconciliation": "Uploaded ZIP matched all 1662 initial-main blobs. GitHub remained authoritative for live refs, publication and exact-head hosted CI; local synthetic mirror commits were never substituted for GitHub SHAs",
+    "hosted_evidence": {
+      "final_head": "c0ab2262bcfaf5c58fea09e181ca12637a80b72a",
+      "final_runs": [
+        {
+          "id": 41960178507,
+          "url": "https://github.com/Chris0Jeky/Loomward/actions/runs/41960178507",
+          "head_sha": "c0ab2262bcfaf5c58fea09e181ca12637a80b72a",
+          "event": "pull_request",
+          "run_attempt": 1,
+          "status": "completed",
+          "conclusion": "success",
+          "checkout_sha": "a10ad95d17f3f15d5facd0bbbd2c710d0667af3d",
+          "jobs": [
+            {
+              "id": 127024898987,
+              "name": "desktop",
+              "conclusion": "success"
+            },
+            {
+              "id": 127024899196,
+              "name": "python (ubuntu-latest, 3.13)",
+              "conclusion": "success"
+            },
+            {
+              "id": 127024899256,
+              "name": "python (windows-latest, 3.11)",
+              "conclusion": "success"
+            },
+            {
+              "id": 127024899258,
+              "name": "python (ubuntu-latest, 3.11)",
+              "conclusion": "success"
+            },
+            {
+              "id": 127024899277,
+              "name": "app (windows-latest)",
+              "conclusion": "success"
+            },
+            {
+              "id": 127024899328,
+              "name": "app (ubuntu-latest)",
+              "conclusion": "success"
+            },
+            {
+              "id": 127024899340,
+              "name": "native (ubuntu-latest)",
+              "conclusion": "success"
+            },
+            {
+              "id": 127024899379,
+              "name": "native (windows-latest)",
+              "conclusion": "success"
+            },
+            {
+              "id": 127024899462,
+              "name": "python (windows-latest, 3.13)",
+              "conclusion": "success"
+            }
+          ]
+        },
+        {
+          "id": 41960173043,
+          "url": "https://github.com/Chris0Jeky/Loomward/actions/runs/41960173043",
+          "head_sha": "c0ab2262bcfaf5c58fea09e181ca12637a80b72a",
+          "event": "push",
+          "run_attempt": 1,
+          "status": "completed",
+          "conclusion": "success",
+          "checkout_sha": "c0ab2262bcfaf5c58fea09e181ca12637a80b72a",
+          "jobs": [
+            {
+              "id": 127024835587,
+              "name": "native (ubuntu-latest)",
+              "conclusion": "success"
+            },
+            {
+              "id": 127024835753,
+              "name": "python (windows-latest, 3.11)",
+              "conclusion": "success"
+            },
+            {
+              "id": 127024835765,
+              "name": "app (ubuntu-latest)",
+              "conclusion": "success"
+            },
+            {
+              "id": 127024835781,
+              "name": "python (windows-latest, 3.13)",
+              "conclusion": "success"
+            },
+            {
+              "id": 127024835828,
+              "name": "python (ubuntu-latest, 3.11)",
+              "conclusion": "success"
+            },
+            {
+              "id": 127024835838,
+              "name": "native (windows-latest)",
+              "conclusion": "success"
+            },
+            {
+              "id": 127024835875,
+              "name": "python (ubuntu-latest, 3.13)",
+              "conclusion": "success"
+            },
+            {
+              "id": 127024835967,
+              "name": "app (windows-latest)",
+              "conclusion": "success"
+            },
+            {
+              "id": 127024835982,
+              "name": "desktop",
+              "conclusion": "success"
+            }
+          ]
+        }
+      ],
+      "automated_code_review": {
+        "commit_sha": "c0ab2262bcfaf5c58fea09e181ca12637a80b72a",
+        "status": "completed",
+        "has_any_findings": false,
+        "has_unresolved_findings": false,
+        "comment_id": 6649035817,
+        "url": "https://github.com/Chris0Jeky/Loomward/pull/1146#issuecomment-6649035817",
+        "completed_at": "2026-11-05T03:41:15Z"
+      },
+      "linux_workspace": {
+        "passed": 1967,
+        "failed": 0,
+        "ignored": 4,
+        "doc_tests_included": 3,
+        "overlapping_publication_passes_excluded": 7,
+        "jobs": [
+          127024899340,
+          127024835587
+        ],
+        "operations_passed": 68,
+        "machine_stores_passed": 44,
+        "architecture_guard": "executed and passed in both jobs",
+        "clippy": "passed in both jobs"
+      },
+      "windows_standard_user": {
+        "pending": false,
+        "test_stage_complete": true,
+        "passed": 2700,
+        "failed": 0,
+        "ignored": 10,
+        "doc_tests_included": 3,
+        "service_passed": 708,
+        "service_failed": 0,
+        "service_ignored": 2,
+        "operations_passed": 68,
+        "machine_stores_passed": 44,
+        "engine_passed": 291,
+        "child_exit_code": 0,
+        "token_elevation": 0,
+        "fixture_filesystem": "NTFS",
+        "jobs": [
+          127024899379,
+          127024835838
+        ],
+        "strict_gates": {
+          "coverage_service": {
+            "passed": 1,
+            "failed": 0,
+            "ignored": 0,
+            "setup_skip": false
+          },
+          "directory_recheck": {
+            "passed": 4,
+            "failed": 0,
+            "ignored": 0,
+            "setup_skip": false
+          },
+          "destination_acl": {
+            "passed": 4,
+            "failed": 0,
+            "ignored": 0,
+            "setup_skip": false
+          },
+          "grant_regrant": {
+            "passed": 4,
+            "failed": 0,
+            "ignored": 0,
+            "setup_skip": false
+          }
+        },
+        "fixture_all_features": {
+          "passed": 389,
+          "failed": 0,
+          "ignored": 3,
+          "overlaps_workspace": true
+        },
+        "overlapping_publication_passes_excluded": 7,
+        "setup_returns": "Only the existing no-8.3-alias fixture marker, once in workspace and once in the overlapping all-features run; no setup skips in the strict gates",
+        "embedded_negative_control": "crash_sweep::a_panicking_child_is_not_an_unreached_crash_point intentionally catches an invalid-synthetic-scenario child panic. Its captured subprocess prints 0 passed/1 failed; the enclosing crash suite passes20/0. Not a failed top-level workspace test.",
+        "artifacts": [
+          {
+            "run_id": 41960178507,
+            "job_id": 127024899379,
+            "artifact_id": 13386861576,
+            "zip_bytes": 124836,
+            "downloaded_zip_sha256": "3ef787326c4d54d1b00cfe5bfe2c8eb3f2c1b13ec908404afe35b904d71b9506",
+            "members": {
+              "stdout.log": 685536,
+              "stderr.log": 0,
+              "status.json": 386
+            },
+            "status": {
+              "schemaVersion": 1,
+              "runId": "41960178507",
+              "runAttempt": "1",
+              "workflowSha": "a10ad95d17f3f15d5facd0bbbd2c710d0667af3d",
+              "startedUtc": "2026-11-05T03:20:42.1629120Z",
+              "updatedUtc": "2026-11-05T03:52:02.5538042Z",
+              "phase": "finished",
+              "childExitCode": 0,
+              "timedOut": false,
+              "parentError": null,
+              "cleanupCompleted": true,
+              "cleanupFailed": false
+            }
+          },
+          {
+            "run_id": 41960173043,
+            "job_id": 127024835838,
+            "artifact_id": 13386069142,
+            "zip_bytes": 124805,
+            "downloaded_zip_sha256": "e3d56c03dc1dc62f03cfa2782d24676847c3dc987d0e8f70d94a691a500dacd1",
+            "members": {
+              "stdout.log": 685639,
+              "stderr.log": 0,
+              "status.json": 386
+            },
+            "status": {
+              "schemaVersion": 1,
+              "runId": "41960173043",
+              "runAttempt": "1",
+              "workflowSha": "c0ab2262bcfaf5c58fea09e181ca12637a80b72a",
+              "startedUtc": "2026-11-05T03:20:27.4570805Z",
+              "updatedUtc": "2026-11-05T03:52:03.6647292Z",
+              "phase": "finished",
+              "childExitCode": 0,
+              "timedOut": false,
+              "parentError": null,
+              "cleanupCompleted": true,
+              "cleanupFailed": false
+            }
+          }
+        ],
+        "clippy": "Both all-features Windows and workspace Clippy gates passed in both completed jobs"
+      },
+      "app": {
+        "passed": 1080,
+        "files": 77,
+        "svelte_errors": 0,
+        "svelte_warnings": 0,
+        "build": "passed in all four jobs",
+        "jobs": [
+          127024899328,
+          127024899277,
+          127024835765,
+          127024835967
+        ],
+        "linux_browser": "mock and live ALL PASS in both Linux jobs",
+        "windows_browser": "not executed on Windows"
+      },
+      "counts_scope": "Workspace totals exclude overlapping focused invocations; ignored measurements and platform-specific setup returns remain explicit. Earlier top-level native/reference counts retain their original measured revisions"
+    },
+    "duplicate_measurement": {
+      "scope": "Paired synthetic count-query timing, identical per-run database/flags/floor/32M budget; first observations plus ten alternating warmed pairs; not cold-cache or general end-to-end latency",
+      "first": {
+        "head": "48471bada8a6bb2d6cb0b5931ed6fc60a3a1d627",
+        "run": 41954090348,
+        "one_size_old_ms": 71.8,
+        "one_size_grouped_ms": 51.7,
+        "spread_old_ms": 837.2,
+        "spread_grouped_ms": 88.0,
+        "normal_ci": "Initial formatting failure preserved"
+      },
+      "qualified": {
+        "head": "129a36f1af1abaecff7d18e8a8a9fe33d48807ad",
+        "run": 41955315631,
+        "job": 127008710644,
+        "artifact": 13383400462,
+        "downloaded_zip_sha256": "aab3a5cc506a67de218293be731295a0fef1df912ea19e7eaf45dca580fcaabd",
+        "one_size_old_ms": 75.8,
+        "one_size_grouped_ms": 54.3,
+        "spread_old_ms": 883.1,
+        "spread_grouped_ms": 91.3,
+        "test_result": "1 passed, 0 failed, 0 ignored"
+      }
+    },
+    "preserved_negative_evidence": [
+      "ACL tests-only 997e57c: real standard-user Windows 0 passed/4 failed; exact null/wrong refusal assertions before the typed-error repair",
+      "Diagnostics probe 6c2fe705: child exit73 stayed failed; exactly stdout/stderr/status survived normal cleanup with verified archive digest",
+      "Coverage phase tests-only 308dae0: four valid phases rejected by the old closed schema",
+      "Coverage b80b7f4: Windows 1 passed/3 failed; Linux operations66 passed/1 failed",
+      "Coverage 27d4160: Linux operations66 passed/2 failed; strict Windows service0 passed/1 failed at query-count assertion",
+      "Production26119c36: one rustfmt layout failure before native compilation/tests",
+      "Productionf630e26: both Linux workflows rejected a direct service fixture reference with the unchanged architecture guard; operations68 and machine_stores44 passed before that later failure",
+      "Integration formatting, serde-map serialization, unavailable-root fixture, closed-schema fragments, command count and exhaustive operation-vocabulary failures were corrected without weakening the checks"
+    ],
+    "runner_loss_incident": {
+      "issue": 1129,
+      "jobs": [
+        125096338660,
+        126997824360
+      ],
+      "runs": [
+        41389074739,
+        41951875642
+      ],
+      "observed_at": "2026-11-05T03:05:00Z",
+      "observation_surface": "Public GitHub Actions job UI, expanded Annotations",
+      "annotation": "The hosted runner lost communication with the server.",
+      "failure_mode": "hosted runner communication loss",
+      "underlying_trigger": "unresolved",
+      "last_executed_test": "unknown",
+      "original_logs": "unavailable (BlobNotFound)",
+      "new_failure_windows_artifact": "absent",
+      "new_failure_log_last_checked": "2026-11-05T03:03:31Z",
+      "recovery_criterion": "original Actions annotation recovered; remaining cause and execution criteria open"
+    },
+    "coverage_boundary": "Cooperative cancellation before/after synchronous directory queries, owned worker until reader return, no retrievable cancelled report, preserved uncertainty. The service fixture holds a completed query return boundary; no in-flight kernel-call interruption or hard latency bound is claimed. A late cancellation can leave a bounded internal report between storage and terminal publication, but retrieval requires Completed; the controlled query-return regression proves no retention for its own cancellation timing",
+    "remaining_work": [
+      "#120 / LW-101: required W0-B cold-cache and strategy/thread/volume measurements; keep in_progress despite completed strategy promotion",
+      "#787: remaining wedged-worker pins, retiring-watch hint coverage and sustained-load churn",
+      "#414: actual durable-service 10M qualification, a new continuous 72-hour pass, required effect power-cut/restore evidence and owner UX acceptance",
+      "#24/#101: manual Windows accessibility/field acceptance",
+      "#1121: recover the retained private Explorer-context source archive/bundle or publish the absent recorded branch before exact-source repair and qualification",
+      "#1129: both original and new failed Windows jobs have recovered hosted-runner-communication-loss annotations; underlying trigger, last test and missing execution diagnostics remain unresolved. Preserve both first attempts and qualified paired/integration receipts",
+      "#1037: complete the Coverage-to-plan_archive integration and valid custody verification evidence; last_content_verified_at remains null rather than inventing a timestamp",
+      "#1076: real-catalogue performance, real-machine category witnesses and remaining design work; synthetic ancestry/depth/budget and intermediate-chain gaps are now covered",
+      "#851: four source/destination revoke/regrant regressions are qualified and refuse old consent; remaining preview/approval timing and staging-name design questions stay distinct from a demonstrated execution bypass",
+      "#762: establish the final duplicate-read revocation/return contract with a targeted interleaving proof, and make mismatched timed/traced budget-cut search measurements explicit; the other old review claims are resolved or have recorded non-bug explanations",
+      "#74/#198/#437/#840: reconcile the native lexical-adapter acceptance evidence, execute the requested live native navigation/restart witness, retain the manual save/overwrite and real-window 100k/1M churn work, and complete the 1M-file forget comparison plus legacy-layout crash sweep; dated issue prefaces now distinguish these residuals from delivered implementation"
+    ],
+    "evidence_notes": [
+      "evidence/v3/round2-20261102.md",
+      "evidence/v3/scan-change-evidence-1098.md",
+      "evidence/v3/duplicate-space-1104-1105.md",
+      "evidence/v3/copy-grant-regrant-851.md",
+      "evidence/v3/destination-acl-refusal-1033.md",
+      "evidence/v3/windows-ci-diagnostics-1129.md",
+      "evidence/v3/coverage-phase-progress-1108.md",
+      "evidence/v3/coverage-identity-cancellation-1144.md",
+      "evidence/v3/reclaim-ancestry-bounds-1076.md",
+      "evidence/v3/reclaim-chain-filters-1076.md"
+    ],
+    "checkpoint_scope": "base_commit is the qualified implementation main, before this docs-only checkpoint; no future/self-referential checkpoint SHA. All prior maintenance evidence and hard gates are preserved. This docs-only change uses whitespace, touched-link and independent-review checks rather than claiming a new native run",
+    "c8": "closed"
+  }
+}
