@@ -1,7 +1,11 @@
 """Offline decisions for the serial lane merge queue."""
 import importlib.util
+import json
 from pathlib import Path
+import subprocess
+import tempfile
 import unittest
+from unittest import mock
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts/lanes/merge_queue.py"
@@ -147,6 +151,132 @@ class MergeDecisionTests(unittest.TestCase):
         self.assertEqual(observation, {"head": "b" * 40, "first_seen": 5000})
         self.assertEqual(age, 0)
         self.assertEqual(seen["123"]["head"], "a" * 40)
+
+
+class MergeTeardownTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.cwd = Path(temporary.name)
+        self.home = self.cwd / "lane-home"
+        self.home.mkdir()
+        self.repo = self.cwd / "coordinator"
+        self.repo.mkdir()
+        self.file = self.home / "mergeq.txt"
+        self.sha = "a" * 40
+        self.file.write_text(f"123 {self.sha} Example_1-test\n", encoding="utf-8")
+        (self.home / "mergeq.seen.json").write_text(json.dumps({
+            "123": {"head": self.sha, "first_seen": 1000},
+            "124": {"head": self.sha, "first_seen": 1000},
+        }), encoding="utf-8")
+        self.teardown_code = 0
+        self.merge_code = 0
+        self.state = "OPEN"
+        self.bash = self.enterContext(mock.patch.object(queue.shutil, "which", return_value="bash"))
+        self.runner = self.enterContext(mock.patch.object(
+            queue.subprocess, "run", side_effect=self.run_command))
+        self.logs = self.enterContext(mock.patch.object(queue, "log"))
+        self.enterContext(mock.patch.object(queue.time, "time", return_value=1180))
+        self.enterContext(mock.patch.object(queue.Path, "cwd", return_value=self.cwd))
+        self.enterContext(mock.patch.object(queue, "gather", side_effect=lambda *args: ready(
+            state=self.state)))
+
+    def run_command(self, args, **kwargs):
+        if args[:3] == ("gh", "pr", "view"):
+            output = json.dumps({"state": self.state, "headRefOid": self.sha})
+            return subprocess.CompletedProcess(args, 0, output, "")
+        if args[:2] == ("gh", "api"):
+            return subprocess.CompletedProcess(args, 0, '{"behind_by": 0}', "")
+        if args[0] == "py":
+            return subprocess.CompletedProcess(args, self.merge_code, "merge helper result", "")
+        if args[0] == self.bash.return_value:
+            return subprocess.CompletedProcess(args, self.teardown_code, "ignored files\n",
+                                               "work remains in worktree\n" if self.teardown_code
+                                               else "removed Example_1-test\n")
+        self.fail(f"unexpected command: {args}")
+
+    def one_pass(self, dry_run=False):
+        queue.one_pass(str(self.repo), self.home, "example/project", dry_run)
+
+    def teardowns(self):
+        return [call for call in self.runner.call_args_list
+                if call.args[0][0] == self.bash.return_value]
+
+    def test_lane_merges_then_tears_down_with_queue_cwd_and_home(self):
+        self.bash.return_value = "C:/synthetic Git/bin/bash.exe"
+        self.one_pass()
+        self.assertEqual(self.file.read_text(encoding="utf-8"), "")
+        calls = self.teardowns()
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0].args[0], (
+            self.bash.return_value, str(self.repo / "scripts/lanes/rmwt.sh"), "Example_1-test"))
+        self.bash.assert_called_once_with("bash")
+        self.assertEqual(calls[0].kwargs["cwd"], self.cwd)
+        self.assertEqual(calls[0].kwargs["env"]["LW_HOME"], str(self.home))
+        commands = [call.args[0][0] for call in self.runner.call_args_list]
+        self.assertLess(commands.index("py"), commands.index(self.bash.return_value))
+        self.assertIn(mock.call("123", "teardown",
+                                "Example_1-test exited 0: removed Example_1-test", False),
+                      self.logs.call_args_list)
+
+    def test_two_fields_merge_without_teardown(self):
+        self.file.write_text(f"123 {self.sha}\n", encoding="utf-8")
+        self.one_pass()
+        self.assertEqual(self.file.read_text(encoding="utf-8"), "")
+        self.assertEqual(self.teardowns(), [])
+        self.assertTrue(any(call.args[0][0] == "py" for call in self.runner.call_args_list))
+
+    def test_teardown_failure_is_logged_once_and_next_line_merges(self):
+        self.teardown_code = 3
+        self.file.write_text(f"123 {self.sha} Example_1-test\n124 {self.sha}\n", encoding="utf-8")
+        self.one_pass()
+        self.assertEqual(self.file.read_text(encoding="utf-8"), f"124 {self.sha}\n")
+        self.assertIn(mock.call("123", "teardown",
+                                "Example_1-test exited 3: work remains in worktree", False),
+                      self.logs.call_args_list)
+        self.one_pass()
+        self.assertEqual(self.file.read_text(encoding="utf-8"), "")
+        self.assertEqual(len(self.teardowns()), 1)
+        self.assertEqual(sum(call.args[0][0] == "py" for call in self.runner.call_args_list), 2)
+
+    def test_dry_run_logs_teardown_without_calling_it(self):
+        before = self.file.read_text(encoding="utf-8")
+        self.one_pass(dry_run=True)
+        self.assertEqual(self.file.read_text(encoding="utf-8"), before)
+        self.assertEqual(self.teardowns(), [])
+        merges = [call for call in self.runner.call_args_list if call.args[0][0] == "py"]
+        self.assertEqual(len(merges), 1)
+        self.assertIn("--dry-run", merges[0].args[0])
+        reasons = [call.args[2] for call in self.logs.call_args_list]
+        self.assertTrue(any("would run" in reason and "rmwt.sh" in reason
+                            and "Example_1-test" in reason for reason in reasons))
+
+    def test_invalid_lanes_park_before_any_subprocess(self):
+        for lane in ("../other", "bad/name", "bad.name", "bad;name", "caf\u00e9"):
+            with self.subTest(lane=lane):
+                self.file.write_text(f"123 {self.sha} {lane}\n", encoding="utf-8")
+                self.one_pass()
+                self.assertEqual(self.file.read_text(encoding="utf-8"), "")
+                self.assertIn("invalid lane", (self.home / "mergeq.parked").read_text(
+                    encoding="utf-8").splitlines()[-1])
+                self.runner.assert_not_called()
+
+    def test_failed_merge_never_tears_down_or_pops(self):
+        self.merge_code = 1
+        before = self.file.read_text(encoding="utf-8")
+        self.one_pass()
+        self.assertEqual(self.file.read_text(encoding="utf-8"), before)
+        self.assertEqual(self.teardowns(), [])
+        self.assertEqual(self.logs.call_args.args[1], "wait")
+
+    def test_already_merged_or_closed_never_tears_down(self):
+        for state in ("MERGED", "CLOSED"):
+            with self.subTest(state=state):
+                self.state = state
+                self.file.write_text(f"123 {self.sha} Example_1-test\n", encoding="utf-8")
+                self.one_pass()
+                self.assertEqual(self.file.read_text(encoding="utf-8"), "")
+                self.assertEqual(self.teardowns(), [])
 
 
 if __name__ == "__main__":
