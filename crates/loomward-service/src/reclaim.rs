@@ -395,17 +395,17 @@ impl Inner {
     /// Whether this process runs with an elevated token; the observation refuses one (invariant 2).
     fn observe_elevated(&self) -> bool {
         #[cfg(test)]
-        if self
+        let forced = self
             .hooks
             .reclaim_elevated
-            .load(std::sync::atomic::Ordering::Acquire)
-        {
-            return true;
-        }
+            .load(std::sync::atomic::Ordering::Acquire);
+        #[cfg(not(test))]
+        let forced = false;
         #[cfg(windows)]
-        return loomward_windows::enumerate::running_elevated();
+        let token = loomward_windows::enumerate::running_elevated();
         #[cfg(not(windows))]
-        false
+        let token = false;
+        forced || token
     }
 
     pub(crate) fn reclaim_observe(&self, req: &RequestEnvelope) -> Result<Out, ErrorBody> {
