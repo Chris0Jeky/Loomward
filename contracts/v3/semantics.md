@@ -1138,7 +1138,8 @@ Reads never request aggregate repairs. Stale roots make the plan partial and the
 sizes unknown. Work-budget exhaustion sets `budget_hit` and `partial`; an empty group then says
 nothing about what the volume holds. Near the read deadline the plan stops early instead of failing: it returns the
 candidates established so far with `budget_hit` and `partial` set, and a candidate whose size was not established
-stays unknown (#1156). `deadline_exceeded` remains only for a read that cannot start within its deadline.
+stays unknown (#1156). Steps that cannot be cut part-way (opening the snapshot, the Recycle Bin query, sealing and
+projecting the result) can still overrun and return `deadline_exceeded`.
 The plan itself performs no link-count pass: reclaimable bytes are `null` with a reason, never
 zero, unless `reclaim.observe` (below) stored a verified verdict for the candidate. The Recycle Bin query is metadata-only and made only for a volume-root grant;
 otherwise its size is unknown. `owner_step` and relocation settings are display text only:
