@@ -48,8 +48,12 @@ fn cut_reached(cut: Option<Instant>) -> bool {
 }
 
 fn detector_budget(error: &loomward_catalog::Error, cut: Option<Instant>) -> bool {
+    // `entry_with_path` surfaces our own progress-handler interrupt as raw SQL (#1172 review).
+    let interrupted = matches!(error, loomward_catalog::Error::Sql(rusqlite::Error::SqliteFailure(e, _))
+        if e.code == rusqlite::ErrorCode::OperationInterrupted);
     matches!(error, loomward_catalog::Error::ResourceBudget)
-        || (matches!(error, loomward_catalog::Error::Cancelled) && cut_reached(cut))
+        || ((interrupted || matches!(error, loomward_catalog::Error::Cancelled))
+            && cut_reached(cut))
 }
 
 // Only our own soft interrupt becomes partial advice. Other SQL failures remain errors.
