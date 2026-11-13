@@ -171,7 +171,9 @@ pub(super) fn admit(
     )
     .map_err(|reason| {
         if reason.contains("protected_profile_or_store") {
-            "whole user-profile folders and credential or browser stores are not eligible".into()
+            "whole user-profile folders, credential or browser stores, and tool stores outside their known cache \
+             folders are not eligible"
+                .into()
         } else {
             reason
         }

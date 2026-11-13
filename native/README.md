@@ -147,8 +147,9 @@ button is Cancel; declining returns `cancelled_by_user` and creates no grant. Vo
 prove file identity (FAT/exFAT, #372, not merged when this landed) get no separate confirmation here
 yet. Its result goes
 through the service's grant-root validator (native selection permits volume roots), then refuses
-whole profiles and credential/browser stores (including `.docker`, `.cargo`, `.npm`,
-`.terraform.d` and `.gemini`); the service must still check state overlap,
+whole profiles, credential/browser stores (including `.docker`, `.terraform.d` and `.gemini`) and tool
+stores outside their known cache folders (`.cargo` and `.npm` only at `.cargo\registry`, `.npm\_cacache` and the
+other docs/52 section 6 folders); the service must still check state overlap,
 dataset provenance and native identity when granting. Concurrent dialog requests decline.
 The picker is owned by the main window and declines before opening if no owner is configured.
 Sibling profile fencing applies only inside named `Users`, `profiles` or `Documents and Settings`
