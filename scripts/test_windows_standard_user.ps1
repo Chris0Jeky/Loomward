@@ -130,7 +130,7 @@ public static class QualificationCloudProbe {
 
     function Invoke-QualificationCargo {
         param([string[]]$CargoArguments, [int]$MinimumPassed = 0, [switch]$NoSetupSkip, [switch]$NoElevatedSkip)
-        Write-Host "::group::stable cargo $($CargoArguments -join ' ')"
+        Write-Host "::group::pinned cargo $($CargoArguments -join ' ')"
         & $config.cargo @CargoArguments 2>&1 | Tee-Object -Variable cargoOutput
         $cargoExit = $LASTEXITCODE
         Write-Host '::endgroup::'
@@ -154,7 +154,7 @@ public static class QualificationCloudProbe {
         }
     }
 
-    # The resolved binaries are the stable toolchain installed by the workflow, copied below.
+    # The resolved binaries are the rust-toolchain.toml toolchain installed by the workflow, copied below.
     # Preserve the existing tests and add exact native witnesses; do not turn setup refusal green.
     # Final Coverage identity queries must stop between calls and preserve uncertainty.
     Invoke-QualificationCargo -CargoArguments @('test', '--locked', '-p', 'loomward-service', '--lib', 'coverage_owns_the_identity_query_return_until_cancellation_drains', '--', '--show-output', '--test-threads=1') -MinimumPassed 1 -NoSetupSkip
@@ -358,8 +358,8 @@ public static class QualificationAccountProcess {
     }
 }
 '@
-$rustc = (& rustup which --toolchain stable rustc).Trim()
-if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve the installed stable compiler.' }
+$rustc = (& rustup which rustc).Trim()  # the rust-toolchain.toml pin (#1154)
+if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve the pinned compiler.' }
 $toolchain = Split-Path (Split-Path $rustc)
 $accountName = 'lwci' + [Guid]::NewGuid().ToString('N').Substring(0, 12)
 $work = Join-Path $runnerTemp $accountName
