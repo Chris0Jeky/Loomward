@@ -799,3 +799,19 @@ open, and their original reports remain available as history.
 The JSON's `backlog_count: 130` refers to the local LW catalogue, not the live GitHub issue count.
 Historical measurements keep their original revisions. Personal copying, provider/model activation,
 original-file effects and owner/manual acceptance retain their existing gates; **C8 remains closed**.
+
+## Agentic development checkpoint, 13 November 2026
+
+The earlier dated sections remain historical. This checkpoint changes how agents work on the repository,
+not product behaviour: no capability, gate or invariant changed, and **C8 remains closed**.
+
+| Change | PR |
+|---|---|
+| Push CI runs on `main` only; a PR head is proved by its `pull_request` run, so each head runs once instead of twice. The same PR carries the Rust 1.100 drift fixes (rustfmt reflow in `loomward-protocol`, clippy `needless_bool` in `loomward-service` reclaim) after hosted `stable` moved on 2026-11-12. | #1150 |
+| Root `AGENTS.md` rewritten to about 2,400 tokens (chars/4) under the 2,500 budget, with in-repo lane rules (STEP 0, per-worktree `target/`, coordinator-owned files, Codex only through `codex_safe.sh`), seam files `app/`, `native/`, `crates/AGENTS.md`, historical banners on the v0.2 entry points, an "Open now" block in `HUMAN_TODO.md`, and the dated wave records moved unchanged from `handoff/CHECKPOINT.json` to `handoff/CHECKPOINT-history.json`; two `loomward-windows` architecture guards now skip plain files under `crates/`. | #1151 |
+| Versioned lane tooling in `scripts/lanes/`: Sol and Terra only through `codex_safe.sh`, no shared `CARGO_TARGET_DIR`, and a serial merge queue that merges a reviewed sha only through `estate_merge.py`. | #1152 |
+
+Evidence for each change, including review verdicts, is in its PR. One smoke lane (`scripts/lanes/lane.sh`, Sol
+under the wrapper's workspace-write sandbox) ran `cargo test -p loomward-core` to 30 passed in its own worktree
+`target/`. The test counts in the 5 November section stay the latest full qualification; this checkpoint did not
+rerun the workspace. The open work list there is unchanged.
