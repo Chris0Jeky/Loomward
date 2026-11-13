@@ -16,11 +16,12 @@ The estate's `~/.claude/tools/codex_safe.sh` and `estate_merge.py` remain machin
   changes and calls the merge helper only with `--dry-run`.
 - `rmwt.sh <lane>` lists ignored files, removes owned build/state directories and
   uses plain `git worktree remove`. Copy anything needed out first; run elsewhere.
+  Non-empty `.loomward/` state is kept at `$LW_HOME/kept/<lane>/.loomward-<UTC timestamp YYYYmmddTHHMMSSZ>/`.
 
 Environment: `LW_HOME` defaults to `C:/lw`; `LW_REPO_SLUG` to `Chris0Jeky/Loomward`.
 `MAX=3` and `MINMB=3000` control queue limits (disk floor: 25 GB).
 `P` overrides the direct lane launcher's prompt stem; queue uses the lane name.
-`CARGO_BUILD_JOBS` defaults to 3. Incremental builds are off, debug is line tables,
+`CARGO_BUILD_JOBS` defaults to 3; `TMP`/`TEMP` are `<worktree>/target/lane-tmp`. Incremental builds are off, debug is line tables,
 and each worktree uses its own default `target/` (the launcher unsets `CARGO_TARGET_DIR`).
 Repository location comes from the installed scripts.
 Example (driver commits and publishes between wait and review):
