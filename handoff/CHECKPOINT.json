@@ -1,11 +1,11 @@
 {
   "project": "Loomward",
   "schema_version": 2,
-  "as_of": "2026-11-05",
+  "as_of": "2026-11-13",
   "version": "0.3.0-dev",
-  "base_commit": "1d5aaf0fd318bdeb692e9e0ec420f05266db96a9",
+  "base_commit": "5ae1d9d813dad1839fcfe05126e1811456c9d260",
   "branch": "main",
-  "phase": "Maintenance implementation merged after independent review and complete exact-head PR/push qualification; runner communication-loss trigger remains open in #1129; C8 remains closed",
+  "phase": "Lane-tooling wave 2026-11-13: main fixed (#1162) and toolchain pinned (#1161); dogfood fixes #1165-#1167, #1172 and lane-tooling fixes #1164, #1171 reviewed and queued in the serial merge queue; C8 remains closed",
   "read_first": [
     "AGENTS.md",
     "docs/16-implementation-status.md (latest dated section only)",
@@ -125,17 +125,21 @@
     "windows_performance_claim": false
   },
   "next_local_issues": [
+    "#1158: items 1 and 3 (owner scan.start still starves under ingestion despite pre-emption and the idempotency cache: reproduce), items 4-5; #1165 adds per-root pacing (item 2)",
+    "#1159: item 3 (why a scan ended partial needs a contracts/v3 field) and the #1167 review gaps (bulk rows bypass empty_established/totals_known)",
+    "#1156: re-measure reclaim.plan on the real multi-million catalogue after #1172; root advice dropped on a mid-walk cut; selection after a cut",
+    "#1170: grant refusal wording in app, native picker and CLI after #1166",
+    "#1168 (sandbox loses .cargo-build-lock), #1169 (8.3 test contract; lane lw1169 parked)",
     "#120 / LW-101: required W0-B cold-cache and strategy/thread/volume measurements; keep in_progress despite completed strategy promotion",
     "#787: remaining wedged-worker pins, retiring-watch hint coverage and sustained-load churn",
     "#414: actual durable-service 10M qualification, a new continuous 72-hour pass, required effect power-cut/restore evidence and owner UX acceptance",
     "#24/#101: manual Windows accessibility/field acceptance",
     "#1121: recover the retained private Explorer-context source archive/bundle or publish the absent recorded branch before exact-source repair and qualification",
     "#1129: both original and new failed Windows jobs have recovered hosted-runner-communication-loss annotations; underlying trigger, last test and missing execution diagnostics remain unresolved. Preserve both first attempts and qualified paired/integration receipts",
-    "#1037: complete the Coverage-to-plan_archive integration and valid custody verification evidence; last_content_verified_at remains null rather than inventing a timestamp",
     "#1076: real-catalogue performance, real-machine category witnesses and remaining design work; synthetic ancestry/depth/budget and intermediate-chain gaps are now covered",
-    "#851: four source/destination revoke/regrant regressions are qualified and refuse old consent; remaining preview/approval timing and staging-name design questions stay distinct from a demonstrated execution bypass",
-    "#762: establish the final duplicate-read revocation/return contract with a targeted interleaving proof, and make mismatched timed/traced budget-cut search measurements explicit; the other old review claims are resolved or have recorded non-bug explanations",
-    "#74/#198/#437/#840: reconcile the native lexical-adapter acceptance evidence, execute the requested live native navigation/restart witness, retain the manual save/overwrite and real-window 100k/1M churn work, and complete the 1M-file forget comparison plus legacy-layout crash sweep; dated issue prefaces now distinguish these residuals from delivered implementation"
+    "#74/#198/#437/#840: reconcile the native lexical-adapter acceptance evidence, execute the requested live native navigation/restart witness, retain the manual save/overwrite and real-window 100k/1M churn work, and complete the 1M-file forget comparison plus legacy-layout crash sweep; dated issue prefaces now distinguish these residuals from delivered implementation",
+    "#851: case-only staging-name refusal needs a case-sensitive NTFS witness (approve-after-revoke is #1174)",
+    "#1037: Coverage-to-plan_archive needs a field-semantics decision (STEP 0 2026-11-13: items 1-4 fixed)"
   ],
   "optional_independent_starts": [
     "LW-065",

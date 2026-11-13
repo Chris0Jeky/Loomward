@@ -815,3 +815,46 @@ Evidence for each change, including review verdicts, is in its PR. One smoke lan
 under the wrapper's workspace-write sandbox) ran `cargo test -p loomward-core` to 30 passed in its own worktree
 `target/`. The test counts in the 5 November section stay the latest full qualification; this checkpoint did not
 rerun the workspace. The open work list there is unchanged.
+
+## Development wave on the lane tooling, 13 November 2026
+
+First real wave on `scripts/lanes/` (#1152). Driver: Opus 5.5. Implementation: GPT-6.1 Sol high lanes through
+`lane.sh` (each change verified again by the driver outside the Codex sandbox before commit). Review: GPT-6.1 Terra
+high through `review.sh` on every PR, plus the Sonnet `reviewer` agent as the law-2 gate on product changes and the
+Opus `deep-reviewer` on the grant fence (#1166) and the copy consent path (#1174). No capability, safety gate or
+invariant opened; **C8 remains closed**. Measured at main `5ae1d9d8` (13 November, 12:07 UTC); later merges of the
+queued PRs below are recorded in their PRs.
+
+| PR | Change | Issue | Implemented by | State at `5ae1d9d8` |
+|---|---|---|---|---|
+| #1162 | E2E routes are removed only after in-flight handlers finish (`route_call`/`unroute_call`); fixed red main run 43362934378 | - | Opus | merged |
+| #1161 | `rust-toolchain.toml` pins 1.100.0 for CI, release action, Windows test scripts and lanes | #1154 closed | Opus | merged |
+| #1163 | `rmwt.sh` keeps non-empty `.loomward/` state; `wait.sh` reads binary logs | #1155 closed | Sol + Opus | merged |
+| #1164 | Lane TMP/TEMP under `<worktree>/target/lane-tmp` (sandbox cannot write the user Temp) | #1160 (item 2) | Opus | queued, reviewed |
+| #1165 | Automatic refreshes paced per root from their last settle (60 s doubling to 15 min) | #1158 (item 2) | Sol | queued, reviewed |
+| #1166 | Grant fence: tool caches grantable at known cache folders; credential/browser stores always refused | #1157 (items 1-2) | Sol + Opus | queued, reviewed (3 lenses) |
+| #1167 | An unestablished zero aggregate reads unknown, not 0 (`roots.list`, tree, search) | #1159 (items 1-2) | Sol + Opus | queued, reviewed |
+| #1171 | The merge queue tears a lane down after merging it, only if the worktree still holds the PR branch | #1160 (item 1) | Sol + Opus | queued, reviewed |
+| #1172 | `reclaim.plan` returns a partial plan with `budget_hit` at its deadline (1 M-file synthetic: unused unique-totals root inspection was 863 ms of 0.7 ms) | #1156 | Sol + Opus | queued, reviewed |
+| #1173 | Explicit timed/counted search pairing; duplicate-read revocation linearisation point pinned at the final gate acquisition | #762 | Sol | queued, reviewed |
+| #1174 | `copy.approve` refuses once a preview grant is revoked (synthetic lab copy only) | #851 (approve item) | Sol | queued, reviewed (2 lenses) |
+
+What the lane tooling got wrong, and the fix:
+- The Codex workspace-write sandbox cannot write the user Temp: lanes saw hundreds of sandbox-only failures. #1164.
+- The sandbox lost write access to `target/debug/.cargo-build-lock` mid-lane (per-session sandbox SIDs on the file):
+  the driver must re-run every lane's proving commands outside the sandbox, which caught one compile error. #1168.
+- `wait.sh` printed "Binary file matches" for Codex logs. #1163.
+- CI-workflow changes need an `estate_gate.py attest` record before `estate_merge.py` accepts them (#1161).
+- Proven end to end: `review.sh` (13 Terra reviews), the `queue.sh` RAM/concurrency gate (7 lanes, never more than
+  3 at once), `merge_queue.py` (merges, `update`, a park on a red check, an estate-merge refusal and its retry).
+  Throughput is bounded by the serial up-to-date rule: about 35 minutes of CI per queued PR.
+
+Already fixed or not lane-able (STEP 0): #1037, #787, #1076 and #120 have only evidence or design items left;
+#1121 needs the private archive. Parked: lane lw1169 (#1169), because its rewrite dropped the 8.3-name case the test
+exists for. Open follow-ups: #1170 (refusal wording after #1166), #1158 items 1 and 3-5, #1159 item 3 and the
+bulk-row gaps, #1156 real-catalogue re-measure and its review follow-ups, #1168, #1169.
+
+Local proof: the driver ran fmt, clippy `-D warnings` and the touched crates' tests for every product PR (counts in
+each PR). Host-load failures that also fail on unmodified main and pass alone: the freshness/f3 family
+(`tests.rs` restart and catch-up tests) and the `tree.slice` repair race. No full workspace qualification was
+rerun; the 5 November section's counts stay the latest full qualification.
