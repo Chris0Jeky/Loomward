@@ -111,20 +111,20 @@
             },
             "root_id": 2,
             "row": {
-              "allocated_bytes": "0",
+              "allocated_bytes": null,
               "attributes": [],
               "coverage": "partial",
-              "dirs": 0,
+              "dirs": null,
               "ext_family": null,
               "extension": null,
-              "files": 0,
+              "files": null,
               "flags": [],
               "kind": "dir",
               "location_hint": {
                 "text": "Synthetic 1\\level-3\\level-4\\level-5\\level-6\\level-7\\level-8\\level-9\\level-10\\level-11\\level-12\\level-13\\level-14\\level-15\\level-16\\level-17\\level-18\\level-19\\level-20\\level-21\\level-22",
                 "truncated": false
               },
-              "logical_bytes": "0",
+              "logical_bytes": null,
               "modified_at": null,
               "name": "common-folder",
               "node_id": "nd_dir_23"
