@@ -81,6 +81,9 @@ pub(crate) struct Hooks {
     pub personal_space_wait: Mutex<Option<Duration>>,
     /// #569: the next explicit scan.start that has just cancelled an automatic run fails on retry.
     pub fail_explicit_retry: std::sync::atomic::AtomicBool,
+    /// #1158: deterministic automatic-refresh admission/settlement clock, separate from read deadlines.
+    #[cfg(windows)]
+    pub automatic_clock: Mutex<Option<Instant>>,
     #[cfg(windows)]
     pub fail_automatic_start: std::sync::atomic::AtomicBool,
     /// One-shot: the next automatic start is refused by the resource budget (refunded, not failed).
@@ -4593,15 +4596,15 @@ impl Gate {
         }
     }
     #[cfg(windows)]
-    fn arm(&self) {
+    pub(crate) fn arm(&self) {
         *self.armed.lock().unwrap() = true;
     }
     #[cfg(windows)]
-    fn release(&self) {
+    pub(crate) fn release(&self) {
         *self.armed.lock().unwrap() = false;
     }
     #[cfg(windows)]
-    fn wait_reached(&self) {
+    pub(crate) fn wait_reached(&self) {
         let deadline = Instant::now() + Duration::from_secs(20);
         while !self.reached.load(std::sync::atomic::Ordering::SeqCst) {
             assert!(Instant::now() < deadline, "the scan never reached the gate");

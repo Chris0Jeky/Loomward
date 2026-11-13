@@ -12,6 +12,7 @@ use loomward_windows::watch::Change;
 fn tracked() -> Tracked {
     Tracked {
         restart: Restart::default(),
+        pace: RefreshPace::default(),
         opening: false,
         watch: None,
         checkpoint: Arc::default(),
@@ -184,6 +185,131 @@ fn fail_next_start(svc: &crate::Service) {
 
 fn start_attempted(svc: &crate::Service) -> bool {
     !svc.inner.hooks.fail_automatic_start.load(Ordering::SeqCst)
+}
+
+#[test]
+fn f3_issue1158_successful_refreshes_are_coalesced_per_root() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    svc.inner.freshness.pause_pump();
+    settle(svc, &start(svc, &lab.root, "full"));
+    let now = Instant::now() + Duration::from_secs(3600);
+    *svc.inner.hooks.automatic_clock.lock().unwrap() = Some(now);
+    make_due(svc);
+    refresh(&svc.inner);
+    let auto = svc.inner.freshness.automatic_jobs().pop().unwrap();
+    assert_eq!(settle(svc, auto.as_str())["state"], "completed");
+    refresh(&svc.inner);
+
+    // A successful pass starts the per-root settle interval. Repeated hints coalesce.
+    make_due(svc);
+    set_changed(svc, now + Duration::from_secs(1));
+    fail_next_start(svc);
+    for second in [1, 60, 119] {
+        *svc.inner.hooks.automatic_clock.lock().unwrap() = Some(now + Duration::from_secs(second));
+        refresh(&svc.inner);
+        assert!(!start_attempted(svc), "automatic restart at {second} s");
+        assert!(svc.inner.freshness.stale(1));
+    }
+    // Expiry admits retained work without needing another filesystem notification.
+    *svc.inner.hooks.automatic_clock.lock().unwrap() = Some(now + Duration::from_secs(120));
+    refresh(&svc.inner);
+    assert!(start_attempted(svc), "coalesced work never resumed");
+}
+
+#[test]
+fn f3_issue1158_long_refresh_waits_for_interval_after_settlement() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    svc.inner.freshness.pause_pump();
+    settle(svc, &start(svc, &lab.root, "full"));
+    let started = Instant::now() + Duration::from_secs(3600);
+    *svc.inner.hooks.automatic_clock.lock().unwrap() = Some(started);
+    svc.inner.scan.gate.arm();
+    make_due(svc);
+    refresh(&svc.inner);
+    let auto = svc.inner.freshness.automatic_jobs().pop().unwrap();
+    svc.inner.scan.gate.wait_reached();
+    let settled = started + Duration::from_secs(30 * 60);
+    assert!(settled > started + AUTO_REFRESH_MAX_INTERVAL);
+    *svc.inner.hooks.automatic_clock.lock().unwrap() = Some(settled);
+    svc.inner.scan.gate.release();
+    assert_eq!(settle(svc, auto.as_str())["state"], "completed");
+    refresh(&svc.inner);
+
+    make_due(svc);
+    let changed = settled + Duration::from_secs(1);
+    set_changed(svc, changed);
+    fail_next_start(svc);
+    let interval = AUTO_REFRESH_MIN_INTERVAL * 2;
+    for now in [changed, settled + interval - Duration::from_nanos(1)] {
+        *svc.inner.hooks.automatic_clock.lock().unwrap() = Some(now);
+        refresh(&svc.inner);
+        assert!(!start_attempted(svc), "refresh ignored its settle interval");
+        assert!(svc.inner.freshness.stale(1));
+    }
+    *svc.inner.hooks.automatic_clock.lock().unwrap() = Some(settled + interval);
+    refresh(&svc.inner);
+    assert!(start_attempted(svc), "settled work never resumed");
+}
+
+#[test]
+fn f3_issue1158_continuous_hints_cannot_debounce_refresh_forever() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    svc.inner.freshness.pause_pump();
+    make_due(svc);
+    let now = Instant::now() + Duration::from_secs(3600);
+    // Always appears recently dirtied, with no wall-clock sleep or race.
+    set_changed(svc, now + Duration::from_secs(3600));
+    fail_next_start(svc);
+    *svc.inner.hooks.automatic_clock.lock().unwrap() = Some(now);
+    refresh(&svc.inner);
+    assert!(!start_attempted(svc));
+    *svc.inner.hooks.automatic_clock.lock().unwrap() = Some(now + AUTO_REFRESH_MAX_WAIT);
+    refresh(&svc.inner);
+    assert!(start_attempted(svc), "continuous churn starved freshness");
+}
+
+#[test]
+fn f3_issue1158_refresh_backoff_caps_and_recovers_after_a_quiet_interval() {
+    let origin = Instant::now();
+    let mut pace = RefreshPace::default();
+    assert!(pace.ready(origin, origin - AUTO_REFRESH_QUIET));
+    assert_eq!(pace.interval, Duration::from_secs(60));
+    pace.admitted();
+    pace.settled(origin);
+    let mut last = origin;
+    for seconds in [120, 240, 480, 900, 900] {
+        let changed = last + Duration::from_secs(1);
+        assert!(!pace.ready(changed, changed));
+        let due = last + Duration::from_secs(seconds);
+        assert_eq!(pace.interval, Duration::from_secs(seconds));
+        // More hints cannot double the interval again or move the due boundary.
+        assert!(!pace.ready(due - Duration::from_nanos(1), changed));
+        assert!(pace.ready(due, changed));
+        pace.admitted();
+        pace.settled(due);
+        last = due;
+    }
+    let changed = last + AUTO_REFRESH_MAX_INTERVAL;
+    assert!(pace.ready(changed + AUTO_REFRESH_QUIET, changed));
+    assert_eq!(pace.interval, AUTO_REFRESH_MIN_INTERVAL);
+    // A different root has no inherited interval or pending work.
+    assert!(RefreshPace::default().ready(origin, origin - AUTO_REFRESH_QUIET));
+}
+
+#[test]
+fn f3_issue1158_refresh_max_wait_is_fixed_despite_newer_hints() {
+    let origin = Instant::now();
+    let mut pace = RefreshPace::default();
+    assert!(AUTO_REFRESH_MAX_WAIT < AUTO_REFRESH_MIN_INTERVAL);
+    for seconds in 0..20 {
+        let now = origin + Duration::from_secs(seconds);
+        assert!(!pace.ready(now, now));
+    }
+    let due = origin + AUTO_REFRESH_MAX_WAIT;
+    assert!(pace.ready(due, due), "latest hint reset the maximum wait");
 }
 
 #[test]
