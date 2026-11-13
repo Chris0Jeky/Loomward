@@ -16,6 +16,7 @@ The estate's `~/.claude/tools/codex_safe.sh` and `estate_merge.py` remain machin
   changes and calls the merge helper only with `--dry-run`.
 - `rmwt.sh <lane>` lists ignored files, removes owned build/state directories and
   uses plain `git worktree remove`. Copy anything needed out first; run elsewhere.
+  Non-empty `.loomward/` state is kept at `$LW_HOME/kept/<lane>/.loomward-<UTC timestamp YYYYmmddTHHMMSSZ>/`.
 
 Environment: `LW_HOME` defaults to `C:/lw`; `LW_REPO_SLUG` to `Chris0Jeky/Loomward`.
 `MAX=3` and `MINMB=3000` control queue limits (disk floor: 25 GB).

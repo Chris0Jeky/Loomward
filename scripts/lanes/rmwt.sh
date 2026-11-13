@@ -23,6 +23,16 @@ if [ -d "$WT" ]; then
   for path in "$WT/target" "$WT/app/node_modules" "$WT/app/dist" "$WT/.loomward"; do
     [ ! -L "$path" ] || { echo "refusing symlink $path" >&2; exit 3; }
   done
+  if [ -d "$WT/.loomward" ]; then
+    STATE_ENTRY=$(find "$WT/.loomward" -mindepth 1 -maxdepth 1 -print -quit)
+    if [ -n "$STATE_ENTRY" ]; then
+      KEPT=$LW_HOME/kept/$1/.loomward-$(date -u +%Y%m%dT%H%M%SZ)
+      (CDPATH= cd "$LW_HOME" && mkdir -p "kept/$1")
+      [ ! -e "$KEPT" ] && [ ! -L "$KEPT" ] || { echo "kept state already exists: $KEPT" >&2; exit 3; }
+      mv "$WT/.loomward" "$KEPT"
+      echo "kept state at $KEPT"
+    fi
+  fi
   rm -rf "$WT/target" "$WT/app/node_modules" "$WT/app/dist" "$WT/.loomward"
   git -C "$REPO" worktree remove "$WT"
 fi
