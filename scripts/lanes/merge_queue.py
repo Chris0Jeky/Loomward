@@ -160,7 +160,7 @@ def one_pass(repo, home, slug, dry_run):
             seen_file = home / "mergeq.seen.json"
             seen = json.loads(seen_file.read_text(encoding="utf-8")) if seen_file.exists() else {}
             info = json.loads(run(repo, "gh", "pr", "view", pr, "--repo", slug, "--json",
-                                  "state,mergeStateStatus,headRefOid,statusCheckRollup,baseRefName,isDraft").stdout)
+                                  "state,mergeStateStatus,headRefOid,headRefName,statusCheckRollup,baseRefName,isDraft").stdout)
             age = 0
             if info["state"] == "OPEN":
                 head = info["headRefOid"]
@@ -189,6 +189,17 @@ def one_pass(repo, home, slug, dry_run):
             run(repo, *args)
             if not dry_run:
                 pop(queue, first)
+            # Tear down only the worktree that still holds this PR's branch: a lane name reused
+            # for other work while the line waited must never be removed (#1171 review).
+            branch = None
+            if lane is not None:
+                found = run(Path.cwd(), "git", "-C", str(home / "wt" / lane), "branch",
+                            "--show-current", check=False)
+                branch = found.stdout.strip() if found.returncode == 0 else None
+                if branch != info.get("headRefName"):
+                    log(pr, "teardown", f"{lane} skipped: worktree branch {branch or '(none)'} "
+                        f"is not the PR head {info.get('headRefName')}", dry_run)
+                    lane = None
             if lane is not None:
                 # Pin PATH's Bash: Windows' process search can otherwise select WSL's bash.exe.
                 teardown = [shutil.which("bash") or "bash",

@@ -172,6 +172,8 @@ class MergeTeardownTests(unittest.TestCase):
         self.teardown_code = 0
         self.merge_code = 0
         self.state = "OPEN"
+        self.branch = "lane/example"
+        self.worktree_branch = "lane/example"
         self.bash = self.enterContext(mock.patch.object(queue.shutil, "which", return_value="bash"))
         self.runner = self.enterContext(mock.patch.object(
             queue.subprocess, "run", side_effect=self.run_command))
@@ -183,12 +185,15 @@ class MergeTeardownTests(unittest.TestCase):
 
     def run_command(self, args, **kwargs):
         if args[:3] == ("gh", "pr", "view"):
-            output = json.dumps({"state": self.state, "headRefOid": self.sha})
+            output = json.dumps({"state": self.state, "headRefOid": self.sha,
+                                 "headRefName": self.branch})
             return subprocess.CompletedProcess(args, 0, output, "")
         if args[:2] == ("gh", "api"):
             return subprocess.CompletedProcess(args, 0, '{"behind_by": 0}', "")
         if args[0] == "py":
             return subprocess.CompletedProcess(args, self.merge_code, "merge helper result", "")
+        if args[0] == "git" and args[-2:] == ("branch", "--show-current"):
+            return subprocess.CompletedProcess(args, 0, self.worktree_branch + "\n", "")
         if args[0] == self.bash.return_value:
             return subprocess.CompletedProcess(args, self.teardown_code, "ignored files\n",
                                                "work remains in worktree\n" if self.teardown_code
@@ -217,6 +222,15 @@ class MergeTeardownTests(unittest.TestCase):
         self.assertLess(commands.index("py"), commands.index(self.bash.return_value))
         self.assertIn(mock.call("123", "teardown",
                                 "Example_1-test exited 0: removed Example_1-test", False),
+                      self.logs.call_args_list)
+
+    def test_teardown_skips_a_lane_reused_for_another_branch(self):
+        self.worktree_branch = "other/work"
+        self.one_pass()
+        self.assertEqual(self.file.read_text(encoding="utf-8"), "")
+        self.assertEqual(self.teardowns(), [])
+        self.assertIn(mock.call("123", "teardown", "Example_1-test skipped: worktree branch "
+                                "other/work is not the PR head lane/example", False),
                       self.logs.call_args_list)
 
     def test_two_fields_merge_without_teardown(self):
