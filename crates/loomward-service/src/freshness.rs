@@ -260,10 +260,9 @@ impl Tracker {
         root.changed = Instant::now() - Duration::from_secs(1);
         // This fixture explicitly makes the next refresh due: expire its per-root interval
         // as well as the quiet period, without changing production admission or retry history.
-        root.pace.last_settled = root
-            .pace
-            .last_settled
-            .map(|_| Instant::now() - AUTO_REFRESH_MAX_INTERVAL);
+        // (Clearing it rather than back-dating it: `Instant::now() - 15 min` panics on a host
+        // that booted less than 15 minutes ago, such as a fresh CI runner.)
+        root.pace.last_settled = None;
     }
     #[cfg(all(test, windows))]
     pub(crate) fn unclaimed(&self, row: i64) -> bool {
