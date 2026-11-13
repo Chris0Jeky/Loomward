@@ -522,6 +522,8 @@ impl Engine {
     ) -> EngineResult<loomward_windows::duplicate_reader::Report> {
         self.inspect_duplicates_cancel(root, entries, budget, None)
     }
+    /// The read linearises at the final root-gate acquisition: an in-memory revoke acknowledged
+    /// before it refuses the report; a durable-only revoke after the recheck may return the report.
     pub(crate) fn inspect_duplicates_cancel(
         &self,
         root: &GrantedRoot,
@@ -555,6 +557,10 @@ impl Engine {
             self.duplicate_read_admission_worker(root)?;
         } else {
             self.duplicate_read_admission(root)?;
+        }
+        #[cfg(test)]
+        if let Some(hook) = tests::DUPLICATE_FINAL_GATE_HOOK.with_borrow_mut(Option::take) {
+            hook();
         }
         // Refuse evidence if revocation is observed at this final gate.
         let gate = self.scan_root_gate(root.key());

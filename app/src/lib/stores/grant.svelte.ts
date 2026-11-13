@@ -24,7 +24,8 @@ const REFUSAL: Record<NonNullable<RootGrantResult['refusal']>, string> = {
   inside_state_dir: "That folder is inside Loomward's own state folder.",
   already_granted: 'That folder, or one inside or around it, is already granted.',
   network_or_removable_unsupported: 'Network and removable drives are not supported.',
-  protected_profile_or_store: 'That folder holds a user profile or a credential store, which Loomward does not read.',
+  protected_profile_or_store:
+    'That folder holds a user profile or a credential store, or it is a tool folder (AppData, .cargo, .npm and similar) outside its cache folder. Choose the cache folder itself, for example AppData\\Local\\npm-cache or .cargo\\registry.',
   identity_unavailable: "Loomward could not verify that folder's identity, so it was not added.",
   synthetic_session_requires_lab_root: 'This synthetic session takes registered lab folders only.',
 };
