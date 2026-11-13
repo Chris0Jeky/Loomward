@@ -227,6 +227,97 @@ fn duplicate_grant_returns_evidence(class: DatasetClass) {
 #[cfg(test)]
 thread_local! {
     pub(super) static DUPLICATE_READ_DONE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+    pub(super) static DUPLICATE_FINAL_GATE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(windows)]
+#[test]
+fn memory_revoke_before_duplicate_final_gate_refuses_the_report() {
+    duplicate_final_gate_revocation(true);
+}
+
+#[cfg(windows)]
+#[test]
+fn durable_only_revoke_after_duplicate_recheck_returns_the_report() {
+    duplicate_final_gate_revocation(false);
+}
+
+#[cfg(windows)]
+fn duplicate_final_gate_revocation(in_memory: bool) {
+    use loomward_windows::{
+        duplicate_reader::Entry,
+        enumerate::{DirSource, NativeSource},
+        identity,
+    };
+    if skip_elevated() {
+        return;
+    }
+    for worker in [false, true] {
+        let temp = canonical_tempdir();
+        for name in ["a", "b"] {
+            std::fs::write(temp.path().join(name), b"same").unwrap();
+        }
+        let expected = NativeSource::default().open_root(temp.path()).unwrap().1;
+        let mut grant = GrantedRoot::new(
+            RootId::new("rt_final_gate_fixture").unwrap(),
+            temp.path().to_owned(),
+            DatasetClass::Synthetic,
+            expected,
+        );
+        grant.key = RootKey::Grant(1);
+        let entries = ["a", "b"].map(|name| Entry {
+            relative: name.into(),
+            expected: identity::observe(&temp.path().join(name)).unwrap(),
+        });
+        let state = canonical_tempdir();
+        let conn = duplicate_grant_store(state.path(), &grant);
+        let engine = Arc::new(
+            Engine::open(EngineConfig::new(
+                state.path().to_owned(),
+                DatasetClass::Synthetic,
+            ))
+            .unwrap(),
+        );
+        let revoke_engine = engine.clone();
+        let revoke_grant = grant.clone();
+        let hook_ran = Arc::new(AtomicBool::new(false));
+        let ran = hook_ran.clone();
+        DUPLICATE_FINAL_GATE_HOOK.with_borrow_mut(|hook| {
+            *hook = Some(Box::new(move || {
+                conn.execute("UPDATE root_grant SET state='revoked'", [])
+                    .unwrap();
+                if in_memory {
+                    revoke_engine
+                        .scan_cancel_root(revoke_grant.key(), revoke_grant.root_id())
+                        .unwrap();
+                }
+                ran.store(true, Ordering::Release);
+            }));
+        });
+        let result = engine.inspect_duplicates_cancel(
+            &grant,
+            &entries,
+            duplicate_budget(),
+            worker.then(|| Arc::new(AtomicBool::new(false))),
+        );
+        // Also makes the durable-only case fail if the scheduling seam was never reached.
+        let unused_hook = DUPLICATE_FINAL_GATE_HOOK.with_borrow_mut(Option::take);
+        drop(unused_hook);
+        assert!(hook_ran.load(Ordering::Acquire), "worker={worker}");
+        if in_memory {
+            assert_eq!(
+                result.unwrap_err().to_body().message.as_str(),
+                "cancelled",
+                "worker={worker}: acknowledged revocation precedes the final gate"
+            );
+        } else {
+            let report = result.unwrap();
+            assert_eq!(report.groups, vec![vec![0, 1]], "worker={worker}");
+            assert_eq!(report.compared, 2);
+            assert!(!report.partial);
+            assert!(report.stop.is_none());
+        }
+    }
 }
 
 /// Retro review (w12): a durable revoke that commits while duplicate content reads run, before

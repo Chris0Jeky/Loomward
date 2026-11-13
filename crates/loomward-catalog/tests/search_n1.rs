@@ -3,6 +3,86 @@ use loomward_catalog::*;
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 
+#[path = "../examples/support/search_pairing.rs"]
+mod search_pairing;
+
+#[test]
+fn pairing_reports_matching_pages_and_budget_cut_divergence() {
+    let timed = SearchPage {
+        generation: None,
+        hits: Vec::new(),
+        next_cursor: Some(SearchCursor {
+            catalog_instance: "synthetic".into(),
+            filters: String::new(),
+            pass: 0,
+            last_key: 7,
+            last_size: None,
+            revision: None,
+        }),
+        budget_hit: true,
+        index_state: "ready".into(),
+        partial: false,
+        substring_searched: false,
+        roots: Vec::new(),
+    };
+    assert_eq!(
+        search_pairing::pairing(&timed, &timed),
+        json!({"counted_budget_hit":true,"counted_hits":0,"counted_has_cursor":true,
+            "paired":true,"unpaired_reason":null})
+    );
+    let mut counted = timed.clone();
+    counted.next_cursor.as_mut().unwrap().last_key = 8;
+    assert_eq!(
+        search_pairing::pairing(&timed, &counted),
+        json!({"counted_budget_hit":true,"counted_hits":0,"counted_has_cursor":true,
+            "paired":false,"unpaired_reason":"budget_cut_diverged"})
+    );
+    counted = timed.clone();
+    counted.budget_hit = false;
+    assert_eq!(search_pairing::pairing(&timed, &counted)["paired"], false);
+    counted = timed.clone();
+    counted.hits.push(SearchHit {
+        row: EntryRow {
+            node_id: "synthetic-file".into(),
+            kind: "file".into(),
+            name: "fixture.txt".into(),
+            extension: None,
+            ext_family: None,
+            logical_bytes: None,
+            allocated_bytes: None,
+            files: None,
+            dirs: None,
+            modified_at: None,
+            attributes: Vec::new(),
+            flags: Vec::new(),
+            coverage: "complete".into(),
+            location_hint: None,
+        },
+        root_id: 1,
+        path: DisplayPath {
+            text: "fixture.txt".into(),
+            truncated: false,
+        },
+        match_kind: "name".into(),
+        highlights: Vec::new(),
+    });
+    assert_eq!(
+        search_pairing::pairing(&timed, &counted),
+        json!({"counted_budget_hit":true,"counted_hits":1,"counted_has_cursor":true,
+            "paired":false,"unpaired_reason":"budget_cut_diverged"})
+    );
+    counted = timed.clone();
+    counted.next_cursor = None;
+    assert_eq!(search_pairing::pairing(&timed, &counted)["paired"], false);
+    let mut exhausted = counted.clone();
+    exhausted.budget_hit = false;
+    assert_eq!(
+        search_pairing::pairing(&exhausted, &exhausted),
+        json!({"counted_budget_hit":false,"counted_hits":0,"counted_has_cursor":false,
+            "paired":true,"unpaired_reason":null})
+    );
+}
+
 #[cfg(feature = "test-hooks")]
 thread_local! {
     static SQL_COUNTS: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
