@@ -1,5 +1,7 @@
 # Resume Loomward v0.2
 
+> **Historical (banner added 2026-11-13).** The current agent entry point is [`AGENTS.md`](../AGENTS.md); this v0.2 resume note is kept as history and its reading order and process no longer apply.
+
 This is an existing source checkout expanded from the v0.1 bundle at `1e51c3b`, not a greenfield scaffold. The original implementation, docs, issue IDs and negative experiment are retained. The current branch in the bundle is `expansion/interop-v2`; inspect Git rather than assuming a remote exists.
 
 Read in order: `AGENTS.md`, this file, `CHECKPOINT.json`, `docs/23-expansion-overview.md`, `docs/37-expansion-verification.md`, `docs/38-reference-operating-guide.md`, and the exact assigned issue. `docs/40-parallel-work-packs.md` defines non-overlapping local lanes.

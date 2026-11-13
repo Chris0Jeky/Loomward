@@ -1,5 +1,7 @@
 # Contributing
 
+> **Note (2026-11-13).** Native compilation and Windows CI are established (the "pending" line below is historical); agents start at [`AGENTS.md`](AGENTS.md) and current status is the latest section of `docs/16-implementation-status.md`.
+
 Read `AGENTS.md` and the implementation status first. Start with one backlog issue and a reproducible fixture. Prefer small, reviewable changes with tests and source-linked claims. Safety, protocol, privacy, elevated privileges and any new mutation capability require explicit design review.
 
 The reference uses Python 3.11+ with no mandatory dependencies; optional process telemetry uses psutil. Run `python scripts/verify.py`. The Svelte app's browser tests (`scripts/verify.py --app`) require Node, `app/node_modules`, Playwright and a Chromium executable. Native compilation is pending; help establish the Rust/Windows baseline without lowering the safety boundary.
