@@ -13,6 +13,8 @@
 - Known host flakes: #292 is fixed (#479). Under heavy load a few timing-bound service tests (#530, #533, #538 family)
   can time out and pass alone; re-run those alone before reporting a failure, and report them as pre-existing
   only when evidence establishes that cause.
+- Temp: `TMP` and `TEMP` point at `<worktree>/target/lane-tmp` (the sandbox cannot write the user Temp); keep them
+  set for every cargo or test command. If cargo reports `.cargo-build-lock` access denied, stop building and say so.
 - Proving checks before you finish: `cargo fmt --all --check`; `cargo clippy --workspace --all-targets -- -D warnings`;
   `cargo test` for every crate you touched (then `cargo test --workspace --no-fail-fast` once at the end);
   `git diff --check`. For `app/` changes: `npm.cmd --prefix app run check`, `run test`, `run build`.
