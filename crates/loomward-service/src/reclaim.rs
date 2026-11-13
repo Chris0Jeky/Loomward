@@ -36,6 +36,46 @@ const OBSERVE_BUDGET: Duration = Duration::from_secs(600);
 /// Names opened between cancellation and grant checks.
 const OBSERVE_CHUNK: usize = 1000;
 
+#[cfg(test)]
+thread_local! {
+    // Expire the machine read after developer candidates exist, without racing the
+    // host scheduler to decide which detector a tiny wall-clock budget interrupts.
+    pub(crate) static EXPIRE_MACHINE_READ: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn cut_reached(cut: Option<Instant>) -> bool {
+    cut.is_some_and(|end| Instant::now() >= end)
+}
+
+fn detector_budget(error: &loomward_catalog::Error, cut: Option<Instant>) -> bool {
+    matches!(error, loomward_catalog::Error::ResourceBudget)
+        || (matches!(error, loomward_catalog::Error::Cancelled) && cut_reached(cut))
+}
+
+// Only our own soft interrupt becomes partial advice. Other SQL failures remain errors.
+fn soft_sql<T>(
+    result: Result<T, ErrorBody>,
+    cut: Instant,
+    budget: &mut bool,
+) -> Result<Option<T>, ErrorBody> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(error)
+            if Instant::now() >= cut
+                && error
+                    .detail
+                    .as_ref()
+                    .and_then(|d| d.get("sqlite_code"))
+                    .and_then(serde_json::Value::as_str)
+                    == Some("OperationInterrupted") =>
+        {
+            *budget = true;
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
+}
+
 fn root_path(path: &str) -> String {
     path.replace('/', "\\")
         .trim_end_matches('\\')
@@ -111,6 +151,7 @@ impl Inner {
         limit: usize,
         deadline: Instant,
         work: Option<&ReadWork>,
+        budgeted: bool,
     ) -> Result<Gathered<'_>, ErrorBody> {
         let input = Input::open(self, deadline, work)?;
         let volume_row = self.volume_row(volume_id)?;
@@ -154,11 +195,27 @@ impl Inner {
             ..Default::default()
         };
         let mut reader = self.read_reader(work)?.without_repairs();
+        let cut = budgeted.then(|| {
+            let now = Instant::now();
+            now + deadline.saturating_duration_since(now) / 2
+        });
         let mut budget_hit = false;
-        for root in &roots {
+        for (i, root) in roots.iter().enumerate() {
+            // A large root cannot consume the later roots' whole share. Leave half of
+            // this root's share for the machine detector after developer advice.
+            let root_cut = cut.map(|end| {
+                let now = Instant::now();
+                now + end.saturating_duration_since(now) / (roots.len() - i) as u32
+            });
+            if let Some(end) = root_cut {
+                reader.set_deadline(end);
+            }
             let mut coverage = "unscanned".to_owned();
             let mut allocated = None;
-            if let Some(dir) = root.dir {
+            if cut_reached(root_cut) {
+                coverage = "unknown".into();
+                budget_hit = true;
+            } else if let Some(dir) = root.dir {
                 #[cfg(test)]
                 let inspect = if self
                     .hooks
@@ -167,18 +224,22 @@ impl Inner {
                 {
                     Err(loomward_catalog::Error::ResourceBudget)
                 } else {
-                    reader.inspect(NodeKey::Dir(dir))
+                    reader
+                        .entry_with_path(NodeKey::Dir(dir))
+                        .map(|(row, _)| row)
                 };
                 #[cfg(not(test))]
-                let inspect = reader.inspect(NodeKey::Dir(dir));
+                let inspect = reader
+                    .entry_with_path(NodeKey::Dir(dir))
+                    .map(|(row, _)| row);
                 match inspect {
                     Ok(detail) => {
-                        coverage = detail.row.coverage;
+                        coverage = detail.coverage;
                         if coverage == "complete" && root.subtree_complete {
-                            allocated = detail.row.allocated_bytes.and_then(|s| s.parse().ok());
+                            allocated = detail.allocated_bytes.and_then(|s| s.parse().ok());
                         }
                     }
-                    Err(loomward_catalog::Error::ResourceBudget) => {
+                    Err(e) if detector_budget(&e, root_cut) => {
                         coverage = "unknown".into();
                         budget_hit = true;
                     }
@@ -194,9 +255,16 @@ impl Inner {
                 coverage = "stale".into();
                 allocated = None;
             }
+            let developer_cut = root_cut.map(|end| {
+                let now = Instant::now();
+                now + end.saturating_duration_since(now) / 2
+            });
+            if let Some(end) = developer_cut {
+                reader.set_deadline(end);
+            }
             let mut developer = match reader.developer_clutter(root.root, DETECTOR_CAP) {
                 Ok(found) => found,
-                Err(loomward_catalog::Error::ResourceBudget) => {
+                Err(e) if detector_budget(&e, developer_cut) => {
                     budget_hit = true;
                     DeveloperClutter {
                         rules_version: 1,
@@ -206,10 +274,19 @@ impl Inner {
                 }
                 Err(e) => return Err(catalog_error(e)),
             };
+            #[cfg(test)]
+            let root_cut = if EXPIRE_MACHINE_READ.with(|cut| cut.replace(false)) {
+                Some(Instant::now())
+            } else {
+                root_cut
+            };
+            if let Some(end) = root_cut {
+                reader.set_deadline(end);
+            }
             let mut machine =
                 match reader.machine_stores_with_root_staleness(root.root, DETECTOR_CAP, stale) {
                     Ok(found) => found,
-                    Err(loomward_catalog::Error::ResourceBudget) => MachineStores {
+                    Err(e) if detector_budget(&e, root_cut) => MachineStores {
                         rules_version: reclaim::RULES_VERSION,
                         partial: true,
                         budget_hit: true,
@@ -256,28 +333,73 @@ impl Inner {
     ) -> Result<Out, ErrorBody> {
         let r: ReclaimPlanRequest = req.decode_payload()?;
         let deadline = work.map_or_else(|| Instant::now() + Duration::from_secs(2), |w| w.deadline);
-        let gathered =
-            self.reclaim_gather(r.volume_id.as_str(), r.limit.get() as usize, deadline, work)?;
-        let selection = r
-            .selection
-            .as_ref()
-            .map(|ids| selection::read(self, &gathered, ids))
-            .transpose()?;
+        let mut gathered = self.reclaim_gather(
+            r.volume_id.as_str(),
+            r.limit.get() as usize,
+            deadline,
+            work,
+            true,
+        )?;
+        let now = Instant::now();
+        let remaining = deadline.saturating_duration_since(now);
+        // Reserve projection/delivery time even if opening the snapshot was slow.
+        let sql_cut = now + remaining / 2;
+        let rank_cut = now + remaining * 3 / 4;
+        gathered
+            .input
+            .conn
+            .progress_handler(1000, Some(move || Instant::now() >= sql_cut))
+            .map_err(sql_error)?;
+        gathered
+            .input
+            .conn
+            .busy_timeout(sql_cut.saturating_duration_since(Instant::now()))
+            .map_err(sql_error)?;
+        let selection = if let Some(ids) = r.selection.as_ref() {
+            let unassessed = || {
+                json!({"members": ids, "status": "unobserved",
+                "observed_at": null, "reclaimable_bytes": null,
+                "reason": "The plan's read budget ended before this selection could be assessed."})
+            };
+            if Instant::now() >= sql_cut {
+                gathered.budget_hit = true;
+                Some(unassessed())
+            } else {
+                let read = selection::read(self, &gathered, ids);
+                Some(soft_sql(read, sql_cut, &mut gathered.budget_hit)?.unwrap_or_else(unassessed))
+            }
+        } else {
+            None
+        };
         let Gathered {
             input,
             volume_row,
             mut planner,
             roots,
-            budget_hit,
+            mut budget_hit,
             online,
         } = gathered;
         let mut bin_unknown = false;
         // When each shown verdict was observed (#1029), by the candidate's wire reference.
         let mut observed_at: HashMap<String, i64> = HashMap::new();
         for (i, root) in roots.iter().enumerate() {
+            if Instant::now() >= sql_cut {
+                budget_hit = true;
+                break;
+            }
             // A stale root's sizes are unknown, so a stored verdict for it is not shown either.
             if planner.covered_roots[i].coverage != "stale" {
-                for (node, bytes, at) in self.observed_relief(&input.conn, root.root, None)? {
+                for (node, bytes, at) in soft_sql(
+                    self.observed_relief(&input.conn, root.root, None),
+                    sql_cut,
+                    &mut budget_hit,
+                )?
+                .unwrap_or_default()
+                {
+                    if Instant::now() >= sql_cut {
+                        budget_hit = true;
+                        break;
+                    }
                     planner.observed.insert(node, bytes);
                     observed_at.insert(node.reference(), at);
                 }
@@ -285,6 +407,11 @@ impl Inner {
             let path = Path::new(&root.display_path);
             // shortcut: mounted-folder roots stay unknown until volume mount points are recorded.
             if path.is_absolute() && path.parent().is_none() {
+                if Instant::now() >= sql_cut {
+                    budget_hit = true;
+                    bin_unknown = true;
+                    break;
+                }
                 planner.recycle_bin = online
                     .then(|| loomward_windows::recycle_bin::query(path))
                     .flatten();
@@ -292,11 +419,29 @@ impl Inner {
                 bin_unknown = planner.recycle_bin.is_none();
             }
         }
-        let relief = relief::relief(&input.conn, &self.instance, volume_row)?;
+        let relief = if Instant::now() < sql_cut {
+            soft_sql(
+                relief::relief(&input.conn, &self.instance, volume_row),
+                sql_cut,
+                &mut budget_hit,
+            )?
+            .flatten()
+        } else {
+            budget_hit = true;
+            None
+        };
         let nodes = nested::references(&planner);
-        let mut plan = reclaim::plan(planner)?;
+        let mut plan = reclaim::plan_until(planner, Some(rank_cut))?;
         // A candidate inside another candidate is listed once, under the outer one (#1076).
-        nested::dedupe(&input.conn, &mut plan, &nodes)?;
+        if Instant::now() < sql_cut {
+            soft_sql(
+                nested::dedupe(&input.conn, &mut plan, &nodes),
+                sql_cut,
+                &mut budget_hit,
+            )?;
+        } else {
+            budget_hit = true;
+        }
         plan.budget_hit |= budget_hit;
         plan.partial |= budget_hit || bin_unknown;
         let bytes = |b: Option<u64>| b.map(Bytes);
@@ -417,7 +562,7 @@ impl Inner {
             ));
         }
         let deadline = Instant::now() + Duration::from_secs(5);
-        let gathered = self.reclaim_gather(r.volume_id.as_str(), 200, deadline, None)?;
+        let gathered = self.reclaim_gather(r.volume_id.as_str(), 200, deadline, None, false)?;
         let selection = r
             .selection
             .as_ref()

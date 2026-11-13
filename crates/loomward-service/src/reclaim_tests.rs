@@ -45,6 +45,176 @@ fn reclaim(svc: &Service) -> Value {
     )
 }
 
+// SQL-generated metadata only, in the test's disposable catalogue. Keep the ordinary
+// recogniser fixture and its aggregates, and add a wide, unrecognised directory.
+fn seed_reclaim_files(svc: &Service, files: i64) {
+    let mut conn = svc.inner.db();
+    let tx = conn.transaction().unwrap();
+    tx.execute_batch(
+        "INSERT INTO main.dir(root_id,parent_id,name,id_quality,id_basis,depth,attrs,
+         listing_state,listing_outcome,born_run,seen_run,sub_complete)
+         SELECT root_id,id,'unrecognised','path_observation','none',1,16,
+         'complete','complete',born_run,seen_run,1 FROM main.dir WHERE parent_id IS NULL;",
+    )
+    .unwrap();
+    let dir = tx.last_insert_rowid();
+    tx.execute(
+        "WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<?2)
+         INSERT INTO main.file(dir_id,name,logical,allocated,attrs,born_run,seen_run)
+         SELECT ?1,printf('synthetic-%08d.bin',i),1,1,0,1,1 FROM n",
+        rusqlite::params![dir, files],
+    )
+    .unwrap();
+    tx.execute(
+        "UPDATE main.dir SET own_files=?2,own_logical=?2,own_allocated=?2,
+        own_noid=?2,sub_files=?2,sub_logical=?2,sub_allocated=?2,sub_noid=?2 WHERE id=?1",
+        rusqlite::params![dir, files],
+    )
+    .unwrap();
+    tx.execute(
+        "UPDATE main.dir SET sub_files=sub_files+?1,sub_dirs=sub_dirs+1,
+        sub_logical=sub_logical+?1,sub_allocated=sub_allocated+?1,sub_noid=sub_noid+?1
+        WHERE parent_id IS NULL",
+        [files],
+    )
+    .unwrap();
+    tx.commit().unwrap();
+}
+
+#[test]
+fn reclaim_short_read_returns_established_candidates_and_marks_budget() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    fixture(&svc);
+    seed_reclaim_files(&svc, 40_000);
+    let req = request(
+        "reclaim.plan",
+        json!({"volume_id": volume_id(&svc), "limit": 20}),
+    );
+    let work = crate::ReadWork {
+        deadline: Instant::now() + Duration::from_secs(2),
+        interrupt: Mutex::new(None),
+        repair_on_read: false,
+    };
+    // The actual catalogue reader sees an expired deadline after developer advice,
+    // so scheduler load cannot move the cut before the candidates this test pins.
+    crate::reclaim::EXPIRE_MACHINE_READ.with(|cut| cut.set(true));
+    let cut = svc.inner.reclaim_plan(&req, Some(&work)).unwrap().result;
+    assert_eq!(cut["budget_hit"], true, "{cut}");
+    assert_eq!(cut["partial"], true);
+    assert!(
+        Instant::now() < work.deadline,
+        "leave time to deliver the partial result"
+    );
+    assert!(
+        cut["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|g| g["candidates"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|c| c["name"] == "target")),
+        "{cut}"
+    );
+
+    let complete = reclaim(&svc);
+    assert_eq!(complete["budget_hit"], false, "{complete}");
+    assert_eq!(complete["partial"], false, "{complete}");
+    assert_eq!(complete["groups"], reclaim(&svc)["groups"]);
+}
+
+#[test]
+#[ignore = "million-file synthetic reclaim stage measurement; run with --ignored --nocapture"]
+fn reclaim_million_file_stage_measurement() {
+    let tmp = tempfile::Builder::new()
+        .prefix("reclaim-million-")
+        .tempdir_in(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target"))
+        .unwrap();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    fixture(&svc);
+    seed_reclaim_files(&svc, 1_000_000);
+    let root: i64 = svc
+        .inner
+        .db()
+        .query_row("SELECT id FROM main.root", [], |r| r.get(0))
+        .unwrap();
+    let dir: i64 = svc
+        .inner
+        .db()
+        .query_row("SELECT id FROM main.dir WHERE parent_id IS NULL", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let mut reader = svc.inner.catalog.reader().unwrap().without_repairs();
+    let start = Instant::now();
+    let detail = reader.inspect(NodeKey::Dir(dir)).unwrap();
+    eprintln!(
+        "reclaim 1000000 files: root_inspect_ms={:.3}",
+        start.elapsed().as_secs_f64() * 1000.0
+    );
+    let start = Instant::now();
+    reader.entry_with_path(NodeKey::Dir(dir)).unwrap();
+    eprintln!(
+        "metadata_only_root_ms={:.3}",
+        start.elapsed().as_secs_f64() * 1000.0
+    );
+    let start = Instant::now();
+    let developer = reader.developer_clutter(root, 200).unwrap();
+    eprintln!(
+        "developer_walk_ms={:.3}",
+        start.elapsed().as_secs_f64() * 1000.0
+    );
+    let start = Instant::now();
+    let machine = reader.machine_stores(root, 200).unwrap();
+    eprintln!(
+        "machine_walk_ms={:.3}, budget_hit={}",
+        start.elapsed().as_secs_f64() * 1000.0,
+        machine.budget_hit
+    );
+    let planner = loomward_engine::reclaim::ReclaimInput {
+        developer: vec![developer],
+        machine: vec![machine],
+        limit: 200,
+        ..Default::default()
+    };
+    let nodes = planner
+        .developer
+        .iter()
+        .flat_map(|r| r.candidates.iter().map(|c| c.directory))
+        .chain(
+            planner
+                .machine
+                .iter()
+                .flat_map(|r| r.candidates.iter().map(|c| c.node)),
+        )
+        .map(|node| (node.reference(), node))
+        .collect();
+    let start = Instant::now();
+    let mut plan = loomward_engine::reclaim::plan(planner).unwrap();
+    eprintln!(
+        "group_ranking_ms={:.3}",
+        start.elapsed().as_secs_f64() * 1000.0
+    );
+    let conn = svc.inner.db();
+    let start = Instant::now();
+    crate::reclaim::nested::dedupe(&conn, &mut plan, &nodes).unwrap();
+    eprintln!(
+        "ancestry_dedupe_ms={:.3}",
+        start.elapsed().as_secs_f64() * 1000.0
+    );
+    drop(conn);
+    assert_eq!(detail.row.logical_bytes.as_deref(), Some("1010010"));
+    let start = Instant::now();
+    let result = reclaim(&svc);
+    eprintln!(
+        "service_plan_ms={:.3}, budget_hit={}",
+        start.elapsed().as_secs_f64() * 1000.0,
+        result["budget_hit"]
+    );
+}
+
 #[test]
 fn reclaim_composes_four_groups_with_unknown_relief_and_sealed_references() {
     let tmp = temp_root();
