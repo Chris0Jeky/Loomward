@@ -1358,12 +1358,12 @@ mod lab_copy {
     }
 
     #[test]
-    fn grant_regrant_approval_after_source_revocation_cannot_start() {
+    fn grant_regrant_approval_after_source_revocation_is_refused() {
         regrant_rejects_old_copy_consent(true, true);
     }
 
     #[test]
-    fn grant_regrant_approval_after_destination_revocation_cannot_start() {
+    fn grant_regrant_approval_after_destination_revocation_is_refused() {
         regrant_rejects_old_copy_consent(false, true);
     }
 
@@ -1404,10 +1404,10 @@ mod lab_copy {
         assert_eq!(old_state, "active");
         svc.inner.revoke(old_grant).unwrap();
         if approve_after_revoke {
-            // A cached preview can still be approved; this acknowledgment cannot revive its grant.
-            let (approval, _) = ok("copy.approve", call(&svc, "copy.approve", consent.clone()));
-            assert_eq!(approval["operation_id"], p["operation_id"]);
-            assert_eq!(approval["digest"], p["digest"]);
+            let e = err(call(&svc, "copy.approve", consent.clone()));
+            assert_eq!(e.code, ErrorCode::PermissionDenied, "{e:?}");
+            assert_eq!(reason(&e), Some("grant_revoked"), "{e:?}");
+            assert_eq!(e.message.as_str(), "the copy cannot be approved");
         }
         let (new_root, fresh) = svc
             .inner
@@ -1443,6 +1443,65 @@ mod lab_copy {
             assert_ne!(digest(&fresh_preview), digest(&p));
         }
 
+        let e = err(call(&svc, "copy.start", consent));
+        if approve_after_revoke {
+            assert_eq!(reason(&e), Some("approval_required"), "{e:?}");
+        } else {
+            assert_eq!(e.code, ErrorCode::NotFound, "{e:?}");
+        }
+        assert!(svc
+            .inner
+            .copies
+            .store
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .operations()
+            .unwrap()
+            .is_empty());
+        assert!(svc.inner.copies.running.lock().unwrap().is_empty());
+        assert_eq!(contents(&source), before_source);
+        assert_eq!(contents(&destination), before_destination);
+    }
+
+    #[test]
+    fn copy_source_revoked_after_approval_cannot_start() {
+        copy_revoked_after_approval_cannot_start(true);
+    }
+
+    #[test]
+    fn copy_destination_revoked_after_approval_cannot_start() {
+        copy_revoked_after_approval_cannot_start(false);
+    }
+
+    fn copy_revoked_after_approval_cannot_start(revoke_source: bool) {
+        let Some((tmp, svc, first, second)) = two_roots() else {
+            return; // two_roots() already printed the elevated-token skip.
+        };
+        let source = tmp.path().join("lab-scan");
+        let destination = tmp.path().join("lab-other");
+        let before_source = contents(&source);
+        let before_destination = contents(&destination);
+        let a = child_named(&lab_slice(&svc, &first), "a").unwrap();
+        let c = child_named(&lab_slice(&svc, &second), "c").unwrap();
+        let p = preview(&svc, &a, &c);
+        assert_eq!(p["state"], "draft", "{p:?}");
+        let consent = json!({"operation_id": p["operation_id"], "digest": digest(&p)});
+        let (approval, _) = ok("copy.approve", call(&svc, "copy.approve", consent.clone()));
+        assert_eq!(approval["digest"], p["digest"]);
+        let root = svc
+            .inner
+            .root_row(if revoke_source { &first } else { &second })
+            .unwrap();
+        let grant: i64 = svc
+            .inner
+            .db()
+            .query_row("SELECT grant_id FROM main.root WHERE id=?1", [root], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        svc.inner.revoke(grant).unwrap();
         let e = err(call(&svc, "copy.start", consent));
         assert_eq!(e.code, ErrorCode::NotFound, "{e:?}");
         assert!(svc

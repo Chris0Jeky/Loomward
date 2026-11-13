@@ -6,6 +6,10 @@ use serde_json::json;
 use std::time::Instant;
 
 #[cfg(feature = "test-hooks")]
+#[path = "support/search_pairing.rs"]
+mod search_pairing;
+
+#[cfg(feature = "test-hooks")]
 thread_local! {
     static SQL_COUNTS: std::cell::Cell<(usize, usize, usize, usize)> = const { std::cell::Cell::new((0, 0, 0, 0)) };
 }
@@ -104,7 +108,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 "{label} run {run}: {ms:.3} ms, budget_hit={}",
                 page.budget_hit
             );
-            let result = json!({"case":label,"run":run,"ms":ms,"hits":page.hits.len(),"budget_hit":page.budget_hit,"has_cursor":page.next_cursor.is_some(),"next_key":page.next_cursor.map(|c|c.last_key)});
+            let result = json!({"case":label,"run":run,"ms":ms,"hits":page.hits.len(),"budget_hit":page.budget_hit,"has_cursor":page.next_cursor.is_some(),"next_key":page.next_cursor.as_ref().map(|c|c.last_key)});
             #[cfg(feature = "test-hooks")]
             let result = {
                 // Count a separate execution: tracing FTS-internal SQL can distort latency.
@@ -119,7 +123,14 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 result["application_statements"] = json!(all - internal);
                 result["fts_statements"] = json!(fts);
                 result["ancestry_statements"] = json!(ancestry);
-                result["counted_next_key"] = json!(counted.next_cursor.map(|c| c.last_key));
+                result["counted_next_key"] =
+                    json!(counted.next_cursor.as_ref().map(|c| c.last_key));
+                result.as_object_mut().unwrap().extend(
+                    search_pairing::pairing(&page, &counted)
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                );
                 result
             };
             cases.push(result);
