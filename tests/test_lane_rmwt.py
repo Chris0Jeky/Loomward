@@ -49,6 +49,43 @@ class RemoveWorktreeTests(unittest.TestCase):
             env={**os.environ, "LW_HOME": self.home.as_posix(), **environment},
             capture_output=True, text=True)
 
+    def require_status_without_fscache(self):
+        startup = self.root / "check-status.sh"
+        startup.write_bytes(b'git() {\n'
+                            b'  case " $* " in *" status "*)\n'
+                            b'    [ "$1" = "-c" ] && [ "$2" = "core.fscache=false" ] || return 86\n'
+                            b'    echo status >> "$LW_STATUS_LOG";;\n'
+                            b'  esac\n'
+                            b'  command git "$@"\n'
+                            b'}\n')
+        log = self.root / "status.log"
+        return {"BASH_ENV": startup.as_posix(), "LW_STATUS_LOG": log.as_posix()}, log
+
+    def test_both_status_calls_disable_fscache(self):
+        environment, log = self.require_status_without_fscache()
+
+        result = self.remove_worktree(**environment)
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(log.read_text().splitlines(), ["status", "status"])
+        self.assertFalse(self.worktree.exists())
+
+    def test_dirty_worktree_is_preserved_with_fscache_disabled(self):
+        environment, log = self.require_status_without_fscache()
+        changed = self.worktree / "untracked.txt"
+        changed.write_text("keep this change", encoding="utf-8")
+        output = self.worktree / "target" / "artifact"
+        output.parent.mkdir()
+        output.write_text("keep this output", encoding="utf-8")
+
+        result = self.remove_worktree(**environment)
+
+        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+        self.assertIn("work remains in worktree", result.stderr)
+        self.assertEqual(log.read_text().splitlines(), ["status", "status"])
+        self.assertEqual(changed.read_text(), "keep this change")
+        self.assertEqual(output.read_text(), "keep this output")
+
     def test_nonempty_state_is_kept_before_worktree_removal(self):
         record = self.state / ".root-record"
         record.write_text("synthetic stress-test root record\n", encoding="utf-8")
