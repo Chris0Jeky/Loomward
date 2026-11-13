@@ -1,5 +1,11 @@
 name: reference-and-native
-on: [push, pull_request, workflow_dispatch]
+# Push CI on main only: a PR head is proved by its pull_request run, so a branch push no longer runs
+# the suite twice. nightly.yml chains on this workflow's push runs for main, which stay.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
 permissions:
   contents: read
 concurrency:
