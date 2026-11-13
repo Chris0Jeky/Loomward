@@ -157,11 +157,33 @@ volume, both metadata only and both limited to granted roots: placement's link-c
 which is read only when the granted root is the volume root (the bin is per volume; otherwise its size is unknown).
 It never stats a
 well-known location the owner has not granted. To make the first plan useful, the desktop shows a **checklist of
-well-known store locations** (for example `%USERPROFILE%\.cargo`, `%LOCALAPPDATA%\npm-cache`,
-`%USERPROFILE%\.cache\huggingface`, `%USERPROFILE%\.lmstudio\models`, `%LOCALAPPDATA%\Docker`,
-`%LOCALAPPDATA%\Packages\<distro>\LocalState`), each granted one at a time through the native folder picker. None is
-a whole user profile, a volume root or a credential or browser store (q-4, q-7). The checklist is text until the
-owner picks; nothing is probed for existence in advance.
+well-known store locations**:
+
+- `%LOCALAPPDATA%\Temp`
+- `%LOCALAPPDATA%\npm-cache`
+- `%LOCALAPPDATA%\uv\cache`
+- `%LOCALAPPDATA%\pip\cache`
+- `%LOCALAPPDATA%\NuGet\v3-cache` and `%LOCALAPPDATA%\NuGet\Cache`
+- `%LOCALAPPDATA%\Docker` (Docker Desktop data, not the profile's `.docker` registry credentials)
+- `%LOCALAPPDATA%\Packages\<distro>\LocalState` (`<distro>` is exactly one folder and a WSL distro package: its name
+  starts with a known distro publisher such as `CanonicalGroupLimited.`, `TheDebianProject.`, `KaliLinux.` or
+  `46932SUSE.`; other packaged apps keep account state there and stay refused)
+- `%USERPROFILE%\.cargo\registry` and `%USERPROFILE%\.cargo\git`
+- `%USERPROFILE%\.npm\_cacache`
+- `%USERPROFILE%\.gradle\caches`
+- `%USERPROFILE%\.m2\repository`
+- `%USERPROFILE%\.ollama\models`
+- `%USERPROFILE%\.cache\huggingface`
+- `%USERPROFILE%\.lmstudio\models`
+
+Each location or a child folder is granted one at a time through the native folder picker. The cache exceptions
+are profile-relative and case-insensitive. Tool-store parents (`AppData`, `.cargo`, `.npm`, `.gradle`, `.m2`,
+`.ollama`) and their other subfolders stay refused, including `AppData\Local` and `AppData\Roaming` themselves.
+Credential and browser components (including WebView2 `EBWebView` profiles), and a tool-store parent nested inside a
+cache (`Temp\.cargo`), stay refused as grant roots even inside an eligible cache. The fence applies to grant roots
+only: a scan of a granted cache still catalogues the names and sizes of whatever lies below it. None of these grants is a whole
+user profile, a volume root or a credential or browser store (q-4, q-7). The checklist is text until the owner
+picks; nothing is probed for existence in advance.
 
 ### 6.1 Observing relief (lane R1g, #939)
 

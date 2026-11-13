@@ -63,7 +63,7 @@ $tests = @(
 # bins and test targets only, so no doctest or example is built for a name filter.
 $cargoArguments = @('test', '--locked', '--workspace', '--lib', '--bins', '--tests', '--', '--exact', '--show-output') + $tests
 Write-Host "::group::elevated cargo test: $($tests.Count) refusal tests"
-& cargo +stable @cargoArguments 2>&1 | Tee-Object -Variable cargoOutput
+& cargo @cargoArguments 2>&1 | Tee-Object -Variable cargoOutput
 $cargoExit = $LASTEXITCODE
 Write-Host '::endgroup::'
 if ($cargoExit -ne 0) { exit $cargoExit }

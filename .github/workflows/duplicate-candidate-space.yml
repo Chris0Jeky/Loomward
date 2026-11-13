@@ -19,7 +19,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install stable Rust
-        run: rustup toolchain install stable --profile minimal
+        run: rustup toolchain install
       # This catalogue fixture writes only synthetic SQLite rows in a temporary directory.
       # It neither grants a native filesystem root nor runs the Windows effect/handle tests.
       - name: Compare the exact ignored candidate-count benchmark
@@ -40,9 +40,9 @@ jobs:
             'Synthetic SQLite; timings describe this hosted runner, not cold disk or user-machine latency.'
           ) | Tee-Object -FilePath $rawLog
           try {
-            rustc +stable --version --verbose 2>&1 | Tee-Object -FilePath $rawLog -Append
+            rustc --version --verbose 2>&1 | Tee-Object -FilePath $rawLog -Append
             if ($LASTEXITCODE -ne 0) { throw 'Cannot identify the compiler.' }
-            cargo +stable test --release --locked -p loomward-catalog --lib duplicates::tests::measure_the_candidate_space_count_at_130k -- --exact --ignored --nocapture --test-threads=1 2>&1 | Tee-Object -FilePath $rawLog -Append
+            cargo test --release --locked -p loomward-catalog --lib duplicates::tests::measure_the_candidate_space_count_at_130k -- --exact --ignored --nocapture --test-threads=1 2>&1 | Tee-Object -FilePath $rawLog -Append
             $measurementExit = $LASTEXITCODE
             "cargo_exit_code=$measurementExit" | Add-Content -LiteralPath $rawLog
             if ($measurementExit -eq 0 -and -not (Select-String -LiteralPath $rawLog -Pattern '^test result: ok\. 1 passed; 0 failed; 0 ignored;' -Quiet)) {
