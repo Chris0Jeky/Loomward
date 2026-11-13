@@ -1,0 +1,6 @@
+# CI and local lanes build with this exact toolchain (#1154): a new stable release cannot turn every PR red.
+# Upgrade deliberately in one PR that also carries any fmt/clippy drift fixes.
+[toolchain]
+channel = "1.100.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

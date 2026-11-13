@@ -31,7 +31,7 @@ class DesktopPackaging(unittest.TestCase):
 
     def test_ci_and_installer_stage_before_building_the_desktop(self):
         ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8").split("  desktop:")[1].split("  app:")[0]
-        self.assertLess(ci.index("python scripts/build_broker.py"), ci.index("cargo +stable build --locked"))
+        self.assertLess(ci.index("python scripts/build_broker.py"), ci.index("cargo build --locked --manifest-path native/Cargo.toml"))
         action = (ROOT / ".github/actions/desktop-installer/action.yml").read_text(encoding="utf-8")
         self.assertLess(action.index("python scripts/build_broker.py --release"), action.index("tauri.js build"))
         self.assertIn("Join-Path $dir 'loomward-broker.exe'", action)
