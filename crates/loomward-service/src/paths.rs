@@ -132,7 +132,16 @@ pub fn validate_profile_root(root: &Path, profile: &Path) -> Result<(), String> 
     }) {
         return Err("whole profiles are not eligible".into());
     }
-    for component in root.strip_prefix(profiles).unwrap_or(root).components() {
+    let components = |path: &Path| {
+        path.components()
+            .map(|part| part.as_os_str().to_string_lossy().to_lowercase())
+            .collect::<Vec<_>>()
+    };
+    let root_parts = components(root);
+    let profiles_parts = components(profiles);
+    let relative = root_parts.strip_prefix(profiles_parts.as_slice());
+    let parts = relative.unwrap_or(&root_parts);
+    for component in parts {
         if [
             ".ssh",
             ".aws",
@@ -141,33 +150,75 @@ pub fn validate_profile_root(root: &Path, profile: &Path) -> Result<(), String> 
             ".kube",
             ".codex",
             ".claude",
-            "appdata",
+            ".gemini",
             ".mozilla",
             ".config",
             "user data",
             "browser profiles",
+            "ebwebview",
             "login data",
             "keychains",
             ".docker",
-            ".cargo",
-            ".npm",
             ".terraform.d",
-            ".gemini",
-            ".m2",
-            ".gradle",
             ".android",
             ".minikube",
-            ".ollama",
             ".oci",
         ]
-        .contains(
-            &component
-                .as_os_str()
-                .to_string_lossy()
-                .to_lowercase()
-                .as_str(),
-        ) {
+        .contains(&component.as_str())
+        {
             return Err("credential and browser stores are not eligible".into());
+        }
+    }
+    const TOOL_STORES: [&str; 6] = ["appdata", ".cargo", ".npm", ".gradle", ".m2", ".ollama"];
+    // `Packages\<name>\LocalState` is WSL distro data only for a distro package; other packaged
+    // apps (mail, notes, password managers, WebView2 apps) keep account state there.
+    // Store package family names start with their publisher; unknown publishers stay refused.
+    const WSL_PACKAGES: [&str; 8] = [
+        "canonicalgrouplimited.",
+        "thedebianproject.",
+        "kalilinux.",
+        "46932suse.",
+        "suse.",
+        "whitewaterfoundryltd.",
+        "oracleamericainc.",
+        "almalinuxosfoundation.",
+    ];
+    if parts
+        .iter()
+        .any(|part| TOOL_STORES.contains(&part.as_str()))
+    {
+        // Exceptions start after exactly one profile directory. No exception overrides the
+        // credential/browser fence above, even when that component is inside a known cache.
+        let cache = relative
+            .and_then(|parts| parts.get(1..))
+            .map(|parts| parts.iter().map(String::as_str).collect::<Vec<_>>())
+            .unwrap_or_default();
+        // A tool-store parent may appear only as the cache's first component: `Temp\.cargo` is
+        // a Cargo home (with `credentials.toml`) inside Temp, not Temp.
+        let nested = cache.iter().skip(1).any(|part| TOOL_STORES.contains(part));
+        let distro = |name: &str| WSL_PACKAGES.iter().any(|w| name.starts_with(w));
+        let packaged = matches!(cache.as_slice(),
+            ["appdata", "local", "packages", name, "localstate", ..] if distro(name));
+        if nested
+            || !packaged
+                && !matches!(
+                    cache.as_slice(),
+                    ["appdata", "local", "temp", ..]
+                        | ["appdata", "local", "npm-cache", ..]
+                        | ["appdata", "local", "uv", "cache", ..]
+                        | ["appdata", "local", "pip", "cache", ..]
+                        | ["appdata", "local", "nuget", "v3-cache", ..]
+                        | ["appdata", "local", "nuget", "cache", ..]
+                        | ["appdata", "local", "docker", ..]
+                        | [".cargo", "registry", ..]
+                        | [".cargo", "git", ..]
+                        | [".npm", "_cacache", ..]
+                        | [".gradle", "caches", ..]
+                        | [".m2", "repository", ..]
+                        | [".ollama", "models", ..]
+                )
+        {
+            return Err("tool stores are eligible only at a known cache folder".into());
         }
     }
     Ok(())
@@ -247,9 +298,8 @@ pub(crate) fn check_profile_with(
 }
 
 /// Where tests create synthetic grant fixtures (#465): the workspace's `target/test-roots`, unless
-/// the profile fence refuses it, as it rightly does for a checkout under `%LOCALAPPDATA%` (every
-/// `%TEMP%` worktree) or under a `.claude` folder (every agent worktree). Then `loomward-test-roots`
-/// in `%ProgramData%`, which no store rule names and whose folders inherit their ACLs the way the
+/// the profile fence refuses it, for example for a checkout under a `.claude` folder. Then
+/// `loomward-test-roots` in `%ProgramData%`, which no store rule names and whose folders inherit their ACLs the way the
 /// copy engine requires (#1027); then the same folder at the root of the volume, whose children
 /// carry explicit-looking ACEs (a volume root is not auto-inherited), so the lab copy tests cannot
 /// complete there. The fixtures move; the fence never relaxes. Panics if no place is eligible.
@@ -675,6 +725,186 @@ mod tests {
             check_profile_with(&project, Some(work.join("me")), Some(base.join("missing"))),
             refused
         );
+    }
+
+    const TOOL_CACHE_FOLDERS: &[&str] = &[
+        "AppData/Local/Temp",
+        "AppData/Local/npm-cache",
+        "AppData/Local/uv/cache",
+        "AppData/Local/pip/cache",
+        "AppData/Local/NuGet/v3-cache",
+        "AppData/Local/NuGet/Cache",
+        "AppData/Local/Docker",
+        "AppData/Local/Packages/CanonicalGroupLimited.Ubuntu_fixture/LocalState",
+        ".cargo/registry",
+        ".cargo/git",
+        ".npm/_cacache",
+        ".gradle/caches",
+        ".m2/repository",
+        ".ollama/models",
+    ];
+
+    #[test]
+    fn profile_tool_cache_grants_accept_known_folders_and_descendants() {
+        let tmp = crate::tests::temp_root();
+        let profile = tmp.path().join("Profiles/fixture");
+        std::fs::create_dir_all(&profile).unwrap();
+        let profile = profile.canonicalize().unwrap();
+        for relative in TOOL_CACHE_FOLDERS
+            .iter()
+            .copied()
+            .chain([".cache/huggingface", ".lmstudio/models"])
+        {
+            for root in [profile.join(relative), profile.join(relative).join("child")] {
+                std::fs::create_dir_all(&root).unwrap();
+                let root = root.canonicalize().unwrap();
+                assert_eq!(validate_profile_root(&root, &profile), Ok(()), "{relative}");
+                assert_eq!(
+                    validate_profile_root(
+                        Path::new(&root.to_string_lossy().to_uppercase()),
+                        &profile
+                    ),
+                    Ok(()),
+                    "case-insensitive profile prefix and cache: {relative}"
+                );
+                assert_eq!(
+                    check_profile_with(
+                        &root,
+                        Some(profile.clone()),
+                        profile.parent().map(Path::to_path_buf)
+                    ),
+                    Ok(()),
+                    "shared grant fence: {relative}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn profile_tool_cache_grants_refuse_parents_and_unknown_subfolders() {
+        let tmp = crate::tests::temp_root();
+        let profile = tmp.path().join("Profiles/fixture");
+        for relative in [
+            "AppData",
+            "AppData/Local",
+            "AppData/Roaming",
+            "AppData/Local/uv",
+            "AppData/Local/pip",
+            "AppData/Local/NuGet",
+            "AppData/Local/Packages",
+            "AppData/Local/Packages/fixture-distro",
+            ".cargo",
+            ".npm",
+            ".gradle",
+            ".m2",
+            ".ollama",
+            ".cargo/credentials",
+            ".cargo/credentials.toml",
+            ".cargo/registry-sibling",
+            ".cargo/git-sibling",
+            ".npm/_cacache-sibling",
+            ".gradle/caches-sibling",
+            ".m2/repository-sibling",
+            ".ollama/models-sibling",
+            "AppData/Roaming/npm-cache",
+            "AppData/Local/Temp-sibling",
+            "AppData/Local/Docker-sibling",
+            "AppData/Local/uv/cache-sibling",
+            "AppData/Local/pip/cache-sibling",
+            "AppData/Local/NuGet/v3-cache-sibling",
+            "AppData/Local/NuGet/Cache-sibling",
+            "AppData/Local/Packages/LocalState",
+            "AppData/Local/Packages/fixture-distro/nested/LocalState",
+            "AppData/Local/Packages/fixture-distro/LocalState-sibling",
+            "Documents/.cargo/registry",
+            // #1166 review: a tool-store parent nested inside an eligible cache is its own store.
+            "AppData/Local/Temp/.cargo",
+            "AppData/Local/Temp/x/.npm",
+            "AppData/Local/Docker/AppData",
+            ".cargo/registry/.ollama",
+            // Only distro packages: other packaged apps keep account state in LocalState.
+            "AppData/Local/Packages/fixture-vault/LocalState",
+            "AppData/Local/Packages/Contoso.LinuxPasswordManager_fixture/LocalState",
+        ] {
+            for relative in [relative.to_owned(), relative.to_uppercase()] {
+                assert_eq!(
+                    validate_profile_root(&profile.join(&relative), &profile),
+                    Err("tool stores are eligible only at a known cache folder".into()),
+                    "{relative}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn profile_tool_cache_grants_never_unlock_credential_or_browser_components() {
+        let tmp = crate::tests::temp_root();
+        let profile = tmp.path().join("Profiles/fixture");
+        for store in [
+            ".ssh",
+            ".aws",
+            ".azure",
+            ".gnupg",
+            ".kube",
+            ".codex",
+            ".claude",
+            ".gemini",
+            ".mozilla",
+            ".config",
+            ".docker",
+            ".terraform.d",
+            ".minikube",
+            ".oci",
+            ".android",
+            "user data",
+            "browser profiles",
+            "ebwebview",
+            "login data",
+            "keychains",
+        ] {
+            for parent in std::iter::once(profile.clone()).chain(
+                TOOL_CACHE_FOLDERS
+                    .iter()
+                    .map(|relative| profile.join(relative).join("x")),
+            ) {
+                for store in [store.to_owned(), store.to_uppercase()] {
+                    let root = parent.join(store).join("nested");
+                    assert_eq!(
+                        validate_profile_root(&root, &profile),
+                        Err("credential and browser stores are not eligible".into()),
+                        "{}",
+                        root.display()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn profile_tool_cache_grants_require_the_profile_relative_location() {
+        let tmp = crate::tests::temp_root();
+        let profiles = tmp.path().join("Profiles");
+        let profile = profiles.join("fixture");
+        for relative in TOOL_CACHE_FOLDERS {
+            // Any profile in the profiles directory is eligible, but matching suffixes elsewhere
+            // (including a directory whose name merely starts with the profiles path) are not.
+            assert_eq!(
+                validate_profile_root(&profiles.join("other").join(relative), &profile),
+                Ok(()),
+                "sibling profile: {relative}"
+            );
+            for outside in [
+                tmp.path().join("elsewhere/fixture"),
+                tmp.path().join("Profiles-sibling/fixture"),
+                profiles.join("fixture/Documents"),
+            ] {
+                assert_eq!(
+                    validate_profile_root(&outside.join(relative), &profile),
+                    Err("tool stores are eligible only at a known cache folder".into()),
+                    "outside the profile-relative cache location: {relative}"
+                );
+            }
+        }
     }
 
     #[test]
