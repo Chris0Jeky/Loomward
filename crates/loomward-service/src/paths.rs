@@ -155,6 +155,7 @@ pub fn validate_profile_root(root: &Path, profile: &Path) -> Result<(), String> 
             ".config",
             "user data",
             "browser profiles",
+            "ebwebview",
             "login data",
             "keychains",
             ".docker",
@@ -168,32 +169,50 @@ pub fn validate_profile_root(root: &Path, profile: &Path) -> Result<(), String> 
             return Err("credential and browser stores are not eligible".into());
         }
     }
-    if parts.iter().any(|part| {
-        ["appdata", ".cargo", ".npm", ".gradle", ".m2", ".ollama"].contains(&part.as_str())
-    }) {
+    const TOOL_STORES: [&str; 6] = ["appdata", ".cargo", ".npm", ".gradle", ".m2", ".ollama"];
+    // `Packages\<name>\LocalState` is WSL distro data only for a distro package; other packaged
+    // apps (mail, notes, password managers, WebView2 apps) keep account state there.
+    const WSL_PACKAGES: [&str; 4] = [
+        "canonicalgrouplimited.",
+        "linux",
+        "suse",
+        "whitewaterfoundry",
+    ];
+    if parts
+        .iter()
+        .any(|part| TOOL_STORES.contains(&part.as_str()))
+    {
         // Exceptions start after exactly one profile directory. No exception overrides the
         // credential/browser fence above, even when that component is inside a known cache.
         let cache = relative
             .and_then(|parts| parts.get(1..))
             .map(|parts| parts.iter().map(String::as_str).collect::<Vec<_>>())
             .unwrap_or_default();
-        if !matches!(
-            cache.as_slice(),
-            ["appdata", "local", "temp", ..]
-                | ["appdata", "local", "npm-cache", ..]
-                | ["appdata", "local", "uv", "cache", ..]
-                | ["appdata", "local", "pip", "cache", ..]
-                | ["appdata", "local", "nuget", "v3-cache", ..]
-                | ["appdata", "local", "nuget", "cache", ..]
-                | ["appdata", "local", "docker", ..]
-                | ["appdata", "local", "packages", _, "localstate", ..]
-                | [".cargo", "registry", ..]
-                | [".cargo", "git", ..]
-                | [".npm", "_cacache", ..]
-                | [".gradle", "caches", ..]
-                | [".m2", "repository", ..]
-                | [".ollama", "models", ..]
-        ) {
+        // A tool-store parent may appear only as the cache's first component: `Temp\.cargo` is
+        // a Cargo home (with `credentials.toml`) inside Temp, not Temp.
+        let nested = cache.iter().skip(1).any(|part| TOOL_STORES.contains(part));
+        let distro = |name: &str| WSL_PACKAGES.iter().any(|w| name.contains(w));
+        let packaged = matches!(cache.as_slice(),
+            ["appdata", "local", "packages", name, "localstate", ..] if distro(name));
+        if nested
+            || !packaged
+                && !matches!(
+                    cache.as_slice(),
+                    ["appdata", "local", "temp", ..]
+                        | ["appdata", "local", "npm-cache", ..]
+                        | ["appdata", "local", "uv", "cache", ..]
+                        | ["appdata", "local", "pip", "cache", ..]
+                        | ["appdata", "local", "nuget", "v3-cache", ..]
+                        | ["appdata", "local", "nuget", "cache", ..]
+                        | ["appdata", "local", "docker", ..]
+                        | [".cargo", "registry", ..]
+                        | [".cargo", "git", ..]
+                        | [".npm", "_cacache", ..]
+                        | [".gradle", "caches", ..]
+                        | [".m2", "repository", ..]
+                        | [".ollama", "models", ..]
+                )
+        {
             return Err("tool stores are eligible only at a known cache folder".into());
         }
     }
@@ -711,7 +730,7 @@ mod tests {
         "AppData/Local/NuGet/v3-cache",
         "AppData/Local/NuGet/Cache",
         "AppData/Local/Docker",
-        "AppData/Local/Packages/fixture-distro/LocalState",
+        "AppData/Local/Packages/CanonicalGroupLimited.Ubuntu_fixture/LocalState",
         ".cargo/registry",
         ".cargo/git",
         ".npm/_cacache",
@@ -793,6 +812,13 @@ mod tests {
             "AppData/Local/Packages/fixture-distro/nested/LocalState",
             "AppData/Local/Packages/fixture-distro/LocalState-sibling",
             "Documents/.cargo/registry",
+            // #1166 review: a tool-store parent nested inside an eligible cache is its own store.
+            "AppData/Local/Temp/.cargo",
+            "AppData/Local/Temp/x/.npm",
+            "AppData/Local/Docker/AppData",
+            ".cargo/registry/.ollama",
+            // Only distro packages: other packaged apps keep account state in LocalState.
+            "AppData/Local/Packages/fixture-vault/LocalState",
         ] {
             for relative in [relative.to_owned(), relative.to_uppercase()] {
                 assert_eq!(
@@ -826,6 +852,7 @@ mod tests {
             ".android",
             "user data",
             "browser profiles",
+            "ebwebview",
             "login data",
             "keychains",
         ] {

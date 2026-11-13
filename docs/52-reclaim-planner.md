@@ -165,7 +165,8 @@ well-known store locations**:
 - `%LOCALAPPDATA%\pip\cache`
 - `%LOCALAPPDATA%\NuGet\v3-cache` and `%LOCALAPPDATA%\NuGet\Cache`
 - `%LOCALAPPDATA%\Docker` (Docker Desktop data, not the profile's `.docker` registry credentials)
-- `%LOCALAPPDATA%\Packages\<distro>\LocalState` (`<distro>` is exactly one folder)
+- `%LOCALAPPDATA%\Packages\<distro>\LocalState` (`<distro>` is exactly one folder and a WSL distro package: its name
+  contains `CanonicalGroupLimited.`, `Linux`, `SUSE` or `WhitewaterFoundry`; other packaged apps keep account state there)
 - `%USERPROFILE%\.cargo\registry` and `%USERPROFILE%\.cargo\git`
 - `%USERPROFILE%\.npm\_cacache`
 - `%USERPROFILE%\.gradle\caches`
@@ -177,7 +178,9 @@ well-known store locations**:
 Each location or a child folder is granted one at a time through the native folder picker. The cache exceptions
 are profile-relative and case-insensitive. Tool-store parents (`AppData`, `.cargo`, `.npm`, `.gradle`, `.m2`,
 `.ollama`) and their other subfolders stay refused, including `AppData\Local` and `AppData\Roaming` themselves.
-Credential and browser components stay refused even inside an eligible cache. None of these grants is a whole
+Credential and browser components (including WebView2 `EBWebView` profiles), and a tool-store parent nested inside a
+cache (`Temp\.cargo`), stay refused as grant roots even inside an eligible cache. The fence applies to grant roots
+only: a scan of a granted cache still catalogues the names and sizes of whatever lies below it. None of these grants is a whole
 user profile, a volume root or a credential or browser store (q-4, q-7). The checklist is text until the owner
 picks; nothing is probed for existence in advance.
 
