@@ -838,12 +838,17 @@ queued PRs below are recorded in their PRs.
 | #1172 | `reclaim.plan` returns a partial plan with `budget_hit` at its deadline (1 M-file synthetic: the root inspection took 863 ms computing unused unique totals; metadata-only it takes 0.7 ms) | #1156 | Sol + Opus | queued, reviewed |
 | #1173 | Explicit timed/counted search pairing; duplicate-read revocation linearisation point pinned at the final gate acquisition | #762 | Sol | queued, reviewed |
 | #1174 | `copy.approve` refuses once a preview grant is revoked (synthetic lab copy only) | #851 (approve item) | Sol | queued, reviewed (2 lenses) |
+| #1176 | Grant refusal wording in app, CLI and native docs covers tool stores outside their cache folder | #1170 | Opus | opened after `5ae1d9d8`, reviewed |
+| #1177 | Path-limit enumerate fixtures clean up on every exit path; `rmwt.sh` lists with `core.fscache=false` | #1160 (last item) | Sol + Opus | opened after `5ae1d9d8`, reviewed |
 
 What the lane tooling got wrong, and the fix:
 - The Codex workspace-write sandbox cannot write the user Temp: lanes saw hundreds of sandbox-only failures. #1164.
 - The sandbox lost write access to `target/debug/.cargo-build-lock` mid-lane (per-session sandbox SIDs on the file):
   the driver must re-run every lane's proving commands outside the sandbox, which caught one compile error. #1168.
 - `wait.sh` printed "Binary file matches" for Codex logs. #1163.
+- The first live teardown on merge (#1171, after #1172 merged) ran `rmwt.sh` and kept the queue going, but
+  `rmwt.sh` exited 3: a test fixture nested beyond the Win32 path limit under the lane temp crashed
+  `git status --ignored` (Git for Windows fscache) and defeated `rm -rf`. #1177 fixes the fixture and the listing.
 - CI-workflow changes need an `estate_gate.py attest` record before `estate_merge.py` accepts them (#1161).
 - Proven end to end: `review.sh` (13 Terra reviews), the `queue.sh` RAM/concurrency gate (7 lanes, never more than
   3 at once), `merge_queue.py` (merges, `update`, a park on a red check, an estate-merge refusal and its retry).
