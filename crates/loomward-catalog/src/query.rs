@@ -52,6 +52,8 @@ pub(crate) struct Raw {
     pub accessed: Option<i64>,
     pub born_run: i64,
     pub valid: bool,
+    /// A prior completed traversal established zero, even if its aggregates needed repair.
+    pub empty_established: bool,
 }
 pub(crate) fn raw(r: &rusqlite::Row<'_>) -> rusqlite::Result<Raw> {
     let id = r.get(0)?;
@@ -116,9 +118,21 @@ pub(crate) fn raw(r: &rusqlite::Row<'_>) -> rusqlite::Result<Raw> {
         accessed: r.get(20)?,
         born_run: r.get(21)?,
         valid: r.get(22)?,
+        empty_established: false,
     })
 }
 impl Raw {
+    /// A finished rollup can contain only initialized zero counters: no listing or an empty
+    /// interrupted traversal has not established an aggregate (#1159). Keep observed partial
+    /// counts, but require complete coverage to establish an empty subtree.
+    fn totals_known(&self) -> bool {
+        self.state != "unknown"
+            && (self.totals.files > 0
+                || self.totals.complete
+                || self.empty_established
+                || self.state == "excluded")
+    }
+
     pub(crate) fn coverage(&self) -> String {
         if self.flags & (1 << 6) != 0 {
             "denied".into()
@@ -143,7 +157,7 @@ impl Raw {
         }
     }
     pub(crate) fn entry(&self) -> EntryRow {
-        let known = self.state != "unknown";
+        let known = self.totals_known();
         const ATTRIBUTES: [(u32, &str); 15] = [
             (1, "readonly"),
             (2, "hidden"),
@@ -195,10 +209,24 @@ pub(crate) fn get(conn: &Connection, key: NodeKey) -> Result<Raw> {
         NodeKey::Dir(id) | NodeKey::File(id) => id,
         _ => unreachable!(),
     };
-    let row = conn
+    let mut row = conn
         .query_row(&sql, [id], raw)
         .optional()?
         .ok_or(Error::NotFound)?;
+    if matches!(key, NodeKey::Dir(_))
+        && row.totals.files == 0
+        && !row.totals.complete
+        && row.state == "complete"
+    {
+        // Repair clears coverage, but must not erase a previously established empty sample.
+        // Read this in the same snapshot, without changing the shared search-row projection.
+        row.empty_established = conn.query_row(
+            "SELECT r.state='complete' AND d.sub_skipped=0 AND d.sub_errors=0
+             FROM dir d JOIN root r ON r.id=d.root_id WHERE d.id=?1",
+            [id],
+            |r| r.get(0),
+        )?;
+    }
     let directory = match row.key {
         NodeKey::Dir(id) => id,
         NodeKey::File(_) => row.parent.ok_or(Error::NotFound)?,
@@ -564,7 +592,7 @@ impl Reader {
                 let mut s=conn.prepare("SELECT c.id,c.name FROM st.collection c JOIN st.collection_member m ON m.collection_id=c.id JOIN st.object_ref o ON o.id=m.object_ref_id LEFT JOIN st.pending_reference p ON p.object_ref_id=o.id AND p.catalog_instance=?3 AND p.publication_token=(SELECT value FROM meta WHERE key='reference_publication') WHERE o.volume_key=?1 AND o.file_id=?2 AND o.state='resolved' AND o.retired=0 AND o.catalog_instance=?3 AND ((o.row_id=?4 AND o.born_run=?5) OR (p.row_id=?4 AND p.born_run=?5)) AND o.kind=?6 LIMIT 32")?;
                 memberships=s.query_map(params![v,id,instance(conn)?,match r.key{NodeKey::Dir(id)|NodeKey::File(id)=>id,_=>0},r.born_run,if matches!(r.key,NodeKey::Dir(_)){"dir"}else{"file"}],|r|Ok(CollectionRef{collection_id:format!("cl_{}",r.get::<_,i64>(0)?),name:r.get(1)?}))?.collect::<rusqlite::Result<Vec<_>>>()?;
             }
-            let subtree=if matches!(key,NodeKey::Dir(_)) {let (skipped_raw,failed_raw):(i64,i64)=conn.query_row("SELECT sub_skipped,sub_errors FROM dir WHERE id=?1",[match key{NodeKey::Dir(id)=>id,_=>unreachable!()}],|r|Ok((r.get(0)?,r.get(1)?)))?;let skipped=u64::try_from(skipped_raw).map_err(|e|rusqlite::Error::FromSqlConversionFailure(0,rusqlite::types::Type::Integer,Box::new(e)))?;let failed=u64::try_from(failed_raw).map_err(|e|rusqlite::Error::FromSqlConversionFailure(1,rusqlite::types::Type::Integer,Box::new(e)))?;let(unique_objects,unique_allocated_bytes,multi_link_entries)=unique_totals(conn,&r,steps,cut,hard)?;Some(SubtreeTotals{files:r.totals.files,dirs:r.totals.dirs,logical_bytes:r.totals.logical.to_string(),allocated_bytes:r.entry().allocated_bytes,allocation_unknown_files:r.totals.allocation_unknown,skipped,failed,complete:r.totals.complete,stream_coverage:"default_stream_only".into(),unique_objects,unique_allocated_bytes,multi_link_entries})}else{None};
+            let subtree=if matches!(key,NodeKey::Dir(_)) && r.totals_known() {let (skipped_raw,failed_raw):(i64,i64)=conn.query_row("SELECT sub_skipped,sub_errors FROM dir WHERE id=?1",[match key{NodeKey::Dir(id)=>id,_=>unreachable!()}],|r|Ok((r.get(0)?,r.get(1)?)))?;let skipped=u64::try_from(skipped_raw).map_err(|e|rusqlite::Error::FromSqlConversionFailure(0,rusqlite::types::Type::Integer,Box::new(e)))?;let failed=u64::try_from(failed_raw).map_err(|e|rusqlite::Error::FromSqlConversionFailure(1,rusqlite::types::Type::Integer,Box::new(e)))?;let(unique_objects,unique_allocated_bytes,multi_link_entries)=unique_totals(conn,&r,steps,cut,hard)?;Some(SubtreeTotals{files:r.totals.files,dirs:r.totals.dirs,logical_bytes:r.totals.logical.to_string(),allocated_bytes:r.entry().allocated_bytes,allocation_unknown_files:r.totals.allocation_unknown,skipped,failed,complete:r.totals.complete,stream_coverage:"default_stream_only".into(),unique_objects,unique_allocated_bytes,multi_link_entries})}else{None};
             let exclusions=flags(r.flags).into_iter().filter(|s|s!="hardlink_suspected").map(|code|Exclusion{explanation:code.replace('_'," "),code}).collect();
             let denied_capabilities=["file_move","file_delete","file_rename","content_read","teacher_disclosure","training"].into_iter().map(|capability|DeniedCapability{capability:capability.into(),reason:if r.flags&1!=0 && matches!(capability,"teacher_disclosure"|"training"){"sensitive_name"}else{"not_implemented_in_v03"}.into()}).collect();
             Ok(NodeDetail{row:r.entry(),root_id:format!("rt_{}",r.grant),volume_id:volume.map(|v|format!("vo_{v}")),display_path:DisplayPath::bounded(display_path,path.truncated),identity,timestamps:Timestamps{created_at:timestamp(r.created),modified_at:timestamp(r.modified),changed_at:timestamp(r.changed),accessed_at:timestamp(r.accessed),accessed_note:"Last access may be disabled or delayed; it is not usage evidence.".into()},subtree,threads:threads(conn,r.grant,&r.coverage(),r.flags)?,exclusions,denied_capabilities,memberships,suggestion:None})
