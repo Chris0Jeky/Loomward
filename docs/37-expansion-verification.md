@@ -1,5 +1,7 @@
 # v0.2 implementation and verification status
 
+> **Historical (banner added 2026-11-13).** The current agent entry point is [`AGENTS.md`](../AGENTS.md); its "current capability matrix" claim is from 9 October 2026; current status is the latest section of `16-implementation-status.md`.
+
 9 October 2026. This is the current capability matrix for the expansion. `16-implementation-status.md` and the original evidence describe the first pass; they remain useful historical records, not the current test-count source.
 
 ## What changed in code

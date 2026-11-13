@@ -1,5 +1,7 @@
 # Documentation map
 
+> **Note (2026-11-13).** The current agent entry point is [`AGENTS.md`](../AGENTS.md); the "start with 23 and 37" line below is historical; current status is the latest section of [16](16-implementation-status.md).
+
 Chapters 00-22 preserve the initial project. Chapters 23-40 expand it. Start with 23 and 37 for the current design/status. The research thesis is 24, the product thesis 44, executable MCP scope 28, use cases 33 and local-agent lanes 40.
 
 - [00: Loomward: design brief](00-design-brief.md)
@@ -47,6 +49,7 @@ Chapters 00-22 preserve the initial project. Chapters 23-40 expand it. Start wit
 - [42: v0.3 architecture decision records](42-v03-adrs.md)
 - [43: v0.3 parallel implementation plan](43-v03-lanes.md)
 - [44: Product thesis: workspace memory, honest by construction, agent-ready](44-product-thesis.md)
+- [45: Daily-use readiness checklist (HUMAN_TODO q-39)](45-daily-use-readiness.md)
 - [46: Find & Ask: search tiers, semantic layer and the Ask provider interface](46-find-and-ask.md)
 - [47: Copy-and-verify: the first file effect](47-copy-and-verify.md)
 - [48: External archive disk and agent storage tooling](48-external-disk-and-agent-storage.md)
