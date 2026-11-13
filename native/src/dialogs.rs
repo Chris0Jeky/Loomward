@@ -288,7 +288,8 @@ impl NativeDialogs for DesktopDialogs {
 }
 
 /// Same grant-root validator as the service; native selection is the only volume-root grant.
-/// The picker additionally fences whole profiles and credential/browser stores.
+/// The picker additionally fences whole profiles, credential/browser stores and tool stores outside
+/// their known cache folders (docs/52 section 6).
 pub fn validate_picked_folder(root: &Path, profile: &Path) -> Result<PathBuf, String> {
     let root = loomward_service::paths::check_root(root, None, &[], true)
         .map_err(|_| "the selected folder is not an eligible grant root".to_string())?;
