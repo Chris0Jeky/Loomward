@@ -3,10 +3,9 @@
 The one baseline for every agent runtime. Claude Code reads it because the repo has no `CLAUDE.md`; do not
 add one. **T2 daily driver** · push free / merge free within the estate T2 gate · `.agent-harness/tier.json` ·
 delegation ceilings `.agent-harness/delegation.json` · human decisions `HUMAN_TODO.md` (its "Open now" block).
-Global estate laws come from each runtime's global instructions; this file holds what is true of this repo.
+Global laws come from each runtime's own instructions.
 
-Loomward: open-source, local-first Windows workspace, storage and resource companion (native inventory, personal
-learning, virtual organisation, disk tiers, duplicates, backups, process/RAM control). Core ruling: **meaning,
+Loomward: open-source, local-first Windows workspace, storage and resource companion. Core ruling: **meaning,
 residency and permission are separate systems.** Rust workspace (`crates/`), Tauri 2 shell (`native/`), Svelte app
 (`app/`, the one interface), read-only MCP; the Python reference is a frozen test oracle (q-40) that changes only to
 keep cross-language fixtures aligned.
@@ -22,7 +21,7 @@ keep cross-language fixtures aligned.
 4. The assigned GitHub issue, read live.
 
 `handoff/`, `docs/23`, `docs/37`, `docs/40` and the ChatGPT-era process text are history: their product content is
-authoritative context, their process instructions are not. `handoff/v1/` is never overwritten.
+authoritative context, their process instructions are not.
 
 ## Proving checks by seam
 
@@ -37,7 +36,7 @@ authoritative context, their process instructions are not. `handoff/v1/` is neve
 `py -3 scripts/verify.py --changed` is a local inner loop over the crates a diff can affect, never the proof of
 record; hosted CI runs everything. Missing tooling is UNVERIFIED, never PASS. New behaviour lands with the test that
 pins it. Never disable, skip or weaken a failing test. On Windows use `npm.cmd`/`npx.cmd` (the `.ps1` shims are
-blocked by execution policy). Reports name the exact commands, platform, results, what stayed unverified and any external action.
+blocked by execution policy).
 
 ## Product invariants (violating one is a bug)
 
@@ -83,21 +82,22 @@ q-20 to q-46 (12 Oct), q-47 onwards dated in place.
 ## Lanes
 
 - One bounded issue per lane, in its own worktree and branch. **STEP 0:** list every item of the issue and verify
-  OPEN versus already fixed on `origin/main` (merged PRs often said `Refs #N` and left it open), citing file:line or
-  the PR; work only open items, and if none is open report the table and stop. Then regression test, change, suite.
+  OPEN versus already fixed on `origin/main`, citing file:line or the PR; work only open items, and if none is open report the table and stop. Then regression test, change, suite.
 - Each worktree builds in its own default `target/`; never set a shared `CARGO_TARGET_DIR` (#601: identical artifact
-  names overwrite). Use `CARGO_INCREMENTAL=0` and `CARGO_PROFILE_{DEV,TEST}_DEBUG=line-tables-only`; removing the
-  worktree removes its build. Iterate with `-p <crate>`; run the workspace once at the end.
+  names overwrite). Use `CARGO_INCREMENTAL=0` and `CARGO_PROFILE_{DEV,TEST}_DEBUG=line-tables-only`. Iterate with `-p <crate>`; run the workspace once at the end.
 - Coordinator-owned (a lane asks, never edits): root `Cargo.toml`, `Cargo.lock`, `.github/workflows/`, `AGENTS.md`
   and the seam `AGENTS.md` files, `HUMAN_TODO.md`, `.agent-harness/`, `docs/16-implementation-status.md`,
   `handoff/CHECKPOINT*.json`, `backlog/`, `docs/INDEX.md`, `contracts/v3/`. The driver updates docs/16 and the
   checkpoint once per wave in a checkpoint PR; a PR that opens or closes a safety gate or changes an invariant
   updates both itself. Shared schemas, protocol, routes and dependencies have one named owner per wave.
-- Codex starts only through `bash ~/.claude/tools/codex_safe.sh <sol|terra|astra> <effort> ...`, never a plain
-  `codex exec` or a sandbox-bypass flag. A Codex worker (Sol, Astra or any other) cannot commit in a worktree: it
-  leaves the change uncommitted and reports the proving command and output; the driver commits. Lane tooling:
-  `scripts/lanes/README.md`.
-- Merge only a reviewed, green head that is up to date with `main`, with a merge commit (never squash).
+- Codex only through `codex_safe.sh` (law); its workers cannot commit, so they leave changes uncommitted and the
+  driver commits. Lane tooling: `scripts/lanes/README.md`.
+- Pick a tier by the job, not a model name: design, safety-gate and invariant work stay with the session driver (the
+  low-level specialist for Windows internals such as USN or Hyper-V); mechanical fixtures and named checks go to the
+  quick-mechanical tier or a Muse recipe; review goes to the review gate. Models and effort: the
+  `model-effort-routing` skill.
+- Merge only a reviewed, green head that is up to date with `main`, with a merge commit (never squash). Merge through
+  `~/.claude/tools/estate_merge.py` (`scripts/lanes/merge_queue.py` calls it).
 - Lane report (last message, under 300 words): PR URL or "left uncommitted", commands run with pass/fail counts,
   what is NOT verified, any external action, and what you noticed but did not do.
 
@@ -106,12 +106,14 @@ q-20 to q-46 (12 Oct), q-47 onwards dated in place.
 - Provider, event and proposal schemas marked design-only stay design-only until their issue lands.
 - `LW-*` IDs are the local backlog (`backlog/issues.json`, source of truth), not GitHub numbers; the GitHub mirror
   is `backlog/github-issues.json`. New IDs mint there first, through the coordinator.
+- Releases: `RELEASING.md`; `.github/workflows/release.yml` and `nightly.yml` are coordinator-owned; never print or
+  commit signing material.
 - Hosted CI clippy runs on Linux too: code used only under `#[cfg(windows)]` must itself be gated or
   platform-neutral. Hosted Windows runners are elevated: native tests skip on `running_elevated()`, never assert.
 - The primary checkout's gitignored `Resources/` folder is the only copy of the owner's ChatGPT downloads: never
   `git clean -x` there, never move it into a worktree.
 - Licence AGPL-3.0-only since #396 (commercial licensing possible, q-20 to q-23). Taskdeck is proprietary: never copy
   its code here.
-- Public repo: synthetic fixtures only; no real file names, inventories or training exports; personal diagnostics, `.loomward/` state and database files never enter Git.
+- Public repo: synthetic fixtures only; no training exports; diagnostics, `.loomward/` state and database files never enter Git.
 - The UI is not frozen: the owner wants a signature, elegant interface that grows with the engine.
-- Shared skills, roles and MCP servers come from the global runtime homes (`claude-config`); do not copy them here.
+- Shared skills, roles and MCP servers come from the global runtime homes; do not copy them here.
