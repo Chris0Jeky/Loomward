@@ -13,7 +13,7 @@ nothing. Every balancing or resource output is a simulation or a proposal.
 **Problem.** v0.2 is a tested Python reference with a generic browser UI and an uncompiled-until-today Rust
 foundation. The owner wants all four pillars at once: (a) a native engine that inventories disks far faster than
 WinDirStat with real identity, volume capabilities and a persistent catalogue, under a new signature UI; (b)
-organisation and learning with a Rust-resident student and an optional GPT-6.1 Sol teacher; (c) storage
+organisation and learning with a Rust-resident student and an optional GPT-6.2 Sol teacher; (c) storage
 balancing simulated against the real C:, G: and E: volumes; (d) a read-only resource companion. Plus a lab for
 synthetic, scale and stress testing.
 
@@ -51,7 +51,7 @@ flowchart LR
   fs[(Windows filesystems<br/>C: fast local volume, G: fast local volume, E: slow local volume)]
   os[Windows kernel APIs<br/>volumes, processes, PDH]
   codex[Codex CLI native binary<br/>pinned hash and version]
-  openai[(OpenAI GPT-6.1 Sol<br/>cloud)]
+  openai[(OpenAI GPT-6.2 Sol<br/>cloud)]
   owner -->|views, labels, grants via native dialogs| lw
   agents -->|synthetic lab runs, Playwright over loopback HTTP| lw
   lw -->|read-only metadata enumeration| fs
