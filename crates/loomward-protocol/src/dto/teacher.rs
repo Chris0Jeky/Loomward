@@ -14,7 +14,7 @@ const_str!(
 );
 
 const_str!(
-    pub TeacherPreviewModel = "gpt-6.1-sol"
+    pub TeacherPreviewModel = "gpt-6.2-sol"
 );
 
 const_str!(

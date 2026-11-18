@@ -831,7 +831,7 @@ const_str!(
     pub Protocol = "loomward/3"
 );
 const_str!(
-    /// The only v0.3 teacher: GPT-6.1 Sol at medium effort via the owner's local Codex CLI.
+    /// The only v0.3 teacher: GPT-6.2 Sol at medium effort via the owner's local Codex CLI.
     /// A cloud recipient, so every disclosure names it.
     pub TeacherRecipient = "codex_cli_gpt_6_1_sol"
 );

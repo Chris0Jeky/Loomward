@@ -727,7 +727,7 @@ records its path, SHA-256 and `--version`, and launches it directly with `Create
 never `cmd.exe`, never data in argv. Fixed argv:
 
 ```text
-<codex.exe> exec -m gpt-6.1-sol -c model_reasoning_effort=medium -s read-only
+<codex.exe> exec -m gpt-6.2-sol -c model_reasoning_effort=medium -s read-only
   --ignore-user-config --ignore-rules --ephemeral --skip-git-repo-check
   --output-schema <request dir>\schema.json -o <request dir>\out.json
   --disable <each tool/feature listed by the pinned version> -

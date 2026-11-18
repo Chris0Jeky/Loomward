@@ -211,7 +211,7 @@ dependency for about 150 lines of arithmetic. ONNX runtime: rejected, unnecessar
 
 **Context.** Owner decision 4: GPT-6.1 Sol at medium effort via the local Codex CLI. Codex is an agent with
 tools, and it sends context to a cloud provider. Invariant 3 requires explicit, bounded, per-grant disclosure.
-**Decision.** The engine spawns `codex.cmd exec -m gpt-6.1-sol -c model_reasoning_effort=medium
+**Decision.** The engine spawns `codex.cmd exec -m gpt-6.2-sol -c model_reasoning_effort=medium
 --output-schema <file> -o <file>` with fixed argv, an empty per-request working directory, a minimal
 environment and the sandbox flags confirmed by the LW-109 spike, inside a Job Object
 (`PROC_THREAD_ATTRIBUTE_JOB_LIST`, kill-on-close, memory cap, 180 s timeout). Payloads: at most 25 items,
@@ -257,6 +257,8 @@ fail to read outside the allowlist and to reach a non-endpoint host, plus the #1
 it. CLI flags are kept as defence in depth, not as the gate. The 180 s timeout covers the observed 88.8 s maximum.
 
 **Owner decision (2026-10-10).** L15b is authorised: build the OS-enforced boundary (per-request credential copy readable only inside the sandbox, filesystem allowlist, egress restricted to the model endpoint). Personal metadata stays off until its enforcement canaries pass. Any elevated step, such as a firewall rule, is performed by the owner from a prepared HUMAN_TODO item, never by an agent.
+
+**Owner decision (2026-11-17).** The pinned teacher model moves from `gpt-6.1-sol` to `gpt-6.2-sol` (same medium effort). The spike and confinement measurements above were taken on `gpt-6.1-sol` and are not repeated; the recipient id `codex_cli_gpt_6_1_sol` stays as the stable grant identifier.
 
 ## ADR-V3-11: Svelte 5 shell in TypeScript; heavy visuals as JSDoc-typed ES modules (partly overturns the default)
 

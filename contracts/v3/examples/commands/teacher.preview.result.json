@@ -1,7 +1,7 @@
 {
   "preview_id": "tp_0001",
   "recipient": "codex_cli_gpt_6_1_sol",
-  "model": "gpt-6.1-sol",
+  "model": "gpt-6.2-sol",
   "reasoning_effort": "medium",
   "dataset_class": "synthetic",
   "serialization_version": "loomward-teacher-request/1",
