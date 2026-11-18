@@ -1869,7 +1869,7 @@
     },
 
     "TeacherField": { "enum": ["name", "extension", "context", "size_bucket"] },
-    "TeacherRecipient": { "const": "codex_cli_gpt_6_1_sol", "$comment": "The only v0.3 teacher: GPT-6.1 Sol at medium effort via the owner's local Codex CLI. A cloud recipient." },
+    "TeacherRecipient": { "const": "codex_cli_gpt_6_1_sol", "$comment": "The only v0.3 teacher: GPT-6.2 Sol at medium effort via the owner's local Codex CLI. A cloud recipient." },
     "TeacherPreviewRequest": {
       "type": "object",
       "additionalProperties": false,
@@ -1891,7 +1891,7 @@
         "output_schema_digest": { "$ref": "#/$defs/Digest" },
         "runner_profile_digest": { "$ref": "#/$defs/Digest", "$comment": "Pinned Codex executable hash, version, argv and effective configuration overrides (docs/41 section 9.2)." },
         "recipient": { "$ref": "#/$defs/TeacherRecipient" },
-        "model": { "const": "gpt-6.1-sol" },
+        "model": { "const": "gpt-6.2-sol" },
         "reasoning_effort": { "const": "medium" },
         "dataset_class": { "$ref": "#/$defs/DatasetClass" },
         "fields": { "type": "array", "minItems": 1, "maxItems": 4, "uniqueItems": true, "items": { "$ref": "#/$defs/TeacherField" } },
@@ -1945,7 +1945,7 @@
       "properties": {
         "preview_id": { "$ref": "#/$defs/PreviewId" },
         "recipient": { "$ref": "#/$defs/TeacherRecipient" },
-        "model": { "const": "gpt-6.1-sol" },
+        "model": { "const": "gpt-6.2-sol" },
         "reasoning_effort": { "const": "medium" },
         "dataset_class": { "$ref": "#/$defs/DatasetClass" },
         "fields": { "type": "array", "minItems": 1, "maxItems": 4, "uniqueItems": true, "items": { "$ref": "#/$defs/TeacherField" } },

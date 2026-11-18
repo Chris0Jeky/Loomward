@@ -1373,7 +1373,7 @@ export interface CollectionMembersRequest {
 
 export type TeacherField = "name" | "extension" | "context" | "size_bucket";
 
-/** The only v0.3 teacher: GPT-6.1 Sol at medium effort via the owner's local Codex CLI. A cloud recipient. */
+/** The only v0.3 teacher: GPT-6.2 Sol at medium effort via the owner's local Codex CLI. A cloud recipient. */
 export type TeacherRecipient = "codex_cli_gpt_6_1_sol";
 
 export interface TeacherPreviewRequest {
@@ -1392,7 +1392,7 @@ export interface TeacherPreview {
   /** Pinned Codex executable hash, version, argv and effective configuration overrides (docs/41 section 9.2). */
   runner_profile_digest: Digest;
   recipient: TeacherRecipient;
-  model: "gpt-6.1-sol";
+  model: "gpt-6.2-sol";
   reasoning_effort: "medium";
   dataset_class: DatasetClass;
   fields: TeacherField[];
@@ -1421,7 +1421,7 @@ export interface TeacherPreview {
 export interface DisclosureSummary {
   preview_id: PreviewId;
   recipient: TeacherRecipient;
-  model: "gpt-6.1-sol";
+  model: "gpt-6.2-sol";
   reasoning_effort: "medium";
   dataset_class: DatasetClass;
   fields: TeacherField[];
