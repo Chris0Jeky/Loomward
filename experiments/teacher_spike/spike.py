@@ -59,7 +59,7 @@ def args_for(exe: Path, cwd: Path, output: Path, schema: Path | None,
              shell_control: bool = False, full_access_control: bool = False) -> list[str]:
     args = [str(exe), "--no-daemon", "exec", "--strict-config", "--ignore-user-config",
             "--ignore-rules", "--ephemeral", "--skip-git-repo-check", "-s", "read-only",
-            "-m", "gpt-6.1-sol", "-C", str(cwd), "--json", "--color", "never"]
+            "-m", "gpt-6.2-sol", "-C", str(cwd), "--json", "--color", "never"]
     for key in OVERRIDES:
         if full_access_control and key.startswith("shell_environment_policy."):
             continue
@@ -277,7 +277,7 @@ def main():
                               text=True, check=True).stdout
     (raw_dir / "features.txt").write_text(features, encoding="utf-8")
     receipt = {"version": version, "exe_sha256": hashlib.sha256(exe.read_bytes()).hexdigest(),
-               "platform": "Windows", "model": "gpt-6.1-sol", "effort": "medium",
+               "platform": "Windows", "model": "gpt-6.2-sol", "effort": "medium",
                "disabled_features": DISABLED, "overrides": OVERRIDES, "runs": []}
     schema = raw_dir / "batch-schema.json"
     schema.write_text(json.dumps(batch_schema()), encoding="utf-8")
