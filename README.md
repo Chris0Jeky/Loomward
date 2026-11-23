@@ -143,7 +143,7 @@ flowchart LR
 | `crates/loomward-apps`, `loomward-shell` | Read-only installed-application inventory and shortcut reading. |
 | `crates/loomward-backup` | Pure, bounded backup-receipt normalisation. No provider execution. |
 | `crates/loomward-lab` | Synthetic scale trees, four enumeration strategies, and benchmarks. Windows only. See its [README](crates/loomward-lab/README.md). |
-| `crates/loomward-cli` | The `loomward-native` source CLI: `capabilities`, `scan ROOT [MAX_ENTRIES]`, `plan SCENARIO.json`. |
+| `crates/loomward-cli` | The `loomward-native` source CLI: `capabilities`, `scan ROOT [MAX_ENTRIES]`, `scan-summary ROOT [MAX_ENTRIES]` (totals, coverage and newest modification time; no names), `plan SCENARIO.json`, `verify-tree`, `covers`, `receipt`. |
 | `app/` | Svelte 5, Vite and TypeScript. `app/prototype/` is the no-build woven-atlas and Observatory prototype. |
 | `native/` | Tauri 2 desktop shell. Excluded from the root workspace and built with its own `Cargo.lock`. |
 | `python/loomward/`, `scripts/` | The frozen Python reference: scanner, student, tier simulator, loopback API, CLI and MCP reference. |
