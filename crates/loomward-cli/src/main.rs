@@ -8,7 +8,7 @@ use std::process::ExitCode;
 mod covers;
 mod verify_tree;
 
-const USAGE: &str = "Usage: loomward-native capabilities | scan ROOT [MAX_ENTRIES] | plan SCENARIO.json | receipt (copy.status JSON on stdin) | verify-tree SOURCE DESTINATION --state-dir DIR [--max-entries N] [--budget-bytes N] [--budget-secs N] [--only LIST] [--manifest-roots] | covers A B --state-dir DIR [--max-entries N] [--budget-bytes N] [--budget-secs N]";
+const USAGE: &str = "Usage: loomward-native capabilities | scan ROOT [MAX_ENTRIES] | scan-summary ROOT [MAX_ENTRIES] | plan SCENARIO.json | receipt (copy.status JSON on stdin) | verify-tree SOURCE DESTINATION --state-dir DIR [--max-entries N] [--budget-bytes N] [--budget-secs N] [--only LIST] [--manifest-roots] | covers A B --state-dir DIR [--max-entries N] [--budget-bytes N] [--budget-secs N]";
 
 fn execute(args: &[String]) -> Result<serde_json::Value, String> {
     match args.first().map(String::as_str) {
@@ -16,13 +16,14 @@ fn execute(args: &[String]) -> Result<serde_json::Value, String> {
             serde_json::json!({"native_build":"local_build","metadata_scan":true,"tier_simulation":true,"file_mutation":false,"process_mutation":false,"native_content_hash":cfg!(windows)}),
         ),
         Some("receipt") if args.len() == 1 => receipt(io::stdin().lock()),
-        Some("scan") if (2..=3).contains(&args.len()) => {
+        Some(cmd @ ("scan" | "scan-summary")) if (2..=3).contains(&args.len()) => {
             let limit = if args.len() == 3 {
                 args[2].parse::<usize>().map_err(|e| e.to_string())?
             } else {
                 50_000
             };
-            loomward_core::inventory::scan(Path::new(&args[1]), limit, 64)
+            let scan = loomward_core::inventory::scan(Path::new(&args[1]), limit, 64)?;
+            Ok(if cmd == "scan" { scan } else { summarise(scan) })
         }
         Some("plan") if args.len() == 2 => {
             let file = std::fs::File::open(&args[1]).map_err(|e| e.to_string())?;
@@ -39,6 +40,29 @@ fn execute(args: &[String]) -> Result<serde_json::Value, String> {
         _ => Err(USAGE.into()),
     }
 }
+/// Aggregates only: drops every per-file entry (names, paths, extensions) and keeps the totals,
+/// coverage and the newest modification time, so a folder can be sized without a listing leaving
+/// the process (sizes and dates only, e.g. for an owner's personal folders).
+fn summarise(mut scan: serde_json::Value) -> serde_json::Value {
+    let files = scan
+        .as_object_mut()
+        .and_then(|o| o.remove("files"))
+        .unwrap_or_default();
+    let times: Vec<Option<i128>> = files
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|f| f["mtime_ns"].as_str().and_then(|t| t.parse::<i128>().ok()))
+        .collect();
+    let newest = times.iter().flatten().max();
+    scan["summary"]["newest_mtime_ns"] =
+        newest.map_or(serde_json::Value::Null, |n| n.to_string().into());
+    // Honest unknowns: files whose time could not be read are counted, never silently skipped.
+    scan["summary"]["mtime_unknown_count"] = times.iter().filter(|t| t.is_none()).count().into();
+    scan["mode"] = "observed_summary".into();
+    scan
+}
+
 /// Render a stored service receipt; this command never reads or copies owner files.
 fn receipt(input: impl Read) -> Result<serde_json::Value, String> {
     let mut text = String::new();
@@ -123,6 +147,65 @@ mod tests {
         assert!(receipt(vec![b' '; 64 * 1024 + 1].as_slice())
             .unwrap_err()
             .contains("64 KiB"));
+    }
+
+    #[test]
+    fn scan_summary_keeps_totals_and_drops_every_name() {
+        let t = tempfile::tempdir().unwrap();
+        std::fs::create_dir(t.path().join("private-folder")).unwrap();
+        std::fs::write(t.path().join("private-folder/secret-name.txt"), b"hello").unwrap();
+        std::fs::write(t.path().join("other.bin"), b"abc").unwrap();
+        let root = t.path().to_string_lossy().to_string();
+        let full = execute(&["scan".into(), root.clone()]).unwrap();
+        let summary = execute(&["scan-summary".into(), root]).unwrap();
+        let text = summary.to_string();
+        assert!(summary.get("files").is_none());
+        assert!(
+            !text.contains("secret-name")
+                && !text.contains("private-folder")
+                && !text.contains(".txt")
+                && !text.contains("other.bin")
+                && !text.contains(".bin")
+        );
+        assert_eq!(summary["mode"], "observed_summary");
+        assert_eq!(summary["summary"]["file_count"], 2);
+        assert_eq!(summary["summary"]["logical_bytes"], 8);
+        assert_eq!(summary["coverage"], full["coverage"]);
+        let newest = full["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f["mtime_ns"].as_str().unwrap().parse::<i128>().unwrap())
+            .max()
+            .unwrap();
+        assert_eq!(summary["summary"]["newest_mtime_ns"], newest.to_string());
+        assert_eq!(summary["summary"]["mtime_unknown_count"], 0);
+    }
+
+    #[test]
+    fn summarise_takes_the_max_known_time_and_counts_unknown_ones() {
+        let scan = serde_json::json!({"mode": "observed", "summary": {"file_count": 4}, "files": [
+            {"name": "a", "mtime_ns": "200"},
+            {"name": "b", "mtime_ns": "900"},
+            {"name": "c", "mtime_ns": null},
+            {"name": "d", "mtime_ns": "300"},
+        ]});
+        let s = summarise(scan);
+        assert_eq!(s["summary"]["newest_mtime_ns"], "900");
+        assert_eq!(s["summary"]["mtime_unknown_count"], 1);
+        assert!(s.get("files").is_none());
+    }
+
+    #[test]
+    fn scan_summary_of_an_empty_folder_has_no_newest_time() {
+        let t = tempfile::tempdir().unwrap();
+        let summary = execute(&[
+            "scan-summary".into(),
+            t.path().to_string_lossy().to_string(),
+        ])
+        .unwrap();
+        assert_eq!(summary["summary"]["file_count"], 0);
+        assert!(summary["summary"]["newest_mtime_ns"].is_null());
     }
 
     /// A stdout stand-in whose every write and flush fails with one error kind.
