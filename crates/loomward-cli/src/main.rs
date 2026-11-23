@@ -48,14 +48,17 @@ fn summarise(mut scan: serde_json::Value) -> serde_json::Value {
         .as_object_mut()
         .and_then(|o| o.remove("files"))
         .unwrap_or_default();
-    let newest = files
+    let times: Vec<Option<i128>> = files
         .as_array()
         .into_iter()
         .flatten()
-        .filter_map(|f| f["mtime_ns"].as_str()?.parse::<i128>().ok())
-        .max();
+        .map(|f| f["mtime_ns"].as_str().and_then(|t| t.parse::<i128>().ok()))
+        .collect();
+    let newest = times.iter().flatten().max();
     scan["summary"]["newest_mtime_ns"] =
         newest.map_or(serde_json::Value::Null, |n| n.to_string().into());
+    // Honest unknowns: files whose time could not be read are counted, never silently skipped.
+    scan["summary"]["mtime_unknown_count"] = times.iter().filter(|t| t.is_none()).count().into();
     scan["mode"] = "observed_summary".into();
     scan
 }
@@ -161,6 +164,8 @@ mod tests {
             !text.contains("secret-name")
                 && !text.contains("private-folder")
                 && !text.contains(".txt")
+                && !text.contains("other.bin")
+                && !text.contains(".bin")
         );
         assert_eq!(summary["mode"], "observed_summary");
         assert_eq!(summary["summary"]["file_count"], 2);
@@ -174,6 +179,21 @@ mod tests {
             .max()
             .unwrap();
         assert_eq!(summary["summary"]["newest_mtime_ns"], newest.to_string());
+        assert_eq!(summary["summary"]["mtime_unknown_count"], 0);
+    }
+
+    #[test]
+    fn summarise_takes_the_max_known_time_and_counts_unknown_ones() {
+        let scan = serde_json::json!({"mode": "observed", "summary": {"file_count": 4}, "files": [
+            {"name": "a", "mtime_ns": "200"},
+            {"name": "b", "mtime_ns": "900"},
+            {"name": "c", "mtime_ns": null},
+            {"name": "d", "mtime_ns": "300"},
+        ]});
+        let s = summarise(scan);
+        assert_eq!(s["summary"]["newest_mtime_ns"], "900");
+        assert_eq!(s["summary"]["mtime_unknown_count"], 1);
+        assert!(s.get("files").is_none());
     }
 
     #[test]
