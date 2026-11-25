@@ -1,5 +1,9 @@
-import { describe, expect, it } from 'vitest';
-import { chooseTransport, tokenFromHash, type Env } from '../../src/lib/transport/select';
+import { describe, expect, it, vi } from 'vitest';
+import { buildTransport, chooseTransport, tokenFromHash, type Env } from '../../src/lib/transport/select';
+
+vi.mock('../../src/lib/transport/tauri', () => ({
+  createTauriTransport: async () => ({ mode: 'tauri', call: vi.fn(), subscribe: vi.fn() }),
+}));
 
 const TOKEN = 'a1b2c3d4e5f60718293a4b5c6d7e8f90';
 const env = (o: Partial<Env> = {}): Env => ({ search: '', hash: '', origin: 'http://127.0.0.1:5000', hasTauri: false, storedToken: null, ...o });
@@ -35,5 +39,26 @@ describe('chooseTransport', () => {
     expect(tokenFromHash('#token=short')).toBeNull();
     expect(tokenFromHash('#/explorer')).toBeNull();
     expect(tokenFromHash(`#token=${TOKEN}`)).toBe(TOKEN);
+  });
+});
+
+describe('buildTransport', () => {
+  it('resolves mode mock to a mock transport', async () => {
+    const t = await buildTransport({ mode: 'mock' });
+    expect(t).toBeDefined();
+    expect(t.mode).toBe('mock');
+    expect(typeof t.call).toBe('function');
+    expect(typeof t.subscribe).toBe('function');
+  });
+  it('resolves mode http to an http transport', async () => {
+    const t = await buildTransport({ mode: 'http', base: 'http://127.0.0.1:5000', token: 't' });
+    expect(t).toBeDefined();
+    expect(t.mode).toBe('http');
+    expect(typeof t.call).toBe('function');
+    expect(typeof t.subscribe).toBe('function');
+  });
+  it('resolves mode tauri through the lazy desktop transport module', async () => {
+    const t = await buildTransport({ mode: 'tauri' });
+    expect(t.mode).toBe('tauri');
   });
 });
