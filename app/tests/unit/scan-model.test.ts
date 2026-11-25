@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ErrorCode, Job, JobState, ScanProgress } from '../../src/lib/contracts.gen';
-import { announcement, applyJob, applyProgress, fromList, isActive, refusalText, viewOf, type Book } from '../../src/lib/scan/model';
+import { announcement, applyJob, applyProgress, fromList, isActive, lostJob, refusalText, viewOf, type Book } from '../../src/lib/scan/model';
 
 const LEGACY_REV = undefined as unknown as number; // Older responses omitted rev.
 const T0 = Date.parse('2026-10-10T10:00:00Z');
@@ -169,6 +169,14 @@ describe('applying job snapshots', () => {
     expect(fromList([fresh, old]).rt_a?.job_id).toBe('jb_2');
     expect(fromList([old, fresh]).rt_a?.job_id).toBe('jb_2');
     expect(isActive('running') && isActive('queued') && isActive('cancel_requested') && !isActive('completed')).toBe(true);
+  });
+});
+
+describe('lost jobs', () => {
+  it('marks a lost job terminal', () => {
+    const j = lostJob(job('running'), '2026-10-10T12:00:00Z');
+    expect(j.state).toBe('failed');
+    expect(j.finished_at).toBe('2026-10-10T12:00:00Z');
   });
 });
 
