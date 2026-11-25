@@ -17,6 +17,8 @@ when completion is directly verified; never infer a human decision.
 - **q-39**: the daily-use readiness bar (docs/45) is met only when every line carries pass evidence.
 - **q-5**: answered; waits on the teacher broker's enforcement canaries, then the `sensitive_data` overlay.
 - **q-6**: not yet needed (an elevated firewall rule when LW-111 reaches it).
+- **q-51** (owner actions, 2026-11-25): the personal folders on the lab's slow disk; two folders parked for you on the
+  archive disk; optionally a second archive disk.
 
 ## q-1 — Confirm the T1 sandbox tier — CONFIRMED 2026-10-10, CLOSED
 
@@ -506,6 +508,6 @@ What only you can do:
   archive disk. A move leaves the archive disk as their only copy unless you keep the originals (q-49: single copy for now).
 - [ ] Look at the two folders an earlier session parked on the archive disk for you (23 Nov and 16 Nov; names in the lab's
   plan file). Agents did not open them.
-- [ ] Optional: a second archive disk, so archived lab data is not on one USB disk only (q-49 already plans one).
+- [ ] Optional: a second archive disk, so archived lab data is not on one USB disk only (q-49 anticipates one).
 Not done by agents, by design: Loomward's own copy-and-verify effect stays synthetic-only until gate C8 (docs/47); the moves
-used the lab's existing hash-verified copy tool. Building the product path is LW-042 (#48).
+used the lab's existing hash-verified copy tool. The product's gated move is LW-042 (#48).
