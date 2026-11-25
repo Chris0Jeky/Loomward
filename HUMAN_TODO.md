@@ -17,6 +17,8 @@ when completion is directly verified; never infer a human decision.
 - **q-39**: the daily-use readiness bar (docs/45) is met only when every line carries pass evidence.
 - **q-5**: answered; waits on the teacher broker's enforcement canaries, then the `sensitive_data` overlay.
 - **q-6**: not yet needed (an elevated firewall rule when LW-111 reaches it).
+- **q-51** (owner actions, 2026-11-25): the personal folders on the lab's slow disk; two folders parked for you on the
+  archive disk; optionally a second archive disk.
 
 ## q-1 — Confirm the T1 sandbox tier — CONFIRMED 2026-10-10, CLOSED
 
@@ -494,3 +496,18 @@ The external-disk lane shipped USB scan roots, the read-only `loomward-mcp` serv
 and the Agent access view (docs/48). Only you can grant whole volumes (q-7):
 - [x] **loomward-space-survey-setup**: ANSWERED 2026-10-26 (Other): "Why is this not something you could do yourself from start to end? if possible, do that, unless it's highly inefficient and you'd need to use the computer-use, in which case I'll do it tomorrow". Volume roots stay picker-only in code, so the agent surveys with every top-level folder of each disk granted in separate local state folders on `E:`; files sitting directly on a volume root are measured separately (a plain directory listing of sizes). This answer is the owner's authority for that piecewise whole-disk survey beyond q-4's single-folder grant: metadata only (names, sizes, times), read-only, non-elevated, with its state and survey output on `E:` outside every Git checkout. Installing the nightly and granting volumes in the app stays optional.
   Done 2026-10-26: all four disks surveyed read-only; the summary with six draft cleanup proposals went to the owner locally (never committed). Each proposal waits for the owner's approval of its plan.
+
+### q-51 — Lab drive tiering, 25 Nov 2026 — OWNER ACTIONS (nothing blocks the agent work)
+
+The lab's drive session (25 Nov) used Loomward's scanner and `plan` simulation to free the lab's slow disk and moved only lab
+data: cold lab folders and agent archives to the archive disk, each file SHA-256 verified before its source went, with a
+junction left behind; two builds and the lab's coordinator records went to your Google Drive. Your personal folders were not
+opened, listed, hashed or moved. The per-folder list with sizes is in the lab's local plan file (never committed here).
+What only you can do:
+- [ ] Decide on your personal folders on the slow disk (about 1,000 GB, the bulk of its use): keep them, or move them to the
+  archive disk. A move leaves the archive disk as their only copy unless you keep the originals (q-49: single copy for now).
+- [ ] Look at the two folders an earlier session parked on the archive disk for you (23 Nov and 16 Nov; names in the lab's
+  plan file). Agents did not open them.
+- [ ] Optional: a second archive disk, so archived lab data is not on one USB disk only (q-49 anticipates one).
+Not done by agents, by design: Loomward's own copy-and-verify effect stays synthetic-only until gate C8 (docs/47); the moves
+used the lab's existing hash-verified copy tool. The product's gated move is LW-042 (#48).
