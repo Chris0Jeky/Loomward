@@ -171,7 +171,11 @@ Result on Linux (2026-10-12, Python 3.12.3): 243 tests, 8 skipped. The skips com
 
 ### Rust workspace
 
-Needs Rust 1.85 or later, as the workspace's `rust-version` says. The desktop shell needs 1.89.
+Install Rust with `rustup` and use the checkout's pinned
+[toolchain](rust-toolchain.toml), currently Rust 1.100.0 with `rustfmt` and `clippy`.
+CI uses the same pin. The Cargo manifests declare lower `rust-version` floors
+(1.85 for the workspace and 1.89 for the desktop shell); those are not the versions
+used for the contributor checks below.
 
 ```bash
 cargo test --workspace
