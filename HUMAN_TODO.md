@@ -509,5 +509,10 @@ What only you can do:
 - [ ] Look at the two folders an earlier session parked on the archive disk for you (23 Nov and 16 Nov; names in the lab's
   plan file). Agents did not open them.
 - [ ] Optional: a second archive disk, so archived lab data is not on one USB disk only (q-49 anticipates one).
+- [ ] Delete one empty folder left on the slow disk (26 Nov): it belongs to the Codex sandbox account, which the agent cannot
+  remove without elevation; everything else in that archived folder is verified on the archive disk. Path in the lab's plan file.
+- [ ] Optional: point Google Drive's local cache at a disk other than the system disk. Uploads stage there, and the system disk
+  went below its 60 GB floor overnight while the lab was also writing to it, so further Drive backups wait. A Drive setting,
+  so yours.
 Not done by agents, by design: Loomward's own copy-and-verify effect stays synthetic-only until gate C8 (docs/47); the moves
 used the lab's existing hash-verified copy tool. The product's gated move is LW-042 (#48).
