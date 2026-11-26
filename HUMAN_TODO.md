@@ -18,7 +18,7 @@ when completion is directly verified; never infer a human decision.
 - **q-5**: answered; waits on the teacher broker's enforcement canaries, then the `sensitive_data` overlay.
 - **q-6**: not yet needed (an elevated firewall rule when LW-111 reaches it).
 - **q-51** (owner actions, 2026-11-25): the personal folders on the lab's slow disk; two folders parked for you on the
-  archive disk; optionally a second archive disk.
+  archive disk; one empty folder only you can delete; optionally a second archive disk and moving Drive's cache.
 
 ## q-1 — Confirm the T1 sandbox tier — CONFIRMED 2026-10-10, CLOSED
 
@@ -509,10 +509,11 @@ What only you can do:
 - [ ] Look at the two folders an earlier session parked on the archive disk for you (23 Nov and 16 Nov; names in the lab's
   plan file). Agents did not open them.
 - [ ] Optional: a second archive disk, so archived lab data is not on one USB disk only (q-49 anticipates one).
-- [ ] Delete one empty folder left on the slow disk (26 Nov): it belongs to the Codex sandbox account, which the agent cannot
-  remove without elevation; everything else in that archived folder is verified on the archive disk. Path in the lab's plan file.
+- [ ] Delete one empty folder left on the slow disk (26 Nov): a real folder, not a junction (its moved parent left none). It
+  belongs to the Codex sandbox account, so deleting it needs an elevated prompt or taking ownership; everything else of that
+  parent is verified on the archive disk. Path in the lab's plan file.
 - [ ] Optional: point Google Drive's local cache at a disk other than the system disk. Uploads stage there, and the system disk
-  went below its 60 GB floor overnight while the lab was also writing to it, so further Drive backups wait. A Drive setting,
-  so yours.
+  went below its 60 GB floor overnight while the lab was also writing to it, so further Drive backups wait until it is above
+  70 GB again or the cache has moved. A Drive setting, so yours.
 Not done by agents, by design: Loomward's own copy-and-verify effect stays synthetic-only until gate C8 (docs/47); the moves
 used the lab's existing hash-verified copy tool. The product's gated move is LW-042 (#48).
