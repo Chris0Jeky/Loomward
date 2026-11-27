@@ -86,7 +86,13 @@ export function asResponse(v: unknown, requestId: string): ResponseEnvelope {
   if (!isObject(v) || v.protocol !== 'loomward/3' || v.request_id !== requestId || typeof v.ok !== 'boolean') {
     throw new TransportError('response is not a loomward/3 envelope for this request');
   }
-  if (v.ok ? !isObject(v.meta) : !isObject(v.error)) throw new TransportError('malformed response envelope');
+  if (v.ok) {
+    if (!isObject(v.result) || !isObject(v.meta)) throw new TransportError('malformed response envelope');
+  } else {
+    if (!isObject(v.error) || typeof v.error.code !== 'string') {
+      throw new TransportError('malformed response envelope');
+    }
+  }
   return v as unknown as ResponseEnvelope;
 }
 
